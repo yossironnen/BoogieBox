@@ -2,7 +2,7 @@
 
 Self-hosted Windows music library app with a standalone Rust server package, multi-user support, scanning, fast search and browse, playlists, in-app playback, waveform/BPM background jobs, BoogieMix playlist rendering, and optional DLNA/UPnP serving.
 
-Current version: `0.7.202` (see [`client/src/version.ts`](client/src/version.ts))
+Current version: `0.8` (see [`client/src/version.ts`](client/src/version.ts))
 
 ## Warning: Local Network Use Only
 
