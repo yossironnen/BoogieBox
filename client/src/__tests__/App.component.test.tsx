@@ -1,0 +1,332 @@
+/**
+ * Tests App.Component.Test behavior for BoogieBox regressions.
+ */
+
+import React from 'react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import App, { THEME_STORAGE_KEY, sortSearchTracks } from '../App';
+import { DEFAULT_SETTINGS } from '../types';
+
+const { apiMock, getStreamDirectMock, openContextMenuMock } = vi.hoisted(() => ({
+  apiMock: {
+    libraries: {
+      list: vi.fn(),
+      add: vi.fn(),
+      remove: vi.fn(),
+      scan: vi.fn(),
+    },
+    scanJobs: { get: vi.fn(), active: vi.fn() },
+    stats: vi.fn(),
+    playbackSettings: vi.fn(),
+    systemStatus: vi.fn(),
+    settings: { get: vi.fn() },
+    userSettings: { get: vi.fn(), update: vi.fn() },
+    genres: vi.fn(),
+    search: vi.fn(),
+    autoDjTracks: vi.fn(),
+    markTrackPlayed: vi.fn(),
+    artists: vi.fn(),
+    albums: vi.fn(),
+    debugTestPath: vi.fn(),
+    auth: {
+      me: vi.fn(),
+      getLoginUsers: vi.fn(),
+      login: vi.fn(),
+      logout: vi.fn(),
+    },
+  },
+  getStreamDirectMock: vi.fn(),
+  openContextMenuMock: vi.fn(),
+}));
+
+vi.mock('../api', () => ({
+  api: apiMock,
+  getStreamDirect: getStreamDirectMock,
+}));
+
+vi.mock('../components/HomeView', () => ({
+  default: (props: any) => (
+    <div data-testid="home-view">
+      <button onClick={() => props.onOpenArtist({ id: '1', name: 'Artist One', track_count: 2, album_count: 1 })}>home-open-artist</button>
+      <button onClick={() => props.onOpenAlbum({ id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2 })}>home-open-album</button>
+      <button onClick={() => props.onOpenGenre('Rock')}>home-open-genre</button>
+      <button onClick={() => props.onOpenPlaylist('42')}>home-open-playlist</button>
+      <button onClick={() => props.onPlayTrack({ id: '1', file_path: 'x', file_name: 'x.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Track One', artist: 'Artist One', album: 'Album One', library_name: 'Main', track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01' })}>home-play-track</button>
+      <button onClick={() => props.onStartAutoDj(['Rock'])}>home-start-auto-dj</button>
+    </div>
+  ),
+}));
+
+
+vi.mock('../components/BrowseView', () => ({
+  default: (props: any) => (
+    <div data-testid="browse-view">
+      browse:{props.openArtistRequest ? 'artist' : props.openAlbumRequest ? 'album' : props.openGenreRequest ? 'genre' : 'none'}:libs:{(props.forcedLibraryIds ?? []).join(',') || 'all'}
+    </div>
+  ),
+}));
+
+vi.mock('../components/PlaylistsView', () => ({
+  default: (props: any) => <div data-testid="playlists-view">playlist:{props.initialPlaylistId ?? 'none'}</div>,
+}));
+
+vi.mock('../components/SettingsPage', () => ({
+  default: (props: any) => (
+    <div data-testid="settings-view">
+      <button onClick={() => props.onSettingsChange({ ...DEFAULT_SETTINGS, lastfmKey: 'changed' })}>change-settings</button>
+      <button onClick={() => props.onStreamDirectChange?.(true)}>set-stream-direct</button>
+    </div>
+  ),
+}));
+
+vi.mock('../components/Player', () => ({
+  default: () => <div data-testid="player-view">player</div>,
+}));
+
+vi.mock('../components/ContextMenu', async () => {
+  const actual = await vi.importActual('../components/ContextMenu');
+  return {
+    ...actual,
+    ContextMenuRoot: () => <div data-testid="context-menu-root">context</div>,
+    openContextMenu: openContextMenuMock,
+  };
+});
+
+describe('App component flows', () => {
+  it('uses the BoogieBox theme storage key', () => {
+    expect(THEME_STORAGE_KEY).toBe('boogiebox.theme.v1');
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('confirm', vi.fn(() => true));
+
+    getStreamDirectMock.mockReturnValue(false);
+    apiMock.libraries.list.mockResolvedValue([
+      { id: '1', path: 'D:\\Music', name: 'Main Library', added_at: '2026-01-01', last_scan: null, track_count: 3 },
+    ]);
+    apiMock.stats.mockResolvedValue({
+      total_tracks: 3,
+      total_artists: 2,
+      total_albums: 2,
+      total_libraries: 1,
+      total_hours: 1,
+      total_gb: 0.1,
+    });
+    apiMock.systemStatus.mockResolvedValue({ ffmpegAvailable: true });
+    apiMock.playbackSettings.mockResolvedValue({ transcodeQuality: 'high', replayGainEnabled: '0', vinylMode: '0', lastfmConfigured: false });
+    apiMock.auth.me.mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true });
+    apiMock.settings.get.mockResolvedValue({ lastfmKey: 'lastfm', transcodeQuality: 'high' });
+    apiMock.userSettings.get.mockResolvedValue({});
+    apiMock.userSettings.update.mockResolvedValue({ ok: true });
+    apiMock.genres.mockResolvedValue([{ genre: 'Rock', track_count: 3 }]);
+    apiMock.search.mockResolvedValue({
+      tracks: [
+        {
+          id: '1', file_path: 'D:\\Music\\track-one.mp3', file_name: 'track-one.mp3', file_size: 1,
+          format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2,
+          title: 'Track One', artist: 'Artist One', album: 'Album One', library_name: 'Main',
+          track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01',
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 100,
+      artists: [{ id: '1', name: 'Artist One', track_count: 2, album_count: 1 }],
+      albums: [{ id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2 }],
+      top_results: [],
+    });
+    apiMock.autoDjTracks.mockResolvedValue({
+      tracks: [
+        {
+          id: '11', file_path: 'D:\\Music\\dj-one.mp3', file_name: 'dj-one.mp3', file_size: 1,
+          format: 'MP3', duration: 180, bitrate: 320, sample_rate: 44100, channels: 2,
+          title: 'DJ One', artist: 'Artist One', album: 'Album One', library_name: 'Main',
+          track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01',
+        },
+        {
+          id: '12', file_path: 'D:\\Music\\dj-two.mp3', file_name: 'dj-two.mp3', file_size: 1,
+          format: 'MP3', duration: 181, bitrate: 320, sample_rate: 44100, channels: 2,
+          title: 'DJ Two', artist: 'Artist Two', album: 'Album Two', library_name: 'Main',
+          track_number: 1, disc_number: 1, year: 2021, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01',
+        },
+      ],
+    });
+    apiMock.markTrackPlayed.mockResolvedValue({ ok: true });
+    apiMock.artists.mockResolvedValue([{ id: '1', name: 'Artist One', track_count: 2, album_count: 1 }]);
+    apiMock.albums.mockResolvedValue([{ id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2 }]);
+    apiMock.debugTestPath.mockResolvedValue({ exists: true, isDirectory: true, displayName: 'Music' });
+    apiMock.libraries.add.mockResolvedValue({ id: '2', path: 'D:\\More', name: 'More', added_at: '2026-01-01', last_scan: null, track_count: 0 });
+    apiMock.libraries.remove.mockResolvedValue({ ok: true });
+    apiMock.libraries.scan.mockResolvedValue({ jobId: '55' });
+    apiMock.scanJobs.active.mockResolvedValue([]);
+    apiMock.scanJobs.get.mockResolvedValue({
+      id: '55',
+      library_id: '1',
+      status: 'done',
+      files_found: 3,
+      files_scanned: 3,
+      errors: 0,
+      started_at: '2026-01-01',
+      finished_at: '2026-01-01',
+    });
+  });
+
+  it('navigates home/search/browse/playlists/settings and keeps library management inside settings', async () => {
+    render(<App />);
+
+    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    expect(screen.getByText('BoogieBox')).toBeInTheDocument();
+    expect(screen.getByTestId('home-view')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/Transcoding on \(320 kbps\)/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('home-open-playlist'));
+    expect(await screen.findByTestId('playlists-view')).toHaveTextContent('playlist:42');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(screen.getByPlaceholderText(/Search titles, artists, albums/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/Search titles, artists, albums/i), { target: { value: 'Track' } });
+    await waitFor(() => expect(apiMock.search).toHaveBeenCalled(), { timeout: 2000 });
+    expect(screen.getByText(/1 artist/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Album One.*Artist One/i }));
+    expect(await screen.findByTestId('browse-view')).toHaveTextContent('browse:album');
+
+    expect(screen.getByText('Libraries')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.getByTestId('settings-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('set-stream-direct'));
+    expect(screen.getByText(/Transcoding off/i)).toBeInTheDocument();
+  }, 10000);
+
+  it('does not render a standalone Libraries sidebar item', async () => {
+    render(<App />);
+    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: 'Libraries' })).not.toBeInTheDocument();
+  });
+
+  it('opens Browse scoped to the clicked sidebar library and clears back to all libraries from Browse nav', async () => {
+    render(<App />);
+
+    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+
+    expect(screen.queryByRole('button', { name: 'Movies' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse Music' }));
+    expect(await screen.findByTestId('browse-view')).toHaveTextContent('browse:none:libs:all');
+  });
+
+  it('removes Search view options and keeps the results grid sortable, including rating', async () => {
+    const tracks = [
+      {
+        id: '1', file_path: 'D:\\Music\\track-one.mp3', file_name: 'track-one.mp3', file_size: 1,
+        format: 'MP3', duration: 180, bitrate: 192, sample_rate: 44100, channels: 2,
+        title: 'Gamma Track', artist: 'Zulu Artist', album: 'Beta Album', library_name: 'Main',
+        track_number: 1, disc_number: 1, year: 2022, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01', rating: 2.5,
+      },
+      {
+        id: '2', file_path: 'D:\\Music\\track-two.mp3', file_name: 'track-two.mp3', file_size: 1,
+        format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2,
+        title: 'Alpha Track', artist: 'Echo Artist', album: 'Zulu Album', library_name: 'Main',
+        track_number: 2, disc_number: 1, year: 2019, genre: 'Pop', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01', rating: 5,
+      },
+      {
+        id: '3', file_path: 'D:\\Music\\track-three.mp3', file_name: 'track-three.mp3', file_size: 1,
+        format: 'MP3', duration: 240, bitrate: 256, sample_rate: 44100, channels: 2,
+        title: 'Beta Track', artist: 'Mike Artist', album: 'Alpha Album', library_name: 'Main',
+        track_number: 3, disc_number: 1, year: 2021, genre: 'Jazz', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01', rating: null,
+      },
+    ];
+    apiMock.search.mockImplementation(async ({ sort = 'title', order = 'asc' }: { sort?: any; order?: any }) => ({
+      tracks: sortSearchTracks(tracks, sort, order),
+      total: tracks.length,
+      page: 1,
+      limit: 100,
+      artists: [],
+      albums: [],
+      top_results: [],
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.change(screen.getByPlaceholderText(/Search titles, artists, albums/i), { target: { value: 'Track' } });
+    await waitFor(() => expect(apiMock.search).toHaveBeenCalled(), { timeout: 2000 });
+    expect(screen.queryByRole('button', { name: 'View options' })).not.toBeInTheDocument();
+
+    const getTrackTitles = () =>
+      screen.getAllByText(/^(Alpha Track|Beta Track|Gamma Track)$/).map((node) => node.textContent);
+
+    await waitFor(() => expect(getTrackTitles().slice(0, 3)).toEqual(['Alpha Track', 'Beta Track', 'Gamma Track']));
+
+    fireEvent.click(screen.getByText('Year'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'Track', sort: 'year', order: 'asc' })));
+    await waitFor(() => expect(getTrackTitles().slice(0, 3)).toEqual(['Alpha Track', 'Beta Track', 'Gamma Track']));
+
+    fireEvent.click(screen.getByText('Year'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'Track', sort: 'year', order: 'desc' })));
+    await waitFor(() => expect(getTrackTitles().slice(0, 3)).toEqual(['Gamma Track', 'Beta Track', 'Alpha Track']));
+
+    fireEvent.click(screen.getByText('Dur'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'Track', sort: 'duration', order: 'asc' })));
+    await waitFor(() => expect(getTrackTitles().slice(0, 3)).toEqual(['Alpha Track', 'Gamma Track', 'Beta Track']));
+
+    fireEvent.click(screen.getByText('Kbps'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'Track', sort: 'bitrate', order: 'asc' })));
+    await waitFor(() => expect(getTrackTitles().slice(0, 3)).toEqual(['Gamma Track', 'Beta Track', 'Alpha Track']));
+
+    fireEvent.click(screen.getByText('Rating'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'Track', sort: 'rating', order: 'desc' })));
+    await waitFor(() => expect(getTrackTitles().slice(0, 3)).toEqual(['Alpha Track', 'Gamma Track', 'Beta Track']));
+
+    fireEvent.click(screen.getByText('Rating'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'Track', sort: 'rating', order: 'asc' })));
+    await waitFor(() => expect(getTrackTitles().slice(0, 3)).toEqual(['Beta Track', 'Gamma Track', 'Alpha Track']));
+  }, 10000);
+
+
+  it('keeps exactly one sidebar menu item active when switching views', async () => {
+    render(<App />);
+
+    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+
+    const navLabels = ['Home', 'Search', 'Browse Music', 'Playlists', 'Settings'] as const;
+    const homeButton = screen.getByRole('button', { name: 'Home' });
+    const searchButton = screen.getByRole('button', { name: 'Search' });
+    const settingsButton = screen.getByRole('button', { name: 'Settings' });
+
+    expect(homeButton).toHaveAttribute('aria-current', 'page');
+    expect(searchButton).not.toHaveAttribute('aria-current');
+
+    fireEvent.click(searchButton);
+    expect(searchButton).toHaveAttribute('aria-current', 'page');
+    expect(homeButton).not.toHaveAttribute('aria-current');
+
+    fireEvent.click(settingsButton);
+    expect(settingsButton).toHaveAttribute('aria-current', 'page');
+    expect(searchButton).not.toHaveAttribute('aria-current');
+
+    const activeNavButtons = navLabels
+      .map((label) => screen.getByRole('button', { name: label }))
+      .filter((button) => button.getAttribute('aria-current') === 'page');
+    expect(activeNavButtons).toHaveLength(1);
+    expect(activeNavButtons[0]).toBe(settingsButton);
+  });
+
+  it('starts Auto DJ from the Home Genres pane action', async () => {
+    render(<App />);
+
+    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    fireEvent.click(screen.getByText('home-start-auto-dj'));
+
+    await waitFor(() => expect(apiMock.autoDjTracks).toHaveBeenCalledWith({
+      genres: ['Rock'],
+      library_id: undefined,
+      limit: 200,
+    }));
+    await waitFor(() => expect(apiMock.markTrackPlayed).toHaveBeenCalledWith('11'));
+  });
+
+});

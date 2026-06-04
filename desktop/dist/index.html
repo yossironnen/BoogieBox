@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BoogieBox</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d0d0f;
+      color: #e8e8f0;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      gap: 20px;
+    }
+    .brand { font-size: 36px; font-weight: 800; letter-spacing: -1px; color: #fff; }
+    .kicker { font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #6d6dff; margin-bottom: 4px; }
+    .status { font-size: 14px; color: #888; }
+    .spinner {
+      width: 28px; height: 28px;
+      border: 3px solid #222;
+      border-top-color: #6d6dff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #setup {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      background: #15151a;
+      border: 1px solid #2a2a35;
+      border-radius: 16px;
+      padding: 28px 32px;
+      min-width: 360px;
+      max-width: 520px;
+    }
+    #setup label { font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 1px; align-self: flex-start; }
+    #setup input {
+      width: 100%;
+      padding: 10px 14px;
+      background: #1e1e26;
+      border: 1px solid #333;
+      border-radius: 10px;
+      color: #e8e8f0;
+      font-size: 14px;
+      outline: none;
+    }
+    #setup input:focus { border-color: #6d6dff; }
+    #setup .row { display: flex; gap: 10px; width: 100%; }
+    button {
+      flex: 1;
+      padding: 10px 18px;
+      background: #6d6dff;
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: #5a5ae8; }
+    button.secondary { background: #222; border: 1px solid #333; }
+    button.secondary:hover { background: #2a2a35; }
+    #error { color: #f87171; font-size: 13px; display: none; }
+    #servers { width: 100%; display: none; flex-direction: column; gap: 8px; }
+    .server-card {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      background: #1e1e26;
+      border: 1px solid #333;
+      border-radius: 10px;
+      color: #e8e8f0;
+      text-align: left;
+    }
+    .server-card:hover { border-color: #6d6dff; background: #242431; }
+    .server-title { font-size: 14px; font-weight: 800; }
+    .server-meta { margin-top: 3px; font-size: 12px; color: #9ca3af; }
+    .server-action { flex: 0 0 auto; color: #9ca3af; font-size: 12px; font-weight: 800; }
+  </style>
+</head>
+<body>
+  <div>
+    <div class="kicker">Desktop Client</div>
+    <div class="brand">BoogieBox</div>
+  </div>
+  <div class="spinner" id="spinner"></div>
+  <div class="status" id="status">Connecting to server…</div>
+
+  <div id="setup">
+    <div id="servers"></div>
+    <label for="url-input">BoogieBox Server URL</label>
+    <input id="url-input" type="url" placeholder="http://localhost:3001" autocomplete="off" spellcheck="false" />
+    <div id="error"></div>
+    <div class="row">
+      <button class="secondary" onclick="retry()">Retry</button>
+      <button onclick="connect()">Connect</button>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+
+    async function invoke(cmd, args) {
+      if (!window.__TAURI__ || !window.__TAURI__.core) {
+        throw new Error('Tauri API unavailable. Start this page with npm run dev inside desktop/.');
+      }
+      return window.__TAURI__.core.invoke(cmd, args || {});
+    }
+
+    async function init() {
+      try {
+        const cfg = await invoke('get_config');
+        const url = cfg.serverUrl;
+        if (url) {
+          $('status').textContent = 'Connecting to ' + url + '…';
+          const probe = await invoke('probe_server', { url });
+          if (probe.reachable) {
+            $('status').textContent = 'Connected — loading…';
+            window.location.href = url;
+          } else {
+            showSetup(url, probe.error || 'Server not reachable');
+          }
+        } else {
+          showSetup('http://localhost:3001', 'No server configured');
+        }
+        discover();
+      } catch (e) {
+        showSetup('http://localhost:3001', String(e));
+        discover();
+      }
+    }
+
+    function showSetup(url, msg) {
+      $('spinner').style.display = 'none';
+      $('status').style.display = 'none';
+      $('url-input').value = url || '';
+      $('error').textContent = msg || '';
+      $('error').style.display = msg ? 'block' : 'none';
+      $('setup').style.display = 'flex';
+    }
+
+    async function connect() {
+      const url = $('url-input').value.trim();
+      connectTo(url);
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch]));
+    }
+
+    function showServers(servers) {
+      const list = $('servers');
+      list.innerHTML = '';
+      if (!servers.length) {
+        list.style.display = 'none';
+        return;
+      }
+
+      servers.forEach(server => {
+        const button = document.createElement('button');
+        button.className = 'server-card';
+        button.type = 'button';
+        button.onclick = () => connectTo(server.url);
+        const setup = server.setupRequired ? 'Setup required' : 'Ready';
+        const version = server.version ? ' - v' + escapeHtml(server.version) : '';
+        button.innerHTML = `
+          <span>
+            <span class="server-title">${escapeHtml(server.url)}</span>
+            <span class="server-meta">${setup}${version}</span>
+          </span>
+          <span class="server-action">Connect</span>
+        `;
+        list.appendChild(button);
+      });
+      list.style.display = 'flex';
+    }
+
+    async function discover() {
+      try {
+        const result = await invoke('discover_servers');
+        showServers(result.servers || []);
+        if (result.servers && result.servers.length && $('setup').style.display === 'flex') {
+          $('error').textContent = 'Select a discovered server, or enter one manually.';
+          $('error').style.display = 'block';
+        }
+      } catch (e) {
+        console.warn('Server discovery failed', e);
+      }
+    }
+
+    async function connectTo(url) {
+      if (!url) { $('error').textContent = 'Please enter a URL'; $('error').style.display = 'block'; return; }
+      $('error').style.display = 'none';
+      $('status').textContent = 'Probing ' + url + '…';
+      $('setup').style.display = 'none';
+      $('spinner').style.display = '';
+      $('status').style.display = '';
+      try {
+        const probe = await invoke('probe_server', { url });
+        if (probe.reachable) {
+          await invoke('set_server_url', { url });
+          window.location.href = url;
+        } else {
+          showSetup(url, probe.error || 'Server not reachable at that URL');
+        }
+      } catch (e) {
+        showSetup(url, String(e));
+      }
+    }
+
+    async function retry() {
+      const url = $('url-input').value.trim();
+      if (url) {
+        $('setup').style.display = 'none';
+        $('spinner').style.display = '';
+        $('status').style.display = '';
+        $('status').textContent = 'Retrying…';
+        setTimeout(connect, 100);
+      }
+    }
+
+    document.getElementById('url-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') connect();
+    });
+
+    init();
+  </script>
+</body>
+</html>

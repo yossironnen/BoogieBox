@@ -1,0 +1,47 @@
+node_modules/
+client/node_modules/
+desktop/node_modules/
+desktop/src-tauri/target/
+server-rs/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/resources/libmpv/
+Services/boogiemix/python/.venv/
+Services/boogiemix/python/model-cache/
+Services/boogiemix/python/__pycache__/
+**/__pycache__/
+*.pyc
+tools/ffmpeg/*
+!tools/ffmpeg/README.md
+tools/winsw/*
+!tools/winsw/README.md
+client/build/
+client/coverage/
+data/
+data_old/
+Releases/
+tmp/
+logs/
+
+# Local runtime state and private workspace data
+boogiebox-config.json
+dev.config
+.env
+.env.*
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+changes.log
+desktop/changes.log
+d?ProjectsBoogieBoxchanges.log
+
+# Local agent/editor configuration that should not ship publicly
+.claude/
+.mcp.json
+.codex/config.toml
+.vscode/settings.json
+
+# Internal project memory; replace with curated public docs before publishing
+Docs/memory/
+!Docs/memory/README.md

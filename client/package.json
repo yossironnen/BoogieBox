@@ -1,0 +1,36 @@
+{
+  "name": "boogiebox-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "vite --port 3000",
+    "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck",
+    "preview": "vite preview",
+    "test": "vitest run --no-file-parallelism",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "fast-average-color": "^9.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "overrides": {
+    "three-mesh-bvh": "0.8.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.1",
+    "@vitest/coverage-v8": "^4.0.18",
+    "jsdom": "^28.1.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.4.2",
+    "vitest": "^4.0.18"
+  }
+}

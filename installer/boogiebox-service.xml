@@ -1,0 +1,18 @@
+<!-- Defines Windows service metadata for BoogieBox. -->
+<service>
+  <id>BoogieBoxServer</id>
+  <name>BoogieBox Server</name>
+  <description>Serves the BoogieBox media library on the local network.</description>
+  <executable>%BASE%\boogiebox-server.exe</executable>
+  <workingdirectory>%BASE%</workingdirectory>
+  <env name="BOOGIEBOX_LOG_LEVEL" value="info" />
+  <env name="BOOGIEBOX_LOG_DIR" value="%PROGRAMDATA%\BoogieBox\logs" />
+  <startmode>Automatic</startmode>
+  <serviceaccount>
+    <username>.\BoogieBoxService</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+  <onfailure action="restart" delay="10 sec" />
+  <logpath>%PROGRAMDATA%\BoogieBox\service-logs</logpath>
+  <log mode="roll" />
+</service>

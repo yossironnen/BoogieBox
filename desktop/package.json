@@ -1,0 +1,19 @@
+{
+  "name": "boogiebox-desktop",
+  "version": "0.8.0",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "tauri info",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "generate-icons": "powershell -ExecutionPolicy Bypass -File src-tauri/generate-icons.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

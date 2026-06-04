@@ -1,0 +1,839 @@
+﻿//! Defines Rust server support logic for Post Scan.
+
+use crate::{
+    artwork_cache::{
+        build_album_art_cache_key, build_artist_art_cache_key, cache_item_dir,
+        ext_from_content_type, find_existing_cached_image, find_folder_cover_image,
+        get_assigned_cache_file_path,
+    },
+    image_thumb::generate_thumbnail,
+    providers::{
+        download_image, fetch_lastfm_album_info, fetch_lastfm_artist_info,
+        fetch_lastfm_artist_top_tags, fetch_lrclib_lyrics, fetch_lyricsovh,
+        search_deezer_artist_image, search_discogs_album_cover, search_discogs_artist_image,
+        search_spotify_artist_image,
+    },
+    DbPool,
+};
+use boogiebox_db::{
+    artwork::{
+        get_album_for_art, get_artist_for_art, get_lastfm_cached, get_setting,
+        get_track_for_lyrics, save_lastfm_cache, upsert_cached_lyrics,
+    },
+    jobs::{ClaimedPostScanJob, JobError, PostScanLane},
+    music::EntityId,
+};
+use reqwest::Client;
+use rusqlite::OptionalExtension;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+const ARTIST_THUMB_SIZES: &[u32] = &[300, 800];
+const ALBUM_THUMB_SIZES: &[u32] = &[300, 800];
+const LASTFM_CACHE_DAYS: i64 = 7;
+const MIN_LASTFM_TAG_COUNT: u64 = 20;
+const MAX_ARTIST_STYLE_AGE_HOURS: i64 = 24 * 7;
+const STYLE_TAG_BLACKLIST: &[&str] = &[
+    "seen live",
+    "favorites",
+    "favourites",
+    "favorite",
+    "favourite",
+    "my favorites",
+    "my favourites",
+];
+
+// -- State ---------------------------------------------------------------------
+
+/// Public Post Scan State data shape used by BoogieBox.
+#[derive(Clone)]
+pub struct PostScanState {
+    /// Documents the DB public API surface.
+    pub db: DbPool,
+    /// Documents the Http Client public API surface.
+    pub http_client: Client,
+    /// Documents the DB Folder public API surface.
+    pub db_folder: Option<PathBuf>,
+}
+
+// -- Scheduler -----------------------------------------------------------------
+
+/// Documents the Start Post Scan Scheduler public API surface.
+pub fn start_post_scan_scheduler(state: PostScanState) {
+    tokio::spawn(async move {
+        run_one_pending_music_post_scan(&state).await;
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            run_one_pending_music_post_scan(&state).await;
+        }
+    });
+}
+
+/// Documents the Run One Pending Music Post Scan Owned public API surface.
+pub async fn run_one_pending_music_post_scan_owned(state: PostScanState) {
+    run_one_pending_music_post_scan(&state).await;
+}
+
+/// Documents the Run One Pending Music Post Scan public API surface.
+pub async fn run_one_pending_music_post_scan(state: &PostScanState) {
+    run_one_pending_post_scan_in_lane(state, PostScanLane::Music).await;
+}
+
+async fn run_one_pending_post_scan_in_lane(state: &PostScanState, lane: PostScanLane) {
+    let db = state.db.clone();
+    let claimed = match tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::jobs::claim_next_post_scan_job(&conn, lane)
+    })
+    .await
+    {
+        Ok(Ok(Some(job))) => job,
+        Ok(Ok(None)) => return,
+        Ok(Err(err)) => {
+            tracing::warn!("post-scan claim failed: {err}");
+            return;
+        }
+        Err(err) => {
+            tracing::error!("post-scan spawn failed: {err}");
+            return;
+        }
+    };
+
+    tracing::debug!(
+        "post-scan started: {} ({:?})",
+        claimed.job_type,
+        claimed.job_id
+    );
+    let result = process_post_scan_job(state, &claimed).await;
+    let failed_msg = result.as_ref().err().map(|e| e.to_string());
+
+    let db = state.db.clone();
+    let job_id = claimed.job_id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        match failed_msg {
+            None => boogiebox_db::jobs::mark_post_scan_done(&conn, &job_id),
+            Some(ref msg) => boogiebox_db::jobs::mark_post_scan_failed(&conn, &job_id, msg),
+        }
+    })
+    .await;
+
+    if let Err(err) = result {
+        tracing::warn!("post-scan job {} failed: {}", claimed.job_type, err);
+    }
+}
+
+async fn process_post_scan_job(
+    state: &PostScanState,
+    job: &ClaimedPostScanJob,
+) -> Result<(), JobError> {
+    // Heartbeat
+    {
+        let db = state.db.clone();
+        let job_id = job.job_id.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            boogiebox_db::jobs::touch_post_scan_job(&conn, &job_id)
+        })
+        .await;
+    }
+
+    match job.job_type.as_str() {
+        "refresh_library_mappings" => {
+            let db = state.db.clone();
+            let library_id = job.library_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                boogiebox_db::jobs::refresh_library_entity_mappings(&conn, &library_id)
+            })
+            .await
+            .expect("spawn ok")
+        }
+        "cache_artist_images" => {
+            run_cache_artist_images(state, &job.library_id, job.payload.as_deref()).await
+        }
+        "cache_album_images" => {
+            run_cache_album_images(state, &job.library_id, job.payload.as_deref()).await
+        }
+        "warm_lastfm_artist_info" => {
+            run_warm_lastfm_artist_info(state, &job.library_id, job.payload.as_deref()).await
+        }
+        "warm_lastfm_album_info" => {
+            run_warm_lastfm_album_info(state, &job.library_id, job.payload.as_deref()).await
+        }
+        "warm_track_lyrics" => {
+            run_warm_track_lyrics(state, &job.library_id, job.payload.as_deref()).await
+        }
+        "sync_artist_styles" => run_sync_artist_styles(state, &job.library_id).await,
+        other => Err(JobError::UnsupportedPostScanJob(other.to_owned())),
+    }
+}
+
+// -- Helpers -------------------------------------------------------------------
+
+async fn get_setting_value(db: &DbPool, key: &str) -> Option<String> {
+    let db = db.clone();
+    let key = key.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        get_setting(&conn, &key)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn get_library_entity_ids(
+    db: &DbPool,
+    query: &'static str,
+    library_id: EntityId,
+) -> Vec<String> {
+    let db = db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        let mut stmt = match conn.prepare(query) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([&library_id], |row| row.get::<_, EntityId>(0))
+            .ok()
+            .map(|it| {
+                it.flatten()
+                    .map(|id| match id {
+                        EntityId::Int(n) => n.to_string(),
+                        EntityId::Str(s) => s,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn parse_entity_ids_from_payload(payload: Option<&str>, key: &str) -> Vec<String> {
+    let payload = match payload {
+        Some(p) if !p.is_empty() => p,
+        _ => return Vec::new(),
+    };
+    let v: serde_json::Value = match serde_json::from_str(payload) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    v[key]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|id| {
+                    id.as_str()
+                        .map(str::to_owned)
+                        .or_else(|| id.as_u64().map(|n| n.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn art_original_root(db_folder: &Path, entity: &str) -> PathBuf {
+    db_folder.join("art").join(entity).join("original")
+}
+
+fn art_thumb_root(db_folder: &Path, entity: &str, size: u32) -> PathBuf {
+    db_folder
+        .join("art")
+        .join(entity)
+        .join("thumb")
+        .join(size.to_string())
+}
+
+fn generate_cached_thumbs(
+    src: &Path,
+    thumb_root_fn: impl Fn(u32) -> PathBuf,
+    cache_key: &str,
+    sizes: &[u32],
+) {
+    for &size in sizes {
+        let root = thumb_root_fn(size);
+        if let Some(dest) =
+            get_assigned_cache_file_path(&root, cache_key, &format!("thumb-{size}"), ".jpg", true)
+        {
+            let _ = generate_thumbnail(src, &dest, size);
+        }
+    }
+}
+
+// -- cache_artist_images -------------------------------------------------------
+
+async fn run_cache_artist_images(
+    state: &PostScanState,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let db_folder = match &state.db_folder {
+        Some(f) => f.clone(),
+        None => return Ok(()),
+    };
+
+    let artist_ids = parse_entity_ids_from_payload(payload, "artistIds");
+    let artist_ids = if artist_ids.is_empty() {
+        get_library_entity_ids(
+            &state.db,
+            "SELECT DISTINCT artist_id FROM tracks WHERE library_id=?1 AND artist_id IS NOT NULL",
+            library_id.clone(),
+        )
+        .await
+    } else {
+        artist_ids
+    };
+
+    let discogs_token = get_setting_value(&state.db, "discogsToken").await;
+
+    for artist_id in &artist_ids {
+        let cache_key = build_artist_art_cache_key(artist_id);
+        let art_root = art_original_root(&db_folder, "artist");
+        let item_dir = cache_item_dir(&art_root, &cache_key);
+
+        // Already cached - ensure thumbnails exist
+        if let Some(cached) = find_existing_cached_image(&item_dir) {
+            let ck = cache_key.clone();
+            let df = db_folder.clone();
+            let cached_path = cached.clone();
+            tokio::task::spawn_blocking(move || {
+                generate_cached_thumbs(
+                    &cached_path,
+                    |sz| art_thumb_root(&df, "artist", sz),
+                    &ck,
+                    ARTIST_THUMB_SIZES,
+                );
+            })
+            .await
+            .ok();
+            continue;
+        }
+
+        let artist = {
+            let db = state.db.clone();
+            let id = artist_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_artist_for_art(&conn, &id)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some(artist) = artist else { continue };
+        if artist.metadata_locked {
+            continue;
+        }
+
+        // Try providers in priority order
+        let image_url = search_deezer_artist_image(&state.http_client, &artist.name).await;
+
+        let image_url = if image_url.is_none() {
+            if let Some(token) = &discogs_token {
+                search_discogs_artist_image(&state.http_client, token, &artist.name).await
+            } else {
+                None
+            }
+        } else {
+            image_url
+        };
+
+        let image_url = if image_url.is_none() {
+            try_spotify_artist_image(state, &artist.name).await
+        } else {
+            image_url
+        };
+
+        let Some(url) = image_url else { continue };
+
+        if let Some((bytes, content_type)) = download_image(&state.http_client, &url).await {
+            let ext = ext_from_content_type(&content_type);
+            let ck = cache_key.clone();
+            let df = db_folder.clone();
+            let art_r = art_root.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = std::fs::create_dir_all(&item_dir);
+                if let Some(dest) = get_assigned_cache_file_path(&art_r, &ck, "original", ext, true)
+                {
+                    if std::fs::write(&dest, &bytes).is_ok() {
+                        generate_cached_thumbs(
+                            &dest,
+                            |sz| art_thumb_root(&df, "artist", sz),
+                            &ck,
+                            ARTIST_THUMB_SIZES,
+                        );
+                    }
+                }
+            })
+            .await
+            .ok();
+        }
+    }
+    Ok(())
+}
+
+async fn try_spotify_artist_image(state: &PostScanState, artist_name: &str) -> Option<String> {
+    let client_id = get_setting_value(&state.db, "spotifyClientId").await?;
+    let client_secret = get_setting_value(&state.db, "spotifyClientSecret").await?;
+    search_spotify_artist_image(&state.http_client, &client_id, &client_secret, artist_name).await
+}
+
+// -- cache_album_images --------------------------------------------------------
+
+async fn run_cache_album_images(
+    state: &PostScanState,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let db_folder = match &state.db_folder {
+        Some(f) => f.clone(),
+        None => return Ok(()),
+    };
+
+    let album_ids = parse_entity_ids_from_payload(payload, "albumIds");
+    let album_ids = if album_ids.is_empty() {
+        get_library_entity_ids(
+            &state.db,
+            "SELECT DISTINCT album_id FROM tracks WHERE library_id=?1 AND album_id IS NOT NULL",
+            library_id.clone(),
+        )
+        .await
+    } else {
+        album_ids
+    };
+
+    let discogs_token = get_setting_value(&state.db, "discogsToken").await;
+
+    for album_id in &album_ids {
+        let cache_key = build_album_art_cache_key(album_id);
+        let art_root = art_original_root(&db_folder, "album");
+        let item_dir = cache_item_dir(&art_root, &cache_key);
+
+        if let Some(cached) = find_existing_cached_image(&item_dir) {
+            let ck = cache_key.clone();
+            let df = db_folder.clone();
+            let cached_path = cached.clone();
+            tokio::task::spawn_blocking(move || {
+                generate_cached_thumbs(
+                    &cached_path,
+                    |sz| art_thumb_root(&df, "album", sz),
+                    &ck,
+                    ALBUM_THUMB_SIZES,
+                );
+            })
+            .await
+            .ok();
+            continue;
+        }
+
+        let album = {
+            let db = state.db.clone();
+            let id = album_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_album_for_art(&conn, &id)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some(album) = album else { continue };
+        if album.metadata_locked {
+            continue;
+        }
+
+        // Try folder.jpg first
+        if let Some(folder_img) = find_folder_cover_image(Path::new(&album.file_path)) {
+            let ck = cache_key.clone();
+            let df = db_folder.clone();
+            let art_r = art_root.clone();
+            let src = folder_img.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = std::fs::create_dir_all(&item_dir);
+                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+                if let Some(dest) =
+                    get_assigned_cache_file_path(&art_r, &ck, "original", &format!(".{ext}"), true)
+                {
+                    if std::fs::copy(&src, &dest).is_ok() {
+                        generate_cached_thumbs(
+                            &dest,
+                            |sz| art_thumb_root(&df, "album", sz),
+                            &ck,
+                            ALBUM_THUMB_SIZES,
+                        );
+                    }
+                }
+            })
+            .await
+            .ok();
+            continue;
+        }
+
+        // Try Discogs
+        let image_url = if let Some(token) = &discogs_token {
+            search_discogs_album_cover(&state.http_client, token, &album.artist, &album.title).await
+        } else {
+            None
+        };
+
+        let Some(url) = image_url else { continue };
+        if let Some((bytes, content_type)) = download_image(&state.http_client, &url).await {
+            let ext = ext_from_content_type(&content_type);
+            let ck = cache_key.clone();
+            let df = db_folder.clone();
+            let art_r = art_root.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = std::fs::create_dir_all(&item_dir);
+                if let Some(dest) = get_assigned_cache_file_path(&art_r, &ck, "original", ext, true)
+                {
+                    if std::fs::write(&dest, &bytes).is_ok() {
+                        generate_cached_thumbs(
+                            &dest,
+                            |sz| art_thumb_root(&df, "album", sz),
+                            &ck,
+                            ALBUM_THUMB_SIZES,
+                        );
+                    }
+                }
+            })
+            .await
+            .ok();
+        }
+    }
+    Ok(())
+}
+
+// -- warm_lastfm_artist_info ---------------------------------------------------
+
+async fn run_warm_lastfm_artist_info(
+    state: &PostScanState,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let api_key = match get_setting_value(&state.db, "lastfmKey").await {
+        Some(k) => k,
+        None => return Ok(()),
+    };
+
+    let artist_ids = parse_entity_ids_from_payload(payload, "artistIds");
+    let artist_ids = if artist_ids.is_empty() {
+        get_library_entity_ids(
+            &state.db,
+            "SELECT DISTINCT artist_id FROM tracks WHERE library_id=?1 AND artist_id IS NOT NULL",
+            library_id.clone(),
+        )
+        .await
+    } else {
+        artist_ids
+    };
+
+    for artist_id in &artist_ids {
+        let artist = {
+            let db = state.db.clone();
+            let id = artist_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_artist_for_art(&conn, &id)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some(artist) = artist else { continue };
+
+        let cache_key = format!("artist:{}", artist.name.to_lowercase());
+        let is_cached = {
+            let db = state.db.clone();
+            let ck = cache_key.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_lastfm_cached(&conn, &ck).is_some()
+            })
+            .await
+            .unwrap_or(false)
+        };
+        if is_cached {
+            continue;
+        }
+
+        let Some(info) = fetch_lastfm_artist_info(&state.http_client, &api_key, &artist.name).await
+        else {
+            continue;
+        };
+
+        let data = serde_json::to_string(&info).unwrap_or_default();
+        if !data.is_empty() {
+            let db = state.db.clone();
+            let ck = cache_key.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                save_lastfm_cache(&conn, &ck, &data, LASTFM_CACHE_DAYS);
+            })
+            .await;
+        }
+    }
+    Ok(())
+}
+
+// -- warm_lastfm_album_info ----------------------------------------------------
+
+async fn run_warm_lastfm_album_info(
+    state: &PostScanState,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let api_key = match get_setting_value(&state.db, "lastfmKey").await {
+        Some(k) => k,
+        None => return Ok(()),
+    };
+
+    let album_ids = parse_entity_ids_from_payload(payload, "albumIds");
+    let album_ids = if album_ids.is_empty() {
+        get_library_entity_ids(
+            &state.db,
+            "SELECT DISTINCT album_id FROM tracks WHERE library_id=?1 AND album_id IS NOT NULL",
+            library_id.clone(),
+        )
+        .await
+    } else {
+        album_ids
+    };
+
+    for album_id in &album_ids {
+        let album = {
+            let db = state.db.clone();
+            let id = album_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_album_for_art(&conn, &id)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some(album) = album else { continue };
+        if album.title.is_empty() || album.artist.is_empty() {
+            continue;
+        }
+
+        let cache_key = format!(
+            "album:{}:{}",
+            album.artist.to_lowercase(),
+            album.title.to_lowercase()
+        );
+        let is_cached = {
+            let db = state.db.clone();
+            let ck = cache_key.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_lastfm_cached(&conn, &ck).is_some()
+            })
+            .await
+            .unwrap_or(false)
+        };
+        if is_cached {
+            continue;
+        }
+
+        let Some(info) =
+            fetch_lastfm_album_info(&state.http_client, &api_key, &album.artist, &album.title)
+                .await
+        else {
+            continue;
+        };
+
+        let data = serde_json::to_string(&info).unwrap_or_default();
+        if !data.is_empty() {
+            let db = state.db.clone();
+            let ck = cache_key.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                save_lastfm_cache(&conn, &ck, &data, LASTFM_CACHE_DAYS);
+            })
+            .await;
+        }
+    }
+    Ok(())
+}
+
+// -- warm_track_lyrics ---------------------------------------------------------
+
+async fn run_warm_track_lyrics(
+    state: &PostScanState,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let track_ids = parse_entity_ids_from_payload(payload, "trackIds");
+    let track_ids = if track_ids.is_empty() {
+        get_library_entity_ids(
+            &state.db,
+            "SELECT id FROM tracks WHERE library_id=?1",
+            library_id.clone(),
+        )
+        .await
+    } else {
+        track_ids
+    };
+
+    for track_id in &track_ids {
+        let track = {
+            let db = state.db.clone();
+            let id = track_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_track_for_lyrics(&conn, &id)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some(track) = track else { continue };
+
+        // Check if already cached
+        let is_cached = {
+            let db = state.db.clone();
+            let id = track_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                conn.query_row(
+                    "SELECT 1 FROM lyrics_cache WHERE track_id=?",
+                    rusqlite::params![id],
+                    |_| Ok(true),
+                )
+                .optional()
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+            })
+            .await
+            .unwrap_or(false)
+        };
+        if is_cached {
+            continue;
+        }
+
+        // Try LRCLIB first, then lyrics.ovh
+        let lr = fetch_lrclib_lyrics(&state.http_client, &track.artist, &track.title).await;
+        let lr = if lr.is_none() {
+            fetch_lyricsovh(&state.http_client, &track.artist, &track.title).await
+        } else {
+            lr
+        };
+        let Some(lr) = lr else { continue };
+
+        let synced_json = lr
+            .synced
+            .as_ref()
+            .and_then(|s| serde_json::to_string(s).ok());
+
+        let db = state.db.clone();
+        let id = track_id.clone();
+        let artist = track.artist.clone();
+        let title = track.title.clone();
+        let lyrics_text = lr.lyrics.clone();
+        let source = lr.source.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            upsert_cached_lyrics(
+                &conn,
+                &id,
+                &artist,
+                &title,
+                &lyrics_text,
+                &source,
+                synced_json.as_deref(),
+            );
+        })
+        .await;
+    }
+    Ok(())
+}
+
+// -- sync_artist_styles --------------------------------------------------------
+
+async fn run_sync_artist_styles(
+    state: &PostScanState,
+    library_id: &EntityId,
+) -> Result<(), JobError> {
+    let api_key = match get_setting_value(&state.db, "lastfmKey").await {
+        Some(k) => k,
+        None => return Ok(()),
+    };
+
+    // Artists in library whose styles are stale or missing
+    let artist_rows: Vec<(String, String)> = {
+        let db = state.db.clone();
+        let library_id = library_id.clone();
+        let age_hours = MAX_ARTIST_STYLE_AGE_HOURS;
+        tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT ar.id, ar.name \
+                 FROM artists ar \
+                 JOIN tracks t ON t.artist_id = ar.id \
+                 WHERE t.library_id = ?1 \
+                   AND ar.name IS NOT NULL AND ar.name != '' \
+                   AND (NOT EXISTS (SELECT 1 FROM artist_styles WHERE artist_id = ar.id) \
+                        OR (SELECT MAX(updated_at) FROM artist_styles WHERE artist_id = ar.id) \
+                             < datetime('now', '-' || ?2 || ' hours')) \
+                 ORDER BY ar.name",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![library_id, age_hours], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_default()
+    };
+
+    for (artist_id, artist_name) in &artist_rows {
+        let tags = fetch_lastfm_artist_top_tags(&state.http_client, &api_key, artist_name).await;
+
+        let valid_styles: Vec<String> = tags
+            .iter()
+            .filter(|(name, count)| {
+                let n = name.to_lowercase();
+                *count >= MIN_LASTFM_TAG_COUNT
+                    && !STYLE_TAG_BLACKLIST.contains(&n.as_str())
+                    && !n.contains("seen live")
+                    && !n.contains("under ")
+                    && !n.contains("my ")
+                    && n.len() >= 3
+            })
+            .map(|(name, _)| name.to_lowercase())
+            .take(12)
+            .collect();
+
+        if valid_styles.is_empty() {
+            continue;
+        }
+
+        let db = state.db.clone();
+        let id = artist_id.clone();
+        let styles = valid_styles.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = conn.execute(
+                "DELETE FROM artist_styles WHERE artist_id = ?",
+                rusqlite::params![id],
+            );
+            for style in styles {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO artist_styles(artist_id, style, updated_at) \
+                     VALUES(?, ?, datetime('now'))",
+                    rusqlite::params![id, style],
+                );
+            }
+        })
+        .await;
+    }
+    Ok(())
+}

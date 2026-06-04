@@ -1,0 +1,28 @@
+{
+  "name": "boogiebox",
+  "version": "1.0.0",
+  "description": "Music library metadata scanner and search",
+  "scripts": {
+    "install:all": "npm install && cd client && npm install",
+    "build": "npm run lint && npm run security:semgrep && cd client && npx vite build",
+    "test": "npm --prefix client test && npm run server-rs:test",
+    "typecheck": "npm --prefix client run typecheck && npm run server-rs:check",
+    "lint:eslint": "npx eslint client/src scripts",
+    "lint": "npm run typecheck && npm run lint:eslint && npm run server-rs:fmt:check && npm run server-rs:clippy",
+    "security:semgrep": "node scripts/run-semgrep.cjs",
+    "security:semgrep:audit": "node scripts/run-semgrep.cjs --audit",
+    "server-rs:check": "cargo check --manifest-path server-rs/Cargo.toml",
+    "server-rs:fmt:check": "cargo fmt --manifest-path server-rs/Cargo.toml --all --check",
+    "server-rs:clippy": "cargo clippy --manifest-path server-rs/Cargo.toml --all-targets --all-features -- -D warnings",
+    "server-rs:test": "cargo test --manifest-path server-rs/Cargo.toml",
+    "server-rs:audit": "cargo audit --manifest-path server-rs/Cargo.toml",
+    "version:bump": "node -e \"const fs=require('fs'); const p='client/src/version.ts'; const s=fs.readFileSync(p,'utf8'); const m=s.match(/APP_VERSION\\s*=\\s*'([0-9]+)\\.([0-9]+)\\.([0-9]+)'/); if(!m) throw new Error('APP_VERSION not found'); const next=`${m[1]}.${m[2]}.${Number(m[3])+1}`; fs.writeFileSync(p, s.replace(/APP_VERSION\\s*=\\s*'[^']+'/, `APP_VERSION = '${next}'`)); console.log(next);\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.6.0",
+    "typescript-eslint": "^8.59.4"
+  }
+}

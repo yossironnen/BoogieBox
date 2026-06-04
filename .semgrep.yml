@@ -1,0 +1,64 @@
+rules:
+  - id: boogiebox-express-send-stack
+    message: Do not send raw error stacks in API responses.
+    severity: ERROR
+    languages: [typescript, javascript]
+    patterns:
+      - pattern-either:
+          - pattern: $RES.send($ERR.stack)
+          - pattern: |
+              $RES.json({ ..., stack: $ERR.stack, ... })
+
+  - id: boogiebox-child-process-shell
+    message: Review shell-based child process execution before it enters the build.
+    severity: WARNING
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: exec($CMD, ...)
+      - pattern: execSync($CMD, ...)
+      - pattern: |
+          spawn($CMD, ..., { ..., shell: true, ... })
+
+  - id: boogiebox-dynamic-sql-exec
+    message: Review dynamic SQL passed to database execution APIs.
+    severity: WARNING
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: $DB.exec($SQL + $VALUE)
+      - pattern: $DB.prepare($SQL + $VALUE)
+
+  - id: boogiebox-rust-shell-command
+    message: Review shell-based Rust process execution before it enters the build.
+    severity: WARNING
+    languages: [rust]
+    pattern-either:
+      - pattern: std::process::Command::new("cmd")
+      - pattern: std::process::Command::new("cmd.exe")
+      - pattern: std::process::Command::new("powershell")
+      - pattern: std::process::Command::new("powershell.exe")
+      - pattern: std::process::Command::new("sh")
+      - pattern: std::process::Command::new("/bin/sh")
+      - pattern: std::process::Command::new("bash")
+      - pattern: std::process::Command::new("/bin/bash")
+
+  - id: boogiebox-rust-dynamic-command
+    message: Review dynamic Rust Command::new with a variable - prefer string-literal executable paths.
+    severity: WARNING
+    languages: [rust]
+    patterns:
+      - pattern: std::process::Command::new($VAR)
+      - pattern-not: std::process::Command::new("...")
+
+  - id: boogiebox-rust-sql-format
+    message: Review SQL strings built with format! - prefer rusqlite parameterized queries with ? placeholders.
+    severity: WARNING
+    languages: [rust]
+    pattern-either:
+      - pattern: |
+          let $SQL = format!($T, ...);
+          ...
+          $CONN.execute($SQL, ...)
+      - pattern: |
+          let $SQL = format!($T, ...);
+          ...
+          $CONN.prepare($SQL)

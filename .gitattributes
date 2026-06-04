@@ -1,0 +1,27 @@
+# Force CRLF for Windows scripts — CMD requires CRLF to find batch labels
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Standard text files
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.toml      text eol=lf
+*.sql       text eol=lf
+*.sh        text eol=lf
+
+# Binaries — no line-ending conversion
+*.dll       binary
+*.exe       binary
+*.ico       binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.mp4       binary
+*.webp      binary

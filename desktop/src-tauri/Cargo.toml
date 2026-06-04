@@ -1,0 +1,40 @@
+[package]
+name = "boogiebox-desktop"
+version = "0.8.0"
+edition = "2021"
+
+[lib]
+name = "boogiebox_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time"] }
+reqwest = { version = "0.12", features = ["json"], default-features = false, optional = true }
+uuid = { version = "1", features = ["v4"] }
+directories = "5"
+url = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libloading = "0.8"
+
+[features]
+default = ["health-probe"]
+health-probe = ["reqwest"]
+
+[profile.release]
+opt-level = "s"
+panic = "abort"
+codegen-units = 1
+lto = true
+strip = true
