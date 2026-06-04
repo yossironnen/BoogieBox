@@ -1,8 +1,18 @@
 # BoogieBox
 
-Self-hosted Windows music library app with a standalone Rust server package, multi-user support, scanning, fast search and browse, playlists, in-app playback, waveform/BPM background jobs, BoogieMix playlist rendering, and optional DLNA/UPnP serving.
+BoogieBox is a self-hosted music library and player for Windows designed for collectors, audiophiles, and anyone with a large local music collection.
 
-Current version: `0.8` (see [`client/src/version.ts`](client/src/version.ts))
+Enjoy lightning-fast browsing, powerful search, playlists, lyrics, visualizations, Auto DJ, and personalized multi-user experiences. BoogieBox helps you rediscover your library instead of letting it sit untouched on a drive.
+
+Also includes waveform and BPM analysis, mobile-friendly access, optional DLNA/UPnP streaming, and rich metadata and artwork enrichment.
+
+## Meet BoogieMix
+
+BoogieMix is BoogieBox's experimental AI DJ.
+
+Instead of simply shuffling tracks, BoogieMix analyzes your music and creates continuous listening sessions by planning transitions between songs. Think of it as turning a playlist into a DJ mix.
+
+Run entirely on your own machine with optional deep-analysis capabilities for advanced track matching and transition planning.
 
 ## Warning: Local Network Use Only
 
@@ -10,49 +20,84 @@ Built for local network streaming only. Not tested for internet-facing use and n
 
 ## Highlights
 
-- Multi-user login with avatars, optional 4-digit PIN, and admin/user permissions
-- First-run setup wizard prompts for database folder path (local or UNC)
-- Music-only libraries with multi-folder scans, fast browse/search, playlists, and per-user playback preferences
-- Windows desktop client via Tauri 2 with WebView2 shell and first-run LAN server discovery
-- Library scan pipeline with dedicated workers plus lane-limited post-scan follow-up jobs and admin queue controls
-- Full player stack: queue, shuffle/repeat, waveform seek bar, lyrics/karaoke, vinyl mode, and transition controls
-- EQ + Auto-EQ: 7-band parametric EQ, built-in presets, custom profiles, and artist-tag matching
-- Additive iPhone-sized mobile shell with bottom tabs, mini-player, full-screen now playing, and drill-down browse/search/playlist flows
-- Discovery features: Auto DJ, Last.fm artist context, Home insights, and Genre Galaxy
-- BoogieMix playlist-to-mix rendering with AI-assisted planning and optional deep analysis
-- Per-user 0.5-step ratings for artists, albums, and tracks
-- Album and artist artwork caching, post-scan warmup, thumbnail generation, and manual artwork upload
-- Scheduled waveform and BPM background analysis
-- Optional integrations: Last.fm metadata, Discogs/Deezer/Spotify artwork and metadata fallback paths, Genius lyrics, DLNA/UPnP serving, and experimental Python deep analysis
-- FFmpeg/FFprobe bundled in standalone releases for media probing and transcoding
-- All entity IDs are UUID v7 strings end-to-end
-- Scan debug logging: default-off toggle writes structured diagnostics to `logs/debug.log`
+### Your Music, Your Way
 
-## Tech Stack
+* Organize and browse music across multiple folders and drives
+* Fast search, playlists, favorites, and personalized listening history
+* Individual user profiles with avatars, optional PIN protection, and personal preferences
+* Rate artists, albums, and tracks with half-star precision
 
-| Layer | Tech |
-|-------|------|
-| Backend | Rust (Axum + Tokio) compiled as a native Windows executable |
-| Database | SQLite via `rusqlite` (bundled) + FTS5 |
-| Frontend | React + TypeScript + Vite |
-| Desktop | Tauri 2 + Rust |
-| Music metadata | Pure-Rust tag parsers (ID3v2, FLAC, Ogg/Opus, MP4/M4A, WAV, AIFF) |
-| Media probing/transcoding | Bundled FFmpeg/FFprobe |
-| Image processing | Pure-Rust `image` crate (JPEG thumbnails, Lanczos3) |
-| ID generation | UUID v7 strings for all primary keys |
-| DLNA | Rust SSDP + Axum DLNA HTTP server (audio only) |
-| Optional deep analysis | Python + Torch/Demucs worker under `Services/boogiemix/python/` |
+### Experimental AI DJ Features
+
+BoogieBox includes an experimental AI-powered mixing engine designed to transform playlists into continuous DJ-style listening experiences.
+
+* BoogieMix automatically plans transitions between tracks
+* AI-assisted mix generation for smoother playlist playback - running locally
+* Optional deep analysis mode for advanced track matching and transition planning
+* Early-stage DJ capabilities that continue to evolve with each release
+  
+### Rich Listening Experience
+
+* Full-featured music player with queue management, shuffle, repeat, and smooth transitions
+* Interactive waveform seek bar for precise navigation
+* Synchronized lyrics and karaoke mode
+* Vinyl Mode for a classic turntable-inspired experience
+* 7-band parametric EQ with presets, custom profiles, and automatic artist-based EQ matching
+
+### Discover More Music
+
+* Auto DJ keeps the music flowing based on your library and listening habits
+* Genre Galaxy visualizes relationships between your favorite genres and artists
+* Artist insights powered by Last.fm
+* Personalized home screen featuring listening trends, statistics, and recommendations
+
+### Mobile Friendly
+
+* Lightweight mobile experience designed for quick browsing and playback
+* Browse artists, albums, playlists, and search your library from your phone
+* Dedicated Now Playing screen with full playback controls
+
+### Artwork, Metadata & Library Enrichment
+
+* Automatic artwork and metadata enhancement from multiple online sources
+* Manual artwork management when you want complete control
+* Background analysis for BPM, waveforms, and other music insights
+* Extensive caching for fast browsing and responsive playback
+
+### Connect Your Music Ecosystem
+
+* Last.fm scrobbling and artist information
+* Lyrics integration
+* DLNA/UPnP streaming for compatible devices
+* Optional integrations for artwork, metadata enrichment, and advanced music analysis
+
+### Built for Self-Hosting
+
+* Simple first-run setup
+* You can connect the server to free meta data providers
+* Multi-user support
+* Local and network library support
+* Windows desktop application with automatic server discovery
+* Designed for music collectors who want complete ownership of their library
 
 ## Supported Formats
 
 **Music:** MP3, FLAC, M4A/MP4 audio, OGG, OPUS, WAV, AAC, WMA, AIFF, APE
+
+## Built With
+
+- Rust
+- React
+- TypeScript
+- Tauri
+- SQLite
+- FFmpeg
 
 ## Prerequisites
 
 ### End users (standalone EXE release)
 
 - Windows 10/11 or Windows Server
-- No Node.js, npm, or global FFmpeg required — all bundled
 - Use the installer EXE, or extract the release folder and run directly
 
 ### Developers
