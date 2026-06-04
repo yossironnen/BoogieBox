@@ -917,10 +917,6 @@ function ArtistPhoto({ artistId, artist, refreshToken = 0, adaptiveAccentEnabled
   const imgSrc = api.artistPhotoUrl(artistId, 800, refreshToken || undefined);
   useAdaptiveAccentEnabled(phase !== 'none' && phase !== 'loading' ? imgSrc : null, adaptiveAccentEnabled, imgEl);
 
-  if (phase === 'none' || phase === 'loading') {
-    return <div style={L.artistHeaderIcon}><ArtistIcon /></div>;
-  }
-
   return (
     <div style={{ ...L.artistHeaderIcon, overflow: 'hidden', position: 'relative', padding: 0 }}>
       <ArtImage
@@ -929,6 +925,7 @@ function ArtistPhoto({ artistId, artist, refreshToken = 0, adaptiveAccentEnabled
         eager={true}
         fetchPriority="high"
         imgStyle={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        fallback={<div style={L.artistHeaderPlaceholder}><ArtistIcon /></div>}
         onImageReady={setImgEl}
         onLoadStateChange={(state) => {
           if (state === 'loaded') setPhase('local');
@@ -936,9 +933,11 @@ function ArtistPhoto({ artistId, artist, refreshToken = 0, adaptiveAccentEnabled
           else setPhase('loading');
         }}
       />
-      <div style={L.artistPhotoBadge}>
-        {phase === 'local' ? 'Local' : phase === 'deezer' ? 'Deezer' : 'Spotify'}
-      </div>
+      {phase !== 'none' && phase !== 'loading' && (
+        <div style={L.artistPhotoBadge}>
+          {phase === 'local' ? 'Local' : phase === 'deezer' ? 'Deezer' : 'Spotify'}
+        </div>
+      )}
     </div>
   );
 }
@@ -3168,6 +3167,14 @@ const L: Record<string, React.CSSProperties> = {
     border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     color: 'var(--accent)', flexShrink: 0,
+  },
+  artistHeaderPlaceholder: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'var(--accent)',
   },
   artistPhotoBadge: {
     position: 'absolute',

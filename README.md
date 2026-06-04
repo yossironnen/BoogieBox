@@ -39,6 +39,7 @@ Also includes waveform and BPM analysis, mobile-friendly access, optional DLNA/U
 - Built for people who own and curate their music collections
 - Multi-user support with individual preferences and ratings
 - AI-powered BoogieMix DJ engine
+- Vinyl Mode plays your music with an analog look and sound (yeah, some crackles & pops)
 - Karaoke lyrics and waveform navigation
 - Genre Galaxy music discovery
 - Mobile-friendly interface
@@ -135,7 +136,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 | Karaoke Lyrics | ✅ |
 | Waveform Navigation | ✅ |
 | Auto DJ | ✅ |
-| BoogieMix AI Mixing | ✅ |
+| BoogieMix AI Mixing (experimental!) | ✅ |
 | Genre Galaxy | ✅ |
 | Mobile Interface | ✅ |
 | DLNA/UPnP Streaming | ✅ |
