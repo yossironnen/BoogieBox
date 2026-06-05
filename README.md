@@ -12,25 +12,51 @@ Also includes waveform and BPM analysis, mobile-friendly access, optional DLNA/U
 
 ## 📸 Screenshots
 
-### Home Dashboard
+### Home
 
-![Home Dashboard](Docs/screenshots/home-dashboard.png)
+![BoogieBox home dashboard](Docs/Screenshots/home_screen1.png)
 
-### Now Playing
+![BoogieBox listening dashboard](Docs/Screenshots/home_screen2.png)
 
-![Now Playing](Docs/screenshots/now-playing.png)
+### Browse Albums
 
-### Genre Galaxy
+![Album browser](Docs/Screenshots/album_browse.png)
 
-![Genre Galaxy](Docs/screenshots/genre-galaxy.png)
+### Artist Page
+
+![Artist detail page](Docs/Screenshots/artist_page.png)
+
+### Auto DJ
+
+![Auto DJ](Docs/Screenshots/auto_dj.png)
 
 ### BoogieMix
 
-![BoogieMix](Docs/screenshots/boogiemix.png)
+![BoogieMix](Docs/Screenshots/boogiemix.png)
 
-### Mobile Experience
+### Karaoke Playback
 
-![Mobile Experience](Docs/screenshots/mobile.png)
+![Karaoke playback](Docs/Screenshots/karaoke_playback.png)
+
+### Vinyl Mode
+
+![Vinyl Mode](Docs/Screenshots/vinyl_mode.png)
+
+### Parametric EQ
+
+![Parametric equalizer](Docs/Screenshots/param_eq.png)
+
+### Mobile Playback
+
+![Mobile playback](Docs/Screenshots/mobile_playback.png)
+
+### Themes
+
+![BoogieBox themes](Docs/Screenshots/themes.png)
+
+### Library Settings
+
+![Library settings](Docs/Screenshots/lib_settings.png)
 
 ---
 
