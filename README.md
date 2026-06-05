@@ -235,3 +235,11 @@ It has not been hardened or tested for public internet exposure. Do not expose B
 Most modern music platforms focus on streaming. BoogieBox focuses on helping you enjoy and rediscover the music you already own.
 
 Whether you're managing a carefully curated FLAC collection, building playlists for every mood, singing along with karaoke lyrics, or experimenting with AI-generated mixes through BoogieMix, BoogieBox is designed to make local music collections feel alive again.
+
+---
+
+## Support BoogieBox
+
+BoogieBox is developed independently and offered free for self-hosting.
+
+If you enjoy the project and would like to support its continued development, you can [support BoogieBox on Ko-fi](https://ko-fi.com/yronnen).
