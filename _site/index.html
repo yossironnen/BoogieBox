@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="BoogieBox is a self-hosted music library and player for Windows, built for people who own their music.">
+    <meta name="theme-color" content="#101317">
+    <title>BoogieBox - Your music, rediscovered</title>
+    <link rel="icon" href="assets/boogiebox.png">
+    <link rel="stylesheet" href="styles.css">
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="BoogieBox home">
+        <img src="assets/boogiebox.png" alt="">
+        <span>BoogieBox</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#features">Features</a>
+        <a href="#gallery">Screenshots</a>
+        <a href="https://github.com/yossironnen/BoogieBox/tree/main/Docs">Docs</a>
+      </nav>
+      <a class="header-action" href="https://github.com/yossironnen/BoogieBox" aria-label="View BoogieBox source on GitHub">
+        GitHub
+      </a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <img class="hero-image" src="assets/screenshots/home_screen1.png" alt="BoogieBox home dashboard showing music recommendations and library activity">
+        <div class="hero-shade"></div>
+        <div class="hero-content">
+          <div class="hero-mark">
+            <img src="assets/boogiebox.png" alt="">
+            <span>Self-hosted music for Windows</span>
+          </div>
+          <h1 id="hero-title">BoogieBox</h1>
+          <p>Your collection has stories left to tell. Browse it, shape it, sing with it, and let the AI-powered BoogieMix DJ turn it into something new.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/yossironnen/BoogieBox/releases/latest">Download latest release</a>
+            <a class="button button-secondary" href="https://github.com/yossironnen/BoogieBox">View source</a>
+          </div>
+          <p class="platform-note">Windows · Self-hosted · No subscription</p>
+        </div>
+      </section>
+
+      <section class="intro" id="features">
+        <p class="eyebrow">Built for owned music</p>
+        <h2>One home for the collection you chose.</h2>
+        <p class="intro-copy">BoogieBox brings fast browsing, personal ratings, artwork, lyrics, mobile playback, and rich discovery tools to local and network music libraries.</p>
+        <div class="feature-grid">
+          <article>
+            <span class="feature-number">01</span>
+            <h3>Rediscover</h3>
+            <p>Explore artists, albums, listening history, ratings, and the Genre Galaxy without giving up control of your files.</p>
+          </article>
+          <article>
+            <span class="feature-number">02</span>
+            <h3>Make it yours</h3>
+            <p>Multi-user profiles, themes, parametric EQ, playlists, karaoke lyrics, and an expressive Vinyl Mode.</p>
+          </article>
+          <article>
+            <span class="feature-number">03</span>
+            <h3>Keep it local</h3>
+            <p>Run it on Windows, stream across your local network, and enrich your library with optional metadata providers.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="spotlight">
+        <div class="spotlight-copy">
+          <p class="eyebrow">AI-powered mixing</p>
+          <h2>Meet BoogieMix, your experimental AI DJ.</h2>
+          <p>Go beyond shuffle. BoogieMix uses AI-assisted planning and local music analysis to choose track order, plan transitions, and render continuous listening sessions from the playlists you already love.</p>
+          <ul>
+            <li>AI-assisted mix and transition planning</li>
+            <li>Optional local deep analysis</li>
+            <li>Downloadable rendered mixes</li>
+          </ul>
+        </div>
+        <button class="image-button" type="button" data-lightbox="assets/screenshots/boogiemix.png" aria-label="Open BoogieMix screenshot">
+          <img src="assets/screenshots/boogiemix.png" alt="BoogieMix playlist controls and mix generation interface">
+        </button>
+      </section>
+
+      <section class="gallery-section" id="gallery">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Inside BoogieBox</p>
+            <h2>Made for listening, not managing.</h2>
+          </div>
+          <p>From a desktop collection to a phone in your hand, the same library stays close.</p>
+        </div>
+
+        <div class="gallery">
+          <figure class="gallery-wide">
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/album_browse.png" aria-label="Open album browser screenshot">
+              <img src="assets/screenshots/album_browse.png" alt="BoogieBox album browser">
+            </button>
+            <figcaption><strong>Browse naturally</strong><span>Albums, artists, genres, and ratings at a glance.</span></figcaption>
+          </figure>
+          <figure>
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/karaoke_playback.png" aria-label="Open karaoke playback screenshot">
+              <img src="assets/screenshots/karaoke_playback.png" alt="BoogieBox synchronized karaoke lyrics">
+            </button>
+            <figcaption><strong>Sing along</strong><span>Synchronized lyrics and karaoke playback.</span></figcaption>
+          </figure>
+          <figure>
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/vinyl_mode.png" aria-label="Open Vinyl Mode screenshot">
+              <img src="assets/screenshots/vinyl_mode.png" alt="BoogieBox Vinyl Mode">
+            </button>
+            <figcaption><strong>Drop the needle</strong><span>Vinyl Mode adds analog character and motion.</span></figcaption>
+          </figure>
+          <figure>
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/artist_page.png" aria-label="Open artist page screenshot">
+              <img src="assets/screenshots/artist_page.png" alt="BoogieBox artist detail page">
+            </button>
+            <figcaption><strong>Know the artist</strong><span>Artwork, releases, top tracks, and context together.</span></figcaption>
+          </figure>
+          <figure class="gallery-mobile">
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/mobile_playback.png" aria-label="Open mobile playback screenshot">
+              <img src="assets/screenshots/mobile_playback.png" alt="BoogieBox mobile playback experience">
+            </button>
+            <figcaption><strong>Take it with you</strong><span>A focused mobile experience on your local network.</span></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="details">
+        <div>
+          <p class="eyebrow">The useful details</p>
+          <h2>Serious library tools. A little personality.</h2>
+        </div>
+        <div class="detail-list">
+          <div><span>Playback</span><p>MP3, FLAC, M4A, OGG, OPUS, WAV, AAC, WMA, AIFF, and APE.</p></div>
+          <div><span>Analysis</span><p>Waveforms, BPM detection, listening history, and optional BoogieMix deep analysis.</p></div>
+          <div><span>Connected</span><p>Last.fm, lyrics, metadata enrichment, mobile access, and optional DLNA/UPnP.</p></div>
+          <div><span>Built with</span><p>Rust, React, TypeScript, Tauri 2, SQLite, and FFmpeg.</p></div>
+        </div>
+      </section>
+
+      <section class="final-cta">
+        <img src="assets/boogiebox.png" alt="">
+        <p class="eyebrow">Your music is already waiting</p>
+        <h2>Bring the collection back to life.</h2>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/yossironnen/BoogieBox/releases/latest">Get BoogieBox</a>
+          <a class="button button-secondary" href="https://github.com/yossironnen/BoogieBox#readme">Read the documentation</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>BoogieBox</span>
+      <div>
+        <a href="https://github.com/yossironnen/BoogieBox">GitHub</a>
+        <a href="https://github.com/yossironnen/BoogieBox/releases">Releases</a>
+        <a href="https://ko-fi.com/yronnen">Ko-fi</a>
+      </div>
+    </footer>
+
+    <dialog class="lightbox" aria-label="Screenshot preview">
+      <button type="button" class="lightbox-close" aria-label="Close screenshot preview">×</button>
+      <img src="" alt="">
+    </dialog>
+  </body>
+</html>
