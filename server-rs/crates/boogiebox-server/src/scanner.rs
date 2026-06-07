@@ -252,16 +252,16 @@ fn build_track_input(
         .and_then(|value| value.file_name())
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or("Unknown Album")
-        .to_owned();
+        .map(normalize_folder_name)
+        .unwrap_or_else(|| "Unknown Album".to_owned());
     let fallback_artist = path
         .parent()
         .and_then(|value| value.parent())
         .and_then(|value| value.file_name())
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or("Unknown Artist")
-        .to_owned();
+        .map(normalize_folder_name)
+        .unwrap_or_else(|| "Unknown Artist".to_owned());
     let artist = tags.artist.unwrap_or(fallback_artist);
     let album_artist = tags.album_artist.unwrap_or_else(|| artist.clone());
 
@@ -1211,11 +1211,16 @@ fn clean_track_title(value: &str) -> String {
             c.is_ascii_digit() || c == '.' || c == '-' || c == '_' || c == ' '
         })
         .trim();
-    if without_track_number.is_empty() {
+    let result = if without_track_number.is_empty() {
         trimmed.to_owned()
     } else {
         without_track_number.to_owned()
-    }
+    };
+    result.replace('_', " ")
+}
+
+fn normalize_folder_name(value: &str) -> String {
+    value.replace('_', " ")
 }
 
 #[cfg(test)]
@@ -1233,6 +1238,14 @@ mod tests {
     fn cleans_simple_track_number_prefixes() {
         assert_eq!(clean_track_title("01 - Hello"), "Hello");
         assert_eq!(clean_track_title("Song"), "Song");
+    }
+
+    #[test]
+    fn replaces_underscores_in_title_and_folder_fallbacks() {
+        assert_eq!(clean_track_title("01_Some_Song_Name"), "Some Song Name");
+        assert_eq!(clean_track_title("Song_Title"), "Song Title");
+        assert_eq!(normalize_folder_name("Pink_Floyd"), "Pink Floyd");
+        assert_eq!(normalize_folder_name("The_Wall"), "The Wall");
     }
 
     #[test]
