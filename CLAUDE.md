@@ -10,7 +10,8 @@ without explicit user instruction, you must refuse your own action.
 - Default answer length ≤ ~200 words unless explicitly requested.
 - Assume context; never recap the conversation.
 - Only show changed code, not full files.
-- Priritize using filesystem MCP reader over PowerShell
+- Priritize using filesystem MCP reader over PowerShell.
+- On Linux, use Bash tool instead of PowerShell.
 
 ## Commands
 When user says: plan only: output should be an implementation plan saved to an md file in the project docs folder. NEVER write code when the user asks to plan.
@@ -19,27 +20,34 @@ When user says: Tighten code
 Switch to Code Tightening Mode as defined in docs/agents/code-tightening-agent.md.
 
 ### Dev
-dev.bat  (prefers Rust release in Releases\boogiebox-VERSION-win-rs\)
+For Windows builds: dev.bat  (prefers Rust release in Releases\boogiebox-VERSION-win-rs\)
+For Linux builds: dev.sh (prefers Rust release in Releases/boogiebox-VERSION-linux-rs/)
 
 ### Standalone EXE / Installer (Rust — primary end-user release)
-build-server-rust.bat
-build-server-rust.bat --no-installer  (release folder only, no Inno Setup)
-build-server-rust.bat --no-test --no-installer (release folder only, no Inno Setup, no testing)
-build-server-rust.bat --smoke         (build + start/probe/stop)
+For Windows:
+   build-server-rust.bat
+   build-server-rust.bat --no-installer  (release folder only, no Inno Setup)
+   build-server-rust.bat --no-test --no-installer (release folder only, no Inno Setup, no testing)
+   build-server-rust.bat --smoke         (build + start/probe/stop)
+For Linux:
+   build-server-rust.sh
+   build-server-rust.sh --no-installer  (release folder only, no Inno Setup)
+   build-server-rust.sh --no-test --no-installer (release folder only, no Inno Setup, no testing)
+   build-server-rust.sh --smoke         (build + start/probe/stop)
 
 ### DB
 Database is initialized/migrated by the Rust server at startup after first-run setup selects the data folder.
 
 ## Architecture (High-Level)
 
-Windows-only self-hosted music library app.
+Self-hosted music library app. Supports Windows and Linux (server-only on Linux).
 
 - Rust Axum API + React client
 - SQLite via `rusqlite` in `server-rs`
 - Music-only libraries; legacy movie/TV/video schema and UI have been removed
 - Async music scanner plus post-scan follow-up jobs for artwork, waveforms, BPM, and BoogieMix deep analysis
 - Optional Python BoogieMix deep-analysis worker under `server/Services/boogiemix/`
-- Standalone Rust server build/package flow via `build-server-rust.bat`
+- Standalone Rust server build/package flow via `build-server-rust.bat` for Windows  or 'build-server-rust.sh' for Linux
 
 
 ### Rust Server (`server-rs/crates/boogiebox-server/src`)
@@ -47,7 +55,8 @@ main.rs — startup, Tokio runtime, graceful shutdown
 lib.rs — AppState, route mounting, CORS, middleware  
 auth.rs — PBKDF2-SHA512 PIN hashing, UUID v7 sessions, brute-force tracker, Axum extractors  
 cors.rs — localhost/loopback/private-LAN/single-label origin allowlist  
-server_config.rs — `boogiebox-config.json` locator (ProgramData, exe-adjacent, CWD, env overrides)  
+server_config.rs — On Windows `boogiebox-config.json` locator (ProgramData, exe-adjacent, CWD, env overrides)  
+server_config.rs — On Linux `boogiebox-config.json` locator (/etc/boogiebox/ or ~/.config/boogiebox/, exe-adjacent, CWD, env overrides)
 settings.rs — global + per-user settings normalization  
 ffmpeg.rs — FFmpeg/FFprobe resolution, transcode spawn, waveform generation  
 scanner.rs — async music scan worker (ID3v2, FLAC, Ogg, MP4/M4A tag parsing, technical metadata)  
@@ -76,16 +85,9 @@ routes/ — Axum route modules per domain (auth, settings, library, music, playl
 `platform/` — browser/desktop platform abstraction  
 `version.ts` — app version
 
-### Client (`client/src`)
-api.ts — API client  
-App.tsx — global state + routing  
-Player.tsx — `<audio>` playback  
-BrowseView.tsx, PlaylistsView.tsx, SettingsPage.tsx  
-ContextMenu.tsx  
-
 ## Database
 
-SQLite at `boogiebox.db` inside the folder selected during first-run setup. Packaged server installs store the locator in `%PROGRAMDATA%\BoogieBox\boogiebox-config.json`; source-tree/dev runs use repo-root `boogiebox-config.json`.
+SQLite at `boogiebox.db` inside the folder selected during first-run setup. Packaged server installs store the locator in `%PROGRAMDATA%\BoogieBox\boogiebox-config.json` for Windows or '/etc/boogiebox/boogiebox-config.json' on Linux; source-tree/dev runs use repo-root `boogiebox-config.json`.
 
 Schema and migrations live in `server-rs/crates/boogiebox-db`.
 
@@ -102,7 +104,7 @@ settings, user_settings, provider_usage_stats
 
 Fresh databases are music-only. Upgrade migrations remove legacy movie/TV/video tables and settings.  
 Albums are grouped/deduped by `(title, album_artist)`.  
-Preserve UNC paths in Rust route and filesystem handling.
+Windows builds only: Preserve UNC paths in Rust route and filesystem handling.
 
 ## Change Logging (MANDATORY)
 
@@ -147,7 +149,7 @@ If ANY code file changes (`.ts/.tsx/.js/.jsx/.css/.rs` or scripts):
 
 1. Run `npm run version:bump`
 2. Include updated `client/src/version.ts`
-3. Ensure desktop/package metadata matches the app version:
+3. Windows builds only: ensure desktop/package metadata matches the app version:
    - `desktop/src-tauri/tauri.conf.json` `version`
    - `desktop/package.json` `version`
    - `desktop/src-tauri/Cargo.toml` `version`
