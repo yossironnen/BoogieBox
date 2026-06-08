@@ -58,10 +58,8 @@ if "%SKIP_TESTS%"=="1" (
 
 echo.
 echo  [2/8] Building React client...
-cd client
-call npx vite build
+call npm.cmd --prefix client run build
 IF ERRORLEVEL 1 (echo [ERROR] Client build failed & exit /b 1)
-cd ..
 
 echo.
 echo  [3/8] Reading version...

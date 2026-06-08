@@ -12,6 +12,8 @@ Services/boogiemix/python/__pycache__/
 *.pyc
 tools/ffmpeg/*
 !tools/ffmpeg/README.md
+tools/ffmpeg-linux/*
+!tools/ffmpeg-linux/README.md
 tools/winsw/*
 !tools/winsw/README.md
 client/build/
@@ -21,6 +23,7 @@ data_old/
 Releases/
 tmp/
 logs/
+wip/
 
 # Local runtime state and private workspace data
 boogiebox-config.json

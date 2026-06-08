@@ -10,14 +10,15 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `package.json` | Root developer scripts for tests, linting, Semgrep, and Rust checks. |
 | `setup-dev.bat` | Interactive developer environment bootstrap. |
 | `dev.bat` | Development launcher. |
-| `build-server-rust.bat` | Rust standalone server release and installer build flow. |
+| `build-server-rust.bat` | Rust standalone server release and installer build flow (Windows). |
+| `build-server-rust.sh` | Rust standalone server release build flow (Linux). |
 | `build-desktop.bat` | Tauri desktop release build flow. |
 | `Docs/` | Public and project documentation. |
 | `client/` | React and TypeScript client. |
 | `server-rs/` | Rust server and database crates. |
 | `desktop/` | Tauri desktop shell. |
 | `server/Services/boogiemix/` | Optional Python BoogieMix deep-analysis worker assets. |
-| `installer/` | Inno Setup installer definition. |
+| `installer/` | Installer definitions (Inno Setup for Windows, systemd unit and install script for Linux). |
 | `scripts/` | Repo-level helper scripts. |
 | `tools/` | Local binary caches for packaged dependencies such as FFmpeg and WinSW. |
 

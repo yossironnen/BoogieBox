@@ -4,6 +4,8 @@ This guide covers local development for BoogieBox.
 
 ## Requirements
 
+### Windows (full stack)
+
 - Windows
 - Git
 - Node.js
@@ -15,6 +17,13 @@ This guide covers local development for BoogieBox.
 - Optional: Inno Setup for installer builds
 
 Run `setup-dev.bat` from the repo root to install or verify the common development prerequisites.
+
+### Linux (server only)
+
+- Rust toolchain (`rustup`)
+- Node.js and npm (for the React client build)
+- FFmpeg and FFprobe (bundled automatically by `build-server-rust.sh`)
+- Optional: Python for BoogieMix deep analysis
 
 ## Install Dependencies
 
@@ -36,6 +45,8 @@ dev.bat
 `dev.bat` prefers a matching Rust release server under `Releases\boogiebox-VERSION-win-rs\`, starts it with development configuration, then starts the Vite client when Node tooling is available.
 
 ## Build
+
+### Windows
 
 Build the Rust standalone server release:
 
@@ -60,6 +71,28 @@ Build the desktop shell release folder without an installer:
 ```bat
 build-desktop.bat --no-installer
 ```
+
+### Linux
+
+Build the Rust standalone server release folder (auto-downloads static FFmpeg on first run):
+
+```bash
+./build-server-rust.sh
+```
+
+Build without smoke test:
+
+```bash
+./build-server-rust.sh --no-test
+```
+
+Build and run a smoke probe:
+
+```bash
+./build-server-rust.sh --smoke
+```
+
+Output is placed in `Releases/boogiebox-VERSION-linux-rs/`.
 
 ## Verification
 
@@ -106,13 +139,31 @@ Do not commit local database files, runtime config, logs, release output, tempor
 
 ## Logs
 
-Packaged server logs default to `%PROGRAMDATA%\BoogieBox\logs\boogiebox-server.log`. Development logging depends on the active server configuration.
+**Windows:** Packaged server logs default to `%PROGRAMDATA%\BoogieBox\logs\boogiebox-server.log`.
+
+**Linux:** Logs default to the working directory or systemd journal when running as a service. Use `BOOGIEBOX_LOG_DIR` to override.
 
 The server supports:
 
 - `BOOGIEBOX_LOG_PATH`
 - `BOOGIEBOX_LOG_DIR`
 - `BOOGIEBOX_LOG_LEVEL`
+
+## Linux Install
+
+After building with `build-server-rust.sh`, use the bundled installer:
+
+```bash
+sudo ./Releases/boogiebox-VERSION-linux-rs/install/install.sh
+```
+
+This copies the binary and resources to `/opt/boogiebox/`, creates a `boogiebox` system user, installs the systemd unit, and prints the first-run setup URL.
+
+Override the config path for non-system installs:
+
+```bash
+BOOGIEBOX_CONFIG_DIR=~/.config/boogiebox ./boogiebox-server
+```
 
 ## Public Repo Hygiene
 

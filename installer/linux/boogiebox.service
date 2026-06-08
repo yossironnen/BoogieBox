@@ -1,0 +1,15 @@
+[Unit]
+Description=BoogieBox Music Server
+After=network.target
+
+[Service]
+Type=simple
+User=boogiebox
+WorkingDirectory=/opt/boogiebox
+ExecStart=/opt/boogiebox/boogiebox-server
+Restart=on-failure
+RestartSec=5
+Environment=BOOGIEBOX_CONFIG_DIR=/var/lib/boogiebox
+
+[Install]
+WantedBy=multi-user.target

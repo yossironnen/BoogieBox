@@ -191,13 +191,35 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 
 ## 🚀 Installation
 
-### End Users
+### Windows
 
 1. Download the latest release.
 2. Run the installer.
 3. Launch BoogieBox.
 4. Follow the first-run setup wizard.
 5. Start enjoying your music.
+
+### Linux (server only)
+
+BoogieBox runs on Linux as a headless server. Use any browser on the same network to access the UI.
+
+```bash
+# Clone and build
+git clone https://github.com/yronnen/boogiebox
+cd boogiebox
+./build-server-rust.sh --no-test
+
+# Install as a systemd service (requires sudo)
+sudo ./Releases/boogiebox-*/install/install.sh
+```
+
+Then open `http://localhost:PORT` in a browser to complete first-run setup.
+
+Override the config path for non-system installs:
+
+```bash
+BOOGIEBOX_CONFIG_DIR=~/.config/boogiebox ./boogiebox-server
+```
 
 ### Developers
 

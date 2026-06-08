@@ -50,14 +50,14 @@ impl LocatorEnv {
 
 /// Documents the Get DB Locator Path Candidates public API surface.
 pub fn get_db_locator_path_candidates() -> Vec<PathBuf> {
-    let exec_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("boogiebox-server.exe"));
+    let exec_path = env::current_exe().unwrap_or_else(|_| PathBuf::from(exe_name()));
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     db_locator_path_candidates_for(&exec_path, &cwd, app_root(), LocatorEnv::from_process())
 }
 
 /// Documents the Get Writable DB Locator Path public API surface.
 pub fn get_writable_db_locator_path() -> PathBuf {
-    let exec_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("boogiebox-server.exe"));
+    let exec_path = env::current_exe().unwrap_or_else(|_| PathBuf::from(exe_name()));
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let paths =
         db_locator_path_candidates_for(&exec_path, &cwd, app_root(), LocatorEnv::from_process());
@@ -191,30 +191,52 @@ fn configured_locator_path(env: &LocatorEnv) -> Option<PathBuf> {
         .map(|dir| PathBuf::from(dir).join(DB_LOCATOR_FILE))
 }
 
+fn exe_name() -> &'static str {
+    if cfg!(windows) {
+        "boogiebox-server.exe"
+    } else {
+        "boogiebox-server"
+    }
+}
+
 fn is_packaged_server_executable(exec_path: &Path) -> bool {
+    let expected = if cfg!(windows) {
+        "boogiebox-server.exe"
+    } else {
+        "boogiebox-server"
+    };
     exec_path
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case("boogiebox-server.exe"))
+        .is_some_and(|name| name.eq_ignore_ascii_case(expected))
 }
 
 fn packaged_config_path(exec_path: &Path, env: &LocatorEnv) -> PathBuf {
-    let base_dir = env
-        .program_data
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            exec_path
-                .components()
-                .next()
-                .map(|component| PathBuf::from(component.as_os_str()))
-                .unwrap_or_else(|| PathBuf::from("C:\\"))
-                .join("ProgramData")
-        });
-
-    base_dir.join("BoogieBox").join(DB_LOCATOR_FILE)
+    #[cfg(windows)]
+    {
+        let base_dir = env
+            .program_data
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                exec_path
+                    .components()
+                    .next()
+                    .map(|component| PathBuf::from(component.as_os_str()))
+                    .unwrap_or_else(|| PathBuf::from("C:\\"))
+                    .join("ProgramData")
+            });
+        base_dir.join("BoogieBox").join(DB_LOCATOR_FILE)
+    }
+    #[cfg(not(windows))]
+    {
+        // Suppress unused-variable warnings — these are Windows-only fields.
+        let _ = (exec_path, env);
+        // System installs use /var/lib; users can override with BOOGIEBOX_CONFIG_DIR.
+        PathBuf::from("/var/lib/boogiebox").join(DB_LOCATOR_FILE)
+    }
 }
 
 fn app_root() -> PathBuf {
@@ -242,6 +264,7 @@ mod tests {
     use std::time::SystemTime;
 
     #[test]
+    #[cfg(windows)]
     fn explicit_config_path_is_first_candidate() {
         let path = PathBuf::from("D:\\config\\custom.json");
         let candidates = db_locator_path_candidates_for(
@@ -259,6 +282,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn explicit_config_path_is_first_candidate_linux() {
+        let path = PathBuf::from("/etc/boogiebox/custom.json");
+        let candidates = db_locator_path_candidates_for(
+            Path::new("/opt/boogiebox/boogiebox-server"),
+            Path::new("/tmp/work"),
+            PathBuf::from("/repo"),
+            LocatorEnv {
+                explicit_path: Some(path.to_string_lossy().into_owned()),
+                explicit_dir: Some("/tmp/ignored".to_string()),
+                program_data: None,
+            },
+        );
+
+        assert_eq!(candidates.first(), Some(&path));
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn packaged_server_prefers_program_data_before_install_adjacent_config() {
         let candidates = db_locator_path_candidates_for(
             Path::new("C:\\Program Files\\BoogieBox\\boogiebox-server.exe"),
@@ -281,6 +323,27 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn packaged_server_prefers_var_lib_before_install_adjacent_config() {
+        let candidates = db_locator_path_candidates_for(
+            Path::new("/opt/boogiebox/boogiebox-server"),
+            Path::new("/opt/boogiebox"),
+            PathBuf::from("/repo"),
+            LocatorEnv::default(),
+        );
+
+        assert_eq!(
+            candidates[0],
+            PathBuf::from("/var/lib/boogiebox/boogiebox-config.json")
+        );
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("/opt/boogiebox/boogiebox-config.json")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn source_server_prefers_cwd_before_repo_root_and_exe_dir() {
         let candidates = db_locator_path_candidates_for(
             Path::new("C:\\node\\node.exe"),
@@ -296,6 +359,23 @@ mod tests {
         assert_eq!(
             candidates[1],
             PathBuf::from("D:\\repo-root\\boogiebox-config.json")
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn source_server_prefers_cwd_before_repo_root_and_exe_dir_linux() {
+        let candidates = db_locator_path_candidates_for(
+            Path::new("/usr/local/bin/node"),
+            Path::new("/repo"),
+            PathBuf::from("/home/user/repo-root"),
+            LocatorEnv::default(),
+        );
+
+        assert_eq!(candidates[0], PathBuf::from("/repo/boogiebox-config.json"));
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("/home/user/repo-root/boogiebox-config.json")
         );
     }
 
