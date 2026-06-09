@@ -360,10 +360,13 @@ export const api = {
     get<{ path: string; parent: string | null; entries: { name: string; path: string }[] }>(
       `/admin/fs/browse${path !== undefined ? `?path=${encodeURIComponent(path)}` : ''}`,
     ),
+  fsMkdir: (parent: string, name: string) =>
+    post<{ path: string }>('/admin/fs/mkdir', { parent, name }),
   debugTestPath: (path: string) => post<any>('/debug/test-path', { path }),
-  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string }>('/system/status'),
+  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string; dbFolder?: string }>('/system/status'),
   systemSelectFolder: (initialDir?: string) => post<{ folder: string | null }>('/system/select-folder', { initialDir }),
   systemSetup: (dbFolder: string) => post<{ ok: boolean }>('/system/setup', { dbFolder }),
+  systemSwitchDb: (dbFolder: string) => post<{ ok: boolean }>('/system/switch-db', { dbFolder }),
   playbackSettings: () => get<{ transcodeQuality: string; replayGainEnabled: string; vinylMode: string; lastfmConfigured: string }>('/playback-settings'),
   settings: {
     get: () => get<Record<string, string>>('/settings'),

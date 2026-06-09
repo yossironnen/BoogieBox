@@ -9,6 +9,7 @@ import { DEFAULT_SETTINGS, FONT_OPTIONS } from '../types';
 import { parseServerDate } from '../utils';
 import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
+import FolderPickerModal from './FolderPickerModal';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -541,6 +542,11 @@ export default function SettingsPage({
   const [boogiemixDeepActionResult, setBoogiemixDeepActionResult] = useState<string | null>(null);
   const [boogiemixDeepSelectedLibrary, setBoogiemixDeepSelectedLibrary] = useState<ClientEntityId | ''>('');
   const showGeniusIntegration = false;
+  const [currentDbFolder, setCurrentDbFolder] = useState<string>('');
+  const [switchDbFolder, setSwitchDbFolder] = useState<string>('');
+  const [switchDbSaving, setSwitchDbSaving] = useState(false);
+  const [switchDbResult, setSwitchDbResult] = useState<string | null>(null);
+  const [showDbFolderPicker, setShowDbFolderPicker] = useState(false);
 
   useEffect(() => {
     setLocal(settings);
@@ -714,6 +720,7 @@ export default function SettingsPage({
       loadWaveformStatus();
       loadBpmStatus();
       loadBoogieMixDeepStatus();
+      api.systemStatus().then(s => { if (s.dbFolder) setCurrentDbFolder(s.dbFolder); }).catch(() => {});
     }
   }, [activeTab, isAdmin, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
 
@@ -2317,6 +2324,91 @@ export default function SettingsPage({
               )}
             </div>
           </div>
+
+          {/* ── Database (admin only) ─────────────────────────────────────── */}
+          {isAdmin && (
+            <>
+              <div style={{ ...P.sectionTitle, marginTop: 28 }}>Database</div>
+              <div style={{
+                padding: '16px 20px', borderRadius: 8, marginBottom: 12,
+                backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                  Active database folder
+                </div>
+                {currentDbFolder && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                    {currentDbFolder}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
+                  Switch to a different database folder. The server will reload all settings from the new database.
+                  If the folder does not contain a database yet, a fresh one will be created.
+                </div>
+                <div style={{ fontSize: 12, color: '#f59e0b', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
+                  Warning: switching databases reloads the server state. You will be logged out and the page will reload.
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    value={switchDbFolder}
+                    onChange={e => { setSwitchDbFolder(e.target.value); setSwitchDbResult(null); }}
+                    placeholder="Enter folder path..."
+                    style={{
+                      minWidth: 320, flex: 1,
+                      background: 'var(--bg)', border: '1px solid var(--border)',
+                      color: 'var(--text)', borderRadius: 6, padding: '7px 10px',
+                      fontSize: 12, fontFamily: 'inherit', outline: 'none',
+                    }}
+                  />
+                  <button
+                    onClick={() => setShowDbFolderPicker(true)}
+                    style={{
+                      padding: '7px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                      background: 'var(--bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer',
+                    }}
+                  >
+                    Browse...
+                  </button>
+                  <button
+                    disabled={switchDbSaving || !switchDbFolder.trim()}
+                    onClick={async () => {
+                      if (!window.confirm(`Switch to database at:\n\n${switchDbFolder.trim()}\n\nThe page will reload after switching.`)) return;
+                      setSwitchDbSaving(true);
+                      setSwitchDbResult(null);
+                      try {
+                        await api.systemSwitchDb(switchDbFolder.trim());
+                        setSwitchDbResult('Switched — reloading...');
+                        setTimeout(() => window.location.reload(), 800);
+                      } catch (e: any) {
+                        setSwitchDbResult(`Error: ${e.message}`);
+                        setSwitchDbSaving(false);
+                      }
+                    }}
+                    style={{
+                      padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
+                      background: 'var(--accent)', color: '#fff', fontSize: 12, cursor: 'pointer',
+                      opacity: (switchDbSaving || !switchDbFolder.trim()) ? 0.6 : 1,
+                    }}
+                  >
+                    {switchDbSaving ? 'Switching...' : 'Switch Database'}
+                  </button>
+                </div>
+                {switchDbResult && (
+                  <div style={{ fontSize: 12, marginTop: 8, color: switchDbResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                    {switchDbResult}
+                  </div>
+                )}
+              </div>
+              {showDbFolderPicker && (
+                <FolderPickerModal
+                  initialPath={switchDbFolder || currentDbFolder || undefined}
+                  onSelect={path => { setSwitchDbFolder(path); setShowDbFolderPicker(false); }}
+                  onClose={() => setShowDbFolderPicker(false)}
+                />
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -2638,6 +2730,7 @@ export default function SettingsPage({
               </div>
             </>
           )}
+
         </div>
       )}
 

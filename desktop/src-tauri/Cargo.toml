@@ -1,6 +1,6 @@
 [package]
 name = "boogiebox-desktop"
-version = "0.8.4"
+version = "0.8.13"
 edition = "2021"
 
 [lib]
@@ -38,3 +38,6 @@ panic = "abort"
 codegen-units = 1
 lto = true
 strip = true
+
+
+

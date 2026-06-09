@@ -20,13 +20,14 @@ echo ""
 echo " Building BoogieBox standalone server (Rust / Linux)..."
 echo ""
 
-# When the project lives on a Windows-mounted filesystem (WSL2 /mnt/...), Rust
-# build scripts that manipulate file metadata fail with EPERM on NTFS.
-# Redirect the Cargo target directory to the Linux-native filesystem automatically.
-if [[ "$(pwd)" == /mnt/* ]] && [ -z "${CARGO_TARGET_DIR:-}" ]; then
+# Always use a Linux-native Cargo target directory so Linux and Windows builds
+# never share the same target/ tree (avoids lock conflicts and fingerprint stomping
+# when both platforms build from the same repo simultaneously).
+# Honour an explicit override if the caller already set CARGO_TARGET_DIR.
+if [ -z "${CARGO_TARGET_DIR:-}" ]; then
   export CARGO_TARGET_DIR="$HOME/.cargo-targets/boogiebox-server"
-  echo "[INFO] WSL2 Windows mount detected — using native target dir: $CARGO_TARGET_DIR"
 fi
+echo "[INFO] Cargo target dir: $CARGO_TARGET_DIR"
 
 if ! command -v cargo &>/dev/null; then
   echo "[ERROR] cargo (Rust toolchain) is required."

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 
 type Entry = { name: string; path: string };
@@ -49,6 +49,7 @@ const S = {
     gap: 6,
     padding: '6px 16px',
     borderBottom: '1px solid var(--border)',
+    flexWrap: 'wrap' as const,
   },
   upBtn: {
     display: 'flex',
@@ -62,6 +63,25 @@ const S = {
     color: 'var(--text-muted)',
     cursor: 'pointer',
     fontFamily: 'inherit',
+  },
+  newFolderRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '6px 16px 8px',
+    borderBottom: '1px solid var(--border)',
+    backgroundColor: 'color-mix(in srgb, var(--surface) 60%, var(--bg))',
+  },
+  newFolderInput: {
+    flex: 1,
+    background: 'var(--bg)',
+    border: '1px solid var(--accent)',
+    color: 'var(--text)',
+    borderRadius: 5,
+    padding: '4px 8px',
+    fontSize: 12,
+    fontFamily: 'inherit',
+    outline: 'none',
   },
   list: {
     flex: 1,
@@ -137,23 +157,77 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
   const [result, setResult] = useState<BrowseResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderError, setNewFolderError] = useState('');
+  const [newFolderBusy, setNewFolderBusy] = useState(false);
+  const newFolderInputRef = useRef<HTMLInputElement>(null);
 
-  const navigate = useCallback(async (path?: string) => {
+  const navigate = useCallback(async (path?: string, fallbackToRoot = false) => {
     setLoading(true);
     setError('');
+    setShowNewFolder(false);
+    setNewFolderName('');
+    setNewFolderError('');
     try {
       const data = await api.fsBrowse(path);
       setResult(data);
     } catch (e: any) {
-      setError(e.message || 'Failed to browse folder');
+      if (fallbackToRoot && path !== undefined) {
+        // initial path is invalid — silently fall back to filesystem root
+        try {
+          const data = await api.fsBrowse(undefined);
+          setResult(data);
+        } catch (e2: any) {
+          setError(e2.message || 'Failed to browse folder');
+        }
+      } else {
+        setError(e.message || 'Failed to browse folder');
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    navigate(initialPath);
+    navigate(initialPath, true);
   }, [navigate, initialPath]);
+
+  // Focus the new-folder input when the row appears.
+  useEffect(() => {
+    if (showNewFolder) newFolderInputRef.current?.focus();
+  }, [showNewFolder]);
+
+  const openNewFolder = () => {
+    setNewFolderName('');
+    setNewFolderError('');
+    setShowNewFolder(true);
+  };
+
+  const cancelNewFolder = () => {
+    setShowNewFolder(false);
+    setNewFolderName('');
+    setNewFolderError('');
+  };
+
+  const createFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) { setNewFolderError('Folder name cannot be empty'); return; }
+    const parent = result?.path;
+    if (!parent) return;
+    setNewFolderBusy(true);
+    setNewFolderError('');
+    try {
+      const created = await api.fsMkdir(parent, name);
+      setShowNewFolder(false);
+      setNewFolderName('');
+      await navigate(created.path);
+    } catch (e: any) {
+      setNewFolderError(e.message || 'Failed to create folder');
+    } finally {
+      setNewFolderBusy(false);
+    }
+  };
 
   const currentPath = result?.path ?? '';
 
@@ -164,6 +238,7 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
           <div style={S.title}>Choose a folder</div>
           {currentPath && <div style={S.breadcrumb}>{currentPath}</div>}
         </div>
+
         <div style={S.toolbar}>
           <button
             style={{ ...S.upBtn, opacity: result?.parent ? 1 : 0.4, cursor: result?.parent ? 'pointer' : 'default' }}
@@ -173,11 +248,63 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
           >
             ↑ Up
           </button>
+          <button
+            style={S.upBtn}
+            type="button"
+            onClick={() => navigate(undefined)}
+          >
+            / Root
+          </button>
+          <button
+            style={{ ...S.upBtn, opacity: currentPath ? 1 : 0.4, cursor: currentPath ? 'pointer' : 'default' }}
+            disabled={!currentPath || showNewFolder}
+            type="button"
+            onClick={openNewFolder}
+          >
+            + New Folder
+          </button>
           {loading && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</span>}
         </div>
+
+        {showNewFolder && (
+          <div style={S.newFolderRow}>
+            <FolderIcon />
+            <input
+              ref={newFolderInputRef}
+              style={S.newFolderInput}
+              type="text"
+              placeholder="New folder name"
+              value={newFolderName}
+              onChange={e => { setNewFolderName(e.target.value); setNewFolderError(''); }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') createFolder();
+                if (e.key === 'Escape') cancelNewFolder();
+              }}
+              disabled={newFolderBusy}
+            />
+            <button
+              style={{ ...S.upBtn, color: 'var(--accent)', borderColor: 'var(--accent)', opacity: newFolderBusy ? 0.5 : 1 }}
+              type="button"
+              disabled={newFolderBusy}
+              onClick={createFolder}
+            >
+              {newFolderBusy ? 'Creating…' : 'Create'}
+            </button>
+            <button
+              style={{ ...S.upBtn, opacity: newFolderBusy ? 0.5 : 1 }}
+              type="button"
+              disabled={newFolderBusy}
+              onClick={cancelNewFolder}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {newFolderError && <div style={S.errorMsg}>{newFolderError}</div>}
+
         {error && <div style={S.errorMsg}>{error}</div>}
         <div style={S.list}>
-          {result && result.entries.length === 0 && (
+          {result && result.entries.length === 0 && !showNewFolder && (
             <div style={S.emptyMsg}>No subfolders</div>
           )}
           {result?.entries.map((entry) => (

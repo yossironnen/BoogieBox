@@ -1,4 +1,4 @@
-﻿//! Axum application assembly, setup flow, logging, and server runtime wiring.
+//! Axum application assembly, setup flow, logging, and server runtime wiring.
 
 use axum::{
     extract::{ConnectInfo, State},
@@ -180,6 +180,7 @@ struct StatusResponse {
     log_file: Option<String>,
     setup_required: bool,
     suggested_db_folder: String,
+    db_folder: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -455,6 +456,7 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
     let api = Router::new()
         .route("/api/system/status", get(status_handler))
         .route("/api/system/setup", post(setup_handler))
+        .route("/api/system/switch-db", post(switch_db_handler))
         .route("/api/system/select-folder", post(select_folder_handler))
         .route("/api/debug/test-path", post(debug_test_path_handler))
         .route("/api/{*path}", any(api_fallback_handler))
@@ -624,6 +626,10 @@ async fn status_handler(State(state): State<SharedState>) -> impl IntoResponse {
                 .map(|path| path.to_string_lossy().into_owned()),
             setup_required: state.setup_required,
             suggested_db_folder: state.suggested_db_folder.to_string_lossy().into_owned(),
+            db_folder: state
+                .db_folder
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
         }),
     )
 }
@@ -714,6 +720,96 @@ async fn setup_handler(
     }
 }
 
+async fn switch_db_handler(
+    State(state): State<SharedState>,
+    Json(payload): Json<SetupRequest>,
+) -> impl IntoResponse {
+    {
+        let s = state.read().expect("state lock");
+        if s.setup_required {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Server not configured yet; use /api/system/setup first".to_string(),
+                    setup_required: Some(true),
+                }),
+            )
+                .into_response();
+        }
+        if s.db.is_none() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "No active database".to_string(),
+                    setup_required: None,
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let Some(db_folder) = payload
+        .db_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "dbFolder is required".to_string(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    };
+
+    let db_config_path = state.read().expect("state lock").db_config_path.clone();
+
+    match server_config::write_db_config_to(&db_config_path, Path::new(db_folder)) {
+        Ok(_) => match init_db(Path::new(db_folder)) {
+            Ok(initialized) => {
+                let db_pool = Arc::new(Mutex::new(initialized.connection));
+                let mut s = state.write().unwrap_or_else(|p| p.into_inner());
+                s.db = Some(db_pool);
+                s.db_folder = Some(PathBuf::from(db_folder));
+                let ps_state = post_scan::PostScanState {
+                    db: s.db.as_ref().expect("db set").clone(),
+                    http_client: s.http_client.clone(),
+                    db_folder: s.db_folder.clone(),
+                };
+                scanner::start_scan_scheduler(ps_state.clone());
+                post_scan::start_post_scan_scheduler(ps_state.clone());
+                waveform_map::start_waveform_map_scheduler(ps_state.db.clone());
+                bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone());
+                deep_analysis::start_deep_analysis_worker(ps_state.clone());
+                mix_worker::start_mix_worker(ps_state);
+                let dlna_mgr = s.dlna_manager.clone();
+                let dlna_db = s.db.as_ref().expect("db set").clone();
+                tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
+                (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+            }
+            Err(err) => map_init_db_error(err).into_response(),
+        },
+        Err(server_config::DbConfigWriteError::CreateDir { source, .. }) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Cannot create folder: {source}"),
+                setup_required: None,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Switch failed: {err}"),
+                setup_required: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
 fn is_setup_required(db_config: Option<&server_config::DbConfig>) -> bool {
     db_config.is_none_or(|config| !database_exists(Path::new(&config.db_folder)))
 }
@@ -772,7 +868,23 @@ async fn shutdown_signal() {
 pub fn suggested_db_folder() -> PathBuf {
     #[cfg(not(windows))]
     {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        // Prefer an explicit data-dir override (set by the systemd unit via
+        // BOOGIEBOX_DATA_DIR, or conventionally by a package manager install).
+        if let Ok(dir) = env::var("BOOGIEBOX_DATA_DIR") {
+            let trimmed = dir.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+
+        // If running as a system service user (no real HOME, or HOME is / or .),
+        // fall back to the standard system data directory.
+        let home = env::var("HOME").unwrap_or_default();
+        let home = home.trim();
+        if home.is_empty() || home == "." || home == "/" {
+            return PathBuf::from("/var/lib/boogiebox/data");
+        }
+
         PathBuf::from(home)
             .join(".local")
             .join("share")

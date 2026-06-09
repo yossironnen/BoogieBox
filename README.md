@@ -203,23 +203,35 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 
 BoogieBox runs on Linux as a headless server. Use any browser on the same network to access the UI.
 
+#### From a release tarball (recommended)
+
+1. Download the latest `boogiebox-*-linux-rs.tar.gz` from the [Releases](https://github.com/yronnen/boogiebox/releases) page.
+2. Extract and install:
+
 ```bash
-# Clone and build
+tar -xzf boogiebox-*-linux-rs.tar.gz
+cd boogiebox-*-linux-rs
+sudo ./install/install.sh
+```
+
+3. Open `http://localhost:3001` in a browser and complete the setup wizard.
+
+#### From source
+
+```bash
 git clone https://github.com/yronnen/boogiebox
 cd boogiebox
 ./build-server-rust.sh --no-test
-
-# Install as a systemd service (requires sudo)
 sudo ./Releases/boogiebox-*/install/install.sh
 ```
 
-Then open `http://localhost:PORT` in a browser to complete first-run setup.
-
-Override the config path for non-system installs:
+#### Non-systemd / manual run
 
 ```bash
 BOOGIEBOX_CONFIG_DIR=~/.config/boogiebox ./boogiebox-server
 ```
+
+Then open `http://localhost:3001` in a browser to complete first-run setup.
 
 ### Developers
 

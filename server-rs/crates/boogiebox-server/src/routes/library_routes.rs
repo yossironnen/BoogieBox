@@ -1,4 +1,4 @@
-﻿//! Defines Rust API routes for Library Routes server behavior.
+//! Defines Rust API routes for Library Routes server behavior.
 
 use axum::{
     extract::{Path, Query, State},
@@ -73,6 +73,7 @@ pub fn library_router(state: SharedState) -> Router {
         .route("/api/stats", get(stats_handler))
         .route("/api/admin/browse-folder", post(browse_folder_handler))
         .route("/api/admin/fs/browse", get(fs_browse_handler))
+        .route("/api/admin/fs/mkdir", post(fs_mkdir_handler))
         .with_state(state)
 }
 
@@ -677,8 +678,9 @@ async fn fs_browse_handler(
             }
             #[cfg(not(windows))]
             {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-                std::path::PathBuf::from(home)
+                // Default to / so the browser always has a navigable starting point.
+                // Using $HOME is unreliable for system service users (no home dir).
+                std::path::PathBuf::from("/")
             }
         }
     };
@@ -738,6 +740,199 @@ async fn fs_browse_handler(
         }),
     )
         .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FsMkdirRequest {
+    parent: String,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FsMkdirResponse {
+    path: String,
+}
+
+async fn fs_mkdir_handler(
+    _admin: AdminUser,
+    Json(payload): Json<FsMkdirRequest>,
+) -> impl IntoResponse {
+    let parent = payload.parent.trim();
+    let name = payload.name.trim();
+
+    if parent.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "parent path is required".to_string(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Folder name cannot be empty".to_string(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    // Reject names with path separators — must be a single component.
+    if name.contains('/') || name.contains('\\') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Folder name cannot contain path separators".to_string(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    // Reject dot-only names and names with null bytes.
+    if name == "." || name == ".." || name.contains('\0') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid folder name".to_string(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    // Windows: reject reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+    #[cfg(windows)]
+    {
+        let upper = name.to_uppercase();
+        let stem = upper.split('.').next().unwrap_or(&upper);
+        let reserved = matches!(
+            stem,
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        );
+        if reserved {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("'{name}' is a reserved Windows device name"),
+                    setup_required: None,
+                }),
+            )
+                .into_response();
+        }
+
+        // Reject characters illegal on Windows: \ / : * ? " < > |
+        let illegal: &[char] = &[':', '*', '?', '"', '<', '>', '|'];
+        if name.chars().any(|c| illegal.contains(&c)) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error:
+                        "Folder name contains a character not allowed on Windows (: * ? \" < > |)"
+                            .to_string(),
+                    setup_required: None,
+                }),
+            )
+                .into_response();
+        }
+
+        // Reject trailing dot or space (silently stripped by Windows, causes confusion).
+        if name.ends_with('.') || name.ends_with(' ') {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Folder name cannot end with a dot or space on Windows".to_string(),
+                    setup_required: None,
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let parent_path = std::path::Path::new(parent);
+    if !parent_path.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Parent is not a directory: {parent}"),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    let new_path = parent_path.join(name);
+
+    if new_path.exists() {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: format!("'{name}' already exists"),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    match fs::create_dir(&new_path) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(FsMkdirResponse {
+                path: new_path.to_string_lossy().into_owned(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            let msg = match err.kind() {
+                std::io::ErrorKind::PermissionDenied => {
+                    format!("Permission denied: cannot create folder in {parent}")
+                }
+                std::io::ErrorKind::NotFound => {
+                    format!("Parent directory not found: {parent}")
+                }
+                std::io::ErrorKind::AlreadyExists => {
+                    format!("'{name}' already exists")
+                }
+                _ => format!("Failed to create folder: {err}"),
+            };
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: msg,
+                    setup_required: None,
+                }),
+            )
+                .into_response()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

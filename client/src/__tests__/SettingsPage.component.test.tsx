@@ -26,6 +26,8 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
       resumeDeepAnalysisBackground: vi.fn(),
       clearDeepAnalysisCache: vi.fn(),
     },
+    systemStatus: vi.fn(),
+    systemSwitchDb: vi.fn(),
   },
   getStreamDirectMock: vi.fn(),
   setStreamDirectMock: vi.fn(),
@@ -52,6 +54,8 @@ describe('SettingsPage component flows', () => {
     vi.stubGlobal('confirm', vi.fn(() => true));
 
     getStreamDirectMock.mockReturnValue(false);
+    apiMock.systemStatus.mockResolvedValue({ setupRequired: false, ffmpegAvailable: true, dbFolder: 'D:\\BoogieData' });
+    apiMock.systemSwitchDb.mockResolvedValue({ ok: true });
     apiMock.libraries.list.mockResolvedValue([{ id: '1', name: 'Main Library', path: 'D:\\Music', primary_path: 'D:\\Music', folder_count: 2, folders: [{ id: 'f1', library_id: '1', path: 'D:\\Music', position: 0 }, { id: 'f2', library_id: '1', path: 'D:\\More Music', position: 1 }], library_type: 'music', added_at: '2026-01-01', last_scan: null, track_count: 12 }]);
     apiMock.libraries.add.mockResolvedValue({ ok: true });
     apiMock.libraries.rename.mockResolvedValue({ id: '1', name: 'Renamed Library', path: 'D:\\Music', primary_path: 'D:\\Music', folder_count: 2, folders: [{ id: 'f1', library_id: '1', path: 'D:\\Music', position: 0 }, { id: 'f2', library_id: '1', path: 'D:\\More Music', position: 1 }], library_type: 'music', added_at: '2026-01-01', last_scan: null, track_count: 12 });

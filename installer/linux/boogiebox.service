@@ -10,6 +10,7 @@ ExecStart=/opt/boogiebox/boogiebox-server
 Restart=on-failure
 RestartSec=5
 Environment=BOOGIEBOX_CONFIG_DIR=/var/lib/boogiebox
+Environment=BOOGIEBOX_DATA_DIR=/var/lib/boogiebox/data
 
 [Install]
 WantedBy=multi-user.target
