@@ -152,6 +152,7 @@ dependencies = [
  "boogiebox-db",
  "hex",
  "image",
+ "libc",
  "pbkdf2",
  "rand",
  "reqwest",

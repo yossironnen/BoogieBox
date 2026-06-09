@@ -74,6 +74,12 @@ fi
 echo ""
 echo " [2/8] Building React client..."
 pushd client >/dev/null
+# Reinstall if the Linux native rollup binary is missing (node_modules was
+# installed on Windows and lacks linux-x64-gnu optional dependencies).
+if [ ! -d node_modules/@rollup/rollup-linux-x64-gnu ] && [ ! -d node_modules/@rollup/rollup-linux-arm64-gnu ]; then
+  echo "  Native rollup binary missing — reinstalling client dependencies for Linux..."
+  npm install
+fi
 npx vite build
 popd >/dev/null
 

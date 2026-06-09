@@ -575,6 +575,18 @@ async fn select_folder_handler(
             .into_response();
     }
 
+    if !cfg!(windows) {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                error: "Folder picker is not available on Linux — type the path manually"
+                    .to_string(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
     match pick_database_folder(
         state_snapshot.folder_picker,
         payload.initial_dir.as_deref(),
@@ -758,20 +770,30 @@ async fn shutdown_signal() {
 
 /// Documents the Suggested DB Folder public API surface.
 pub fn suggested_db_folder() -> PathBuf {
-    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
-        let trimmed = local_app_data.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("BoogieBox");
-        }
+    #[cfg(not(windows))]
+    {
+        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("BoogieBox")
     }
-
-    let home = env::var("USERPROFILE")
-        .or_else(|_| env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join("AppData")
-        .join("Local")
-        .join("BoogieBox")
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+            let trimmed = local_app_data.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("BoogieBox");
+            }
+        }
+        let home = env::var("USERPROFILE")
+            .or_else(|_| env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home)
+            .join("AppData")
+            .join("Local")
+            .join("BoogieBox")
+    }
 }
 
 /// Documents the Client Build Candidates public API surface.
@@ -847,7 +869,7 @@ fn is_loopback_addr(addr: &SocketAddr) -> bool {
     }
 }
 
-async fn pick_database_folder(
+pub async fn pick_database_folder(
     picker: FolderPicker,
     initial_dir: Option<&str>,
     suggested_db_folder: &Path,
@@ -858,6 +880,61 @@ async fn pick_database_folder(
             .await
             .map_err(|err| err.to_string()),
     }
+}
+
+pub async fn pick_folder(
+    picker: FolderPicker,
+    initial_dir: Option<&str>,
+    description: &str,
+) -> Result<Option<String>, String> {
+    match picker {
+        FolderPicker::Fixed(folder) => Ok(folder),
+        FolderPicker::System => pick_folder_from_system(initial_dir, description)
+            .await
+            .map_err(|err| err.to_string()),
+    }
+}
+
+async fn pick_folder_from_system(
+    initial_dir: Option<&str>,
+    description: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    if !cfg!(windows) {
+        return Ok(None);
+    }
+    let selected_path = initial_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    let script = build_folder_picker_script_with_description(&selected_path, description);
+    let output = timeout(
+        Duration::from_secs(10 * 60),
+        Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-STA",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
+            .stdin(Stdio::null())
+            .output(),
+    )
+    .await??;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("powershell exited with status {}", output.status).into()
+        } else {
+            stderr.into()
+        });
+    }
+
+    let folder = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!folder.is_empty()).then_some(folder))
 }
 
 async fn pick_database_folder_from_system(
@@ -904,10 +981,20 @@ async fn pick_database_folder_from_system(
 }
 
 fn build_folder_picker_script(selected_path: &str) -> String {
+    build_folder_picker_script_with_description(selected_path, "Choose BoogieBox database folder")
+}
+
+pub fn build_folder_picker_script_with_description(
+    selected_path: &str,
+    description: &str,
+) -> String {
     [
         "Add-Type -AssemblyName System.Windows.Forms".to_string(),
         "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog".to_string(),
-        "$dialog.Description = 'Choose BoogieBox database folder'".to_string(),
+        format!(
+            "$dialog.Description = '{}'",
+            escape_powershell_single_quoted(description)
+        ),
         "$dialog.ShowNewFolderButton = $true".to_string(),
         format!(
             "$dialog.SelectedPath = '{}'",

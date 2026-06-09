@@ -58,6 +58,11 @@ if "%SKIP_TESTS%"=="1" (
 
 echo.
 echo  [2/8] Building React client...
+IF NOT EXIST "client\node_modules\@rollup\rollup-win32-x64-msvc" (
+    echo   Native rollup binary missing -- reinstalling client dependencies for Windows...
+    call npm.cmd --prefix client install
+    IF ERRORLEVEL 1 (echo [ERROR] npm install failed & exit /b 1)
+)
 call npm.cmd --prefix client run build
 IF ERRORLEVEL 1 (echo [ERROR] Client build failed & exit /b 1)
 

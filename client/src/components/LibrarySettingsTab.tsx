@@ -4,6 +4,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import FolderPickerModal from './FolderPickerModal';
+import { platform } from '../platform';
 import type { ClientEntityId, Library, LibraryFolder, ScanJob } from '../types';
 import { parseServerDate } from '../utils';
 
@@ -176,6 +178,9 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
   const [pendingFolders, setPendingFolders] = useState<string[]>([]);
   const [newName, setNewName] = useState('');
   const [error, setError] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerInitial, setPickerInitial] = useState<string | undefined>(undefined);
+  const pickerResolveRef = useRef<((path: string | null) => void) | null>(null);
   const [editingLibraryId, setEditingLibraryId] = useState<ClientEntityId | null>(null);
   const [editingName, setEditingName] = useState('');
   const [renameBusy, setRenameBusy] = useState(false);
@@ -190,6 +195,17 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
     const primaryPath = library.primary_path ?? library.path;
     if (!primaryPath) return [];
     return [{ id: library.id, library_id: library.id, path: primaryPath, position: 0 }];
+  }, []);
+
+  const openBrowse = useCallback((initialPath?: string): Promise<string | null> => {
+    if (platform.isDesktop) {
+      return platform.selectFolder(initialPath);
+    }
+    return new Promise((resolve) => {
+      pickerResolveRef.current = resolve;
+      setPickerInitial(initialPath);
+      setPickerOpen(true);
+    });
   }, []);
 
   const refreshLibraries = useCallback(async () => {
@@ -399,6 +415,7 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
   }, [libraries.length, onRefresh]);
 
   return (
+    <>
     <div>
       <div style={L.sectionTitle}>Libraries</div>
       <p style={L.intro}>
@@ -423,6 +440,20 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
           onChange={(e) => setNewName(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && addLibrary()}
         />
+        <button
+          style={L.btnSecondary}
+          type="button"
+          onClick={async () => {
+            try {
+              const folder = await openBrowse(newPath.trim() || undefined);
+              if (folder) { setNewPath(folder); setTestResult(null); }
+            } catch (e: any) {
+              setError(e.message || 'Folder picker failed');
+            }
+          }}
+        >
+          Browse
+        </button>
         <button style={L.btnSecondary} onClick={testPath} type="button">
           Test
         </button>
@@ -538,6 +569,22 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                       onChange={(e) => setFolderDrafts((prev) => ({ ...prev, [String(library.id)]: e.target.value }))}
                       onKeyDown={(e) => e.key === 'Enter' && addFolderToLibrary(library.id)}
                     />
+                    <button
+                      style={L.btnSecondary}
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const folder = await openBrowse(
+                            (folderDrafts[String(library.id)] ?? '').trim() || undefined,
+                          );
+                          if (folder) setFolderDrafts((prev) => ({ ...prev, [String(library.id)]: folder }));
+                        } catch (e: any) {
+                          setError(e.message || 'Folder picker failed');
+                        }
+                      }}
+                    >
+                      Browse
+                    </button>
                     <button style={L.btnSecondary} type="button" onClick={() => addFolderToLibrary(library.id)}>
                       Add Folder
                     </button>
@@ -598,5 +645,21 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
         })}
       </div>
     </div>
+    {pickerOpen && (
+      <FolderPickerModal
+        initialPath={pickerInitial}
+        onSelect={(path) => {
+          setPickerOpen(false);
+          pickerResolveRef.current?.(path);
+          pickerResolveRef.current = null;
+        }}
+        onClose={() => {
+          setPickerOpen(false);
+          pickerResolveRef.current?.(null);
+          pickerResolveRef.current = null;
+        }}
+      />
+    )}
+    </>
   );
 }

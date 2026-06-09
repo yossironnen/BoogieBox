@@ -20,8 +20,9 @@ When user says: Tighten code
 Switch to Code Tightening Mode as defined in docs/agents/code-tightening-agent.md.
 
 ### Dev
-For Windows builds: dev.bat  (prefers Rust release in Releases\boogiebox-VERSION-win-rs\)
-For Linux builds: dev.sh (prefers Rust release in Releases/boogiebox-VERSION-linux-rs/)
+- When coding the server side, always make sure that the code will work on Windows and Linux.
+- For Windows builds: dev.bat  (prefers Rust release in Releases\boogiebox-VERSION-win-rs\)
+- For Linux builds: dev.sh (prefers Rust release in Releases/boogiebox-VERSION-linux-rs/)
 
 ### Standalone EXE / Installer (Rust — primary end-user release)
 For Windows:

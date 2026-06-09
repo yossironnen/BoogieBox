@@ -16,6 +16,7 @@ axum-extra = { version = "0.10", features = ["cookie"] }
 base64 = "0.22"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+libc = "0.2"
 pbkdf2 = "0.12"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "stream"] }

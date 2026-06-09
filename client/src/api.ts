@@ -356,6 +356,10 @@ export const api = {
     const base = `${BASE}/api/tracks/${id}/stream`;
     return getStreamDirect() ? `${base}?noTranscode=1` : base;
   },
+  fsBrowse: (path?: string) =>
+    get<{ path: string; parent: string | null; entries: { name: string; path: string }[] }>(
+      `/admin/fs/browse${path !== undefined ? `?path=${encodeURIComponent(path)}` : ''}`,
+    ),
   debugTestPath: (path: string) => post<any>('/debug/test-path', { path }),
   systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string }>('/system/status'),
   systemSelectFolder: (initialDir?: string) => post<{ folder: string | null }>('/system/select-folder', { initialDir }),

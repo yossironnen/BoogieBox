@@ -20,14 +20,23 @@ export const browserPlatform: Platform = {
   },
 
   async selectFolder(_initialDir?: string): Promise<string | null> {
-    const res = await fetch('/api/system/select-folder', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ initialDir: _initialDir }),
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(payload.error || 'Folder picker failed');
-    return typeof payload.folder === 'string' && payload.folder.trim() ? payload.folder : null;
+    // Try the authenticated admin endpoint first (post-setup); fall back to the
+    // setup-only loopback endpoint during first-run setup.
+    for (const url of ['/api/admin/browse-folder', '/api/system/select-folder']) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ initialDir: _initialDir }),
+      });
+      if (res.status === 400 && url === '/api/system/select-folder') break;
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (url === '/api/admin/browse-folder' && (res.status === 401 || res.status === 403)) continue;
+        throw new Error(payload.error || 'Folder picker failed');
+      }
+      return typeof payload.folder === 'string' && payload.folder.trim() ? payload.folder : null;
+    }
+    return null;
   },
 };

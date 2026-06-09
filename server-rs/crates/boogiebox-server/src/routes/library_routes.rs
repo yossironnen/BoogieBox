@@ -1,7 +1,7 @@
 ﻿//! Defines Rust API routes for Library Routes server behavior.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post, put},
@@ -11,12 +11,12 @@ use boogiebox_db::{
     jobs::{CreateLibraryInput, JobError},
     music::coerce_entity_id,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 
 use crate::{
     auth::{AdminUser, AuthenticatedUser},
-    DbPool, ErrorResponse, OkResponse, SharedState,
+    pick_folder, DbPool, ErrorResponse, FolderPicker, OkResponse, SharedState,
 };
 
 /// Documents the Library Router public API surface.
@@ -71,6 +71,8 @@ pub fn library_router(state: SharedState) -> Router {
             post(enqueue_post_scan_handler),
         )
         .route("/api/stats", get(stats_handler))
+        .route("/api/admin/browse-folder", post(browse_folder_handler))
+        .route("/api/admin/fs/browse", get(fs_browse_handler))
         .with_state(state)
 }
 
@@ -631,6 +633,161 @@ fn map_job_error(err: JobError) -> axum::response::Response {
         }),
     )
         .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct FsBrowseParams {
+    path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FsBrowseEntry {
+    name: String,
+    path: String,
+}
+
+#[derive(Serialize)]
+struct FsBrowseResponse {
+    path: String,
+    parent: Option<String>,
+    entries: Vec<FsBrowseEntry>,
+}
+
+async fn fs_browse_handler(
+    _admin: AdminUser,
+    Query(params): Query<FsBrowseParams>,
+) -> impl IntoResponse {
+    use std::path::Path as StdPath;
+
+    let requested = params
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let dir = match requested {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            #[cfg(windows)]
+            {
+                let home = std::env::var("USERPROFILE")
+                    .or_else(|_| std::env::var("HOMEDRIVE").map(|d| format!("{d}\\")))
+                    .unwrap_or_else(|_| "C:\\".to_string());
+                std::path::PathBuf::from(home)
+            }
+            #[cfg(not(windows))]
+            {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+                std::path::PathBuf::from(home)
+            }
+        }
+    };
+
+    if !dir.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Not a directory: {}", dir.display()),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    let parent = dir
+        .parent()
+        .filter(|p| p != &StdPath::new("") && p != &dir.as_path())
+        .map(|p| p.to_string_lossy().into_owned());
+
+    let mut entries: Vec<FsBrowseEntry> = match std::fs::read_dir(&dir) {
+        Ok(iter) => iter
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter(|e| {
+                // Skip hidden directories (dot-prefixed) unless they are the current dir.
+                e.file_name()
+                    .to_str()
+                    .map(|n| !n.starts_with('.'))
+                    .unwrap_or(false)
+            })
+            .map(|e| FsBrowseEntry {
+                name: e.file_name().to_string_lossy().into_owned(),
+                path: e.path().to_string_lossy().into_owned(),
+            })
+            .collect(),
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Cannot read directory: {err}"),
+                    setup_required: None,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    entries.sort_by_key(|a| a.name.to_lowercase());
+
+    (
+        StatusCode::OK,
+        Json(FsBrowseResponse {
+            path: dir.to_string_lossy().into_owned(),
+            parent,
+            entries,
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowseFolderRequest {
+    initial_dir: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BrowseFolderResponse {
+    folder: Option<String>,
+}
+
+async fn browse_folder_handler(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+    Json(payload): Json<BrowseFolderRequest>,
+) -> impl IntoResponse {
+    let picker = state
+        .read()
+        .map(|s| s.folder_picker.clone())
+        .unwrap_or(FolderPicker::System);
+    if !cfg!(windows) {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(ErrorResponse {
+                error: "Folder picker is not available on Linux — type the path manually"
+                    .to_string(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+    match pick_folder(
+        picker,
+        payload.initial_dir.as_deref(),
+        "Choose a music library folder",
+    )
+    .await
+    {
+        Ok(folder) => (StatusCode::OK, Json(BrowseFolderResponse { folder })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Folder picker failed: {err}"),
+                setup_required: None,
+            }),
+        )
+            .into_response(),
+    }
 }
 
 fn internal_error() -> axum::response::Response {

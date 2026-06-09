@@ -1,5 +1,7 @@
 //! Defines Rust server support logic for Server Config.
 
+#[cfg(not(windows))]
+use libc;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -232,10 +234,18 @@ fn packaged_config_path(exec_path: &Path, env: &LocatorEnv) -> PathBuf {
     }
     #[cfg(not(windows))]
     {
-        // Suppress unused-variable warnings — these are Windows-only fields.
         let _ = (exec_path, env);
-        // System installs use /var/lib; users can override with BOOGIEBOX_CONFIG_DIR.
-        PathBuf::from("/var/lib/boogiebox").join(DB_LOCATOR_FILE)
+        // System installs (root) use /var/lib; non-root installs use ~/.config/boogiebox/.
+        let is_root = unsafe { libc::getuid() } == 0;
+        if is_root {
+            PathBuf::from("/var/lib/boogiebox").join(DB_LOCATOR_FILE)
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home)
+                .join(".config")
+                .join("boogiebox")
+                .join(DB_LOCATOR_FILE)
+        }
     }
 }
 
@@ -324,7 +334,17 @@ mod tests {
 
     #[test]
     #[cfg(not(windows))]
-    fn packaged_server_prefers_var_lib_before_install_adjacent_config() {
+    fn packaged_server_prefers_user_config_before_install_adjacent_config_when_non_root() {
+        // Skip when running as root — packaged_config_path returns /var/lib in that case.
+        if unsafe { libc::getuid() } == 0 {
+            return;
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let expected = PathBuf::from(&home)
+            .join(".config")
+            .join("boogiebox")
+            .join("boogiebox-config.json");
+
         let candidates = db_locator_path_candidates_for(
             Path::new("/opt/boogiebox/boogiebox-server"),
             Path::new("/opt/boogiebox"),
@@ -332,10 +352,7 @@ mod tests {
             LocatorEnv::default(),
         );
 
-        assert_eq!(
-            candidates[0],
-            PathBuf::from("/var/lib/boogiebox/boogiebox-config.json")
-        );
+        assert_eq!(candidates[0], expected);
         assert_eq!(
             candidates[1],
             PathBuf::from("/opt/boogiebox/boogiebox-config.json")
