@@ -89,9 +89,9 @@ popd >/dev/null
 # ------------------------------------------------------------------
 echo ""
 echo " [3/8] Reading version..."
-APP_VERSION=$(grep -oP "APP_VERSION\s*=\s*'\K[^']+" client/src/version.ts || true)
+APP_VERSION=$(cat VERSION | tr -d '[:space:]')
 if [ -z "$APP_VERSION" ]; then
-  echo "[ERROR] Could not read version from client/src/version.ts"
+  echo "[ERROR] Could not read version from VERSION file"
   exit 1
 fi
 echo " Version: $APP_VERSION"

@@ -1,6 +1,6 @@
 # BoogieBox
 
-BoogieBox is a self-hosted music library and player for Windows designed for collectors, audiophiles, and anyone with a large local music collection.
+BoogieBox is a self-hosted music library and player for Windows and Linux designed for collectors, audiophiles, and anyone with a large local music collection.
 
 Enjoy lightning-fast browsing, powerful search, playlists, lyrics, visualizations, Auto DJ, and personalized multi-user experiences. BoogieBox helps you rediscover your library instead of letting it sit untouched on a drive.
 
@@ -145,11 +145,12 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 
 ### 🏠 Built for Self-Hosting
 
+- Server can run on Windows or Linux
 - Simple first-run setup
 - Connect to free metadata providers
 - Multi-user support
 - Local and network library support
-- Windows desktop application with automatic server discovery
+- Optional Windows desktop application with automatic server discovery (in dev)
 
 ---
 
@@ -205,7 +206,7 @@ BoogieBox runs on Linux as a headless server. Use any browser on the same networ
 
 #### From a release tarball (recommended)
 
-1. Download the latest `boogiebox-*-linux-rs.tar.gz` from the [Releases](https://github.com/yronnen/boogiebox/releases) page.
+1. Download the latest `boogiebox-*-linux-rs.tar.gz` from the [Releases](https://github.com/yossironnen/BoogieBox/releases) page.
 2. Extract and install:
 
 ```bash
@@ -219,7 +220,7 @@ sudo ./install/install.sh
 #### From source
 
 ```bash
-git clone https://github.com/yronnen/boogiebox
+git clone https://github.com/yossironnen/BoogieBox
 cd boogiebox
 ./build-server-rust.sh --no-test
 sudo ./Releases/boogiebox-*/install/install.sh

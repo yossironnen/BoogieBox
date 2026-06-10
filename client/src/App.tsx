@@ -854,6 +854,7 @@ export default function App() {
   const [homeRefreshKey, setHomeRefreshKey] = useState(0);
   const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
   const [setupRequired, setSetupRequired] = useState<boolean>(false);
+  const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [streamDirect, setStreamDirect] = useState(() => getStreamDirect());
   const [adaptiveAccentEnabled, setAdaptiveAccentEnabled] = useState<boolean>(true);
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>(() => getStoredVinylSettings().playbackMode);
@@ -931,7 +932,7 @@ export default function App() {
   // Check auth and setup state on startup
   useEffect(() => {
     api.auth.me().then(user => setCurrentUser(user)).catch(() => setCurrentUser(null));
-    api.systemStatus().then(s => setSetupRequired(s.setupRequired ?? false)).catch(() => {});
+    api.systemStatus().then(s => { setSetupRequired(s.setupRequired ?? false); if (s.version) setServerVersion(s.version); }).catch(() => {});
   }, []);
 
   // Load user-specific theme and shared server settings when user changes.
@@ -1079,6 +1080,7 @@ export default function App() {
     if (sys) {
       setFfmpegAvailable(sys.ffmpegAvailable);
       setSetupRequired(sys.setupRequired ?? false);
+      if (sys.version) setServerVersion(sys.version);
     }
   }, []);
 
@@ -1154,14 +1156,14 @@ export default function App() {
         <aside style={{ ...S.sidebar, ...(sidebarCollapsed ? S.sidebarCollapsed : {}) }}>
           <div
             style={{ ...S.logo, ...(sidebarCollapsed ? S.logoCollapsed : {}) }}
-            title={`BoogieBox v${APP_VERSION}`}
+            title={`BoogieBox v${serverVersion ?? APP_VERSION}`}
           >
             <img src="/boogiebox.png" alt="BoogieBox logo" style={S.logoImage} />
             {!sidebarCollapsed && (
               <div>
                 <div>BoogieBox</div>
                 <div style={S.logoMetaRow}>
-                  <span style={S.logoVersion}>v{APP_VERSION}</span>
+                  <span style={S.logoVersion}>v{serverVersion ?? APP_VERSION}</span>
                   <a
                     href="https://ko-fi.com/yronnen"
                     target="_blank"

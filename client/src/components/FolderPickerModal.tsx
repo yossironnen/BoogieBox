@@ -83,6 +83,17 @@ const S = {
     fontFamily: 'inherit',
     outline: 'none',
   },
+  goToInput: {
+    flex: 1,
+    background: 'var(--bg)',
+    border: '1px solid var(--accent)',
+    color: 'var(--text)',
+    borderRadius: 5,
+    padding: '4px 8px',
+    fontSize: 12,
+    fontFamily: 'monospace',
+    outline: 'none',
+  },
   list: {
     flex: 1,
     overflowY: 'auto' as const,
@@ -162,6 +173,9 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
   const [newFolderError, setNewFolderError] = useState('');
   const [newFolderBusy, setNewFolderBusy] = useState(false);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
+  const [showGoTo, setShowGoTo] = useState(false);
+  const [goToPath, setGoToPath] = useState('');
+  const goToInputRef = useRef<HTMLInputElement>(null);
 
   const navigate = useCallback(async (path?: string, fallbackToRoot = false) => {
     setLoading(true);
@@ -169,6 +183,8 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
     setShowNewFolder(false);
     setNewFolderName('');
     setNewFolderError('');
+    setShowGoTo(false);
+    setGoToPath('');
     try {
       const data = await api.fsBrowse(path);
       setResult(data);
@@ -198,16 +214,42 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
     if (showNewFolder) newFolderInputRef.current?.focus();
   }, [showNewFolder]);
 
+  useEffect(() => {
+    if (showGoTo) goToInputRef.current?.focus();
+  }, [showGoTo]);
+
   const openNewFolder = () => {
     setNewFolderName('');
     setNewFolderError('');
     setShowNewFolder(true);
+    setShowGoTo(false);
   };
 
   const cancelNewFolder = () => {
     setShowNewFolder(false);
     setNewFolderName('');
     setNewFolderError('');
+  };
+
+  const openGoTo = () => {
+    setGoToPath(currentPath);
+    setShowGoTo(true);
+    setShowNewFolder(false);
+    setNewFolderName('');
+    setNewFolderError('');
+  };
+
+  const cancelGoTo = () => {
+    setShowGoTo(false);
+    setGoToPath('');
+  };
+
+  const submitGoTo = async () => {
+    const p = goToPath.trim();
+    if (!p) return;
+    setShowGoTo(false);
+    setGoToPath('');
+    await navigate(p);
   };
 
   const createFolder = async () => {
@@ -235,16 +277,19 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
     <div style={S.overlay} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={S.modal}>
         <div style={S.header}>
-          <div style={S.title}>Choose a folder</div>
-          {currentPath && <div style={S.breadcrumb}>{currentPath}</div>}
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+            <div style={S.title}>Choose a folder</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', opacity: 0.7, fontStyle: 'italic' }}>server filesystem</div>
+          </div>
+          <div style={S.breadcrumb}>{currentPath || 'Drives'}</div>
         </div>
 
         <div style={S.toolbar}>
           <button
-            style={{ ...S.upBtn, opacity: result?.parent ? 1 : 0.4, cursor: result?.parent ? 'pointer' : 'default' }}
-            disabled={!result?.parent}
+            style={{ ...S.upBtn, opacity: result?.parent != null ? 1 : 0.4, cursor: result?.parent != null ? 'pointer' : 'default' }}
+            disabled={result?.parent == null}
             type="button"
-            onClick={() => result?.parent && navigate(result.parent)}
+            onClick={() => result?.parent != null && navigate(result.parent || undefined)}
           >
             ↑ Up
           </button>
@@ -256,12 +301,19 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
             / Root
           </button>
           <button
-            style={{ ...S.upBtn, opacity: currentPath ? 1 : 0.4, cursor: currentPath ? 'pointer' : 'default' }}
+            style={{ ...S.upBtn, opacity: currentPath && !showNewFolder ? 1 : 0.4, cursor: currentPath && !showNewFolder ? 'pointer' : 'default' }}
             disabled={!currentPath || showNewFolder}
             type="button"
             onClick={openNewFolder}
           >
             + New Folder
+          </button>
+          <button
+            style={S.upBtn}
+            type="button"
+            onClick={openGoTo}
+          >
+            ⌨ Path
           </button>
           {loading && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</span>}
         </div>
@@ -302,6 +354,25 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
         )}
         {newFolderError && <div style={S.errorMsg}>{newFolderError}</div>}
 
+        {showGoTo && (
+          <div style={S.newFolderRow}>
+            <input
+              ref={goToInputRef}
+              style={S.goToInput}
+              type="text"
+              placeholder={String.raw`e.g. D:\Music  or  \\server\share`}
+              value={goToPath}
+              onChange={e => setGoToPath(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') submitGoTo();
+                if (e.key === 'Escape') cancelGoTo();
+              }}
+            />
+            <button style={{ ...S.upBtn, color: 'var(--accent)', borderColor: 'var(--accent)' }} type="button" onClick={submitGoTo}>Go</button>
+            <button style={S.upBtn} type="button" onClick={cancelGoTo}>✕</button>
+          </div>
+        )}
+
         {error && <div style={S.errorMsg}>{error}</div>}
         <div style={S.list}>
           {result && result.entries.length === 0 && !showNewFolder && (
@@ -321,7 +392,7 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
           ))}
         </div>
         <div style={S.footer}>
-          <div style={S.selectedPath}>{currentPath || 'No folder selected'}</div>
+          <div style={S.selectedPath}>{currentPath || 'Select a folder'}</div>
           <div style={S.btnRow}>
             <button style={S.btnSecondary} type="button" onClick={onClose}>Cancel</button>
             <button

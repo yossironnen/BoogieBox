@@ -173,6 +173,7 @@ pub enum FolderPicker {
 struct StatusResponse {
     app: &'static str,
     server: &'static str,
+    version: &'static str,
     discovery: bool,
     ffmpeg_available: bool,
     ffmpeg_path: String,
@@ -616,6 +617,7 @@ async fn status_handler(State(state): State<SharedState>) -> impl IntoResponse {
         Json(StatusResponse {
             app: "BoogieBox",
             server: "boogiebox",
+            version: env!("CARGO_PKG_VERSION"),
             discovery: true,
             ffmpeg_available: state.ffmpeg_available,
             ffmpeg_path: state.ffmpeg_path.to_string_lossy().into_owned(),
@@ -969,7 +971,7 @@ fn unique_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
-fn is_loopback_addr(addr: &SocketAddr) -> bool {
+pub(crate) fn is_loopback_addr(addr: &SocketAddr) -> bool {
     match addr.ip() {
         IpAddr::V4(ip) => ip.is_loopback(),
         IpAddr::V6(ip) => {

@@ -1,6 +1,6 @@
 # Architecture
 
-BoogieBox is a Windows-first, self-hosted music library application. The packaged runtime is a Rust Axum server with a React client, SQLite storage, optional Tauri desktop shell, FFmpeg-powered audio processing, and optional Python assets for BoogieMix deep analysis.
+BoogieBox is a self-hosted music library application for Windows and Linux. The packaged runtime is a Rust Axum server with a React client, SQLite storage, optional Tauri desktop shell (Windows only), FFmpeg-powered audio processing, and optional Python assets for BoogieMix deep analysis.
 
 ## Runtime Shape
 
@@ -9,6 +9,7 @@ BoogieBox is a Windows-first, self-hosted music library application. The package
 - `desktop/` contains the Tauri 2 desktop wrapper.
 - `server/Services/boogiemix/` contains optional Python worker assets for deep music analysis.
 - `build-server-rust.bat` builds the standalone Windows server release and installer flow.
+- `build-server-rust.sh` builds the standalone Linux server release and tarball flow.
 - `build-desktop.bat` builds the desktop shell release flow.
 
 The server owns authentication, setup, the SQLite database connection, scanning, post-scan jobs, transcoding, metadata/artwork providers, BoogieMix planning/rendering, and static delivery of the built client.

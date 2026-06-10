@@ -655,34 +655,57 @@ struct FsBrowseResponse {
 }
 
 async fn fs_browse_handler(
-    _admin: AdminUser,
+    State(state): State<SharedState>,
+    auth: Result<AdminUser, (StatusCode, Json<ErrorResponse>)>,
     Query(params): Query<FsBrowseParams>,
 ) -> impl IntoResponse {
-    use std::path::Path as StdPath;
-
+    let setup_mode = state.read().expect("state lock").setup_required;
+    if auth.is_err() && !setup_mode {
+        return forbidden();
+    }
     let requested = params
         .path
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
+    // On Windows, an empty/absent path means "show drive list".
+    #[cfg(windows)]
+    if requested.is_none() {
+        let drives: Vec<FsBrowseEntry> = ('A'..='Z')
+            .filter_map(|c| {
+                let path = format!("{c}:\\");
+                if std::path::Path::new(&path).is_dir() {
+                    Some(FsBrowseEntry {
+                        name: path.clone(),
+                        path,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        return (
+            StatusCode::OK,
+            Json(FsBrowseResponse {
+                path: String::new(),
+                parent: None,
+                entries: drives,
+            }),
+        )
+            .into_response();
+    }
+
     let dir = match requested {
         Some(p) => std::path::PathBuf::from(p),
+        #[cfg(not(windows))]
         None => {
-            #[cfg(windows)]
-            {
-                let home = std::env::var("USERPROFILE")
-                    .or_else(|_| std::env::var("HOMEDRIVE").map(|d| format!("{d}\\")))
-                    .unwrap_or_else(|_| "C:\\".to_string());
-                std::path::PathBuf::from(home)
-            }
-            #[cfg(not(windows))]
-            {
-                // Default to / so the browser always has a navigable starting point.
-                // Using $HOME is unreliable for system service users (no home dir).
-                std::path::PathBuf::from("/")
-            }
+            // Default to / so the browser always has a navigable starting point.
+            // Using $HOME is unreliable for system service users (no home dir).
+            std::path::PathBuf::from("/")
         }
+        #[cfg(windows)]
+        None => unreachable!("handled above"),
     };
 
     if !dir.is_dir() {
@@ -696,9 +719,23 @@ async fn fs_browse_handler(
             .into_response();
     }
 
+    // On Windows, a drive root (e.g. C:\) has no real parent; use "" as the
+    // sentinel so the client can navigate back to the drive list.
+    #[cfg(windows)]
+    let parent: Option<String> = {
+        let p = dir
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty() && *p != dir.as_path());
+        match p {
+            Some(p) => Some(p.to_string_lossy().into_owned()),
+            // Drive root — parent sentinel tells the client to go back to the drive list.
+            None => Some(String::new()),
+        }
+    };
+    #[cfg(not(windows))]
     let parent = dir
         .parent()
-        .filter(|p| p != &StdPath::new("") && p != &dir.as_path())
+        .filter(|p| !p.as_os_str().is_empty() && *p != dir.as_path())
         .map(|p| p.to_string_lossy().into_owned());
 
     let mut entries: Vec<FsBrowseEntry> = match std::fs::read_dir(&dir) {
@@ -706,11 +743,10 @@ async fn fs_browse_handler(
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .filter(|e| {
-                // Skip hidden directories (dot-prefixed) unless they are the current dir.
-                e.file_name()
-                    .to_str()
-                    .map(|n| !n.starts_with('.'))
-                    .unwrap_or(false)
+                // Skip hidden directories (dot-prefixed on Linux) and Windows system junctions.
+                let name = e.file_name();
+                let name_str = name.to_str().unwrap_or("");
+                !name_str.starts_with('.')
             })
             .map(|e| FsBrowseEntry {
                 name: e.file_name().to_string_lossy().into_owned(),
@@ -756,9 +792,14 @@ struct FsMkdirResponse {
 }
 
 async fn fs_mkdir_handler(
-    _admin: AdminUser,
+    State(state): State<SharedState>,
+    auth: Result<AdminUser, (StatusCode, Json<ErrorResponse>)>,
     Json(payload): Json<FsMkdirRequest>,
 ) -> impl IntoResponse {
+    let setup_mode = state.read().expect("state lock").setup_required;
+    if auth.is_err() && !setup_mode {
+        return forbidden();
+    }
     let parent = payload.parent.trim();
     let name = payload.name.trim();
 

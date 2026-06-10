@@ -32,7 +32,7 @@ export const browserPlatform: Platform = {
       if (res.status === 400 && url === '/api/system/select-folder') break;
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (url === '/api/admin/browse-folder' && (res.status === 401 || res.status === 403)) continue;
+        if (url === '/api/admin/browse-folder') continue;
         throw new Error(payload.error || 'Folder picker failed');
       }
       return typeof payload.folder === 'string' && payload.folder.trim() ? payload.folder : null;

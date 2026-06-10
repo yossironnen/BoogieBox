@@ -5,6 +5,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { platform } from '../platform';
+import FolderPickerModal from './FolderPickerModal';
 
 const DEFAULT_DATABASE_FOLDER = 'C:\\Users\\Public\\BoogieBox';
 
@@ -14,6 +15,9 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
   const [loading, setLoading] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerInitial, setPickerInitial] = useState<string | undefined>(undefined);
+  const pickerResolveRef = useRef<((path: string | null) => void) | null>(null);
   const userEditedFolderRef = useRef(false);
 
   useEffect(() => {
@@ -43,19 +47,44 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
   };
 
   const handleBrowse = async () => {
-    setBrowsing(true);
-    setError(null);
-    try {
-      const selected = await platform.selectFolder(folder.trim() || DEFAULT_DATABASE_FOLDER);
-      if (selected) setFolder(selected);
-    } catch (err: any) {
-      setError(err.message || 'Folder picker failed');
-    } finally {
-      setBrowsing(false);
+    if (platform.isDesktop) {
+      setBrowsing(true);
+      setError(null);
+      try {
+        const selected = await platform.selectFolder(folder.trim() || DEFAULT_DATABASE_FOLDER);
+        if (selected) setFolder(selected);
+      } catch (err: any) {
+        setError(err.message || 'Folder picker failed');
+      } finally {
+        setBrowsing(false);
+      }
+      return;
     }
+    const selected = await new Promise<string | null>((resolve) => {
+      pickerResolveRef.current = resolve;
+      setPickerInitial(folder.trim() || undefined);
+      setPickerOpen(true);
+    });
+    if (selected) setFolder(selected);
   };
 
   return (
+    <>
+    {pickerOpen && (
+      <FolderPickerModal
+        initialPath={pickerInitial}
+        onSelect={(path) => {
+          setPickerOpen(false);
+          pickerResolveRef.current?.(path);
+          pickerResolveRef.current = null;
+        }}
+        onClose={() => {
+          setPickerOpen(false);
+          pickerResolveRef.current?.(null);
+          pickerResolveRef.current = null;
+        }}
+      />
+    )}
     <div style={{
       position: 'fixed', inset: 0,
       background: 'var(--bg)',
@@ -158,5 +187,6 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
         </form>
       </div>
     </div>
+    </>
   );
 }

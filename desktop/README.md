@@ -9,8 +9,8 @@ The desktop app is a thin Tauri shell that:
 - Opens the existing BoogieBox React/web UI in a WebView2 window
 - Probes the configured BoogieBox server on startup
 - Adds native Windows window management and config persistence
-- Plays video with an embedded libmpv backend, not the browser video element
-- Keeps all server logic (Express, SQLite, scanning, transcoding) untouched
+- Discovers BoogieBox servers on the local network automatically
+- Keeps all server logic (Rust, SQLite, scanning, transcoding) untouched
 
 ## Prerequisites
 
@@ -19,14 +19,12 @@ The desktop app is a thin Tauri shell that:
 - **Microsoft C++ Build Tools** (MSVC v143 or later, via Visual Studio installer)
 - **WebView2 Runtime** (pre-installed on Windows 10 1803+ and Windows 11)
 - **Tauri CLI**: installed from `package.json` devDependencies
-- **libmpv runtime**: `mpv-2.dll` or `libmpv-2.dll` in `src-tauri/resources/libmpv/`
 
 ## Quick Start
 
 ```bat
-:: In one terminal - start the BoogieBox server
-cd server
-npm run dev
+:: In one terminal - start the BoogieBox server (from the repo root)
+dev.bat
 
 :: In another terminal - start the desktop shell
 cd desktop
@@ -49,40 +47,30 @@ Desktop settings are persisted in:
 Fields:
 
 - `serverUrl` - BoogieBox server base URL (default: `http://localhost:3001`)
-- `videoBackend` - `"embedded-libmpv"` (desktop video uses bundled libmpv)
 
 Example:
 
 ```json
 {
-  "serverUrl": "http://localhost:3001",
-  "videoBackend": "embedded-libmpv"
+  "serverUrl": "http://localhost:3001"
 }
 ```
 
 ## Building a Release
 
 ```bat
-cd desktop
-npm install
-npm run build
+build-desktop.bat
 ```
 
-Output is placed under `src-tauri/target/release/bundle/`.
+Or build without the installer:
+
+```bat
+build-desktop.bat --no-installer
+```
+
+Output is placed under `Releases\boogiebox-desktop-<version>-win\`.
 
 See `build-desktop.bat` at the repo root for the automated build with prerequisite checks.
-
-## Video Playback
-
-Desktop video is handed off from React to the Tauri backend and decoded by embedded libmpv.
-The React `<video>` element is not used in the desktop shell, so playback avoids WebView2
-codec/container limits.
-
-The bundled libmpv runtime must include `mpv-2.dll` or `libmpv-2.dll` under
-`src-tauri/resources/libmpv/`. Dev mode loads from that source folder directly. The Tauri
-production build copies the same folder into the app resources. At runtime, BoogieBox looks next
-to `BoogieBox.exe` first, then in bundled `libmpv/`, then in the source/resource roots, then on
-`PATH`. It does not spawn `mpv.exe`.
 
 ## Icon Regeneration
 

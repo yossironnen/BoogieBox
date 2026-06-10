@@ -16,7 +16,8 @@
     "server-rs:clippy": "cargo clippy --manifest-path server-rs/Cargo.toml --all-targets --all-features -- -D warnings",
     "server-rs:test": "cargo test --manifest-path server-rs/Cargo.toml",
     "server-rs:audit": "cargo audit --manifest-path server-rs/Cargo.toml",
-    "version:bump": "node -e \"const fs=require('fs'); const p='client/src/version.ts'; const s=fs.readFileSync(p,'utf8'); const m=s.match(/APP_VERSION\\s*=\\s*'([0-9]+)\\.([0-9]+)\\.([0-9]+)'/); if(!m) throw new Error('APP_VERSION not found'); const next=`${m[1]}.${m[2]}.${Number(m[3])+1}`; fs.writeFileSync(p, s.replace(/APP_VERSION\\s*=\\s*'[^']+'/, `APP_VERSION = '${next}'`)); console.log(next);\""
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:bump": "node -e \"const fs=require('fs'); const v=fs.readFileSync('VERSION','utf8').trim(); const m=v.match(/^(\\d+)\\.(\\d+)\\.(\\d+)$/); if(!m) throw new Error('Invalid VERSION file'); const next=m[1]+'.'+m[2]+'.'+(Number(m[3])+1); fs.writeFileSync('VERSION',next+'\\n'); console.log(next);\" && node scripts/sync-version.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

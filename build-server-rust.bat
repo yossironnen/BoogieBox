@@ -68,8 +68,9 @@ IF ERRORLEVEL 1 (echo [ERROR] Client build failed & exit /b 1)
 
 echo.
 echo  [3/8] Reading version...
-for /f "tokens=2 delims='" %%V in ('findstr /r "APP_VERSION" "client\src\version.ts"') do set APP_VERSION=%%V
-IF NOT DEFINED APP_VERSION (echo [ERROR] Could not read version from client\src\version.ts & exit /b 1)
+set /p APP_VERSION=<"VERSION"
+set "APP_VERSION=%APP_VERSION: =%"
+IF NOT DEFINED APP_VERSION (echo [ERROR] Could not read version from VERSION file & exit /b 1)
 echo  Version: %APP_VERSION%
 
 echo.

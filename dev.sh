@@ -6,10 +6,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_PORT=3001
 
-# Read version from client/src/version.ts
-APP_VERSION=$(grep -oP "APP_VERSION\s*=\s*'\K[^']+" "$ROOT_DIR/client/src/version.ts" || true)
+APP_VERSION=$(cat "$ROOT_DIR/VERSION" | tr -d '[:space:]')
 if [ -z "$APP_VERSION" ]; then
-  echo "[ERROR] Could not read APP_VERSION from client/src/version.ts."
+  echo "[ERROR] Could not read version from VERSION file."
   exit 1
 fi
 

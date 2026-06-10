@@ -5,10 +5,11 @@ setlocal
 set "ROOT_DIR=%~dp0"
 set "SERVER_PORT=3001"
 
-for /f "tokens=2 delims='" %%V in ('findstr /r "APP_VERSION" "%ROOT_DIR%client\src\version.ts"') do set "APP_VERSION=%%V"
+set /p APP_VERSION=<"%ROOT_DIR%VERSION"
+set "APP_VERSION=%APP_VERSION: =%"
 
 if not defined APP_VERSION (
-  echo [ERROR] Could not read APP_VERSION from client\src\version.ts.
+  echo [ERROR] Could not read version from VERSION file.
   exit /b 1
 )
 

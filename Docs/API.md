@@ -15,8 +15,8 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/system/status` | Report setup state, FFmpeg status, log path, and discovery metadata. |
-| `POST` | `/api/setup` | Complete first-run setup by selecting the database folder. |
-| `POST` | `/api/setup/select-folder` | Open the Windows folder picker during local first-run setup. |
+| `POST` | `/api/system/setup` | Complete first-run setup by selecting the database folder. |
+| `POST` | `/api/system/select-folder` | Open the native folder picker during local first-run setup. |
 
 ## Authentication
 
