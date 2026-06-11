@@ -320,6 +320,14 @@ pub struct TransitionWindow {
     pub recommended_min_crossfade: f64,
     /// Documents the Recommended Max Crossfade public API surface.
     pub recommended_max_crossfade: f64,
+    /// Mean vocals RMS over the first 4s of the window (Phase 1).
+    pub vocals_rms: Option<f64>,
+    /// Mean drums RMS over the first 4s of the window (Phase 1).
+    pub drums_rms: Option<f64>,
+    /// Mean bass RMS over the first 4s of the window (Phase 1).
+    pub bass_rms: Option<f64>,
+    /// Mean other-stem RMS over the first 4s of the window (Phase 1).
+    pub other_rms: Option<f64>,
 }
 
 /// Public Stem Summary data shape used by BoogieBox.
@@ -340,6 +348,62 @@ pub struct StemSummary {
     pub has_long_intro: bool,
     /// Documents the Has Long Outro public API surface.
     pub has_long_outro: bool,
+}
+
+/// Neural key detection result (Krumhansl-Schmuckler chroma method).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KeyNeural {
+    /// Musical key name, e.g. "F#".
+    pub key: String,
+    /// "major" or "minor".
+    pub mode: String,
+    /// Correlation confidence [0..1].
+    pub confidence: f64,
+    /// Camelot Wheel code, e.g. "11A".
+    pub camelot: Option<String>,
+}
+
+/// Vocal-activity-derived mix cue points.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VocalCuePoints {
+    /// Suggested intro end (first vocal-free gap end), seconds.
+    pub intro_end_sec: Option<f64>,
+    /// Suggested outro start (last vocal-free gap start), seconds.
+    pub outro_start_sec: Option<f64>,
+    /// Detection confidence [0..1]; use only when >= 0.6.
+    pub confidence: f64,
+}
+
+/// Neural mel-spectrogram energy/mood embedding (Phase 4).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NeuralEmbedding {
+    /// Perceptual energy from mel-spectrogram log-power, normalized to [0,1].
+    pub energy_neural: f64,
+    /// Onset-regularity danceability proxy, normalized to [0,1].
+    pub danceability: f64,
+    /// Valence (future model placeholder).
+    pub valence: Option<f64>,
+    /// 16-dimensional PCA-projected mel embedding.
+    pub embedding_16d: Vec<f64>,
+    /// Model identifier for cache invalidation.
+    pub model_version: String,
+}
+
+/// Neural beat grid from madmom DBNBeatTrackingProcessor (Phase 3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BeatGrid {
+    /// Beat timestamps in seconds, capped at 2000 entries.
+    pub beats: Vec<f64>,
+    /// Median-derived BPM from neural beat tracking.
+    pub bpm_neural: f64,
+    /// Every 4th beat timestamp (approximate downbeats).
+    pub downbeats: Vec<f64>,
+    /// Every 16th beat timestamp (4-bar phrase boundaries).
+    pub phrase_boundaries_neural: Vec<f64>,
 }
 
 /// Public Deep Track Features data shape used by BoogieBox.
@@ -373,6 +437,14 @@ pub struct DeepTrackFeatures {
     pub bpm_refined: Option<f64>,
     /// Documents the Summary public API surface.
     pub summary: StemSummary,
+    /// Neural key detection result (Phase 5).
+    pub key_neural: Option<KeyNeural>,
+    /// Vocal-activity cue points for intro/outro (Phase 2).
+    pub cue_points: Option<VocalCuePoints>,
+    /// Neural beat grid from madmom (Phase 3).
+    pub beat_grid: Option<BeatGrid>,
+    /// Neural mel energy/mood embedding (Phase 4).
+    pub neural_embedding: Option<NeuralEmbedding>,
 }
 
 const DEEP_ANALYSIS_VERSION: i64 = 1;
@@ -1565,6 +1637,18 @@ pub fn load_deep_track_features(
     let hints: serde_json::Value =
         serde_json::from_str(&row.transition_hints_json).unwrap_or(serde_json::Value::Null);
     let bpm_refined = hints.get("bpmRefined").and_then(|v| v.as_f64());
+    let key_neural: Option<KeyNeural> = hints
+        .get("keyNeural")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let cue_points: Option<VocalCuePoints> = hints
+        .get("cuePoints")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let beat_grid: Option<BeatGrid> = hints
+        .get("beatGrid")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let neural_embedding: Option<NeuralEmbedding> = hints
+        .get("neuralEmbedding")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
     let stem: serde_json::Value =
         serde_json::from_str(&row.stem_feature_json).unwrap_or(serde_json::Value::Null);
     let summary: StemSummary = stem
@@ -1587,6 +1671,10 @@ pub fn load_deep_track_features(
         transition_windows,
         bpm_refined,
         summary,
+        key_neural,
+        cue_points,
+        beat_grid,
+        neural_embedding,
     }))
 }
 

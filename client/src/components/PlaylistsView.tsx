@@ -371,6 +371,7 @@ function PlaylistDetail({
   const [mixError, setMixError] = useState('');
   const [mixStyle, setMixStyle] = useState<'chill_blend' | 'club_blend' | 'long_build' | 'safe_mix'>('club_blend');
   const [mixQuality, setMixQuality] = useState<'standard' | 'high_quality'>('standard');
+  const [mixCrossfade, setMixCrossfade] = useState(16);
   const [deepStatus, setDeepStatus] = useState<BoogieMixDeepAnalysisStatus | null>(null);
 
   const loadTracks = useCallback(async () => {
@@ -499,7 +500,7 @@ function PlaylistDetail({
     try {
       if (!api.boogiemix) return;
       setMixError('');
-      const created = await api.boogiemix.createJob(playlist.id, mixStyle, mixQuality);
+      const created = await api.boogiemix.createJob(playlist.id, mixStyle, mixQuality, mixCrossfade);
       setMixJobId(created.jobId);
       setMixJob(await api.boogiemix.getJob(created.jobId));
     } catch (e: any) {
@@ -577,6 +578,19 @@ function PlaylistDetail({
           >
             <option value="standard">Standard</option>
             <option value="high_quality">High Quality (Deep Analysis)</option>
+          </select>
+          <select
+            value={mixCrossfade}
+            onChange={(e) => setMixCrossfade(Number(e.target.value))}
+            style={{ ...PD.btnSecondary, padding: '6px 8px', minWidth: 110 }}
+            title="Transition length"
+          >
+            <option value={8}>8s blend</option>
+            <option value={12}>12s blend</option>
+            <option value={16}>16s blend</option>
+            <option value={24}>24s blend</option>
+            <option value={32}>32s blend</option>
+            <option value={45}>45s blend</option>
           </select>
           <button style={PD.btnSecondary} onClick={() => setShowAdd(s => !s)}>
             <PlusIcon /> Add Tracks

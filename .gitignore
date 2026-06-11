@@ -48,3 +48,6 @@ d?ProjectsBoogieBoxchanges.log
 # Internal project memory; replace with curated public docs before publishing
 Docs/memory/
 !Docs/memory/README.md
+
+# Local AI-generated planning docs not for public repo
+Docs/boogiemix-ai-enhancements-plan.md

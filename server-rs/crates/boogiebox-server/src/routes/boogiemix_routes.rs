@@ -54,6 +54,7 @@ struct DeepRuntimeStatus {
     demucs_callable: bool,
     torch_available: bool,
     gpu_available: bool,
+    madmom_available: bool,
     enabled: bool,
     details: Vec<String>,
     missing_capabilities: Vec<String>,
@@ -204,7 +205,7 @@ async fn enqueue_for_playlist_handler(
     };
     let playlist_id = coerce_entity_id(&playlist_id_raw);
     let user_id = coerce_entity_id(&user.id);
-    let crossfade = body.default_crossfade_sec.unwrap_or(8).clamp(2, 20);
+    let crossfade = body.default_crossfade_sec.unwrap_or(8).clamp(4, 60);
     let style = resolve_style(body.style.as_deref());
     let quality = resolve_quality(body.quality.as_deref());
 
@@ -263,7 +264,7 @@ async fn create_handler(
 
     let playlist_id = coerce_entity_id(&playlist_id_str);
     let user_id = coerce_entity_id(&user.id);
-    let crossfade = body.default_crossfade_sec.unwrap_or(8).clamp(2, 20);
+    let crossfade = body.default_crossfade_sec.unwrap_or(8).clamp(4, 60);
     let style = resolve_style(body.style.as_deref());
     let quality = resolve_quality(body.quality.as_deref());
 
@@ -800,6 +801,7 @@ async fn detect_deep_runtime() -> DeepRuntimeStatus {
     let mut demucs_callable = false;
     let mut torch_available = false;
     let mut gpu_available = false;
+    let mut madmom_available = false;
     let mut demucs_version = None;
     let mut torch_version = None;
     if let Some(invocation) = python.as_ref() {
@@ -857,6 +859,20 @@ async fn detect_deep_runtime() -> DeepRuntimeStatus {
             .await;
         }
         details.push(if gpu_available { "gpu:cuda" } else { "gpu:cpu" }.to_string());
+
+        madmom_available = python_bool(
+            invocation,
+            "import importlib.util; print('true' if importlib.util.find_spec('madmom') else 'false')",
+        )
+        .await;
+        details.push(
+            if madmom_available {
+                "madmom:ok"
+            } else {
+                "madmom:missing"
+            }
+            .to_string(),
+        );
     }
     let enabled = python_available && ffmpeg_available && demucs_callable && torch_available;
     let summary = runtime_summary(enabled, &missing_capabilities, gpu_available);
@@ -867,6 +883,7 @@ async fn detect_deep_runtime() -> DeepRuntimeStatus {
         demucs_callable,
         torch_available,
         gpu_available,
+        madmom_available,
         enabled,
         details,
         missing_capabilities,

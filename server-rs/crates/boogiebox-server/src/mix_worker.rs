@@ -60,6 +60,9 @@ struct MixTransition {
     bpm_adjust_to_pct: f64,
     #[serde(default)]
     deep_used: bool,
+    /// Drums RMS on the incoming track's intro window (Phase 1d).
+    #[serde(default)]
+    drums_rms_incoming: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,7 +155,7 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
     };
     let playlist_id = coerce_entity_id(&playlist_id_str);
     let user_id = coerce_entity_id(&user_id_str);
-    let crossfade = crossfade_sec.clamp(2, 20) as f64;
+    let crossfade = crossfade_sec.clamp(4, 60) as f64;
 
     // ── Load tracks ───────────────────────────────────────────────────────────
     let tracks = {
@@ -280,6 +283,38 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
                         "[mix_worker] deep features load failed for {}: {err}",
                         track.track_id
                     );
+                }
+            }
+        }
+    }
+
+    // ── Merge vocal cue points into analyses (Phase 2) ───────────────────────
+    // When deep features contain high-confidence vocal cue points, override the
+    // silence-detection intro_end/outro_start so the planner picks transitions
+    // at real vocal-free gaps rather than audio silence pads.
+    for analysis in &mut analyses {
+        let tid = analysis.track_id.to_string();
+        if let Some(deep) = deep_features.get(&tid) {
+            if let Some(cp) = &deep.cue_points {
+                if cp.confidence >= 0.6 {
+                    let beats = deep
+                        .beat_grid
+                        .as_ref()
+                        .map(|bg| bg.beats.as_slice())
+                        .unwrap_or(&[]);
+                    if let Some(ie) = cp.intro_end_sec {
+                        if ie > analysis.intro_start_sec && ie < analysis.duration_sec * 0.5 {
+                            // Snap to nearest beat within 0.5s for tighter timing
+                            let snapped = snap_to_beat(beats, ie, 0.5).unwrap_or(ie);
+                            analysis.intro_end_sec = snapped;
+                        }
+                    }
+                    if let Some(os) = cp.outro_start_sec {
+                        if os > analysis.duration_sec * 0.25 && os < analysis.duration_sec {
+                            let snapped = snap_to_beat(beats, os, 0.5).unwrap_or(os);
+                            analysis.outro_start_sec = snapped;
+                        }
+                    }
                 }
             }
         }
@@ -737,25 +772,26 @@ fn style_preset(style: &str) -> StylePreset {
         "chill_blend" => StylePreset {
             allow_resequence: true,
             curve_aggressiveness: 0.55,
-            base_crossfade_sec: 55.0,
+            base_crossfade_sec: 24.0,
             fx_intensity: 0.35,
         },
         "long_build" => StylePreset {
             allow_resequence: true,
             curve_aggressiveness: 0.7,
-            base_crossfade_sec: 65.0,
+            base_crossfade_sec: 28.0,
             fx_intensity: 0.55,
         },
         "safe_mix" => StylePreset {
             allow_resequence: false,
             curve_aggressiveness: 0.4,
-            base_crossfade_sec: 45.0,
+            base_crossfade_sec: 10.0,
             fx_intensity: 0.2,
         },
         _ => StylePreset {
+            // club_blend default: 20s — user setting overrides via default_crossfade
             allow_resequence: true,
             curve_aggressiveness: 0.8,
-            base_crossfade_sec: 60.0,
+            base_crossfade_sec: 20.0,
             fx_intensity: 0.7,
         },
     }
@@ -777,13 +813,18 @@ fn estimate_energy(a: &TrackMixAnalysis) -> f64 {
 
 fn effective_energy(a: &TrackMixAnalysis, deep: Option<&DeepTrackFeatures>) -> f64 {
     let base = estimate_energy(a);
-    match deep {
-        Some(d) if d.energy_refined > 0.0 => {
-            let blend = (d.confidence.clamp(0.0, 1.0) * 0.7 + 0.3).clamp(0.0, 1.0);
-            (base * (1.0 - blend) + d.energy_refined * blend).clamp(0.0, 1.0)
+    let Some(d) = deep else { return base };
+    // Phase 4c: prefer neural mel energy when available (more perceptually accurate).
+    if let Some(ne) = &d.neural_embedding {
+        if ne.energy_neural > 0.0 {
+            return ne.energy_neural;
         }
-        _ => base,
     }
+    if d.energy_refined > 0.0 {
+        let blend = (d.confidence.clamp(0.0, 1.0) * 0.7 + 0.3).clamp(0.0, 1.0);
+        return (base * (1.0 - blend) + d.energy_refined * blend).clamp(0.0, 1.0);
+    }
+    base
 }
 
 fn phase_at(index: usize, total: usize) -> &'static str {
@@ -818,12 +859,127 @@ fn phase_target_energy(phase: &str) -> f64 {
     }
 }
 
+/// Parse a Camelot Wheel code (e.g. "11A", "3B") into (number 1–12, is_major).
+fn parse_camelot(code: &str) -> Option<(u8, bool)> {
+    let code = code.trim();
+    let is_major = code.ends_with('B') || code.ends_with('b');
+    let is_minor = code.ends_with('A') || code.ends_with('a');
+    if !is_major && !is_minor {
+        return None;
+    }
+    let num_str = &code[..code.len() - 1];
+    let num: u8 = num_str.parse().ok()?;
+    if !(1..=12).contains(&num) {
+        return None;
+    }
+    Some((num, is_major))
+}
+
+/// Camelot Wheel compatibility score. Same key = 1.0, adjacent = 0.8,
+/// parallel (same number, different mode) = 0.75, +/-2 steps = 0.5, else = 0.2.
+fn camelot_compat(from: &str, to: &str) -> f64 {
+    let (Some((fn_, fm)), Some((tn_, tm))) = (parse_camelot(from), parse_camelot(to)) else {
+        return 0.5; // unknown keys — neutral
+    };
+    if fn_ == tn_ && fm == tm {
+        return 1.0; // same key
+    }
+    if fn_ == tn_ {
+        return 0.75; // parallel major/minor
+    }
+    let diff = fn_
+        .abs_diff(tn_)
+        .min(12u8.saturating_sub(fn_.abs_diff(tn_)));
+    if fm == tm {
+        // Same mode wheel (all major or all minor)
+        match diff {
+            1 => 0.8,
+            2 => 0.5,
+            _ => 0.2,
+        }
+    } else {
+        // Cross-mode — slightly less compatible
+        match diff {
+            0 => 0.75, // already handled above, keep for clarity
+            1 => 0.6,
+            _ => 0.2,
+        }
+    }
+}
+
+/// Derive a Camelot code from a raw key string like "Am", "F#", "Bm".
+fn key_string_to_camelot(key: &str) -> Option<String> {
+    let k = key.trim();
+    let is_minor = k.ends_with('m');
+    let root = if is_minor { &k[..k.len() - 1] } else { k };
+    let code = if is_minor {
+        match root {
+            "A" => "8A",
+            "E" => "9A",
+            "B" => "10A",
+            "F#" | "Gb" => "11A",
+            "C#" | "Db" => "12A",
+            "G#" | "Ab" => "1A",
+            "D#" | "Eb" => "2A",
+            "A#" | "Bb" => "3A",
+            "F" => "4A",
+            "C" => "5A",
+            "G" => "6A",
+            "D" => "7A",
+            _ => return None,
+        }
+    } else {
+        match root {
+            "C" => "8B",
+            "G" => "9B",
+            "D" => "10B",
+            "A" => "11B",
+            "E" => "12B",
+            "B" => "1B",
+            "F#" | "Gb" => "2B",
+            "C#" | "Db" => "3B",
+            "G#" | "Ab" => "4B",
+            "D#" | "Eb" => "5B",
+            "A#" | "Bb" => "6B",
+            "F" => "7B",
+            _ => return None,
+        }
+    };
+    Some(code.to_string())
+}
+
 fn harmonic_compat(a: &TrackMixAnalysis, b: &TrackMixAnalysis) -> f64 {
     match (&a.key_estimate, &b.key_estimate) {
         (Some(k1), Some(k2)) if k1 == k2 => 1.0,
         (Some(k1), Some(k2)) if k1.replace('m', "") == k2.replace('m', "") => 0.7,
         (Some(_), Some(_)) => 0.35,
         _ => 0.5,
+    }
+}
+
+/// Harmonic compatibility using Camelot Wheel when available in deep features,
+/// falling back to the legacy key-string heuristic.
+fn harmonic_compat_deep(
+    a: &TrackMixAnalysis,
+    b: &TrackMixAnalysis,
+    deep_a: Option<&boogiebox_db::boogiemix::DeepTrackFeatures>,
+    deep_b: Option<&boogiebox_db::boogiemix::DeepTrackFeatures>,
+) -> f64 {
+    // Prefer neural key when confidence >= 0.7
+    let camelot_a = deep_a
+        .and_then(|d| d.key_neural.as_ref())
+        .filter(|kn| kn.confidence >= 0.7)
+        .and_then(|kn| kn.camelot.clone())
+        .or_else(|| a.key_estimate.as_deref().and_then(key_string_to_camelot));
+    let camelot_b = deep_b
+        .and_then(|d| d.key_neural.as_ref())
+        .filter(|kn| kn.confidence >= 0.7)
+        .and_then(|kn| kn.camelot.clone())
+        .or_else(|| b.key_estimate.as_deref().and_then(key_string_to_camelot));
+
+    match (camelot_a.as_deref(), camelot_b.as_deref()) {
+        (Some(ca), Some(cb)) => camelot_compat(ca, cb),
+        _ => harmonic_compat(a, b),
     }
 }
 
@@ -870,6 +1026,32 @@ fn quantize_to_phrase(value: f64, beat_grid: Option<f64>, phrase_bars: Option<i6
     ((value / phrase_len).round() * phrase_len).max(0.0)
 }
 
+/// Returns the best available BPM for a track: neural beat grid > analysis estimate > deep bpm_refined.
+fn best_bpm(
+    a: &TrackMixAnalysis,
+    deep: Option<&boogiebox_db::boogiemix::DeepTrackFeatures>,
+) -> Option<f64> {
+    deep.and_then(|d| d.beat_grid.as_ref())
+        .map(|bg| bg.bpm_neural)
+        .filter(|&b| b > 20.0)
+        .or(a.bpm_estimate)
+        .or_else(|| deep.and_then(|d| d.bpm_refined))
+}
+
+/// Returns the nearest beat from a beat grid within `tolerance` seconds, or None.
+fn snap_to_beat(beats: &[f64], target: f64, tolerance: f64) -> Option<f64> {
+    beats
+        .iter()
+        .copied()
+        .filter(|&b| (b - target).abs() <= tolerance)
+        .min_by(|&a, &b| {
+            (a - target)
+                .abs()
+                .partial_cmp(&(b - target).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
 fn select_transition(
     from_a: &TrackMixAnalysis,
     from_t: &MixTrackInput,
@@ -877,7 +1059,7 @@ fn select_transition(
     to_t: &MixTrackInput,
     phase: &str,
     preset: &StylePreset,
-    _default_crossfade: f64,
+    default_crossfade: f64,
 ) -> MixTransition {
     let bpm_diff = match (from_a.bpm_estimate, to_a.bpm_estimate) {
         (Some(f), Some(t)) => (f - t).abs(),
@@ -887,11 +1069,16 @@ fn select_transition(
     let low_conf = from_a.confidence.min(to_a.confidence) < 0.58;
 
     let mut kind: &str = "blend";
-    let mut crossfade = preset.base_crossfade_sec;
+    // Respect the user's crossfade preference; fall back to preset only when unset.
+    let mut crossfade = if default_crossfade >= 4.0 {
+        default_crossfade
+    } else {
+        preset.base_crossfade_sec
+    };
 
     match phase {
         "warmup" | "groove" => {
-            crossfade += 3.0;
+            crossfade += 2.0;
             kind = "blend";
         }
         "lift" => {
@@ -902,27 +1089,25 @@ fn select_transition(
             };
         }
         "peak" | "anthem" => {
-            crossfade -= 2.0;
+            crossfade = (crossfade - 2.0).max(6.0);
             kind = if bpm_diff > 10.0 { "echo_out" } else { "cut" };
         }
-        _ => {
-            crossfade += 2.0;
-        }
+        _ => {}
     }
 
     if bpm_diff > 14.0 || low_conf {
-        crossfade = (crossfade * 0.6).max(12.0);
+        crossfade = (crossfade * 0.7).max(8.0);
         if kind != "echo_out" {
             kind = "cut";
         }
     }
     if harmonic < 0.4 {
         kind = "echo_out";
-        crossfade = (crossfade * 0.7).max(15.0);
+        crossfade = (crossfade * 0.8).max(8.0);
     }
 
-    let max_dur = (from_a.duration_sec * 0.45).min(to_a.duration_sec * 0.45);
-    crossfade = crossfade.clamp(8.0, max_dur.min(90.0));
+    let max_dur = (from_a.duration_sec * 0.35).min(to_a.duration_sec * 0.35);
+    crossfade = crossfade.clamp(6.0, max_dur.min(60.0));
 
     // Mix from the track's natural outro start (proportional ~78% through), not
     // from duration - crossfade which pushes the transition into the silent tail.
@@ -991,6 +1176,7 @@ fn select_transition(
         bpm_adjust_from_pct: 0.0,
         bpm_adjust_to_pct,
         deep_used: false,
+        drums_rms_incoming: 0.0,
     }
 }
 
@@ -1179,8 +1365,19 @@ fn score_deep_pair(
     let to_start = to_window.start;
 
     let phrase_target_from = from_start;
+    let beat_tol = 0.2_f64;
     let aligned_from = from_deep
         .and_then(|d| {
+            // Prefer neural phrase boundaries if available, else fall back to autocorrelation
+            if let Some(bg) = &d.beat_grid {
+                if !bg.phrase_boundaries_neural.is_empty() {
+                    return nearest_phrase_boundary(
+                        &bg.phrase_boundaries_neural,
+                        phrase_target_from,
+                        beat_tol,
+                    );
+                }
+            }
             nearest_phrase_boundary(
                 &d.phrase_boundaries,
                 phrase_target_from,
@@ -1193,6 +1390,15 @@ fn score_deep_pair(
         .is_some();
     let aligned_to = to_deep
         .and_then(|d| {
+            if let Some(bg) = &d.beat_grid {
+                if !bg.phrase_boundaries_neural.is_empty() {
+                    return nearest_phrase_boundary(
+                        &bg.phrase_boundaries_neural,
+                        to_start,
+                        beat_tol,
+                    );
+                }
+            }
             nearest_phrase_boundary(
                 &d.phrase_boundaries,
                 to_start,
@@ -1229,11 +1435,11 @@ fn score_deep_pair(
         0.3
     };
 
-    let bpm_score = match (from_a.bpm_estimate, to_a.bpm_estimate) {
+    let bpm_score = match (best_bpm(from_a, from_deep), best_bpm(to_a, to_deep)) {
         (Some(f), Some(t)) => (1.0 - ((f - t).abs() / 12.0).min(1.0)).max(0.0),
         _ => 0.5,
     };
-    let key_score = harmonic_compat(from_a, to_a);
+    let key_score = harmonic_compat_deep(from_a, to_a, from_deep, to_deep);
 
     let from_energy = from_deep
         .map(|d| d.energy_refined)
@@ -1401,6 +1607,10 @@ fn select_transition_deep_with_debug(
             energy: estimate_energy(from_a),
             recommended_min_crossfade: 6.0,
             recommended_max_crossfade: (from_a.duration_sec - from_a.outro_start_sec).max(8.0),
+            vocals_rms: None,
+            drums_rms: None,
+            bass_rms: None,
+            other_rms: None,
         };
         vec![&synth_outro]
     } else {
@@ -1418,6 +1628,10 @@ fn select_transition_deep_with_debug(
             energy: estimate_energy(to_a),
             recommended_min_crossfade: 6.0,
             recommended_max_crossfade: to_a.intro_end_sec.max(8.0),
+            vocals_rms: None,
+            drums_rms: None,
+            bass_rms: None,
+            other_rms: None,
         };
         vec![&synth_intro]
     } else {
@@ -1494,11 +1708,18 @@ fn select_transition_deep_with_debug(
         }
     }
 
+    // Style adjustments applied to the window-derived crossfade, then capped at
+    // the user's preference so the mix respects the configured transition length.
+    let style_max = if default_crossfade >= 4.0 {
+        default_crossfade
+    } else {
+        60.0
+    };
     let crossfade = match style {
-        "chill_blend" => (pair.crossfade + 4.0).min(60.0),
-        "long_build" => (pair.crossfade + 2.0).min(60.0),
-        "safe_mix" => pair.crossfade.clamp(8.0, 30.0),
-        _ => pair.crossfade.clamp(6.0, 45.0),
+        "chill_blend" => (pair.crossfade + 4.0).min(style_max),
+        "long_build" => (pair.crossfade + 2.0).min(style_max),
+        "safe_mix" => pair.crossfade.clamp(8.0, 30.0_f64.min(style_max)),
+        _ => pair.crossfade.clamp(6.0, style_max),
     };
 
     let from_start = pair.from_start;
@@ -1545,7 +1766,11 @@ fn select_transition_deep_with_debug(
         _ => "blend",
     };
 
-    let bass_duck = if bass_overlap > 0.45 {
+    // Use measured bass RMS from stem analysis when available (Phase 1c).
+    // Falls back to the overlap-based heuristic for tracks without deep features.
+    let bass_duck = if let Some(rms) = pair.from_window.bass_rms.filter(|&r| r > 0.3) {
+        rms.clamp(0.0, 1.0)
+    } else if bass_overlap > 0.45 {
         (0.45 + (bass_overlap - 0.45) * 0.8).clamp(0.0, 0.8)
     } else {
         0.0
@@ -1593,7 +1818,22 @@ fn select_transition_deep_with_debug(
         bpm_adjust_from_pct: 0.0,
         bpm_adjust_to_pct,
         deep_used: true,
+        drums_rms_incoming: pair.to_window.drums_rms.unwrap_or(0.0),
     }
+}
+
+/// Cosine similarity between two embedding vectors; returns 0.0 if either is empty.
+fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm_a < 1e-9 || norm_b < 1e-9 {
+        return 0.0;
+    }
+    (dot / (norm_a * norm_b)).clamp(-1.0, 1.0)
 }
 
 fn reorder_for_curve(
@@ -1659,8 +1899,36 @@ fn reorder_for_curve(
                     .unwrap_or(0.2);
                 let harm_a = prev_a.map_or(0.0, |p| 1.0 - harmonic_compat(p, &analyses[a]));
                 let harm_b = prev_a.map_or(0.0, |p| 1.0 - harmonic_compat(p, &analyses[b]));
-                let score_a = energy_a * 0.55 + bpm_a * 0.25 + harm_a * 0.2;
-                let score_b = energy_b * 0.55 + bpm_b * 0.25 + harm_b * 0.2;
+                // Phase 4d: cosine similarity boost for embedding-similar adjacent tracks
+                let prev_emb = prev_idx.and_then(|pi| {
+                    deep_for(pi)
+                        .and_then(|d| d.neural_embedding.as_ref())
+                        .map(|ne| ne.embedding_16d.as_slice())
+                });
+                let cosine_bonus_a = prev_emb.map_or(0.0, |prev_e| {
+                    let sim = deep_for(a)
+                        .and_then(|d| d.neural_embedding.as_ref())
+                        .map_or(0.0, |ne| cosine_similarity(prev_e, &ne.embedding_16d));
+                    if sim > 0.7 {
+                        (sim - 0.7) * 0.5
+                    } else {
+                        0.0
+                    }
+                });
+                let cosine_bonus_b = prev_emb.map_or(0.0, |prev_e| {
+                    let sim = deep_for(b)
+                        .and_then(|d| d.neural_embedding.as_ref())
+                        .map_or(0.0, |ne| cosine_similarity(prev_e, &ne.embedding_16d));
+                    if sim > 0.7 {
+                        (sim - 0.7) * 0.5
+                    } else {
+                        0.0
+                    }
+                });
+                let score_a =
+                    energy_a * 0.50 + bpm_a * 0.22 + harm_a * 0.18 - cosine_bonus_a * 0.10;
+                let score_b =
+                    energy_b * 0.50 + bpm_b * 0.22 + harm_b * 0.18 - cosine_bonus_b * 0.10;
                 score_a.partial_cmp(&score_b).unwrap()
             })
             .map(|(idx, _)| idx);
@@ -2082,6 +2350,7 @@ fn parse_ai_plan_response(
             bpm_adjust_from_pct: 0.0,
             bpm_adjust_to_pct: bpm_adjust_b,
             deep_used: false,
+            drums_rms_incoming: 0.0,
         });
         let _ = confidence;
     }
@@ -2181,10 +2450,10 @@ struct RenderTiming {
 }
 
 fn fade_curves_for_style(style: &str) -> (&'static str, &'static str) {
+    // All styles use equal-power curves (qsin = quarter-sine) so the combined
+    // loudness stays constant across the crossfade. Linear (tri) or convex (ipar)
+    // curves cause a ~3 dB power dip at the midpoint for uncorrelated audio.
     match style {
-        "safe_mix" => ("qsin", "qsin"),
-        "club_blend" => ("tri", "tri"),
-        "chill_blend" => ("ipar", "ipar"),
         "long_build" => ("cub", "ihsin"),
         _ => ("qsin", "qsin"),
     }
@@ -2223,7 +2492,9 @@ fn compute_render_timings(
             .clamp(0.0, effective_dur.max(1.0));
         let loudness = a.loudness_lufs.unwrap_or(-14.0);
         let eq_duck = outgoing.map(|t| t.eq_duck).unwrap_or(0.0);
-        let base_gain = (-14.0 - loudness).clamp(-6.0, 6.0);
+        // Allow up to -12 dB reduction for very hot modern masters (e.g. -8 LUFS),
+        // but cap gain boost at +6 dB to avoid clipping quiet tracks.
+        let base_gain = (-14.0 - loudness).clamp(-12.0, 6.0);
         let duck = (eq_duck * 6.0).min(3.0);
         out.push(RenderTiming {
             start,
@@ -2316,9 +2587,32 @@ fn build_filter_complex(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> S
             _ => String::new(),
         };
 
+        // Two-phase drum entry (Phase 1d): when the incoming track has strong drums,
+        // briefly reduce its high-frequency content in the first 40% of the crossfade
+        // window to let the outgoing track's outro breathe before the full blend.
+        let incoming_transition = if i > 0 { transitions.get(i - 1) } else { None };
+        let drum_intro = if !is_first && !safe_mode {
+            if let Some(inc_trans) = incoming_transition {
+                let drums_rms = inc_trans.drums_rms_incoming;
+                if drums_rms > 0.25 {
+                    let phase_a_end = (inc_trans.crossfade_sec * 0.40).min(8.0);
+                    format!(
+                        ",highpass=f=300:enable='lt(t,{phase_a_end:.3})',\
+                         volume=0.75:enable='lt(t,{phase_a_end:.3})'"
+                    )
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
         parts.push(format!(
             "[{i}:a]atrim=start={:.3}:duration={:.3},asetpts=PTS-STARTPTS,\
-             volume={:.3}dB{tempo}{fade_in}{fade_out}{bass_duck}{sweep}{echo}{pad}[t{i}]",
+             volume={:.3}dB{tempo}{fade_in}{fade_out}{bass_duck}{sweep}{echo}{drum_intro}{pad}[t{i}]",
             t.start, t.trim_dur, t.gain_db
         ));
     }
@@ -2334,7 +2628,7 @@ fn build_filter_complex(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> S
             // Must not exceed either track's effective duration (acrossfade limit).
             let max_a = timings.get(i).map(|t| t.effective_dur).unwrap_or(59.0);
             let max_b = timings.get(i + 1).map(|t| t.effective_dur).unwrap_or(59.0);
-            let cross_dur = trans.crossfade_sec.clamp(2.0, 59.0).min(max_a).min(max_b);
+            let cross_dur = trans.crossfade_sec.clamp(2.0, 120.0).min(max_a).min(max_b);
             let next = format!("t{}", i + 1);
             let out = if i == n - 2 {
                 "mixout_raw".to_string()
@@ -2368,18 +2662,21 @@ async fn render_mix(
     let n = tracks.len();
     let transitions = &plan.transitions;
 
-    // Resolve BPM for each ordered track: prefer deep-analysis bpm_refined over
-    // standard metadata, since most tracks have bpm_detected=null in the DB.
+    // Resolve BPM for each ordered track using same priority chain as best_bpm():
+    // neural beat grid (most accurate) → standard mix estimate → Demucs-refined.
     let bpms: Vec<Option<f64>> = tracks
         .iter()
         .zip(analyses.iter())
         .map(|(t, a)| {
-            a.bpm_estimate.or_else(|| {
-                deep_features
-                    .get(&t.track_id.to_string())
-                    .and_then(|d| d.bpm_refined)
-                    .filter(|&b| (60.0..=220.0).contains(&b))
-            })
+            let deep = deep_features.get(&t.track_id.to_string());
+            deep.and_then(|d| d.beat_grid.as_ref())
+                .map(|bg| bg.bpm_neural)
+                .filter(|&b| (60.0..=220.0).contains(&b))
+                .or(a.bpm_estimate)
+                .or_else(|| {
+                    deep.and_then(|d| d.bpm_refined)
+                        .filter(|&b| (60.0..=220.0).contains(&b))
+                })
         })
         .collect();
 
@@ -2621,6 +2918,10 @@ mod tests {
                     energy: 0.35,
                     recommended_min_crossfade: 6.0,
                     recommended_max_crossfade: 16.0,
+                    vocals_rms: Some(vocal_risk),
+                    drums_rms: Some(drum_cont),
+                    bass_rms: Some(bass_risk),
+                    other_rms: None,
                 },
                 TransitionWindow {
                     role: "outro".into(),
@@ -2633,6 +2934,10 @@ mod tests {
                     energy: 0.35,
                     recommended_min_crossfade: 6.0,
                     recommended_max_crossfade: 24.0,
+                    vocals_rms: Some(vocal_risk),
+                    drums_rms: Some(drum_cont),
+                    bass_rms: Some(bass_risk),
+                    other_rms: None,
                 },
             ],
             bpm_refined: Some(120.0),
@@ -2645,6 +2950,10 @@ mod tests {
                 has_long_intro: true,
                 has_long_outro: true,
             },
+            key_neural: None,
+            cue_points: None,
+            beat_grid: None,
+            neural_embedding: None,
         }
     }
 
@@ -2868,6 +3177,7 @@ mod tests {
             bpm_adjust_from_pct: 0.0,
             bpm_adjust_to_pct: 0.0,
             deep_used: true,
+            drums_rms_incoming: 0.0,
         }
     }
 
@@ -2888,8 +3198,8 @@ mod tests {
     #[test]
     fn fade_curves_differ_per_style() {
         assert_eq!(fade_curves_for_style("safe_mix"), ("qsin", "qsin"));
-        assert_eq!(fade_curves_for_style("club_blend"), ("tri", "tri"));
-        assert_eq!(fade_curves_for_style("chill_blend"), ("ipar", "ipar"));
+        assert_eq!(fade_curves_for_style("club_blend"), ("qsin", "qsin"));
+        assert_eq!(fade_curves_for_style("chill_blend"), ("qsin", "qsin"));
         assert_eq!(fade_curves_for_style("long_build"), ("cub", "ihsin"));
     }
 
@@ -2930,8 +3240,8 @@ mod tests {
         let plan = render_plan("club_blend", transition);
         let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0]);
         let filter = build_filter_complex(&plan, &timings, 2);
-        // club_blend uses tri for acrossfade c1/c2
-        assert!(filter.contains("c1=tri"));
+        // club_blend uses equal-power qsin for acrossfade
+        assert!(filter.contains("c1=qsin"));
         // Sweep filter active when filter_sweep=true and not safe-mode.
         assert!(filter.contains("highpass=f=200"));
         assert!(filter.contains("lowpass=f=8000"));
@@ -2945,8 +3255,8 @@ mod tests {
         let plan = render_plan("chill_blend", transition);
         let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0]);
         let filter = build_filter_complex(&plan, &timings, 2);
-        // Crossfade is 18s → acrossfade must use exactly 18s with chill_blend curves
-        assert!(filter.contains("acrossfade=d=18.000:c1=ipar:c2=ipar"));
+        // Crossfade is 18s → acrossfade must use exactly 18s with equal-power qsin curves
+        assert!(filter.contains("acrossfade=d=18.000:c1=qsin:c2=qsin"));
     }
 
     #[test]

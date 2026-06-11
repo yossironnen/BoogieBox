@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 ANALYSIS_VERSION = 1
-ANALYSIS_SCHEMA_VERSION = 2
+ANALYSIS_SCHEMA_VERSION = 3
 DEFAULT_MODEL = "htdemucs"
 
 ENVELOPE_HZ = 1.0
@@ -43,6 +43,25 @@ MAX_PHRASES = 256
 MAX_TIMELINE_POINTS = 600
 
 TARGET_JSON_BYTES = 60 * 1024
+
+# Camelot Wheel lookup tables (for harmonic mixing)
+_CAMELOT_MAJOR = {
+    'C': '8B', 'G': '9B', 'D': '10B', 'A': '11B', 'E': '12B', 'B': '1B',
+    'F#': '2B', 'C#': '3B', 'G#': '4B', 'D#': '5B', 'A#': '6B', 'F': '7B',
+}
+_CAMELOT_MINOR = {
+    'A': '8A', 'E': '9A', 'B': '10A', 'F#': '11A', 'C#': '12A', 'G#': '1A',
+    'D#': '2A', 'A#': '3A', 'F': '4A', 'C': '5A', 'G': '6A', 'D': '7A',
+}
+_MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+_MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+_NOTE_NAMES    = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+try:
+    import madmom  # noqa: F401
+    MADMOM_AVAILABLE = True
+except ImportError:
+    MADMOM_AVAILABLE = False
 
 VOCAL_PRESENT_THRESHOLD = 0.32
 VOCAL_FREE_THRESHOLD = 0.18
@@ -363,7 +382,7 @@ def detect_phrase_boundaries(drum_samples, sr, duration_sec, bpm_hint=None):
     return boundaries, bpm
 
 
-def transition_safe_windows(duration_sec, vocal_env, drum_env, bass_env, sections, hz):
+def transition_safe_windows(duration_sec, vocal_env, drum_env, bass_env, sections, hz, other_env=None):
     import numpy as np
     out = []
 
@@ -373,6 +392,16 @@ def transition_safe_windows(duration_sec, vocal_env, drum_env, bass_env, section
         if ib <= ia:
             return 0.0
         return float(env[ia:ib].mean())
+
+    def stem_rms(a, b):
+        """Return per-stem mean RMS over [a, b] seconds, capped at 4s window."""
+        w_end = min(b, a + 4.0)
+        return {
+            "vocalsRms": round(env_avg(vocal_env, a, w_end), 3),
+            "drumsRms":  round(env_avg(drum_env,  a, w_end), 3),
+            "bassRms":   round(env_avg(bass_env,   a, w_end), 3),
+            "otherRms":  round(env_avg(other_env,  a, w_end), 3) if other_env is not None else None,
+        }
 
     intro_end = 0.0
     for i in range(vocal_env.size):
@@ -400,6 +429,7 @@ def transition_safe_windows(duration_sec, vocal_env, drum_env, bass_env, section
             "energy": round(env_avg(np.maximum(drum_env, bass_env), 0.0, intro_end), 3),
             "recommendedMinCrossfade": 4,
             "recommendedMaxCrossfade": int(min(intro_end, MAX_TRANSITION_SEC)),
+            **stem_rms(0.0, intro_end),
         })
 
     outro_start = duration_sec
@@ -430,6 +460,7 @@ def transition_safe_windows(duration_sec, vocal_env, drum_env, bass_env, section
             "energy": round(env_avg(np.maximum(drum_env, bass_env), outro_start, duration_sec), 3),
             "recommendedMinCrossfade": 4,
             "recommendedMaxCrossfade": int(min(outro_len, MAX_TRANSITION_SEC)),
+            **stem_rms(outro_start, duration_sec),
         })
 
     vocal_free = windows_from_threshold(vocal_env, hz, VOCAL_FREE_THRESHOLD,
@@ -451,9 +482,180 @@ def transition_safe_windows(duration_sec, vocal_env, drum_env, bass_env, section
             "energy": round(env_avg(np.maximum(drum_env, bass_env), a, b), 3),
             "recommendedMinCrossfade": 4,
             "recommendedMaxCrossfade": int(min(b - a, MAX_TRANSITION_SEC)),
+            **stem_rms(a, b),
         })
 
     return trim_to_max(out, MAX_WINDOWS)
+
+
+def extract_neural_embedding(file_path, duration_sec):
+    """Compute a mel-spectrogram energy/danceability embedding using librosa.
+
+    Returns a dict with energy_neural, danceability, embedding_16d (PCA-projected),
+    and model_version, or None on failure.
+    """
+    try:
+        import numpy as np
+        import librosa
+
+        load_dur = min(120.0, duration_sec) if duration_sec > 0 else 120.0
+        y, sr = librosa.load(file_path, sr=22050, mono=True, duration=load_dur)
+
+        # 128-band mel-spectrogram
+        mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128, hop_length=512)
+        mel_db = librosa.power_to_db(mel, ref=np.max)
+
+        # Segment statistics: mean + std per mel band → 256-dim vector
+        mean_v = np.mean(mel_db, axis=1).astype(np.float32)
+        std_v  = np.std(mel_db, axis=1).astype(np.float32)
+        feature_v = np.concatenate([mean_v, std_v])  # 256-dim
+
+        # energy_neural: mean log-power of mid-high mels (bands 40-128), normalized
+        high_energy = float(np.mean(mel_db[40:, :]))
+        energy_neural = round(float(np.clip((high_energy + 80.0) / 80.0, 0.0, 1.0)), 3)
+
+        # danceability: onset strength regularity (coefficient of variation of inter-onset intervals)
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        if onset_env.size > 4:
+            peaks = librosa.util.peak_pick(onset_env, pre_max=3, post_max=3, pre_avg=3, post_avg=5, delta=0.5, wait=10)
+            if len(peaks) > 2:
+                ioi = np.diff(peaks.astype(np.float32))
+                cv = float(np.std(ioi) / (np.mean(ioi) + 1e-6))
+                danceability = round(float(np.clip(1.0 - cv * 0.5, 0.0, 1.0)), 3)
+            else:
+                danceability = 0.5
+        else:
+            danceability = 0.5
+
+        # PCA projection to 16 dimensions using a shipped or identity PCA matrix
+        pca_path = Path(__file__).resolve().parent / 'mel_pca_v1.npy'
+        if pca_path.exists():
+            pca_matrix = np.load(str(pca_path))  # shape (16, 256)
+            if pca_matrix.shape == (16, 256):
+                embedding_16d = pca_matrix.dot(feature_v).tolist()
+            else:
+                embedding_16d = feature_v[:16].tolist()
+        else:
+            # No PCA matrix: use first 16 mel mean values (centroid proxy)
+            embedding_16d = [round(float(x), 4) for x in mean_v[:16]]
+
+        return {
+            'energy_neural': energy_neural,
+            'danceability': danceability,
+            'valence': None,  # placeholder for future model
+            'embedding_16d': [round(float(x), 4) for x in embedding_16d],
+            'model_version': 'librosa-mel-pca-v1',
+        }
+    except Exception as exc:
+        print(f"[boogiemix] neural embedding failed: {exc}", file=sys.stderr)
+        return None
+
+
+def detect_beat_grid(file_path, use_madmom=True):
+    """Neural beat tracking via madmom DBNBeatTrackingProcessor.
+
+    Returns a dict with beats, bpm_neural, downbeats, phrase_boundaries_neural,
+    or None if madmom is unavailable or tracking fails.
+    """
+    if not use_madmom or not MADMOM_AVAILABLE:
+        return None
+    try:
+        import numpy as np
+        import madmom.features.beats as mb
+        act = mb.RNNBeatProcessor()(file_path)
+        proc = mb.DBNBeatTrackingProcessor(fps=100)
+        beats = proc(act)  # numpy array of beat timestamps in seconds
+        if beats is None or len(beats) < 4:
+            return None
+        diffs = np.diff(beats)
+        bpm_neural = round(float(60.0 / np.median(diffs)), 2)
+        # Cap beats at 2000 entries (~26 min at 128 BPM)
+        beats_list = [round(float(b), 3) for b in beats[:2000]]
+        downbeats = [beats_list[i] for i in range(0, len(beats_list), 4)]
+        phrase_boundaries = [beats_list[i] for i in range(0, len(beats_list), 16)]
+        return {
+            'beats': beats_list,
+            'bpm_neural': bpm_neural,
+            'downbeats': downbeats,
+            'phrase_boundaries_neural': phrase_boundaries,
+        }
+    except Exception as exc:
+        print(f"[boogiemix] beat grid detection failed: {exc}", file=sys.stderr)
+        return None
+
+
+def detect_key_neural(file_path, duration_sec):
+    """Chroma-based key detection using Krumhansl-Schmuckler profiles (librosa)."""
+    try:
+        import librosa
+        import numpy as np
+        load_dur = min(120.0, duration_sec) if duration_sec > 0 else 120.0
+        y, sr = librosa.load(file_path, sr=22050, mono=True, duration=load_dur)
+        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+        chroma_mean = np.mean(chroma, axis=1)
+        best_key, best_mode, best_corr = None, None, -2.0
+        for i in range(12):
+            for profile, mode in [(_MAJOR_PROFILE, 'major'), (_MINOR_PROFILE, 'minor')]:
+                rotated = np.roll(np.array(profile, dtype=np.float32), i)
+                c = np.corrcoef(chroma_mean.astype(np.float32), rotated)[0, 1]
+                if c > best_corr:
+                    best_corr, best_key, best_mode = c, _NOTE_NAMES[i], mode
+        camelot = (_CAMELOT_MAJOR if best_mode == 'major' else _CAMELOT_MINOR).get(best_key)
+        return {
+            'key': best_key,
+            'mode': best_mode,
+            'confidence': round(float(best_corr), 3),
+            'camelot': camelot,
+        }
+    except Exception as exc:
+        print(f"[boogiemix] key detection failed: {exc}", file=sys.stderr)
+        return None
+
+
+def detect_vocal_cue_points(vocal_env, duration_sec, hz=ENVELOPE_HZ):
+    """Find intro_end_sec / outro_start_sec from low-vocal regions in the envelope."""
+    try:
+        import numpy as np
+        if vocal_env is None or len(vocal_env) == 0 or duration_sec <= 0:
+            return None
+        arr = np.asarray(vocal_env, dtype=np.float32)
+        # 4-sample running mean to smooth noise
+        kernel = np.ones(4, dtype=np.float32) / 4
+        smoothed = np.convolve(arr, kernel, mode='same')
+        threshold = 0.10
+        min_gap_frames = max(1, int(round(4.0 * hz)))
+        below = smoothed < threshold
+        gap_runs = []
+        start = None
+        for i in range(len(below)):
+            if below[i] and start is None:
+                start = i
+            elif not below[i] and start is not None:
+                if i - start >= min_gap_frames:
+                    gap_runs.append((start, i))
+                start = None
+        if start is not None and len(below) - start >= min_gap_frames:
+            gap_runs.append((start, len(below)))
+        if not gap_runs:
+            return {'intro_end_sec': None, 'outro_start_sec': None, 'confidence': 0.0}
+        first = gap_runs[0]
+        last  = gap_runs[-1]
+        intro_end   = round(first[1] / hz, 2)
+        outro_start = round(last[0] / hz, 2)
+        intro_conf  = min(1.0, (first[1] - first[0]) / hz / 16.0)
+        outro_conf  = min(1.0, (last[1]  - last[0])  / hz / 16.0)
+        confidence  = round((intro_conf + outro_conf) / 2.0, 3)
+        # Sanity-check positions
+        intro_end_out   = intro_end   if intro_end   < duration_sec * 0.5 else None
+        outro_start_out = outro_start if outro_start > duration_sec * 0.25 else None
+        return {
+            'intro_end_sec':   intro_end_out,
+            'outro_start_sec': outro_start_out,
+            'confidence':      confidence,
+        }
+    except Exception as exc:
+        print(f"[boogiemix] vocal cue detection failed: {exc}", file=sys.stderr)
+        return None
 
 
 def analyze_with_stems(stems, duration_sec, bpm_hint):
@@ -504,7 +706,8 @@ def analyze_with_stems(stems, duration_sec, bpm_hint):
 
     sections = detect_sections(vocal, drums, bass, other, ENVELOPE_HZ)
     transitions = transition_safe_windows(duration_sec, vocal, drums, bass,
-                                          sections, ENVELOPE_HZ)
+                                          sections, ENVELOPE_HZ, other_env=other)
+    cue_points = detect_vocal_cue_points(vocal, duration_sec)
 
     bpm_refined = None
     phrase_boundaries = []
@@ -591,6 +794,7 @@ def analyze_with_stems(stems, duration_sec, bpm_hint):
         "energy_score_refined": round(energy_refined, 4),
         "confidence": round(confidence, 3),
         "bpm_refined": bpm_refined,
+        "cue_points": cue_points,
     }
 
 
@@ -705,6 +909,7 @@ def synthetic_fallback(duration_sec, demucs_error, bpm_hint):
         "energy_score_refined": 0.4,
         "confidence": 0.2,
         "bpm_refined": bpm_hint,
+        "cue_points": None,
     }
 
 
@@ -756,6 +961,7 @@ def main():
     cleanup_temp = bool(payload.get("cleanup_temp", True))
     temp_root = payload.get("temp_root") or tempfile.gettempdir()
     bpm_hint = payload.get("bpm_hint")
+    use_madmom = bool(payload.get("use_madmom", True))
     try:
         bpm_hint = float(bpm_hint) if bpm_hint is not None else None
     except Exception:
@@ -800,6 +1006,11 @@ def main():
     if analysis is None:
         analysis = synthetic_fallback(duration, demucs_error, bpm_hint)
 
+    # Run lightweight features that don't require Demucs stems.
+    key_neural = detect_key_neural(file_path, duration)
+    beat_grid = detect_beat_grid(file_path, use_madmom=use_madmom)
+    neural_embedding = extract_neural_embedding(file_path, duration)
+
     output = {
         "track_id": track_id,
         "analysis_version": ANALYSIS_VERSION,
@@ -822,6 +1033,11 @@ def main():
         "energy_score_refined": analysis["energy_score_refined"],
         "confidence": analysis["confidence"],
         "bpm_refined": analysis.get("bpm_refined"),
+        "key_neural": key_neural,
+        "beat_grid": beat_grid,
+        "neural_embedding": neural_embedding,
+        "cue_points": analysis.get("cue_points"),
+        "madmom_available": MADMOM_AVAILABLE,
         "processing_time_ms": int((time.time() - start) * 1000),
     }
 

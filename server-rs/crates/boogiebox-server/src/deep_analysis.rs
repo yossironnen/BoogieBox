@@ -32,6 +32,7 @@ struct DeepSettings {
     max_concurrent: usize,
     timeout_ms: u64,
     prefer_gpu: bool,
+    use_madmom: bool,
     cleanup_temp: bool,
     temp_dir: PathBuf,
     background_mode: String,
@@ -218,6 +219,7 @@ async fn process_job(
         "analysis_version": DEEP_ANALYSIS_VERSION,
         "demucs_model": DEFAULT_MODEL,
         "use_gpu": settings.prefer_gpu && runtime.gpu_available,
+        "use_madmom": settings.use_madmom,
         "cleanup_temp": settings.cleanup_temp,
         "temp_root": settings.temp_dir,
     });
@@ -230,6 +232,37 @@ async fn process_job(
     let demucs_model = output["demucs_model"].as_str().unwrap_or(DEFAULT_MODEL);
     let used_gpu = output["used_gpu"].as_bool().unwrap_or(false);
     let energy = output["energy_score_refined"].as_f64().unwrap_or(0.5);
+
+    // Merge key_neural and cue_points into transition_hints_json so they are
+    // stored without requiring a DB schema change.
+    let hints_json = {
+        let base = json_field(&output, "transition_hints_json", "{}");
+        let mut hints: serde_json::Value =
+            serde_json::from_str(&base).unwrap_or(serde_json::Value::Object(Default::default()));
+        if let Some(obj) = hints.as_object_mut() {
+            if let Some(kn) = output.get("key_neural") {
+                if !kn.is_null() {
+                    obj.insert("keyNeural".to_string(), kn.clone());
+                }
+            }
+            if let Some(cp) = output.get("cue_points") {
+                if !cp.is_null() {
+                    obj.insert("cuePoints".to_string(), cp.clone());
+                }
+            }
+            if let Some(bg) = output.get("beat_grid") {
+                if !bg.is_null() {
+                    obj.insert("beatGrid".to_string(), bg.clone());
+                }
+            }
+            if let Some(ne) = output.get("neural_embedding") {
+                if !ne.is_null() {
+                    obj.insert("neuralEmbedding".to_string(), ne.clone());
+                }
+            }
+        }
+        serde_json::to_string(&hints).unwrap_or(base)
+    };
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     upsert_deep_analysis(
@@ -248,7 +281,7 @@ async fn process_job(
         &json_field(&output, "phrase_boundaries_json", "[]"),
         &json_field(&output, "intro_outro_refined_json", "{}"),
         energy,
-        &json_field(&output, "transition_hints_json", "{}"),
+        &hints_json,
         &json_field(&output, "transition_windows_json", "[]"),
         output["confidence"].as_f64().unwrap_or(0.0),
         job.duration,
@@ -341,6 +374,7 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         get_setting(&conn, "boogiemixDeepAnalysisPreferGpu").as_deref(),
         true,
     );
+    let use_madmom = parse_bool(get_setting(&conn, "boogiemixUseMadmom").as_deref(), true);
     let cleanup_temp = parse_bool(
         get_setting(&conn, "boogiemixDeepAnalysisCleanupTemp").as_deref(),
         true,
@@ -362,6 +396,7 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         max_concurrent,
         timeout_ms,
         prefer_gpu,
+        use_madmom,
         cleanup_temp,
         temp_dir,
         background_mode,
