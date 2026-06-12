@@ -13,6 +13,7 @@ const { apiMock, platformMock } = vi.hoisted(() => ({
     systemSetup: vi.fn(),
   },
   platformMock: {
+    isDesktop: true,
     selectFolder: vi.fn(),
   },
 }));

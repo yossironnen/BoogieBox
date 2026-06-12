@@ -1281,6 +1281,102 @@ fn nearest_phrase_boundary(boundaries: &[f64], target: f64, tolerance: f64) -> O
         })
 }
 
+fn overlap_duration(a_start: f64, a_end: f64, b_start: f64, b_end: f64) -> f64 {
+    a_end.min(b_end) - a_start.max(b_start)
+}
+
+fn has_rhythmic_timing_evidence(deep: Option<&DeepTrackFeatures>) -> bool {
+    let Some(deep) = deep else {
+        return false;
+    };
+    if !deep.drum_windows.is_empty() {
+        return true;
+    }
+    if deep
+        .transition_windows
+        .iter()
+        .any(|w| w.drums_rms.is_some() || w.vocals_rms.is_some() || w.bass_rms.is_some())
+    {
+        return true;
+    }
+    deep.beat_grid
+        .as_ref()
+        .map(|grid| grid.beats.len() >= 8)
+        .unwrap_or(false)
+}
+
+fn drum_score_for_span(deep: Option<&DeepTrackFeatures>, start: f64, end: f64) -> Option<f64> {
+    let deep = deep?;
+    if end <= start {
+        return None;
+    }
+    let span = end - start;
+    deep.drum_windows
+        .iter()
+        .filter_map(|w| {
+            let overlap = overlap_duration(start, end, w.start, w.end);
+            if overlap <= 0.0 {
+                return None;
+            }
+            let strength = w.average.max(w.strength).clamp(0.0, 1.0);
+            Some((overlap / span).clamp(0.0, 1.0) * strength)
+        })
+        .fold(None, |best, score| match best {
+            Some(current) if current >= score => Some(current),
+            _ => Some(score),
+        })
+}
+
+fn outgoing_drum_start(
+    deep: Option<&DeepTrackFeatures>,
+    window: &TransitionWindow,
+    crossfade: f64,
+) -> f64 {
+    let fallback = (window.end - crossfade).max(window.start);
+    let Some(deep) = deep else {
+        return fallback;
+    };
+    let max_start = (window.end - crossfade).max(window.start);
+    let mut best: Option<(f64, f64)> = None;
+    for drum in &deep.drum_windows {
+        let overlap = overlap_duration(window.start, window.end, drum.start, drum.end);
+        if overlap <= 0.0 {
+            continue;
+        }
+        let start = (drum.end - crossfade).clamp(window.start, max_start);
+        let score = drum_score_for_span(Some(deep), start, start + crossfade).unwrap_or(0.0)
+            + (start / window.end.max(1.0)) * 0.05;
+        if best.map(|(_, s)| score > s).unwrap_or(true) {
+            best = Some((start, score));
+        }
+    }
+    best.map(|(start, _)| start).unwrap_or(fallback)
+}
+
+fn incoming_drum_start(
+    deep: Option<&DeepTrackFeatures>,
+    window: &TransitionWindow,
+    crossfade: f64,
+) -> f64 {
+    let Some(deep) = deep else {
+        return window.start;
+    };
+    let mut best: Option<(f64, f64)> = None;
+    for drum in &deep.drum_windows {
+        let overlap = overlap_duration(window.start, window.end, drum.start, drum.end);
+        if overlap <= 0.0 {
+            continue;
+        }
+        let start = drum.start.max(window.start);
+        let score = drum_score_for_span(Some(deep), start, start + crossfade).unwrap_or(0.0)
+            - (start / window.end.max(1.0)) * 0.03;
+        if best.map(|(_, s)| score > s).unwrap_or(true) {
+            best = Some((start, score));
+        }
+    }
+    best.map(|(start, _)| start).unwrap_or(window.start)
+}
+
 fn section_role(deep: Option<&DeepTrackFeatures>, t: f64) -> Option<&str> {
     let deep = deep?;
     deep.sections
@@ -1361,8 +1457,8 @@ fn score_deep_pair(
         .max(4.0);
     let crossfade = max_cross.clamp(min_cross, 60.0);
 
-    let from_start = (from_window.end - crossfade).max(from_window.start);
-    let to_start = to_window.start;
+    let from_start = outgoing_drum_start(from_deep, from_window, crossfade);
+    let to_start = incoming_drum_start(to_deep, to_window, crossfade);
 
     let phrase_target_from = from_start;
     let beat_tol = 0.2_f64;
@@ -1416,7 +1512,11 @@ fn score_deep_pair(
             .vocal_risk
             .max(to_window.vocal_risk)
             .clamp(0.0, 1.0);
-    let drum_pair = (from_window.drum_continuity + to_window.drum_continuity) / 2.0;
+    let from_drum = drum_score_for_span(from_deep, from_start, from_start + crossfade)
+        .unwrap_or(from_window.drum_continuity);
+    let to_drum = drum_score_for_span(to_deep, to_start, to_start + crossfade)
+        .unwrap_or(to_window.drum_continuity);
+    let drum_pair = (from_drum + to_drum) / 2.0;
     let drum_score = match style {
         "club_blend" => drum_pair.clamp(0.0, 1.0),
         "chill_blend" => (1.0 - drum_pair).clamp(0.0, 1.0),
@@ -1565,6 +1665,9 @@ fn select_transition_deep_with_debug(
     mut debug_sink: Option<&mut Vec<TransitionCandidateLocal>>,
 ) -> MixTransition {
     if from_deep.is_none() && to_deep.is_none() {
+        return select_transition(from_a, from_t, to_a, to_t, phase, preset, default_crossfade);
+    }
+    if !has_rhythmic_timing_evidence(from_deep) || !has_rhythmic_timing_evidence(to_deep) {
         return select_transition(from_a, from_t, to_a, to_t, phase, preset, default_crossfade);
     }
 
@@ -1722,7 +1825,11 @@ fn select_transition_deep_with_debug(
         _ => pair.crossfade.clamp(6.0, style_max),
     };
 
-    let from_start = pair.from_start;
+    let from_start = if (crossfade - pair.crossfade).abs() > 0.01 {
+        outgoing_drum_start(from_deep, &pair.from_window, crossfade)
+    } else {
+        pair.from_start
+    };
     let from_start = if let Some(deep) = from_deep {
         let beat = from_a.beat_grid_sec.unwrap_or(0.5).max(0.25);
         nearest_phrase_boundary(&deep.phrase_boundaries, from_start, beat * 2.0)
@@ -1730,7 +1837,11 @@ fn select_transition_deep_with_debug(
     } else {
         from_start
     };
-    let to_start = pair.to_start;
+    let to_start = if (crossfade - pair.crossfade).abs() > 0.01 {
+        incoming_drum_start(to_deep, &pair.to_window, crossfade)
+    } else {
+        pair.to_start
+    };
     let to_start = if let Some(deep) = to_deep {
         let beat = to_a.beat_grid_sec.unwrap_or(0.5).max(0.25);
         nearest_phrase_boundary(&deep.phrase_boundaries, to_start, beat * 2.0).unwrap_or(to_start)
@@ -2836,7 +2947,7 @@ fn get_mix_output_dir_fn(db: &DbPool, db_folder: Option<&PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boogiebox_db::boogiemix::{StemSummary, TrackSection};
+    use boogiebox_db::boogiemix::{StemSummary, StemWindow, TrackSection};
 
     fn analysis(id: &str, bpm: f64) -> TrackMixAnalysis {
         TrackMixAnalysis {
@@ -2955,6 +3066,90 @@ mod tests {
             beat_grid: None,
             neural_embedding: None,
         }
+    }
+
+    fn stem_window(start: f64, end: f64, average: f64) -> StemWindow {
+        StemWindow {
+            start,
+            end,
+            strength: average,
+            average,
+        }
+    }
+
+    fn without_rhythm_timing(mut deep: DeepTrackFeatures) -> DeepTrackFeatures {
+        deep.confidence = 0.4;
+        deep.drum_windows.clear();
+        deep.beat_grid = None;
+        for window in &mut deep.transition_windows {
+            window.vocals_rms = None;
+            window.drums_rms = None;
+            window.bass_rms = None;
+            window.other_rms = None;
+        }
+        deep
+    }
+
+    #[test]
+    fn club_blend_starts_deep_transition_where_drums_are_active() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let mut from_deep = deep_for("a", 0.1, 0.8, 0.2);
+        let mut to_deep = deep_for("b", 0.1, 0.8, 0.2);
+        from_deep.transition_windows[1].start = 200.0;
+        from_deep.transition_windows[1].end = 240.0;
+        from_deep.transition_windows[1].recommended_max_crossfade = 24.0;
+        to_deep.transition_windows[0].start = 0.0;
+        to_deep.transition_windows[0].end = 48.0;
+        to_deep.transition_windows[0].recommended_max_crossfade = 24.0;
+        from_deep.drum_windows = vec![stem_window(214.0, 226.0, 0.9)];
+        to_deep.drum_windows = vec![stem_window(18.0, 42.0, 0.9)];
+
+        let preset = style_preset("club_blend");
+        let trans = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "club_blend",
+            &preset,
+            8.0,
+        );
+
+        assert!(trans.deep_used);
+        assert!((trans.from_outro_start_sec - 218.0).abs() < 0.01);
+        assert!((trans.to_intro_start_sec - 18.0).abs() < 0.01);
+        assert_eq!(trans.kind, "beat_blend");
+    }
+
+    #[test]
+    fn synthetic_deep_rows_fall_back_to_legacy_transition_timing() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let from_deep = without_rhythm_timing(deep_for("a", 0.25, 0.35, 0.3));
+        let to_deep = without_rhythm_timing(deep_for("b", 0.25, 0.35, 0.3));
+
+        let preset = style_preset("club_blend");
+        let trans = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "club_blend",
+            &preset,
+            8.0,
+        );
+
+        assert!(!trans.deep_used);
+        assert!(!trans.reason.starts_with("deep:"));
+        assert_eq!(trans.to_intro_start_sec, 16.0);
+        assert!(trans.from_outro_start_sec < 240.0 - trans.crossfade_sec);
     }
 
     #[test]
