@@ -96,8 +96,9 @@ def ffprobe_duration(file_path):
 
 def run_demucs(file_path, model, use_gpu, temp_root):
     out_dir = tempfile.mkdtemp(prefix="demucs-", dir=temp_root)
+    runner = Path(__file__).resolve().parent / "demucs_runner.py"
     args = [
-        sys.executable, "-m", "demucs", "-n", model,
+        sys.executable, str(runner), "-n", model,
         "--device", "cuda" if use_gpu else "cpu",
         "--out", out_dir, file_path,
     ]
@@ -989,18 +990,18 @@ def main():
                 demucs_error = "stems_not_found"
                 shutil.rmtree(out_dir, ignore_errors=True)
         else:
-            demucs_error = (err or "").strip()[:500]
+            demucs_error = (err or "").strip()[-2000:]
             if out_dir and os.path.isdir(out_dir):
                 shutil.rmtree(out_dir, ignore_errors=True)
     except Exception as exc:
-        demucs_error = str(exc)[:500]
+        demucs_error = str(exc)[-2000:]
 
     analysis = None
     if demucs_used:
         try:
             analysis = analyze_with_stems(stems, duration, bpm_hint)
         except Exception as exc:
-            demucs_error = f"analysis_failed: {exc}"[:500]
+            demucs_error = f"analysis_failed: {exc}"[-2000:]
             analysis = None
 
     if analysis is None:

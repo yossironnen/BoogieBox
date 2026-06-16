@@ -1093,6 +1093,8 @@ pub struct TrackRow {
     pub library_name: Option<String>,
     /// Documents the Rating public API surface.
     pub rating: Option<f64>,
+    /// True when real Demucs stem analysis (confidence > 0.25) exists for this track.
+    pub has_deep_analysis: bool,
 }
 
 fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
@@ -1123,7 +1125,8 @@ fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
         artist: row.get(23)?,
         album: row.get(24)?,
         library_name: row.get(25)?,
-        rating: row.get(26)?,
+        has_deep_analysis: row.get(26)?,
+        rating: row.get(27)?,
     })
 }
 
@@ -1132,7 +1135,9 @@ const TRACK_COLS: &str = "t.id, t.file_name, t.file_size, t.format,
      t.title, t.track_number, t.disc_number, t.year, t.genre,
      t.composer, t.comment, t.bpm, t.bpm_detected, t.bpm_source, t.bpm_confidence, t.scanned_at,
      t.last_played_at, t.play_count, t.album_id,
-     ar.name AS artist, al.title AS album, l.name AS library_name";
+     ar.name AS artist, al.title AS album, l.name AS library_name,
+     (EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id=t.id AND da.confidence>0.25))\
+     AS has_deep_analysis";
 
 /// Documents the List Album Tracks public API surface.
 pub fn list_album_tracks(
@@ -1471,7 +1476,8 @@ pub fn list_artist_radio_candidates(
          SELECT id, file_name, file_size, format, duration, bitrate, sample_rate, channels,
                 title, track_number, disc_number, year, genre, composer, comment,
                 bpm, bpm_detected, bpm_source, bpm_confidence, scanned_at,
-                last_played_at, play_count, album_id, artist, album, library_name, rating
+                last_played_at, play_count, album_id, artist, album, library_name,
+                has_deep_analysis, rating
          FROM ranked_tracks
          WHERE artist_pick <= ?
          ORDER BY score DESC, overlap DESC, RANDOM()
@@ -2024,6 +2030,10 @@ mod tests {
             CREATE TABLE artist_ratings (artist_id TEXT, user_id TEXT, rating REAL);
             CREATE TABLE album_ratings (album_id TEXT, user_id TEXT, rating REAL);
             CREATE TABLE track_ratings (track_id TEXT, user_id TEXT, rating REAL);
+            CREATE TABLE track_deep_analysis (
+                track_id TEXT PRIMARY KEY,
+                confidence REAL NOT NULL DEFAULT 0.0
+            );
             CREATE VIRTUAL TABLE tracks_fts USING fts5(
                 track_id UNINDEXED,
                 title,

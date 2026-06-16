@@ -12,6 +12,7 @@ const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     trackWaveform: vi.fn(),
     trackStreamUrl: vi.fn((id: ClientEntityId) => `/api/tracks/${id}/stream`),
+    trackSonicFingerprint: vi.fn().mockResolvedValue(null),
     crossfade: {
       config: vi.fn(async () => ({ mode: 'off', duration: 2, source: 'global' })),
     },

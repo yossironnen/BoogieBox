@@ -62,6 +62,7 @@ export interface Track {
   last_played_at?: string | null;
   play_count?: number | null;
   rating?: number | null;
+  has_deep_analysis?: boolean;
 }
 
 /** Artist is part of this module's public API. */
@@ -462,6 +463,23 @@ export interface BoogieMixDeepAnalysisStatus {
   };
 }
 
+/** Per-playlist deep analysis progress returned by the progress endpoint. */
+export interface PlaylistDeepAnalysisProgress {
+  total: number;
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  notQueued: number;
+  /** Tracks with any saved deep-analysis cache row. */
+  analyzedCached?: number;
+  /** Tracks with real (non-synthetic) Demucs analysis stored. */
+  analyzedReal: number;
+  /** Tracks with saved synthetic fallback rows. */
+  analyzedFallback?: number;
+}
+
 /** Boogie Mix Runtime Component Status is part of this module's public API. */
 export interface BoogieMixRuntimeComponentStatus {
   available: boolean;
@@ -654,6 +672,67 @@ export interface HistoryEntry {
   title: string | null;
   artist: string | null;
   album: string | null;
+}
+
+// ─── Sonic Fingerprint ─────────────────────────────────────────────────────
+
+/** A detected structural section within a track (intro, verse, chorus, etc.). */
+export interface TrackSection {
+  kind: string;
+  start: number;
+  end: number;
+  confidence: number;
+  vocalDensity: number;
+  drumDensity: number;
+  energy: number;
+}
+
+/** A time window of stem activity (vocals, drums, or bass). */
+export interface StemWindow {
+  start: number;
+  end: number;
+  strength: number;
+  average: number;
+}
+
+/** A time window suitable for DJ transitions. */
+export interface TransitionWindow {
+  role: string;
+  start: number;
+  end: number;
+  score: number;
+  vocalRisk: number;
+  drumContinuity: number;
+  bassRisk: number;
+  energy: number;
+  recommendedMinCrossfade?: number;
+  recommendedMaxCrossfade?: number;
+  recommended?: boolean;
+}
+
+/** Refined intro/outro boundary timestamps. */
+export interface IntroOutroRefined {
+  introEnd: number | null;
+  outroStart: number | null;
+}
+
+/** Full Sonic Fingerprint payload returned by GET /api/tracks/:id/sonic-fingerprint. */
+export interface SonicFingerprint {
+  trackId: string;
+  bpmDetected: number | null;
+  energyScoreRefined: number;
+  confidence: number;
+  sourceDurationSec: number | null;
+  demucsModel: string;
+  usedGpu: boolean;
+  analysisSchemaVersion: number;
+  sectionJson: TrackSection[];
+  vocalWindowsJson: StemWindow[];
+  drumWindowsJson: StemWindow[];
+  bassWindowsJson: StemWindow[];
+  transitionWindowsJson: TransitionWindow[];
+  introOutroRefinedJson: IntroOutroRefined;
+  phraseBoundariesJson: number[];
 }
 
 /** Metadata Search Result is part of this module's public API. */

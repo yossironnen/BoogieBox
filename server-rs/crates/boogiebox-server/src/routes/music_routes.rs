@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use boogiebox_db::boogiemix::get_track_sonic_fingerprint;
 use boogiebox_db::music::{
     coerce_entity_id, get_album, get_artist, get_artist_name, get_home_top_rated, get_track,
     interleave_by_artist, list_album_tracks, list_albums, list_albums_by_group_tracks,
@@ -53,9 +54,13 @@ pub fn music_router(state: SharedState) -> Router {
         .route("/api/albums", get(list_albums_handler))
         .route("/api/albums/{id}", get(get_album_handler))
         .route("/api/albums/{id}/tracks", get(album_tracks_handler))
-        // Tracks
+        // Tracks — specific sub-routes BEFORE parameterized {id}
         .route("/api/tracks/recently-played", get(recently_played_handler))
         .route("/api/tracks/top-played", get(top_played_handler))
+        .route(
+            "/api/tracks/{id}/sonic-fingerprint",
+            get(track_sonic_fingerprint_handler),
+        )
         .route("/api/tracks/{id}", get(get_track_handler))
         // Auto-DJ
         .route("/api/auto-dj/tracks", get(auto_dj_handler))
@@ -831,6 +836,27 @@ async fn get_track_handler(
     {
         Ok(Ok(Some(track))) => (StatusCode::OK, Json(track)).into_response(),
         Ok(Ok(None)) => not_found("Not found"),
+        _ => internal_error(),
+    }
+}
+
+async fn track_sonic_fingerprint_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(d) => d,
+        None => return setup_required(),
+    };
+    let track_id = coerce_entity_id(&id);
+    match tokio::task::spawn_blocking(move || {
+        get_track_sonic_fingerprint(&db.lock().expect("db"), &track_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(fp))) => (StatusCode::OK, Json(fp)).into_response(),
+        Ok(Ok(None)) => not_found("not_analyzed"),
         _ => internal_error(),
     }
 }

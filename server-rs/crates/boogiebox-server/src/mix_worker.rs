@@ -1109,9 +1109,9 @@ fn select_transition(
     let max_dur = (from_a.duration_sec * 0.35).min(to_a.duration_sec * 0.35);
     crossfade = crossfade.clamp(6.0, max_dur.min(60.0));
 
-    // Mix from the track's natural outro start (proportional ~78% through), not
-    // from duration - crossfade which pushes the transition into the silent tail.
-    let mut from_start = from_a.outro_start_sec;
+    // Mix from the track's musical body when long overlays would otherwise land
+    // in a sparse silence-detected tail.
+    let mut from_start = outgoing_analysis_end(from_a, crossfade);
     from_start = quantize_to_phrase(from_start, from_a.beat_grid_sec, from_a.phrase_bars);
 
     let mut to_start = to_a.intro_end_sec;
@@ -1327,30 +1327,63 @@ fn drum_score_for_span(deep: Option<&DeepTrackFeatures>, start: f64, end: f64) -
         })
 }
 
-fn outgoing_drum_start(
+fn outgoing_crossfade_end(
     deep: Option<&DeepTrackFeatures>,
     window: &TransitionWindow,
     crossfade: f64,
 ) -> f64 {
-    let fallback = (window.end - crossfade).max(window.start);
+    let fallback = window.end.max(crossfade);
     let Some(deep) = deep else {
         return fallback;
     };
-    let max_start = (window.end - crossfade).max(window.start);
     let mut best: Option<(f64, f64)> = None;
     for drum in &deep.drum_windows {
         let overlap = overlap_duration(window.start, window.end, drum.start, drum.end);
         if overlap <= 0.0 {
             continue;
         }
-        let start = (drum.end - crossfade).clamp(window.start, max_start);
-        let score = drum_score_for_span(Some(deep), start, start + crossfade).unwrap_or(0.0)
-            + (start / window.end.max(1.0)) * 0.05;
+        let end = (drum.end + 2.0).clamp(crossfade, window.end);
+        let start = (end - crossfade).max(0.0);
+        let score = drum_score_for_span(Some(deep), start, end).unwrap_or(0.0)
+            + (end / window.end.max(1.0)) * 0.05;
         if best.map(|(_, s)| score > s).unwrap_or(true) {
-            best = Some((start, score));
+            best = Some((end, score));
         }
     }
-    best.map(|(start, _)| start).unwrap_or(fallback)
+    if let Some((end, _)) = best {
+        return end;
+    }
+    // No drums overlap the outro window — the track's energetic body ends before the
+    // outro. Find the global last drum hit and trim A just after it so the crossfade
+    // region stays in the energetic section rather than a beatless quiet tail.
+    let last_drum_end = deep
+        .drum_windows
+        .iter()
+        .filter(|w| w.end < window.end)
+        .map(|w| w.end)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if last_drum_end.is_finite() && last_drum_end > 0.0 {
+        // 2-second tail after the last hit gives a clean exit; don't exceed window.end.
+        (last_drum_end + 2.0).clamp(crossfade, window.end)
+    } else {
+        fallback
+    }
+}
+
+fn outgoing_analysis_end(a: &TrackMixAnalysis, crossfade: f64) -> f64 {
+    let latest = (a.duration_sec - 1.0).max(crossfade);
+    let earliest = (a.intro_end_sec + crossfade + 4.0)
+        .min(latest)
+        .max(crossfade);
+    let natural = a.outro_start_sec.clamp(earliest, latest);
+    if crossfade < 20.0 || a.duration_sec < 240.0 {
+        return natural;
+    }
+
+    // Long overlay blends need to leave before sparse, beatless DJ outros when
+    // stem timing is unavailable. Cap very-late silence-based outros to the body.
+    let body_latest = (a.duration_sec * 0.82).clamp(earliest, latest);
+    natural.min(body_latest)
 }
 
 fn incoming_drum_start(
@@ -1457,10 +1490,10 @@ fn score_deep_pair(
         .max(4.0);
     let crossfade = max_cross.clamp(min_cross, 60.0);
 
-    let from_start = outgoing_drum_start(from_deep, from_window, crossfade);
+    let from_start = outgoing_crossfade_end(from_deep, from_window, crossfade);
     let to_start = incoming_drum_start(to_deep, to_window, crossfade);
 
-    let phrase_target_from = from_start;
+    let phrase_target_from = (from_start - crossfade).max(0.0);
     let beat_tol = 0.2_f64;
     let aligned_from = from_deep
         .and_then(|d| {
@@ -1512,13 +1545,15 @@ fn score_deep_pair(
             .vocal_risk
             .max(to_window.vocal_risk)
             .clamp(0.0, 1.0);
-    let from_drum = drum_score_for_span(from_deep, from_start, from_start + crossfade)
+    let from_drum = drum_score_for_span(from_deep, (from_start - crossfade).max(0.0), from_start)
         .unwrap_or(from_window.drum_continuity);
     let to_drum = drum_score_for_span(to_deep, to_start, to_start + crossfade)
         .unwrap_or(to_window.drum_continuity);
     let drum_pair = (from_drum + to_drum) / 2.0;
     let drum_score = match style {
-        "club_blend" => drum_pair.clamp(0.0, 1.0),
+        // Beat-centric styles: require BOTH tracks to have drums; a beatless mixout
+        // tanks the score via min() so the planner seeks an earlier energetic window.
+        "club_blend" | "long_build" => from_drum.min(to_drum).clamp(0.0, 1.0),
         "chill_blend" => (1.0 - drum_pair).clamp(0.0, 1.0),
         _ => drum_pair.clamp(0.0, 1.0),
     };
@@ -1671,16 +1706,31 @@ fn select_transition_deep_with_debug(
         return select_transition(from_a, from_t, to_a, to_t, phase, preset, default_crossfade);
     }
 
+    // For beat-centric styles, prefer outro windows that have drum activity.
+    // Try with a drum threshold first; if no windows qualify, fall back to all.
+    let beat_centric = matches!(style, "club_blend" | "long_build");
     let outro_windows: Vec<&TransitionWindow> = from_deep
         .map(|d| {
-            d.transition_windows
+            let base: Vec<&TransitionWindow> = d
+                .transition_windows
                 .iter()
                 .filter(|w| {
                     (w.role == "outro" || w.role == "instrumental")
                         && near_end(w.end, from_a.duration_sec)
                         && (w.end - w.start) >= 4.0
                 })
-                .collect()
+                .collect();
+            if beat_centric {
+                let with_drums: Vec<&TransitionWindow> = base
+                    .iter()
+                    .copied()
+                    .filter(|w| w.drum_continuity > 0.15)
+                    .collect();
+                if !with_drums.is_empty() {
+                    return with_drums;
+                }
+            }
+            base
         })
         .unwrap_or_default();
     let intro_windows: Vec<&TransitionWindow> = to_deep
@@ -1826,14 +1876,19 @@ fn select_transition_deep_with_debug(
     };
 
     let from_start = if (crossfade - pair.crossfade).abs() > 0.01 {
-        outgoing_drum_start(from_deep, &pair.from_window, crossfade)
+        outgoing_crossfade_end(from_deep, &pair.from_window, crossfade)
     } else {
         pair.from_start
     };
     let from_start = if let Some(deep) = from_deep {
         let beat = from_a.beat_grid_sec.unwrap_or(0.5).max(0.25);
-        nearest_phrase_boundary(&deep.phrase_boundaries, from_start, beat * 2.0)
-            .unwrap_or(from_start)
+        nearest_phrase_boundary(
+            &deep.phrase_boundaries,
+            (from_start - crossfade).max(0.0),
+            beat * 2.0,
+        )
+        .map(|phrase_start| phrase_start + crossfade)
+        .unwrap_or(from_start)
     } else {
         from_start
     };
@@ -3120,9 +3175,43 @@ mod tests {
         );
 
         assert!(trans.deep_used);
-        assert!((trans.from_outro_start_sec - 218.0).abs() < 0.01);
+        assert!((trans.from_outro_start_sec - 228.0).abs() < 0.01);
         assert!((trans.to_intro_start_sec - 18.0).abs() < 0.01);
         assert_eq!(trans.kind, "beat_blend");
+    }
+
+    #[test]
+    fn club_blend_cuts_after_last_drum_before_beatless_outro() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let mut from_deep = deep_for("a", 0.1, 0.8, 0.2);
+        let mut to_deep = deep_for("b", 0.1, 0.8, 0.2);
+        from_deep.transition_windows[1].start = 210.0;
+        from_deep.transition_windows[1].end = 240.0;
+        from_deep.transition_windows[1].recommended_max_crossfade = 24.0;
+        to_deep.transition_windows[0].start = 0.0;
+        to_deep.transition_windows[0].end = 48.0;
+        to_deep.transition_windows[0].recommended_max_crossfade = 24.0;
+        from_deep.drum_windows = vec![stem_window(160.0, 190.0, 0.9)];
+        to_deep.drum_windows = vec![stem_window(18.0, 42.0, 0.9)];
+
+        let preset = style_preset("club_blend");
+        let trans = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "club_blend",
+            &preset,
+            45.0,
+        );
+
+        assert!(trans.deep_used);
+        assert!((trans.from_outro_start_sec - 192.0).abs() < 0.01);
+        assert!(trans.from_outro_start_sec < from_deep.transition_windows[1].start);
     }
 
     #[test]
@@ -3150,6 +3239,33 @@ mod tests {
         assert!(!trans.reason.starts_with("deep:"));
         assert_eq!(trans.to_intro_start_sec, 16.0);
         assert!(trans.from_outro_start_sec < 240.0 - trans.crossfade_sec);
+    }
+
+    #[test]
+    fn long_overlay_fallback_caps_very_late_outgoing_tail() {
+        let mut from_a = analysis("a", 124.0);
+        from_a.duration_sec = 600.0;
+        from_a.intro_end_sec = 60.0;
+        from_a.outro_start_sec = 598.0;
+        let mut to_a = analysis("b", 124.0);
+        to_a.duration_sec = 600.0;
+        to_a.intro_end_sec = 60.0;
+        to_a.outro_start_sec = 598.0;
+
+        let preset = style_preset("club_blend");
+        let trans = select_transition(
+            &from_a,
+            &input_track("a"),
+            &to_a,
+            &input_track("b"),
+            "lift",
+            &preset,
+            45.0,
+        );
+
+        assert_eq!(trans.crossfade_sec, 45.0);
+        assert!(trans.from_outro_start_sec < 520.0);
+        assert!(trans.from_outro_start_sec > 440.0);
     }
 
     #[test]

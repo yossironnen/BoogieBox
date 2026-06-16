@@ -84,6 +84,8 @@ pub struct PlaylistTrackRow {
     pub album: Option<String>,
     /// Documents the Library Name public API surface.
     pub library_name: Option<String>,
+    /// True when real Demucs stem analysis exists for this track.
+    pub has_deep_analysis: bool,
     /// Documents the Position public API surface.
     pub position: i64,
     /// Documents the Playlist Track Id public API surface.
@@ -396,6 +398,8 @@ pub fn list_playlist_tracks(
                     t.title, t.track_number, t.disc_number, t.year, t.genre,
                     t.composer, t.comment, t.bpm, t.bpm_detected, t.bpm_source, t.bpm_confidence, t.scanned_at,
                     t.album_id, ar.name AS artist, al.title AS album, l.name AS library_name,
+                    (EXISTS (SELECT 1 FROM track_deep_analysis da
+                             WHERE da.track_id=t.id AND da.confidence>0.25)) AS has_deep_analysis,
                     pt.position, pt.id AS playlist_track_id, pt.progress_seconds
              FROM playlist_tracks pt
              JOIN tracks t ON t.id = pt.track_id
@@ -431,9 +435,10 @@ pub fn list_playlist_tracks(
                 artist: row.get(21)?,
                 album: row.get(22)?,
                 library_name: row.get(23)?,
-                position: row.get(24)?,
-                playlist_track_id: row.get(25)?,
-                progress_seconds: row.get(26)?,
+                has_deep_analysis: row.get(24)?,
+                position: row.get(25)?,
+                playlist_track_id: row.get(26)?,
+                progress_seconds: row.get(27)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1132,6 +1137,10 @@ mod tests {
               rating REAL NOT NULL,
               updated_at TEXT NOT NULL DEFAULT (datetime('now')),
               PRIMARY KEY (user_id, track_id)
+            );
+            CREATE TABLE track_deep_analysis (
+              track_id TEXT PRIMARY KEY,
+              confidence REAL NOT NULL DEFAULT 0.0
             );
             INSERT INTO users(id, username) VALUES ('user-1', 'Admin');
             INSERT INTO artists(id, name) VALUES ('artist-1', 'Artist');

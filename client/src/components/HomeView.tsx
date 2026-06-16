@@ -1162,7 +1162,12 @@ function RecentlyPlayedWidget({
               fallback: 'TR',
             })}
             <div style={H.topRatedTextWrap}>
-              <div style={H.topRatedPrimary}>{title}</div>
+              <div style={{ ...H.topRatedPrimary, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+                {track.has_deep_analysis && (
+                  <span style={{ fontSize: 9, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available">✦</span>
+                )}
+              </div>
               <div style={H.topRatedSecondary}>
                 {album ? `${artist} • ${album}` : artist}
               </div>

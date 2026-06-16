@@ -3,6 +3,7 @@
  */
 
 import React, { useMemo, useRef, useState } from 'react';
+import type { TrackSection, TransitionWindow } from '../types';
 
 /** Waveform Bar Status is part of this module's public API. */
 export type WaveformBarStatus = 'ready' | 'loading' | 'generating' | 'missing' | 'error';
@@ -16,7 +17,19 @@ export interface WaveformBarProps {
   onSeek: (timeSeconds: number) => void;
   onSeekStart?: () => void;
   onSeekEnd?: (timeSeconds: number) => void;
+  sections?: TrackSection[];
+  transitionWindows?: TransitionWindow[];
 }
+
+const SECTION_COLORS: Record<string, string> = {
+  intro:     'color-mix(in srgb, var(--text-muted) 45%, transparent)',
+  verse:     'color-mix(in srgb, var(--accent) 70%, transparent)',
+  chorus:    '#f5a623cc',
+  breakdown: '#7b61ffcc',
+  build:     '#e91e63cc',
+  drop:      '#ff5722cc',
+  outro:     'color-mix(in srgb, var(--text-muted) 45%, transparent)',
+};
 
 const DISPLAY_BINS = 180;
 
@@ -68,11 +81,11 @@ export function downsampleWaveform(points: number[], targetBins = DISPLAY_BINS):
 }
 
 function buildPlaceholderBins(status: WaveformBarStatus, count = DISPLAY_BINS): number[] {
-  const base = status === 'error' ? 20 : status === 'missing' ? 18 : 26;
-  const wobble = status === 'generating' || status === 'loading' ? 14 : 8;
+  const base = status === 'error' ? 60 : status === 'missing' ? 50 : 100;
+  const wobble = status === 'generating' || status === 'loading' ? 80 : 30;
   return Array.from({ length: count }, (_, idx) => {
     const wave = Math.abs(Math.sin(idx * 0.24)) * wobble;
-    return clamp(Math.round(base + wave), 6, 60);
+    return clamp(Math.round(base + wave), 10, 200);
   });
 }
 
@@ -85,6 +98,8 @@ export default function WaveformBar({
   onSeek,
   onSeekStart,
   onSeekEnd,
+  sections,
+  transitionWindows,
 }: WaveformBarProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
@@ -147,6 +162,10 @@ export default function WaveformBar({
     setHoverTime(null);
   };
 
+  const hasSections = sections && sections.length > 0 && duration > 0;
+  const hasTransitions = transitionWindows && transitionWindows.length > 0 && duration > 0;
+  const totalHeight = 32 + (hasSections ? 8 : 0);
+
   return (
     <div
       ref={rootRef}
@@ -164,18 +183,20 @@ export default function WaveformBar({
       style={{
         position: 'relative',
         flex: 1,
-        height: 32,
+        height: totalHeight,
         display: 'flex',
-        alignItems: 'center',
+        flexDirection: 'column',
         cursor: duration > 0 ? 'pointer' : 'default',
         userSelect: 'none',
         touchAction: 'none',
       }}
     >
+      {/* Waveform bars row */}
       <div
         style={{
+          position: 'relative',
           width: '100%',
-          height: 24,
+          height: 32,
           display: 'flex',
           alignItems: 'center',
           gap: 1,
@@ -184,7 +205,7 @@ export default function WaveformBar({
       >
         {bins.map((value, idx) => {
           const normalized = clamp(value / 255, 0, 1);
-          const barHeight = 4 + normalized * 20;
+          const barHeight = 4 + normalized * 28;
           const active = idx < playedBins;
           return (
             <div
@@ -205,14 +226,73 @@ export default function WaveformBar({
             />
           );
         })}
+
+        {/* Transition window markers — rendered behind bars */}
+        {hasTransitions && transitionWindows!.map((tw, i) => {
+          const left = clamp(tw.start / duration, 0, 1) * 100;
+          const width = clamp((tw.end - tw.start) / duration, 0, 1) * 100;
+          return (
+            <div
+              key={i}
+              data-testid="transition-window-marker"
+              style={{
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                left: `${left}%`,
+                width: `${width}%`,
+                backgroundColor: tw.recommended !== false
+                  ? 'rgba(76, 175, 80, 0.18)'
+                  : 'rgba(255, 193, 7, 0.10)',
+                pointerEvents: 'none',
+              }}
+            />
+          );
+        })}
       </div>
+
+      {/* Section band strip */}
+      {hasSections && (
+        <div
+          data-testid="section-band"
+          style={{
+            position: 'relative',
+            width: '100%',
+            height: 4,
+            marginTop: 2,
+            borderRadius: 2,
+            overflow: 'hidden',
+            display: 'flex',
+          }}
+        >
+          {sections!.map((sec, i) => {
+            const left = clamp(sec.start / duration, 0, 1) * 100;
+            const width = clamp((sec.end - sec.start) / duration, 0, 1) * 100;
+            const color = SECTION_COLORS[sec.kind.toLowerCase()] ?? 'color-mix(in srgb, var(--text-muted) 30%, transparent)';
+            return (
+              <div
+                key={i}
+                data-testid="section-segment"
+                title={sec.kind}
+                style={{
+                  position: 'absolute',
+                  left: `${left}%`,
+                  width: `${width}%`,
+                  height: '100%',
+                  backgroundColor: color,
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
 
       <div
         data-testid="waveform-playhead"
         style={{
           position: 'absolute',
           top: 2,
-          bottom: 2,
+          height: 28,
           left: playheadLeft,
           width: 2,
           borderRadius: 2,

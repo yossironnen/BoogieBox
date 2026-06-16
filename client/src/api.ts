@@ -40,6 +40,11 @@ import type {
   BoogieMixDeepAnalysisStatus,
   ClientEntityId,
   AdminPostScanJobType,
+  SonicFingerprint,
+  TrackSection,
+  StemWindow,
+  TransitionWindow,
+  IntroOutroRefined,
 } from './types';
 import type { EntityId } from './entityId';
 
@@ -351,6 +356,50 @@ export const api = {
   })),
   markTrackPlayed: (id: ApiEntityId) => post<{ ok: boolean }>(`/tracks/${id}/played`),
   trackWaveform: (id: ApiEntityId) => get<TrackWaveformLookupResponse>(`/tracks/${id}/waveform`),
+  trackSonicFingerprint: async (id: ApiEntityId): Promise<SonicFingerprint | null> => {
+    type RawFingerprint = {
+      trackId: string;
+      bpmDetected: number | null;
+      energyScoreRefined: number;
+      confidence: number;
+      sourceDurationSec: number | null;
+      demucsModel: string;
+      usedGpu: boolean;
+      analysisSchemaVersion: number;
+      sectionJson: string;
+      vocalWindowsJson: string;
+      drumWindowsJson: string;
+      bassWindowsJson: string;
+      transitionWindowsJson: string;
+      introOutroRefinedJson: string;
+      phraseBoundariesJson: string;
+    };
+    try {
+      const raw = await get<RawFingerprint>(`/tracks/${id}/sonic-fingerprint`);
+      const parseJson = <T>(s: string, fallback: T): T => {
+        try { return JSON.parse(s) as T; } catch { return fallback; }
+      };
+      return {
+        trackId: raw.trackId,
+        bpmDetected: raw.bpmDetected,
+        energyScoreRefined: raw.energyScoreRefined,
+        confidence: raw.confidence,
+        sourceDurationSec: raw.sourceDurationSec,
+        demucsModel: raw.demucsModel,
+        usedGpu: raw.usedGpu,
+        analysisSchemaVersion: raw.analysisSchemaVersion,
+        sectionJson: parseJson<TrackSection[]>(raw.sectionJson, []),
+        vocalWindowsJson: parseJson<StemWindow[]>(raw.vocalWindowsJson, []),
+        drumWindowsJson: parseJson<StemWindow[]>(raw.drumWindowsJson, []),
+        bassWindowsJson: parseJson<StemWindow[]>(raw.bassWindowsJson, []),
+        transitionWindowsJson: parseJson<TransitionWindow[]>(raw.transitionWindowsJson, []),
+        introOutroRefinedJson: parseJson<IntroOutroRefined>(raw.introOutroRefinedJson, { introEnd: null, outroStart: null }),
+        phraseBoundariesJson: parseJson<number[]>(raw.phraseBoundariesJson, []),
+      };
+    } catch {
+      return null;
+    }
+  },
   generateTrackWaveform: (id: ApiEntityId) => post<TrackWaveformLookupResponse>(`/tracks/${id}/waveform/generate`),
   trackStreamUrl: (id: ApiEntityId) => {
     const base = `${BASE}/api/tracks/${id}/stream`;
@@ -455,6 +504,8 @@ export const api = {
       get<BoogieMixDeepAnalysisStatus>('/boogiemix/deep-analysis/status'),
     queuePlaylistDeepAnalysis: (playlistId: EntityId) =>
       post<{ queued: number }>(`/boogiemix/deep-analysis/playlists/${playlistId}/queue`),
+    playlistDeepAnalysisProgress: (playlistId: EntityId) =>
+      get<import('./types').PlaylistDeepAnalysisProgress>(`/boogiemix/deep-analysis/playlists/${playlistId}/progress`),
     queueLibraryDeepAnalysis: (libraryId: EntityId) =>
       post<{ queued: number }>(`/boogiemix/deep-analysis/libraries/${libraryId}/queue`),
     pauseDeepAnalysisBackground: () =>

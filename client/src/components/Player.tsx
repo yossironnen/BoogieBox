@@ -3,10 +3,11 @@
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import type { ClientEntityId, Track, TrackWaveform, CrossfadeConfig, CrossfadeMode, QueueSource } from '../types';
+import type { ClientEntityId, Track, TrackWaveform, CrossfadeConfig, CrossfadeMode, QueueSource, SonicFingerprint } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import { api } from '../api';
 import WaveformBar, { type WaveformBarStatus } from './WaveformBar';
+import SonicFingerprintPanel from './SonicFingerprintPanel';
 import VinylTurntable from './VinylTurntable';
 import { playNeedleDrop, preloadVinylFx } from '../audio/VinylFxEngine';
 import {
@@ -1629,6 +1630,9 @@ export default function Player({
   const [audioError,  setAudioError]  = useState<string | null>(null);
   const [waveform,    setWaveform]    = useState<TrackWaveform | null>(null);
   const [waveformStatus, setWaveformStatus] = useState<WaveformBarStatus>('loading');
+  const [sonicFingerprint, setSonicFingerprint] = useState<SonicFingerprint | null>(null);
+  const [sonicFingerprintChecked, setSonicFingerprintChecked] = useState(false);
+  const [showSonicFingerprint, setShowSonicFingerprint] = useState(false);
   const [audioReady,  setAudioReady]  = useState(false);
   const [vizMode,     setVizMode]     = useState<VizMode>(() => {
     try { return normalizeVizMode(localStorage.getItem('vizMode')); } catch { return 'bars'; }
@@ -2076,6 +2080,21 @@ export default function Player({
       stopWaveformPoll();
     };
   }, [currentTrack, stopWaveformPoll]);
+
+  // ─── Load sonic fingerprint when track changes ─────────────────────────
+  useEffect(() => {
+    setSonicFingerprint(null);
+    setSonicFingerprintChecked(false);
+    setShowSonicFingerprint(false);
+    if (!currentTrack) return;
+    let cancelled = false;
+    api.trackSonicFingerprint(currentTrack.id).then(fp => {
+      if (!cancelled) { setSonicFingerprint(fp); setSonicFingerprintChecked(true); }
+    }).catch(() => {
+      if (!cancelled) { setSonicFingerprint(null); setSonicFingerprintChecked(true); }
+    });
+    return () => { cancelled = true; };
+  }, [currentTrack]);
 
   // ─── Cancel crossfade on track change or skip ──────────────────────────
   const cancelCrossfade = useCallback(() => {
@@ -2731,30 +2750,121 @@ export default function Player({
             </div>
           </div>
         ) : (
-          <div style={P.progressArea} data-testid="player-progress-area">
-            {audioError
-              ? <span style={{ color: '#ef4444', fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>? {audioError}</span>
-              : <>
-                  <span style={P.timeLabel}>{fmt(currentTime)}</span>
-                  {showWaveformProgress ? (
-                    <WaveformBar
-                      points={waveformPoints}
-                      duration={duration || 0}
-                      currentTime={currentTime}
-                      status={waveformStatus}
-                      onSeek={(time) => seekToTime(time, false)}
-                      onSeekStart={() => setSeeking(true)}
-                      onSeekEnd={(time) => seekToTime(time, true)}
-                    />
-                  ) : (
-                    <Slider value={currentTime} max={duration || 1}
-                      onChange={v => { seekValueRef.current = v; setCurrentTime(v); }}
-                      onSeekStart={() => setSeeking(true)}
-                      onSeekEnd={() => { setSeeking(false); const a = getActiveAudio(); if (a) a.currentTime = seekValueRef.current; }} />
-                  )}
-                  <span style={P.timeLabel}>{fmt(duration)}</span>
-                </>
-            }
+          /* Wrapper takes the progress-area flex slot; stacks badge row, panel, waveform vertically */
+          <div
+            data-testid="player-progress-area"
+            style={{
+              flex: '1 1 0',
+              width: PLAYER_LAYOUT.progressWidth,
+              maxWidth: PLAYER_LAYOUT.progressMaxWidth,
+              minWidth: PLAYER_LAYOUT.progressMinWidth,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            {/* Sonic Fingerprint badge row */}
+            {sonicFingerprintChecked && (
+              <div
+                data-testid="sonic-fingerprint-badge-row"
+                style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}
+              >
+                {sonicFingerprint ? (
+                  <>
+                    {sonicFingerprint.bpmDetected != null && (
+                      <span
+                        style={P.fpBadge}
+                        data-testid="fp-badge-bpm"
+                        title="Beats per minute — detected by AI stem analysis"
+                      >
+                        ♩ {Math.round(sonicFingerprint.bpmDetected)} BPM
+                      </span>
+                    )}
+                    <span
+                      style={P.fpBadge}
+                      data-testid="fp-badge-energy"
+                      title="Energy score — overall intensity derived from stem activity (0–100%)"
+                    >
+                      ⚡ {Math.round(sonicFingerprint.energyScoreRefined * 100)}%
+                    </span>
+                    <span
+                      style={P.fpBadge}
+                      data-testid="fp-badge-confidence"
+                      title="Analysis confidence — how reliable the AI stem analysis is (values below 30% indicate synthetic fallback data; real Demucs analysis required for full detail)"
+                    >
+                      ◎ {Math.round(sonicFingerprint.confidence * 100)}%
+                    </span>
+                    <button
+                      style={{
+                        ...P.fpBadge,
+                        cursor: 'pointer',
+                        border: '1px solid var(--border)',
+                        backgroundColor: showSonicFingerprint ? 'var(--accent)' : 'var(--surface)',
+                        color: showSonicFingerprint ? '#fff' : 'var(--text-muted)',
+                      }}
+                      data-testid="fp-toggle-button"
+                      onClick={() => setShowSonicFingerprint(v => !v)}
+                      title="Show or hide the full Sonic Fingerprint panel — stem heatmap, energy curve, and section map"
+                      aria-label={showSonicFingerprint ? 'Hide Sonic Fingerprint' : 'Show Sonic Fingerprint'}
+                    >
+                      {showSonicFingerprint ? 'Hide Fingerprint' : 'Sonic Fingerprint ✦'}
+                    </button>
+                  </>
+                ) : (
+                  <span
+                    style={{ ...P.fpBadge, opacity: 0.45 }}
+                    data-testid="fp-badge-unavailable"
+                    title="This track has not been deep-analyzed yet. Run BoogieMix High Quality on a playlist containing this track to generate its Sonic Fingerprint."
+                  >
+                    ✦ No Sonic Fingerprint
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Expandable Sonic Fingerprint panel */}
+            {sonicFingerprint && showSonicFingerprint && (
+              <SonicFingerprintPanel
+                fingerprint={sonicFingerprint}
+                waveformPoints={waveformPoints}
+                waveformStatus={waveformStatus}
+                duration={duration || 0}
+                currentTime={currentTime}
+                onSeek={(time) => seekToTime(time, false)}
+                onSeekStart={() => setSeeking(true)}
+                onSeekEnd={(time) => seekToTime(time, true)}
+                onClose={() => setShowSonicFingerprint(false)}
+              />
+            )}
+
+            {/* Standard progress row: time + waveform/slider + time */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {audioError
+                ? <span style={{ color: '#ef4444', fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>? {audioError}</span>
+                : <>
+                    <span style={P.timeLabel}>{fmt(currentTime)}</span>
+                    {showWaveformProgress ? (
+                      <WaveformBar
+                        points={waveformPoints}
+                        duration={duration || 0}
+                        currentTime={currentTime}
+                        status={waveformStatus}
+                        onSeek={(time) => seekToTime(time, false)}
+                        onSeekStart={() => setSeeking(true)}
+                        onSeekEnd={(time) => seekToTime(time, true)}
+                        sections={sonicFingerprint?.sectionJson}
+                        transitionWindows={sonicFingerprint?.transitionWindowsJson}
+                      />
+                    ) : (
+                      <Slider value={currentTime} max={duration || 1}
+                        onChange={v => { seekValueRef.current = v; setCurrentTime(v); }}
+                        onSeekStart={() => setSeeking(true)}
+                        onSeekEnd={() => { setSeeking(false); const a = getActiveAudio(); if (a) a.currentTime = seekValueRef.current; }} />
+                    )}
+                    <span style={P.timeLabel}>{fmt(duration)}</span>
+                  </>
+              }
+            </div>
           </div>
         )}
 
@@ -3004,6 +3114,19 @@ const P: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
+  },
+  fpBadge: {
+    fontSize: 10,
+    lineHeight: '14px',
+    padding: '2px 7px',
+    borderRadius: 4,
+    border: '1px solid var(--border)',
+    backgroundColor: 'var(--surface)',
+    color: 'var(--text-muted)',
+    whiteSpace: 'nowrap' as const,
+    fontVariantNumeric: 'tabular-nums',
+    cursor: 'default',
+    fontFamily: 'inherit',
   },
   vinylArea: {
     flex: '1 1 0',

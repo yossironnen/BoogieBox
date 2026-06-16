@@ -1,4 +1,4 @@
-﻿//! Defines Rust API routes for Boogiemix Routes server behavior.
+//! Defines Rust API routes for Boogiemix Routes server behavior.
 
 use axum::{
     body::Body,
@@ -12,10 +12,10 @@ use boogiebox_db::{
     boogiemix::{
         cancel_mix_job, clear_deep_analysis_cache, count_playlist_deep_analysis_ready,
         enqueue_mix_job, get_deep_analysis_cache_status, get_deep_analysis_queue_status,
-        get_mix_job, get_mix_job_logs, get_mix_output_file, get_mix_transitions, get_setting,
-        list_mix_outputs, queue_library_deep_analysis, queue_playlist_deep_analysis,
-        DeepAnalysisCacheStatus, DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow,
-        MixTransitionRow,
+        get_mix_job, get_mix_job_logs, get_mix_output_file, get_mix_transitions,
+        get_playlist_deep_analysis_progress, get_setting, list_mix_outputs,
+        queue_library_deep_analysis, queue_playlist_deep_analysis, DeepAnalysisCacheStatus,
+        DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow, MixTransitionRow,
     },
     music::coerce_entity_id,
     upsert_setting,
@@ -118,6 +118,10 @@ pub fn boogiemix_router(state: SharedState) -> Router {
         .route(
             "/api/boogiemix/deep-analysis/playlists/{playlistId}/queue",
             post(queue_playlist_deep_analysis_handler),
+        )
+        .route(
+            "/api/boogiemix/deep-analysis/playlists/{playlistId}/progress",
+            get(playlist_deep_analysis_progress_handler),
         )
         .route(
             "/api/boogiemix/deep-analysis/libraries/{libraryId}/queue",
@@ -557,6 +561,25 @@ async fn queue_playlist_deep_analysis_handler(
                 Json(serde_json::json!({ "queued": queued })),
             )
                 .into_response(),
+            Err(e) => internal_error(&e.to_string()),
+        },
+        Err(_) => internal_error("DB lock failed"),
+    };
+    result
+}
+
+async fn playlist_deep_analysis_progress_handler(
+    State(state): State<SharedState>,
+    AdminUser(_user): AdminUser,
+    Path(playlist_id_raw): Path<String>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let playlist_id = coerce_entity_id(&playlist_id_raw);
+    let result = match db.lock() {
+        Ok(conn) => match get_playlist_deep_analysis_progress(&conn, &playlist_id) {
+            Ok(progress) => (StatusCode::OK, Json(progress)).into_response(),
             Err(e) => internal_error(&e.to_string()),
         },
         Err(_) => internal_error("DB lock failed"),

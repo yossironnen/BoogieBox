@@ -233,6 +233,25 @@ pub struct DeepAnalysisQueueStatus {
     pub done: i64,
 }
 
+/// Per-playlist deep analysis progress counts.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistDeepAnalysisProgress {
+    pub total: i64,
+    pub pending: i64,
+    pub running: i64,
+    pub done: i64,
+    pub failed: i64,
+    pub skipped: i64,
+    pub not_queued: i64,
+    /// Tracks with any saved deep-analysis cache row.
+    pub analyzed_cached: i64,
+    /// Tracks with real (non-synthetic) deep analysis stored.
+    pub analyzed_real: i64,
+    /// Tracks with saved synthetic fallback rows.
+    pub analyzed_fallback: i64,
+}
+
 /// Public Deep Analysis Cache Status data shape used by BoogieBox.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1080,6 +1099,59 @@ pub fn get_deep_analysis_cache_status(
     .map_err(JobError::Db)
 }
 
+/// Returns per-playlist deep analysis progress counts.
+pub fn get_playlist_deep_analysis_progress(
+    conn: &Connection,
+    playlist_id: &EntityId,
+) -> Result<PlaylistDeepAnalysisProgress, JobError> {
+    let row = conn
+        .query_row(
+            "SELECT
+           COUNT(DISTINCT pt.track_id),
+           COUNT(DISTINCT CASE WHEN daj.status='pending' THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN daj.status='running' THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN daj.status='done'    THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN daj.status='failed'  THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN daj.status='skipped' THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN daj.track_id IS NULL THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN tda.track_id IS NOT NULL THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN tda.confidence > 0.25 THEN pt.track_id END),
+           COUNT(DISTINCT CASE WHEN tda.track_id IS NOT NULL AND tda.confidence <= 0.25 THEN pt.track_id END)
+         FROM playlist_tracks pt
+         LEFT JOIN deep_analysis_jobs daj ON daj.track_id = pt.track_id
+         LEFT JOIN track_deep_analysis tda ON tda.track_id = pt.track_id
+         WHERE pt.playlist_id = ?1",
+            params![playlist_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                ))
+            },
+        )
+        .map_err(JobError::Db)?;
+    Ok(PlaylistDeepAnalysisProgress {
+        total: row.0,
+        pending: row.1,
+        running: row.2,
+        done: row.3,
+        failed: row.4,
+        skipped: row.5,
+        not_queued: row.6,
+        analyzed_cached: row.7,
+        analyzed_real: row.8,
+        analyzed_fallback: row.9,
+    })
+}
+
 fn compact_feature_size(json_fields: &[&str]) -> usize {
     json_fields.iter().map(|field| field.len()).sum()
 }
@@ -1716,6 +1788,86 @@ pub fn get_mix_output_dir_from_db(conn: &Connection) -> Option<String> {
     })
 }
 
+/// Public Sonic Fingerprint data shape returned by the per-track fingerprint endpoint.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SonicFingerprintRow {
+    /// Documents the Track Id public API surface.
+    pub track_id: String,
+    /// BPM from the tracks table (detected by FFmpeg/BPM analysis).
+    pub bpm_detected: Option<f64>,
+    /// Overall energy score (0–1) from deep analysis.
+    pub energy_score_refined: f64,
+    /// Confidence score (0–1) from deep analysis.
+    pub confidence: f64,
+    /// Source audio duration in seconds.
+    pub source_duration_sec: Option<f64>,
+    /// Demucs model used for stem separation.
+    pub demucs_model: String,
+    /// Whether GPU was used during analysis.
+    pub used_gpu: bool,
+    /// Schema version of the stored analysis data.
+    pub analysis_schema_version: i64,
+    /// JSON array of TrackSection objects.
+    pub section_json: String,
+    /// JSON array of StemWindow objects for vocals.
+    pub vocal_windows_json: String,
+    /// JSON array of StemWindow objects for drums.
+    pub drum_windows_json: String,
+    /// JSON array of StemWindow objects for bass.
+    pub bass_windows_json: String,
+    /// JSON array of TransitionWindow objects.
+    pub transition_windows_json: String,
+    /// JSON object with introEnd / outroStart timestamps.
+    pub intro_outro_refined_json: String,
+    /// JSON array of phrase boundary timestamps (seconds).
+    pub phrase_boundaries_json: String,
+}
+
+/// Returns the sonic fingerprint for the given track, or None if no deep analysis exists.
+pub fn get_track_sonic_fingerprint(
+    conn: &Connection,
+    track_id: &EntityId,
+) -> Result<Option<SonicFingerprintRow>, JobError> {
+    let id_str = match track_id {
+        EntityId::Str(s) => s.clone(),
+        EntityId::Int(n) => n.to_string(),
+    };
+    conn.query_row(
+        "SELECT tda.track_id, tda.analysis_schema_version, tda.demucs_model, tda.used_gpu,
+                tda.energy_score_refined, tda.confidence, tda.source_duration_sec,
+                tda.section_json, tda.vocal_windows_json, tda.drum_windows_json,
+                tda.bass_windows_json, tda.transition_windows_json,
+                tda.intro_outro_refined_json, tda.phrase_boundaries_json,
+                t.bpm_detected
+         FROM track_deep_analysis tda
+         JOIN tracks t ON t.id = tda.track_id
+         WHERE tda.track_id = ?1",
+        params![id_str],
+        |r| {
+            Ok(SonicFingerprintRow {
+                track_id: r.get::<_, String>(0)?,
+                analysis_schema_version: r.get(1)?,
+                demucs_model: r.get(2)?,
+                used_gpu: r.get::<_, i64>(3)? != 0,
+                energy_score_refined: r.get(4)?,
+                confidence: r.get(5)?,
+                source_duration_sec: r.get(6)?,
+                section_json: r.get(7)?,
+                vocal_windows_json: r.get(8)?,
+                drum_windows_json: r.get(9)?,
+                bass_windows_json: r.get(10)?,
+                transition_windows_json: r.get(11)?,
+                intro_outro_refined_json: r.get(12)?,
+                phrase_boundaries_json: r.get(13)?,
+                bpm_detected: r.get(14)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(JobError::Db)
+}
+
 /// Documents the Get Setting public API surface.
 pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row(
@@ -1909,6 +2061,34 @@ mod tests {
     }
 
     #[test]
+    fn playlist_progress_counts_cached_real_and_fallback_rows() {
+        let conn = setup_deep_db();
+        conn.execute_batch(
+            r#"
+            INSERT INTO playlist_tracks(id, playlist_id, track_id, position)
+            VALUES('pt2', 'playlist-1', 't2', 1);
+            INSERT INTO track_deep_analysis(track_id, analysis_version, file_fingerprint, confidence)
+            VALUES('t1', 1, 'fp-real', 0.82),
+                  ('t2', 1, 'fp-fallback', 0.2);
+            INSERT INTO deep_analysis_jobs(id, track_id, status, priority, file_fingerprint)
+            VALUES('job-real', 't1', 'done', 70, 'fp-real'),
+                  ('job-fallback', 't2', 'done', 70, 'fp-fallback');
+            "#,
+        )
+        .unwrap();
+
+        let progress =
+            get_playlist_deep_analysis_progress(&conn, &EntityId::Str("playlist-1".into()))
+                .unwrap();
+
+        assert_eq!(progress.total, 2);
+        assert_eq!(progress.done, 2);
+        assert_eq!(progress.analyzed_cached, 2);
+        assert_eq!(progress.analyzed_real, 1);
+        assert_eq!(progress.analyzed_fallback, 1);
+    }
+
+    #[test]
     fn claims_and_completes_deep_analysis_job_with_uuid_track_id() {
         let conn = setup_deep_db();
         let track = track("t1", "D:\\Music\\one.mp3", Some(180.0));
@@ -2071,5 +2251,50 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM track_deep_analysis", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn sonic_fingerprint_returns_none_for_unanalyzed_track() {
+        let conn = setup_deep_db();
+        let track_id = EntityId::Str("t1".to_string());
+        let result = get_track_sonic_fingerprint(&conn, &track_id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn sonic_fingerprint_returns_row_with_bpm_join() {
+        let conn = setup_deep_db();
+        // Give t1 a BPM value
+        conn.execute("UPDATE tracks SET bpm_detected=128.5 WHERE id='t1'", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO track_deep_analysis(
+               track_id, analysis_version, analysis_schema_version, file_fingerprint,
+               energy_score_refined, confidence, source_duration_sec,
+               section_json, vocal_windows_json, drum_windows_json, bass_windows_json,
+               transition_windows_json, intro_outro_refined_json, phrase_boundaries_json
+             ) VALUES('t1', 1, 2, 'fp1', 0.75, 0.88, 180.0,
+               '[{\"kind\":\"intro\"}]', '[{\"start\":0}]', '[]', '[]', '[]', '{}', '[]')",
+            [],
+        )
+        .unwrap();
+        let track_id = EntityId::Str("t1".to_string());
+        let row = get_track_sonic_fingerprint(&conn, &track_id)
+            .unwrap()
+            .expect("should have a row");
+        assert_eq!(row.track_id, "t1");
+        assert!((row.bpm_detected.unwrap() - 128.5).abs() < 0.01);
+        assert!((row.energy_score_refined - 0.75).abs() < 0.01);
+        assert!((row.confidence - 0.88).abs() < 0.01);
+        assert_eq!(row.analysis_schema_version, 2);
+        assert!(row.section_json.contains("intro"));
+    }
+
+    #[test]
+    fn sonic_fingerprint_returns_none_for_unknown_track_id() {
+        let conn = setup_deep_db();
+        let track_id = EntityId::Str("does-not-exist".to_string());
+        let result = get_track_sonic_fingerprint(&conn, &track_id).unwrap();
+        assert!(result.is_none());
     }
 }

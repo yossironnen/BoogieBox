@@ -461,3 +461,56 @@ describe('api.dlna', () => {
   });
 });
 
+describe('api.trackSonicFingerprint', () => {
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('returns null when server returns 404', async () => {
+    vi.mocked(fetch).mockReturnValue(errJson(404, 'not_analyzed'));
+    const result = await api.trackSonicFingerprint('track-1');
+    expect(result).toBeNull();
+  });
+
+  it('parses JSON string fields from raw server response', async () => {
+    const raw = {
+      trackId: 'track-1',
+      bpmDetected: 130,
+      energyScoreRefined: 0.8,
+      confidence: 0.9,
+      sourceDurationSec: 200,
+      demucsModel: 'htdemucs',
+      usedGpu: false,
+      analysisSchemaVersion: 2,
+      sectionJson: '[{"kind":"intro","start":0,"end":20,"confidence":0.9,"vocalDensity":0,"drumDensity":0,"energy":0.2}]',
+      vocalWindowsJson: '[{"start":20,"end":100,"strength":0.8,"average":0.7}]',
+      drumWindowsJson: '[]',
+      bassWindowsJson: '[]',
+      transitionWindowsJson: '[]',
+      introOutroRefinedJson: '{"introEnd":20,"outroStart":180}',
+      phraseBoundariesJson: '[0,16,32]',
+    };
+    vi.mocked(fetch).mockReturnValue(okJson(raw));
+    const result = await api.trackSonicFingerprint('track-1');
+    expect(result).not.toBeNull();
+    expect(result!.bpmDetected).toBe(130);
+    expect(result!.sectionJson).toHaveLength(1);
+    expect(result!.sectionJson[0].kind).toBe('intro');
+    expect(result!.vocalWindowsJson).toHaveLength(1);
+    expect(result!.introOutroRefinedJson.introEnd).toBe(20);
+    expect(result!.phraseBoundariesJson).toEqual([0, 16, 32]);
+  });
+
+  it('calls the correct endpoint URL', async () => {
+    const raw = {
+      trackId: 'abc', bpmDetected: null, energyScoreRefined: 0.5, confidence: 0.5,
+      sourceDurationSec: null, demucsModel: 'htdemucs', usedGpu: false, analysisSchemaVersion: 2,
+      sectionJson: '[]', vocalWindowsJson: '[]', drumWindowsJson: '[]', bassWindowsJson: '[]',
+      transitionWindowsJson: '[]', introOutroRefinedJson: '{}', phraseBoundariesJson: '[]',
+    };
+    vi.mocked(fetch).mockReturnValue(okJson(raw));
+    await api.trackSonicFingerprint('abc-123');
+    const [url] = vi.mocked(fetch).mock.calls[0] as [string];
+    expect(url).toContain('/api/tracks/abc-123/sonic-fingerprint');
+  });
+});
+

@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api';
-import type { Playlist, PlaylistTrack, Track, CrossfadeMode, BoogieMixDeepAnalysisStatus, BoogieMixJob, ClientEntityId } from '../types';
+import type { Playlist, PlaylistTrack, Track, CrossfadeMode, BoogieMixDeepAnalysisStatus, BoogieMixJob, ClientEntityId, PlaylistDeepAnalysisProgress } from '../types';
 import type { EntityId } from '../entityId';
 import { parseServerDate } from '../utils';
 import { phase2 } from '../uiPhase2';
@@ -319,6 +319,9 @@ function DraggableTrackRow({
         <div style={T.title}>{track.title || track.file_name}</div>
         <div style={T.sub}>{[track.artist, track.album].filter(Boolean).join(' · ')}</div>
       </div>
+      {track.has_deep_analysis && (
+        <span style={{ fontSize: 10, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available — AI stem analysis complete">✦</span>
+      )}
       <div style={T.dur}>{fmtTrackDur(track.duration)}</div>
       <button style={T.removeBtn} onClick={(e) => { e.stopPropagation(); onRemove(); }} title="Remove from playlist"><TrashIcon /></button>
     </div>
@@ -373,6 +376,10 @@ function PlaylistDetail({
   const [mixQuality, setMixQuality] = useState<'standard' | 'high_quality'>('standard');
   const [mixCrossfade, setMixCrossfade] = useState(16);
   const [deepStatus, setDeepStatus] = useState<BoogieMixDeepAnalysisStatus | null>(null);
+  const [deepRunning, setDeepRunning] = useState(false);
+  const [deepProgress, setDeepProgress] = useState<PlaylistDeepAnalysisProgress | null>(null);
+  const [deepQueuedCount, setDeepQueuedCount] = useState(0);
+  const [deepError, setDeepError] = useState('');
 
   const loadTracks = useCallback(async () => {
     setLoading(true);
@@ -518,6 +525,39 @@ function PlaylistDetail({
     }
   };
 
+  const runDeepAnalysis = async () => {
+    if (!api.boogiemix) return;
+    setDeepError('');
+    setDeepRunning(true);
+    setDeepProgress(null);
+    try {
+      const result = await api.boogiemix.queuePlaylistDeepAnalysis(playlist.id);
+      setDeepQueuedCount(result.queued);
+      const prog = await api.boogiemix.playlistDeepAnalysisProgress(playlist.id);
+      setDeepProgress(prog);
+    } catch (e: any) {
+      setDeepError(e?.message || 'Failed to queue deep analysis');
+      setDeepRunning(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!deepRunning || !api.boogiemix) return;
+    let stopped = false;
+    const timer = setInterval(async () => {
+      try {
+        const prog = await api.boogiemix!.playlistDeepAnalysisProgress(playlist.id);
+        if (stopped) return;
+        setDeepProgress(prog);
+        if (prog.pending === 0 && prog.running === 0) {
+          clearInterval(timer);
+          setDeepRunning(false);
+        }
+      } catch {}
+    }, 2000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [deepRunning, playlist.id]);
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
       {/* Header */}
@@ -558,6 +598,14 @@ function PlaylistDetail({
             title="BoogieMix is experimental"
           >
             <MixIcon /> BoogieMix (Experimental)
+          </button>
+          <button
+            style={PD.btnSecondary}
+            onClick={runDeepAnalysis}
+            disabled={!api.boogiemix || tracks.length === 0 || deepRunning}
+            title="Run Demucs deep analysis on all tracks in this playlist. Replaces synthetic placeholder data with real AI stem analysis."
+          >
+            ⚡ Deep Analysis
           </button>
           <select
             value={mixStyle}
@@ -704,11 +752,20 @@ function PlaylistDetail({
       <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
         {/* Track list */}
         <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 0 }}>
-          {(mixJob || mixError || mixOutputs.length > 0 || deepFallbackMessage) && (
+          {(deepRunning || deepProgress || deepError || mixJob || mixError || mixOutputs.length > 0 || deepFallbackMessage) && (
             <div style={{ borderBottom: '1px solid var(--border)', padding: '10px 12px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
               <div style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
                 BoogieMix is experimental and may produce inconsistent results.
               </div>
+              {(deepRunning || deepProgress || deepError) && (
+                <DeepAnalysisProgressPanel
+                  progress={deepProgress}
+                  running={deepRunning}
+                  queuedCount={deepQueuedCount}
+                  error={deepError}
+                  onDismiss={() => { setDeepProgress(null); setDeepError(''); setDeepRunning(false); }}
+                />
+              )}
               {mixJob && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                   BoogieMix: {mixJob.status} · {mixJob.progress_percent ?? 0}% {mixJob.current_step ? `· ${mixJob.current_step}` : ''}
@@ -856,6 +913,83 @@ const PD: Record<string, React.CSSProperties> = {
   btnSecondary: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.04)', color: 'var(--text)', border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)', borderRadius: 999, padding: '9px 14px', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', fontWeight: 600 },
   iconBtn: { display: 'flex', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.04)', color: 'var(--text-muted)', border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)', borderRadius: 999, padding: '9px 10px', cursor: 'pointer' },
 };
+
+// ─── Deep Analysis Progress Panel ────────────────────────────────────────────
+
+function DeepAnalysisProgressPanel({
+  progress,
+  running,
+  queuedCount,
+  error,
+  onDismiss,
+}: {
+  progress: PlaylistDeepAnalysisProgress | null;
+  running: boolean;
+  queuedCount: number;
+  error: string;
+  onDismiss: () => void;
+}) {
+  const total = progress?.total ?? 0;
+  const done = (progress?.done ?? 0) + (progress?.skipped ?? 0);
+  const active = progress?.running ?? 0;
+  const pending = progress?.pending ?? 0;
+  const analyzedReal = progress?.analyzedReal ?? 0;
+  const analyzedCached = progress?.analyzedCached ?? analyzedReal;
+  const analyzedFallback = progress?.analyzedFallback ?? Math.max(0, analyzedCached - analyzedReal);
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const finished = !running && total > 0;
+
+  return (
+    <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>
+          {running ? '⚡ Deep Analysis Running' : finished ? '✓ Deep Analysis Complete' : '⚡ Deep Analysis'}
+        </span>
+        <button
+          onClick={onDismiss}
+          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 13, lineHeight: 1, padding: '0 2px' }}
+          title="Dismiss"
+        >
+          ×
+        </button>
+      </div>
+      {error && <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 4 }}>{error}</div>}
+      {progress && (
+        <>
+          <div style={{ width: '100%', height: 6, borderRadius: 3, backgroundColor: 'var(--border)', overflow: 'hidden', marginBottom: 6 }}>
+            <div style={{ height: '100%', width: `${pct}%`, borderRadius: 3, backgroundColor: finished ? '#22c55e' : 'var(--accent)', transition: 'width 0.4s ease' }} />
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <span>{done}/{total} processed</span>
+            {active > 0 && <span style={{ color: 'var(--accent)' }}>{active} running</span>}
+            {pending > 0 && <span>{pending} queued</span>}
+            <span>{analyzedCached} cached</span>
+            <span style={{ color: '#22c55e' }}>{analyzedReal} with real analysis</span>
+            {analyzedFallback > 0 && <span style={{ color: '#f59e0b' }}>{analyzedFallback} fallback</span>}
+            {progress.failed > 0 && <span style={{ color: '#ef4444' }}>{progress.failed} failed</span>}
+          </div>
+          {running && active > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+              Processing with Demucs CPU analysis — this may take several minutes per track.
+            </div>
+          )}
+          {finished && (
+            <div style={{ fontSize: 11, color: '#22c55e', marginTop: 4 }}>
+              {analyzedCached} track{analyzedCached !== 1 ? 's' : ''} have saved deep-analysis data.
+              {analyzedFallback > 0 ? ` ${analyzedFallback} are fallback rows; real Demucs stem analysis did not complete for those tracks.` : ''}
+              {progress.failed > 0 ? ` ${progress.failed} failed.` : ''}
+            </div>
+          )}
+        </>
+      )}
+      {!progress && running && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          Queued {queuedCount} track{queuedCount !== 1 ? 's' : ''} for analysis…
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Sidebar: Playlist List ───────────────────────────────────────────────────
 

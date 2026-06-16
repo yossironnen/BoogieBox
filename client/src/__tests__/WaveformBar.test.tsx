@@ -137,4 +137,53 @@ describe('WaveformBar component', () => {
     expect(screen.getByTestId('waveform-hover-marker')).toBeInTheDocument();
     expect(screen.getByTestId('waveform-tooltip').textContent).toBe('0:45');
   });
+
+  it('renders section-band strip when sections are provided', () => {
+    render(
+      <WaveformBar
+        points={null}
+        duration={200}
+        currentTime={0}
+        status="ready"
+        onSeek={() => {}}
+        sections={[
+          { kind: 'intro', start: 0, end: 20, confidence: 0.9, vocalDensity: 0, drumDensity: 0, energy: 0.2 },
+          { kind: 'verse', start: 20, end: 80, confidence: 0.9, vocalDensity: 0.8, drumDensity: 0.7, energy: 0.6 },
+          { kind: 'chorus', start: 80, end: 130, confidence: 0.9, vocalDensity: 1, drumDensity: 0.9, energy: 0.9 },
+        ]}
+      />,
+    );
+    expect(screen.getByTestId('section-band')).toBeInTheDocument();
+    expect(screen.getAllByTestId('section-segment')).toHaveLength(3);
+  });
+
+  it('does not render section-band when sections prop is absent', () => {
+    render(
+      <WaveformBar
+        points={null}
+        duration={200}
+        currentTime={0}
+        status="ready"
+        onSeek={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('section-band')).toBeNull();
+  });
+
+  it('renders transition window markers when transitionWindows are provided', () => {
+    render(
+      <WaveformBar
+        points={null}
+        duration={200}
+        currentTime={0}
+        status="ready"
+        onSeek={() => {}}
+        transitionWindows={[
+          { role: 'intro', start: 0, end: 20, score: 0.8, vocalRisk: 0.1, drumContinuity: 0.9, bassRisk: 0.1, energy: 0.3, recommended: true },
+          { role: 'outro', start: 170, end: 200, score: 0.7, vocalRisk: 0.1, drumContinuity: 0.5, bassRisk: 0.2, energy: 0.4, recommended: false },
+        ]}
+      />,
+    );
+    expect(screen.getAllByTestId('transition-window-marker')).toHaveLength(2);
+  });
 });

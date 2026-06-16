@@ -1584,6 +1584,9 @@ function TrackList({
                 subdued={hoveredTrackId !== track.id && !track.rating}
               />
             </div>
+            {track.has_deep_analysis && (
+              <span style={{ fontSize: 10, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available — AI stem analysis complete">✦</span>
+            )}
             <div style={{ ...L.meta, minWidth: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
               {fmtTrackDur(track.duration)}
             </div>

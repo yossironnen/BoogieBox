@@ -24,7 +24,7 @@ use tokio::{process::Command, time::timeout};
 
 const DEEP_ANALYSIS_VERSION: i64 = 1;
 const DEFAULT_MODEL: &str = "htdemucs";
-const DEFAULT_TIMEOUT_MS: u64 = 8 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS: u64 = 90 * 60 * 1000;
 
 #[derive(Debug, Clone)]
 struct DeepSettings {
@@ -369,7 +369,7 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
     let timeout_ms = get_setting(&conn, "boogiemixDeepAnalysisTimeoutMs")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(DEFAULT_TIMEOUT_MS)
-        .clamp(30_000, 30 * 60_000);
+        .clamp(30_000, 4 * 60 * 60_000);
     let prefer_gpu = parse_bool(
         get_setting(&conn, "boogiemixDeepAnalysisPreferGpu").as_deref(),
         true,
