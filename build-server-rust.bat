@@ -139,6 +139,12 @@ if exist "%WINSW_CACHE_EXE%" (
 )
 
 if exist "Services\boogiemix\python" (
+  echo  Building madmom wheels for bundled installation...
+  call Services\boogiemix\python\build-wheels.bat
+  if errorlevel 1 (
+    echo [WARN] madmom wheel build incomplete. Targets without MSVC Build Tools will lack neural beat tracking.
+  )
+
   mkdir "%DIST_DIR%\resources\Services\boogiemix" >nul 2>nul
   xcopy /e /q "Services\boogiemix\python" "%DIST_DIR%\resources\Services\boogiemix\python\" >nul
   IF ERRORLEVEL 1 (echo [ERROR] Failed to copy BoogieMix Python assets & exit /b 1)

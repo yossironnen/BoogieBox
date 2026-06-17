@@ -465,34 +465,65 @@ async fn detect_python() -> Option<PythonInvocation> {
 }
 
 fn python_candidates() -> Vec<PythonInvocation> {
-    let rel = PathBuf::from("Services")
-        .join("boogiemix")
-        .join("python")
-        .join(".venv")
-        .join("Scripts")
-        .join("python.exe");
-    candidate_roots()
-        .into_iter()
-        .map(|dir| dir.join(&rel))
-        .filter(|path| path.is_file())
-        .map(|path| PythonInvocation {
-            display_name: path.display().to_string(),
-            command: path,
-            base_args: Vec::new(),
-        })
-        .collect()
+    // Check both the dev layout (repo-root/Services/...) and the installed layout
+    // (exe-dir/resources/Services/...) for the managed venv python.exe.
+    let rels: &[&[&str]] = &[
+        &[
+            "Services",
+            "boogiemix",
+            "python",
+            ".venv",
+            "Scripts",
+            "python.exe",
+        ],
+        &[
+            "resources",
+            "Services",
+            "boogiemix",
+            "python",
+            ".venv",
+            "Scripts",
+            "python.exe",
+        ],
+    ];
+    let mut candidates = Vec::new();
+    for root in candidate_roots() {
+        for rel in rels {
+            let path = rel.iter().fold(root.clone(), |p, s| p.join(s));
+            if path.is_file() {
+                candidates.push(PythonInvocation {
+                    display_name: path.display().to_string(),
+                    command: path,
+                    base_args: Vec::new(),
+                });
+            }
+        }
+    }
+    candidates
 }
 
 fn worker_script_path() -> Option<PathBuf> {
-    let rel = PathBuf::from("Services")
-        .join("boogiemix")
-        .join("python")
-        .join("boogiemix_demucs_worker.py");
-
+    let rels: &[&[&str]] = &[
+        &[
+            "Services",
+            "boogiemix",
+            "python",
+            "boogiemix_demucs_worker.py",
+        ],
+        &[
+            "resources",
+            "Services",
+            "boogiemix",
+            "python",
+            "boogiemix_demucs_worker.py",
+        ],
+    ];
     for root in candidate_roots() {
-        let path = root.join(&rel);
-        if path.is_file() {
-            return Some(path);
+        for rel in rels {
+            let path = rel.iter().fold(root.clone(), |p, s| p.join(s));
+            if path.is_file() {
+                return Some(path);
+            }
         }
     }
     None

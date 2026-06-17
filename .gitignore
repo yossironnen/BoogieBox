@@ -7,6 +7,7 @@ desktop/src-tauri/gen/
 desktop/src-tauri/resources/libmpv/
 Services/boogiemix/python/.venv/
 Services/boogiemix/python/model-cache/
+Services/boogiemix/python/wheels/
 Services/boogiemix/python/__pycache__/
 **/__pycache__/
 *.pyc

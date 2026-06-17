@@ -1005,12 +1005,27 @@ async fn detect_python() -> Option<PythonInvocation> {
 }
 
 fn python_candidates() -> Vec<PythonInvocation> {
-    let exe = PathBuf::from("Services")
-        .join("boogiemix")
-        .join("python")
-        .join(".venv")
-        .join("Scripts")
-        .join("python.exe");
+    // Check both the dev layout (repo-root/Services/...) and the installed layout
+    // (exe-dir/resources/Services/...) for the managed venv python.exe.
+    let rels: &[&[&str]] = &[
+        &[
+            "Services",
+            "boogiemix",
+            "python",
+            ".venv",
+            "Scripts",
+            "python.exe",
+        ],
+        &[
+            "resources",
+            "Services",
+            "boogiemix",
+            "python",
+            ".venv",
+            "Scripts",
+            "python.exe",
+        ],
+    ];
     let mut dirs = Vec::new();
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {
@@ -1027,15 +1042,20 @@ fn python_candidates() -> Vec<PythonInvocation> {
             .join(".."),
     );
 
-    dirs.into_iter()
-        .map(|dir| dir.join(&exe))
-        .filter(|path| path.is_file())
-        .map(|path| PythonInvocation {
-            display_name: "app-local Python runtime".to_string(),
-            command: path,
-            base_args: Vec::new(),
-        })
-        .collect()
+    let mut candidates = Vec::new();
+    for dir in dirs {
+        for rel in rels {
+            let path = rel.iter().fold(dir.clone(), |p, s| p.join(s));
+            if path.is_file() {
+                candidates.push(PythonInvocation {
+                    display_name: "app-local Python runtime".to_string(),
+                    command: path,
+                    base_args: Vec::new(),
+                });
+            }
+        }
+    }
+    candidates
 }
 
 async fn python_min_version(invocation: &PythonInvocation) -> bool {

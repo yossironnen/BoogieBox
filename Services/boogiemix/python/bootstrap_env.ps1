@@ -117,6 +117,34 @@ if ($CpuOnly) {
 }
 
 Invoke-NativeChecked $pip @("install", "--no-build-isolation", "-r", (Join-Path $root "requirements.txt"))
+
+# madmom: try pre-built bundled wheel first, then fall back to PyPI source build (requires MSVC).
+Write-Host "Installing madmom (neural beat tracking)..."
+$wheelsDir = Join-Path $root "wheels"
+$madmomOk = $false
+
+if (Test-Path $wheelsDir) {
+  Write-Host "  Trying bundled wheel from $wheelsDir..."
+  & $pip install --find-links $wheelsDir "madmom>=0.16.1" 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    $madmomOk = $true
+    Write-Host "  madmom installed from bundled wheel."
+  } else {
+    Write-Warning "  No compatible bundled wheel found — trying PyPI source build..."
+  }
+}
+
+if (-not $madmomOk) {
+  & $pip install "madmom>=0.16.1" 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    $madmomOk = $true
+    Write-Host "  madmom installed from source."
+  } else {
+    Write-Warning "madmom install failed — neural beat tracking will be unavailable."
+    Write-Warning "To fix: run Services\boogiemix\python\build-wheels.bat on the build machine (requires MSVC Build Tools), then rebuild and redeploy."
+  }
+}
+
 Invoke-NativeChecked $py @("-c", "import torch, demucs")
 
 if ($PrimeDemucsModel) {
