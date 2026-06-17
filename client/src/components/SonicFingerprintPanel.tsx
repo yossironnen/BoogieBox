@@ -110,33 +110,49 @@ export default function SonicFingerprintPanel({
   const energyPoints = energyBins
     .map((v, i) => `${((i / DISPLAY_BINS) * 100).toFixed(2)}%,${((1 - v) * 28 + 2).toFixed(1)}`)
     .join(' ');
+  const energyFillPoints = `0%,32 ${energyPoints} 100%,32`;
 
   const bpmLabel = fingerprint.bpmDetected != null
-    ? `${Math.round(fingerprint.bpmDetected)} BPM`
+    ? `♩ ${Math.round(fingerprint.bpmDetected)} BPM`
     : null;
-  const energyLabel = `Energy ${Math.round(fingerprint.energyScoreRefined * 100)}%`;
-  const confLabel = `Confidence ${Math.round(fingerprint.confidence * 100)}%`;
+  const energyLabel = `⚡ Energy ${Math.round(fingerprint.energyScoreRefined * 100)}%`;
+  const confLabel = `◎ Confidence ${Math.round(fingerprint.confidence * 100)}%`;
 
   return (
     <div
       data-testid="sonic-fingerprint-panel"
       style={{
         width: '100%',
-        padding: '8px 0 4px',
+        background: 'var(--surface)',
+        borderTop: '2px solid var(--accent)',
+        boxShadow: '0 -4px 24px color-mix(in srgb, var(--accent) 18%, transparent), inset 0 1px 0 color-mix(in srgb, var(--accent) 20%, transparent)',
+        padding: '10px 14px 14px',
         display: 'flex',
         flexDirection: 'column',
-        gap: 6,
+        gap: 9,
+        boxSizing: 'border-box',
       }}
     >
-      {/* Badge row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.12em',
+          color: 'var(--accent)',
+          textTransform: 'uppercase' as const,
+          opacity: 0.9,
+        }}>
+          Sonic Fingerprint ✦
+        </span>
+        <div style={{ flex: 1 }} />
+        {/* Badges */}
         {bpmLabel && <Badge label={bpmLabel} testId="sfp-bpm-badge" title="Beats per minute — detected by AI stem analysis" />}
         <Badge label={energyLabel} testId="sfp-energy-badge" title="Overall energy score derived from vocal, drum, and bass stem activity (0–100%)" />
-        <Badge label={confLabel} testId="sfp-confidence-badge" title="How reliable the AI stem analysis is. Values below 30% indicate synthetic fallback data — real Demucs stem separation did not run for this track." />
+        <Badge label={confLabel} testId="sfp-confidence-badge" title="How reliable the AI stem analysis is. Values below 30% indicate synthetic fallback data." />
         {fingerprint.demucsModel && (
-          <Badge label={fingerprint.demucsModel} testId="sfp-model-badge" title="AI model used for stem separation (source of the deep analysis data)" />
+          <Badge label={fingerprint.demucsModel} testId="sfp-model-badge" title="AI model used for stem separation" />
         )}
-        <div style={{ flex: 1 }} />
         <button
           data-testid="sfp-close-button"
           onClick={onClose}
@@ -145,10 +161,10 @@ export default function SonicFingerprintPanel({
             border: 'none',
             cursor: 'pointer',
             color: 'var(--text-muted)',
-            fontSize: 14,
-            padding: '2px 6px',
-            borderRadius: 4,
+            fontSize: 16,
+            padding: '0 4px',
             lineHeight: 1,
+            marginLeft: 2,
           }}
           aria-label="Close Sonic Fingerprint"
         >
@@ -157,7 +173,7 @@ export default function SonicFingerprintPanel({
       </div>
 
       {/* Waveform + section band */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
         <WaveformBar
           points={waveformPoints}
           duration={dur}
@@ -177,7 +193,7 @@ export default function SonicFingerprintPanel({
       )}
 
       {/* Stem heatmap rows */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         {STEM_CONFIG.map(({ key, label, color }) => {
           const bins = key === 'vocalWindowsJson' ? stemBins.vocal
                      : key === 'drumWindowsJson'  ? stemBins.drums
@@ -195,37 +211,45 @@ export default function SonicFingerprintPanel({
       </div>
 
       {/* Energy curve */}
-      <div style={{ position: 'relative', width: '100%', height: 32, marginTop: 2 }}>
+      <div style={{ position: 'relative', width: '100%', height: 34 }}>
         <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0,
-          fontSize: 9, color: 'var(--text-muted)', paddingLeft: 2,
+          position: 'absolute', top: 0, left: 0,
+          fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
+          color: 'var(--accent)', opacity: 0.75, paddingLeft: 2,
         }}>
           ENERGY
         </div>
         <svg
           data-testid="sfp-energy-curve"
           width="100%"
-          height="32"
+          height="34"
           preserveAspectRatio="none"
           style={{ display: 'block' }}
         >
           {energyPoints && (
-            <polyline
-              points={energyPoints}
-              fill="none"
-              stroke="var(--accent)"
-              strokeWidth="1.5"
-              strokeOpacity="0.7"
-            />
+            <>
+              <polygon
+                points={energyFillPoints}
+                fill="var(--accent)"
+                fillOpacity="0.08"
+              />
+              <polyline
+                points={energyPoints}
+                fill="none"
+                stroke="var(--accent)"
+                strokeWidth="1.8"
+                strokeOpacity="0.9"
+              />
+            </>
           )}
           <line
             x1={`${(playedRatio * 100).toFixed(2)}%`}
             x2={`${(playedRatio * 100).toFixed(2)}%`}
             y1="0"
-            y2="32"
+            y2="34"
             stroke="var(--text)"
             strokeWidth="1.5"
-            strokeOpacity="0.6"
+            strokeOpacity="0.5"
           />
         </svg>
       </div>
@@ -240,14 +264,15 @@ function Badge({ label, testId, title }: { label: string; testId?: string; title
       title={title}
       style={{
         fontSize: 10,
-        lineHeight: '14px',
-        padding: '2px 7px',
+        lineHeight: '16px',
+        padding: '2px 8px',
         borderRadius: 4,
-        border: '1px solid var(--border)',
-        backgroundColor: 'var(--surface)',
-        color: 'var(--text-muted)',
-        whiteSpace: 'nowrap',
+        border: '1px solid color-mix(in srgb, var(--accent) 35%, var(--border))',
+        backgroundColor: 'color-mix(in srgb, var(--accent) 10%, var(--bg))',
+        color: 'var(--text)',
+        whiteSpace: 'nowrap' as const,
         fontVariantNumeric: 'tabular-nums',
+        fontWeight: 600,
       }}
     >
       {label}
@@ -270,31 +295,33 @@ function StemRow({
   return (
     <div
       data-testid={`stem-row-${label.toLowerCase()}`}
-      style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+      style={{ display: 'flex', alignItems: 'center', gap: 6 }}
     >
       <span style={{
-        fontSize: 9,
-        color: 'var(--text-muted)',
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '0.08em',
+        color,
         width: 44,
         flexShrink: 0,
-        textAlign: 'right',
-        letterSpacing: '0.04em',
+        textAlign: 'right' as const,
+        opacity: 0.85,
       }}>
         {label}
       </span>
-      <div style={{ flex: 1, height: 10, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+      <div style={{ flex: 1, height: 14, display: 'flex', alignItems: 'center', gap: 0.5 }}>
         {bins.map((strength, i) => (
           <div
             key={i}
             style={{
               flex: 1,
               minWidth: 1,
-              height: `${Math.max(2, strength * 10)}px`,
+              height: `${Math.max(2, strength * 14)}px`,
               borderRadius: 1,
               backgroundColor: color,
               opacity: i < playedBins
-                ? clamp(0.25 + strength * 0.75, 0.2, 1)
-                : clamp(0.1 + strength * 0.5, 0.05, 0.55),
+                ? clamp(0.4 + strength * 0.6, 0.35, 1)
+                : clamp(0.18 + strength * 0.55, 0.12, 0.7),
             }}
           />
         ))}
@@ -313,12 +340,12 @@ function SectionLegend({ sections }: { sections: TrackSection[] }) {
   });
   if (unique.length === 0) return null;
   return (
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' as const }}>
       {unique.map(s => {
         const color = SECTION_LABEL_COLORS[s.kind.toLowerCase()] ?? 'var(--text-muted)';
         return (
-          <span key={s.kind} style={{ fontSize: 9, color, display: 'flex', alignItems: 'center', gap: 3 }}>
-            <span style={{ width: 6, height: 6, borderRadius: 1, backgroundColor: color, display: 'inline-block' }} />
+          <span key={s.kind} style={{ fontSize: 10, color, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 7, height: 7, borderRadius: 1.5, backgroundColor: color, display: 'inline-block' }} />
             {s.kind}
           </span>
         );

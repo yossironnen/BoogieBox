@@ -222,6 +222,11 @@ select option { background-color: var(--surface); color: var(--text); }
   to { opacity: 1; }
 }
 
+@keyframes bm-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
 @media (max-width: 1060px) {
   .boogie-metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -661,8 +661,8 @@ export default function SettingsPage({
     }
   }, []);
 
-  const loadBoogieMixDeepStatus = useCallback(async () => {
-    setBoogiemixDeepLoading(true);
+  const loadBoogieMixDeepStatus = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setBoogiemixDeepLoading(true);
     try {
       const status = await api.boogiemix.deepAnalysisStatus();
       setBoogiemixDeepStatus(status);
@@ -673,7 +673,7 @@ export default function SettingsPage({
     } catch {
       setBoogiemixDeepStatus(null);
     } finally {
-      setBoogiemixDeepLoading(false);
+      if (showSpinner) setBoogiemixDeepLoading(false);
     }
   }, []);
 
@@ -719,10 +719,17 @@ export default function SettingsPage({
       loadDlnaStatus();
       loadWaveformStatus();
       loadBpmStatus();
-      loadBoogieMixDeepStatus();
+      loadBoogieMixDeepStatus(true);
       api.systemStatus().then(s => { if (s.dbFolder) setCurrentDbFolder(s.dbFolder); }).catch(() => {});
     }
   }, [activeTab, isAdmin, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
+
+  useEffect(() => {
+    if (activeTab !== 'advanced') return;
+    const isRunning = (boogiemixDeepStatus?.queue.running ?? 0) > 0 || (boogiemixDeepStatus?.queue.pending ?? 0) > 0;
+    const interval = setInterval(() => { loadBoogieMixDeepStatus(); }, isRunning ? 3000 : 10000);
+    return () => clearInterval(interval);
+  }, [activeTab, boogiemixDeepStatus?.queue.running, boogiemixDeepStatus?.queue.pending, loadBoogieMixDeepStatus]);
 
   const set = (key: keyof AppSettings, value: string) => {
     const next = { ...local, [key]: value };
@@ -1677,8 +1684,14 @@ export default function SettingsPage({
                     );
                   })}
                 </div>
-                <div>
-                  Queue: {boogiemixDeepStatus.queue.pending} pending / {boogiemixDeepStatus.queue.running} running / {boogiemixDeepStatus.queue.failed} failed / {boogiemixDeepStatus.queue.skipped} skipped / {boogiemixDeepStatus.queue.done} done
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {boogiemixDeepStatus.queue.running > 0 && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'rgba(34,197,94,0.15)', border: '1px solid #22c55e', borderRadius: 10, padding: '1px 8px', color: '#22c55e', fontWeight: 700, fontSize: 11 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', display: 'inline-block', animation: 'bm-pulse 1.2s ease-in-out infinite' }} />
+                      ANALYZING
+                    </span>
+                  )}
+                  <span>Queue: {boogiemixDeepStatus.queue.pending} pending / {boogiemixDeepStatus.queue.running} running / {boogiemixDeepStatus.queue.failed} failed / {boogiemixDeepStatus.queue.skipped} skipped / {boogiemixDeepStatus.queue.done} done</span>
                 </div>
                 <div>
                   Cache: {boogiemixDeepStatus.cache.analyzedTracks} tracks analyzed, about {formatBytes(boogiemixDeepStatus.cache.estimatedBytes)} stored in SQLite

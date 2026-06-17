@@ -156,6 +156,7 @@ If ANY code file changes (`.ts/.tsx/.js/.jsx/.css/.rs` or scripts):
    - `desktop/src-tauri/Cargo.toml` `version`
 4. Log version change in `changes.log`
 5. Do NOT bump if no code changed.
+6. Explicitly say if a version was bumped or not.
 
 ## Mandatory Rules (All Apply)
 
