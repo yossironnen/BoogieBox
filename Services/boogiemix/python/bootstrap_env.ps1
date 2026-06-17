@@ -55,6 +55,7 @@ $py = Join-Path $venvFull "Scripts\python.exe"
 $pip = Join-Path $venvFull "Scripts\pip.exe"
 
 Invoke-NativeChecked $py @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+Invoke-NativeChecked $pip @("install", "--upgrade", "Cython<3", "numpy>=1.24")
 
 New-Item -ItemType Directory -Force -Path $torchHome | Out-Null
 $env:TORCH_HOME = $torchHome
@@ -115,7 +116,7 @@ if ($CpuOnly) {
   $torchMode = "cpu"
 }
 
-Invoke-NativeChecked $pip @("install", "-r", (Join-Path $root "requirements.txt"))
+Invoke-NativeChecked $pip @("install", "--no-build-isolation", "-r", (Join-Path $root "requirements.txt"))
 Invoke-NativeChecked $py @("-c", "import torch, demucs")
 
 if ($PrimeDemucsModel) {
