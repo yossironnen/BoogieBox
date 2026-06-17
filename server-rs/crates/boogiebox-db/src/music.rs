@@ -527,6 +527,8 @@ pub struct ListArtistsParams<'a> {
     pub page_limit: Option<i64>,
     /// Documents the Page Offset public API surface.
     pub page_offset: i64,
+    /// Filter to artists with at least one Sonic Fingerprint (deep analysis) track.
+    pub sonic_fingerprint_only: bool,
 }
 
 /// Documents the List Artists public API surface.
@@ -560,6 +562,10 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
     if let Some(q) = p.name_query {
         conditions.push("LOWER(TRIM(COALESCE(ar.name,''))) LIKE ?".into());
         filter_params.push(Value::Text(format!("%{}%", q.to_lowercase())));
+    }
+    if p.sonic_fingerprint_only {
+        conditions
+            .push("EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".into());
     }
 
     let where_clause = if conditions.is_empty() {
@@ -744,6 +750,8 @@ pub struct ListAlbumsParams<'a> {
     pub genres: &'a [String],
     /// Documents the By Album Artist public API surface.
     pub by_album_artist: bool,
+    /// Filter to albums with at least one Sonic Fingerprint (deep analysis) track.
+    pub sonic_fingerprint_only: bool,
 }
 
 /// Documents the List Albums public API surface.
@@ -769,6 +777,10 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
         for g in p.genres {
             filter_params.push(Value::Text(g.to_lowercase()));
         }
+    }
+    if p.sonic_fingerprint_only {
+        conditions
+            .push("EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".into());
     }
 
     let where_clause = if conditions.is_empty() {
@@ -1615,6 +1627,8 @@ pub struct SearchMusicParams<'a> {
     pub include_total: bool,
     /// Documents the Mobile Tracks Mode public API surface.
     pub mobile_tracks_mode: bool,
+    /// Filter track results to those with a Sonic Fingerprint (deep analysis).
+    pub sonic_fingerprint_only: bool,
 }
 
 /// Documents the Search Music public API surface.
@@ -1774,6 +1788,11 @@ pub fn search_music(conn: &Connection, p: SearchMusicParams<'_>) -> rusqlite::Re
         if let Some(f) = p.format {
             conds.push("t.format LIKE ?".to_owned());
             bind.push(Box::new(format!("%{}%", f)));
+        }
+        if p.sonic_fingerprint_only {
+            conds.push(
+                "EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".to_owned(),
+            );
         }
 
         let where_clause = format!("WHERE {}", conds.join(" AND "));
@@ -2104,6 +2123,7 @@ mod tests {
                 include_albums: true,
                 include_total: true,
                 mobile_tracks_mode: false,
+                sonic_fingerprint_only: false,
             },
         )
         .unwrap();

@@ -476,6 +476,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
   const [libraryId, setLibraryId] = useState<ClientEntityId | undefined>();
   const [genre, setGenre]         = useState('');
   const [year, setYear]           = useState('');
+  const [sonicFingerprintOnly, setSonicFingerprintOnly] = useState(false);
   const [sort, setSort]           = useState<SearchTrackField>('title');
   const [order, setOrder]         = useState<SortOrder>('asc');
   const [trackSortField, setTrackSortField] = useState<SearchTrackField>('title');
@@ -500,6 +501,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
         year: year ? Number(year) : undefined, sort, order, page: p, limit: 100,
         search_mode: 'omni',
         mode: 'music',
+        sonic_fingerprint_only: sonicFingerprintOnly || undefined,
       });
       if (requestSeq !== searchRequestSeqRef.current) return;
       setResult(res); setPage(p);
@@ -515,6 +517,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
     year,
     sort,
     order,
+    sonicFingerprintOnly,
   ]);
 
   useEffect(() => {
@@ -627,6 +630,27 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
         </select>
         <input style={{ ...S.select, width: 90 }} placeholder="Year" value={year}
           onChange={e => setYear(e.target.value)} type="number" min="1900" max="2099" />
+        <button
+          style={{
+            ...S.select,
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            border: sonicFingerprintOnly
+              ? '1px solid color-mix(in srgb, var(--accent) 60%, var(--border))'
+              : undefined,
+            background: sonicFingerprintOnly
+              ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
+              : undefined,
+            color: sonicFingerprintOnly ? 'var(--accent)' : undefined,
+          }}
+          onClick={() => setSonicFingerprintOnly(v => !v)}
+          title="Show only tracks with Sonic Fingerprint (AI stem analysis)"
+          aria-pressed={sonicFingerprintOnly}
+        >
+          ✦ Sonic Fingerprint
+        </button>
       </div>
 
       {/* ── Artists + Albums quick results ── */}

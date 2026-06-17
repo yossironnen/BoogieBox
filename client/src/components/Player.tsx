@@ -2822,19 +2822,30 @@ export default function Player({
               </div>
             )}
 
-            {/* Expandable Sonic Fingerprint panel */}
+            {/* Expandable Sonic Fingerprint panel — rendered as a fixed popup above the player bar */}
             {sonicFingerprint && showSonicFingerprint && (
-              <SonicFingerprintPanel
-                fingerprint={sonicFingerprint}
-                waveformPoints={waveformPoints}
-                waveformStatus={waveformStatus}
-                duration={duration || 0}
-                currentTime={currentTime}
-                onSeek={(time) => seekToTime(time, false)}
-                onSeekStart={() => setSeeking(true)}
-                onSeekEnd={(time) => seekToTime(time, true)}
-                onClose={() => setShowSonicFingerprint(false)}
-              />
+              <div style={{
+                position: 'fixed',
+                bottom: 108,
+                left: 0,
+                right: 0,
+                zIndex: 99,
+                borderRadius: '10px 10px 0 0',
+                overflow: 'hidden',
+                boxShadow: '0 -8px 32px rgba(0,0,0,0.45)',
+              }}>
+                <SonicFingerprintPanel
+                  fingerprint={sonicFingerprint}
+                  waveformPoints={waveformPoints}
+                  waveformStatus={waveformStatus}
+                  duration={duration || 0}
+                  currentTime={currentTime}
+                  onSeek={(time) => seekToTime(time, false)}
+                  onSeekStart={() => setSeeking(true)}
+                  onSeekEnd={(time) => seekToTime(time, true)}
+                  onClose={() => setShowSonicFingerprint(false)}
+                />
+              </div>
             )}
 
             {/* Standard progress row: time + waveform/slider + time */}

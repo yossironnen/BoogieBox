@@ -84,6 +84,7 @@ struct SearchQuery {
     include_artists: Option<String>,
     include_albums: Option<String>,
     include_total: Option<String>,
+    sonic_fingerprint_only: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +104,7 @@ struct ArtistBrowseQuery {
     order: Option<String>,
     view: Option<String>,
     paged: Option<String>,
+    sonic_fingerprint_only: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +113,7 @@ struct AlbumBrowseQuery {
     library_ids: Option<String>,
     genres: Option<String>,
     group_by: Option<String>,
+    sonic_fingerprint_only: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +278,11 @@ async fn search_handler(
     let genre = q.genre.clone();
     let year: Option<i64> = q.year.as_deref().and_then(|s| s.parse().ok());
     let format = q.format.clone();
+    let sonic_fingerprint_only = q
+        .sonic_fingerprint_only
+        .as_deref()
+        .map(|s| s == "true" || s == "1")
+        .unwrap_or(false);
     let user_id = user.id.clone();
 
     let result = tokio::task::spawn_blocking(move || {
@@ -296,6 +304,7 @@ async fn search_handler(
                 include_albums,
                 include_total,
                 mobile_tracks_mode: is_mobile_tracks,
+                sonic_fingerprint_only,
             },
         )
     })
@@ -434,6 +443,11 @@ async fn list_artists_handler(
         .is_some_and(|v| matches!(v, "1" | "true" | "yes"))
         || page_limit.is_some()
         || page_offset > 0;
+    let sonic_fingerprint_only = q
+        .sonic_fingerprint_only
+        .as_deref()
+        .map(|s| s == "true" || s == "1")
+        .unwrap_or(false);
 
     let user_id = user.id.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -454,6 +468,7 @@ async fn list_artists_handler(
                     page_limit
                 },
                 page_offset,
+                sonic_fingerprint_only,
             },
         )
     })
@@ -665,6 +680,11 @@ async fn list_albums_handler(
     let genres = parse_genres(q.genres.as_deref());
     let library_ids = parse_library_ids(q.library_ids.as_deref(), q.library_id.as_deref());
     let by_album_artist = q.group_by.as_deref() == Some("album_artist");
+    let sonic_fingerprint_only = q
+        .sonic_fingerprint_only
+        .as_deref()
+        .map(|s| s == "true" || s == "1")
+        .unwrap_or(false);
     let user_id = user.id;
     match tokio::task::spawn_blocking(move || {
         list_albums(
@@ -674,6 +694,7 @@ async fn list_albums_handler(
                 library_ids: &library_ids,
                 genres: &genres,
                 by_album_artist,
+                sonic_fingerprint_only,
             },
         )
     })

@@ -69,7 +69,7 @@ describe('SonicFingerprintPanel', () => {
     expect(screen.getByTestId('stem-row-bass')).toBeInTheDocument();
   });
 
-  it('renders energy curve SVG', () => {
+  it('renders stem rows without energy curve', () => {
     render(
       <SonicFingerprintPanel
         fingerprint={makeFingerprint()}
@@ -81,7 +81,9 @@ describe('SonicFingerprintPanel', () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.getByTestId('sfp-energy-curve')).toBeInTheDocument();
+    expect(screen.getByTestId('stem-row-vocals')).toBeInTheDocument();
+    expect(screen.getByTestId('stem-row-bass')).toBeInTheDocument();
+    expect(screen.queryByTestId('sfp-energy-curve')).not.toBeInTheDocument();
   });
 
   it('calls onClose when close button is clicked', () => {

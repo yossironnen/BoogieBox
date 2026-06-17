@@ -262,6 +262,7 @@ export const api = {
     track_rating_filter?: 'all' | 'rated' | 'unrated' | 'gte4' | 'gte3';
     track_sort_mode?: 'default' | 'rating';
     track_rating_sort_dir?: SortOrder;
+    sonic_fingerprint_only?: boolean;
   }) => get<SearchResult>('/search', params as any),
   autoDjTracks: (params: { genres: string[]; library_id?: ApiEntityId; limit?: number }) =>
     get<{ tracks: Track[] }>('/auto-dj/tracks', {
@@ -269,14 +270,15 @@ export const api = {
       library_id: params.library_id,
       limit: params.limit,
     }),
-  artists: (params?: ApiEntityId | { library_id?: ApiEntityId; library_ids?: ApiEntityId[]; genres?: string[] }) => {
-    const query: Record<string, string | number | undefined> = {};
+  artists: (params?: ApiEntityId | { library_id?: ApiEntityId; library_ids?: ApiEntityId[]; genres?: string[]; sonic_fingerprint_only?: boolean }) => {
+    const query: Record<string, string | number | boolean | undefined> = {};
     if (typeof params === 'string' || typeof params === 'number') {
       query.library_id = params;
     } else if (params) {
       query.library_id = params.library_id;
       query.library_ids = encodeLibraryIdsParam(params.library_ids);
       query.genres = encodeGenresParam(params.genres);
+      if (params.sonic_fingerprint_only) query.sonic_fingerprint_only = true;
     }
     return get<Artist[]>('/artists', Object.keys(query).length ? query : undefined);
   },
@@ -290,6 +292,7 @@ export const api = {
     offset?: number;
     order?: 'asc' | 'desc';
     view?: 'summary' | 'full';
+    sonic_fingerprint_only?: boolean;
   }) =>
     get<ArtistBrowsePage>('/artists', {
       library_id: params?.library_id,
@@ -302,12 +305,14 @@ export const api = {
       order: params?.order,
       view: params?.view,
       paged: 1,
+      sonic_fingerprint_only: params?.sonic_fingerprint_only || undefined,
     } as any),
-  albums: (params?: { artist_id?: ApiEntityId; library_id?: ApiEntityId; library_ids?: ApiEntityId[]; group_by?: 'artist' | 'album_artist'; genres?: string[] }) =>
+  albums: (params?: { artist_id?: ApiEntityId; library_id?: ApiEntityId; library_ids?: ApiEntityId[]; group_by?: 'artist' | 'album_artist'; genres?: string[]; sonic_fingerprint_only?: boolean }) =>
     get<Album[]>('/albums', {
       ...params,
       library_ids: encodeLibraryIdsParam(params?.library_ids),
       genres: encodeGenresParam(params?.genres),
+      sonic_fingerprint_only: params?.sonic_fingerprint_only || undefined,
     } as any),
   latestAlbums: (limit = 60) => get<LatestAlbum[]>('/albums/latest', { limit }),
   homeTopRated: (limit = 5) => get<HomeTopRated>('/home/top-rated', { limit }),

@@ -41,28 +41,6 @@ function buildStemBins(windows: StemWindow[], duration: number, bins: number): n
   return out;
 }
 
-function buildEnergyBins(
-  vocals: StemWindow[],
-  drums: StemWindow[],
-  bass: StemWindow[],
-  duration: number,
-  bins: number,
-): number[] {
-  if (!duration) return new Array<number>(bins).fill(0);
-  const out = new Array<number>(bins).fill(0);
-  const allWindows = [...vocals, ...drums, ...bass];
-  for (let i = 0; i < bins; i++) {
-    const binStart = (i / bins) * duration;
-    const binEnd = ((i + 1) / bins) * duration;
-    let sum = 0;
-    for (const w of allWindows) {
-      if (w.end > binStart && w.start < binEnd) sum += clamp(w.strength, 0, 1);
-    }
-    out[i] = sum;
-  }
-  const max = Math.max(...out, 1e-6);
-  return out.map(v => v / max);
-}
 
 export interface SonicFingerprintPanelProps {
   fingerprint: SonicFingerprint;
@@ -95,22 +73,7 @@ export default function SonicFingerprintPanel({
     bass:  buildStemBins(fingerprint.bassWindowsJson, dur, DISPLAY_BINS),
   }), [fingerprint, dur]);
 
-  const energyBins = useMemo(() =>
-    buildEnergyBins(
-      fingerprint.vocalWindowsJson,
-      fingerprint.drumWindowsJson,
-      fingerprint.bassWindowsJson,
-      dur,
-      DISPLAY_BINS,
-    ),
-    [fingerprint, dur],
-  );
-
   const playedRatio = dur > 0 ? clamp(currentTime / dur, 0, 1) : 0;
-  const energyPoints = energyBins
-    .map((v, i) => `${((i / DISPLAY_BINS) * 100).toFixed(2)}%,${((1 - v) * 28 + 2).toFixed(1)}`)
-    .join(' ');
-  const energyFillPoints = `0%,32 ${energyPoints} 100%,32`;
 
   const bpmLabel = fingerprint.bpmDetected != null
     ? `♩ ${Math.round(fingerprint.bpmDetected)} BPM`
@@ -210,49 +173,6 @@ export default function SonicFingerprintPanel({
         })}
       </div>
 
-      {/* Energy curve */}
-      <div style={{ position: 'relative', width: '100%', height: 34 }}>
-        <div style={{
-          position: 'absolute', top: 0, left: 0,
-          fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
-          color: 'var(--accent)', opacity: 0.75, paddingLeft: 2,
-        }}>
-          ENERGY
-        </div>
-        <svg
-          data-testid="sfp-energy-curve"
-          width="100%"
-          height="34"
-          preserveAspectRatio="none"
-          style={{ display: 'block' }}
-        >
-          {energyPoints && (
-            <>
-              <polygon
-                points={energyFillPoints}
-                fill="var(--accent)"
-                fillOpacity="0.08"
-              />
-              <polyline
-                points={energyPoints}
-                fill="none"
-                stroke="var(--accent)"
-                strokeWidth="1.8"
-                strokeOpacity="0.9"
-              />
-            </>
-          )}
-          <line
-            x1={`${(playedRatio * 100).toFixed(2)}%`}
-            x2={`${(playedRatio * 100).toFixed(2)}%`}
-            y1="0"
-            y2="34"
-            stroke="var(--text)"
-            strokeWidth="1.5"
-            strokeOpacity="0.5"
-          />
-        </svg>
-      </div>
     </div>
   );
 }

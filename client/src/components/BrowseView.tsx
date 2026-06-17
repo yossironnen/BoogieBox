@@ -1687,6 +1687,7 @@ export default function BrowseView({
   const [artistAlbums, setArtistAlbums] = useState<Album[]>([]);
   const [appearsOnAlbums, setAppearsOnAlbums] = useState<Album[]>([]);
   const [albumTracks, setAlbumTracks]   = useState<Track[]>([]);
+  const [sonicFingerprintOnly, setSonicFingerprintOnly] = useState(false);
   const [artistRatingFilter, setArtistRatingFilter] = useState<RatingFilter>('all');
   const [albumRatingFilter, setAlbumRatingFilter] = useState<RatingFilter>('all');
   const [trackRatingFilter, setTrackRatingFilter] = useState<RatingFilter>('all');
@@ -1774,7 +1775,7 @@ export default function BrowseView({
     const fetchToken = ++rootFetchTokenRef.current;
     setLoading(true);
     if (tab === 'artists') {
-      api.artists({ genres: selectedGenres, library_ids: activeLibraryIds })
+      api.artists({ genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined })
         .then((rows) => {
           if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
           setArtists(rows);
@@ -1785,7 +1786,7 @@ export default function BrowseView({
           setLoading(false);
         });
     } else {
-      api.albums({ group_by: groupBy, genres: selectedGenres, library_ids: activeLibraryIds })
+      api.albums({ group_by: groupBy, genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined })
         .then((rows) => {
           if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
           setAllAlbums(rows);
@@ -1796,7 +1797,7 @@ export default function BrowseView({
           setLoading(false);
         });
     }
-  }, [activeLibraryIds, drill.level, tab, groupBy, selectedGenres, selectedLibraryIds]);
+  }, [activeLibraryIds, drill.level, tab, groupBy, selectedGenres, selectedLibraryIds, sonicFingerprintOnly]);
 
   // Load artist's albums and "appears on" compilations when drilling into artist
   useEffect(() => {
@@ -1944,6 +1945,7 @@ export default function BrowseView({
   const clearBrowseRefinements = useCallback(() => {
     setSelectedGenres([]);
     setGenreFilterOpen(false);
+    setSonicFingerprintOnly(false);
     if (tab === 'artists') {
       setArtistRatingFilter('all');
       setArtistSortDir('asc');
@@ -2290,12 +2292,14 @@ export default function BrowseView({
   const refineActive = tab === 'artists' ? artistRefineActive : albumRefineActive;
   const activeRefinementChips = tab === 'artists'
     ? [
+      ...(sonicFingerprintOnly ? [{ key: 'sfp', label: '✦ Sonic Fingerprint', onClear: () => setSonicFingerprintOnly(false) }] : []),
       ...(selectedGenres.length > 0 ? [{ key: 'genre', label: `Genre: ${selectedGenres.length} selected`, onClear: clearGenreFilter }] : []),
       ...(artistRatingFilter !== 'all' ? [{ key: 'rating', label: `Rating: ${getRatingFilterLabel(artistRatingFilter)}`, onClear: () => setArtistRatingFilter('all') }] : []),
       ...(artistSortDir !== 'asc' ? [{ key: 'sort', label: 'Sort: Name ↓', onClear: () => setArtistSortDir('asc') }] : []),
       ...(rootViewMode !== 'grid' ? [{ key: 'view', label: 'View: Table', onClear: () => setPersistedRootViewMode('grid') }] : []),
     ]
     : [
+      ...(sonicFingerprintOnly ? [{ key: 'sfp', label: '✦ Sonic Fingerprint', onClear: () => setSonicFingerprintOnly(false) }] : []),
       ...(selectedGenres.length > 0 ? [{ key: 'genre', label: `Genre: ${selectedGenres.length} selected`, onClear: clearGenreFilter }] : []),
       ...(albumRatingFilter !== 'all' ? [{ key: 'rating', label: `Rating: ${getRatingFilterLabel(albumRatingFilter)}`, onClear: () => setAlbumRatingFilter('all') }] : []),
       ...((albumSortField !== 'title' || albumSortDir !== 'asc') ? [{ key: 'sort', label: `Sort: ${getAlbumSortLabel(albumSortField, albumSortDir)}`, onClear: () => { setAlbumSortField('title'); setAlbumSortDir('asc'); } }] : []),
@@ -2433,6 +2437,21 @@ export default function BrowseView({
               ))}
             </div>
             <div style={L.rootToolbarRight}>
+              <button
+                style={{
+                  ...L.compactButton,
+                  ...(sonicFingerprintOnly ? {
+                    ...L.compactButtonActive,
+                    color: 'var(--accent)',
+                    borderColor: 'color-mix(in srgb, var(--accent) 50%, var(--border))',
+                  } : {}),
+                }}
+                onClick={() => setSonicFingerprintOnly(v => !v)}
+                title="Show only artists/albums with Sonic Fingerprint (AI stem analysis)"
+                aria-pressed={sonicFingerprintOnly}
+              >
+                ✦ Sonic Fingerprint
+              </button>
               {refineControl}
               {libraryFilterControl}
             </div>
