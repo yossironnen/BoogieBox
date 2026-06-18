@@ -37,6 +37,7 @@ struct DeepSettings {
     temp_dir: PathBuf,
     background_mode: String,
     pause_background: bool,
+    max_duration_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,7 +203,7 @@ async fn process_job(
         scanned_at: None,
         position: 0,
     };
-    if let Some(reason) = should_skip_deep_analysis(&track) {
+    if let Some(reason) = should_skip_deep_analysis(&track, settings.max_duration_secs) {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         skip_deep_analysis_job(&conn, &job.id, reason).map_err(|e| e.to_string())?;
         return Ok(());
@@ -223,8 +224,15 @@ async fn process_job(
         "cleanup_temp": settings.cleanup_temp,
         "temp_root": settings.temp_dir,
     });
+    // Scale timeout by track duration so long tracks on slow (CPU-only) hardware
+    // don't hit a blanket cap. 5 s of processing budget per 1 s of audio.
+    let effective_timeout_ms = job
+        .duration
+        .map(|secs| (secs * 5_000.0) as u64)
+        .map(|scaled| scaled.max(settings.timeout_ms))
+        .unwrap_or(settings.timeout_ms);
     let start = Instant::now();
-    let output = run_python_worker(python, &payload, settings.timeout_ms).await?;
+    let output = run_python_worker(python, &payload, effective_timeout_ms).await?;
     let processing_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
     let analysis_version = output["analysis_version"]
         .as_i64()
@@ -391,6 +399,10 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         get_setting(&conn, "boogiemixDeepAnalysisPauseBackground").as_deref(),
         false,
     );
+    let max_duration_secs = get_setting(&conn, "boogiemixDeepAnalysisMaxDurationMins")
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|mins| mins * 60.0)
+        .filter(|&secs| secs > 0.0);
     Ok(DeepSettings {
         enabled,
         max_concurrent,
@@ -401,6 +413,7 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         temp_dir,
         background_mode,
         pause_background,
+        max_duration_secs,
     })
 }
 

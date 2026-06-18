@@ -135,8 +135,8 @@ export default function SonicFingerprintPanel({
         </button>
       </div>
 
-      {/* Waveform + section band */}
-      <div style={{ display: 'flex', alignItems: 'center' }}>
+      {/* Waveform + section band — left-offset matches stem label width so bars align */}
+      <div style={{ display: 'flex', alignItems: 'center', paddingLeft: 50 }}>
         <WaveformBar
           points={waveformPoints}
           duration={dur}
@@ -150,9 +150,11 @@ export default function SonicFingerprintPanel({
         />
       </div>
 
-      {/* Section legend */}
+      {/* Section legend — same left offset as waveform/stem bars */}
       {fingerprint.sectionJson.length > 0 && (
-        <SectionLegend sections={fingerprint.sectionJson} />
+        <div style={{ paddingLeft: 50 }}>
+          <SectionLegend sections={fingerprint.sectionJson} />
+        </div>
       )}
 
       {/* Stem heatmap rows */}

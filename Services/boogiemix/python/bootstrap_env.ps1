@@ -149,7 +149,11 @@ Invoke-NativeChecked $py @("-c", "import torch, demucs")
 
 if ($PrimeDemucsModel) {
   Write-Host "Priming Demucs model cache for $defaultDemucsModel..."
-  Invoke-NativeChecked $py @("-c", "from demucs.pretrained import get_model; get_model('$defaultDemucsModel'); print('Demucs model ready: $defaultDemucsModel')")
+  try {
+    Invoke-NativeChecked $py @("-c", "from demucs.pretrained import get_model; get_model('$defaultDemucsModel'); print('Demucs model ready: $defaultDemucsModel')")
+  } catch {
+    Write-Warning "Model priming failed (model will be downloaded on first analysis run): $($_.Exception.Message)"
+  }
 }
 
 Write-Host "BoogieMix deep-analysis worker environment ready: $venvFull"

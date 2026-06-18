@@ -239,6 +239,7 @@ export interface AppSettings {
   boogiemixOutputFolder: string;
   boogiemixDeepAnalysisBackgroundMode: string;
   boogiemixDeepAnalysisPauseBackground: string;
+  boogiemixDeepAnalysisMaxDurationMins: string;
 }
 
 /** Scan Schedule is part of this module's public API. */
@@ -322,6 +323,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   boogiemixOutputFolder: '',
   boogiemixDeepAnalysisBackgroundMode: 'off',
   boogiemixDeepAnalysisPauseBackground: 'false',
+  boogiemixDeepAnalysisMaxDurationMins: '15',
 };
 
 /** FONT OPTIONS is part of this module's public API. */

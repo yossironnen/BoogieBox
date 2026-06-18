@@ -155,9 +155,9 @@ async fn run_waveform_map_batch_inner(
     for track in tracks {
         processed += 1;
         let file_path = path::Path::new(&track.file_path).to_path_buf();
-        if !file_path.exists() {
+        if std::fs::File::open(&file_path).is_err() {
             skipped += 1;
-            tracing::warn!(track_id = %track.id, "waveform map skipped missing file");
+            tracing::warn!(track_id = %track.id, "waveform map skipped unreadable file");
             continue;
         }
 

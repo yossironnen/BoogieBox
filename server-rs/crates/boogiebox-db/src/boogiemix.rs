@@ -1387,9 +1387,17 @@ pub fn build_deep_analysis_fingerprint(track: &MixTrackInput) -> String {
 }
 
 /// Documents the Should Skip Deep Analysis public API surface.
-pub fn should_skip_deep_analysis(track: &MixTrackInput) -> Option<&'static str> {
+pub fn should_skip_deep_analysis(
+    track: &MixTrackInput,
+    max_duration_secs: Option<f64>,
+) -> Option<&'static str> {
     if track.duration.is_some_and(|duration| duration < 45.0) {
         return Some("too_short");
+    }
+    if let (Some(max), Some(duration)) = (max_duration_secs, track.duration) {
+        if max > 0.0 && duration > max {
+            return Some("too_long");
+        }
     }
     let ext = std::path::Path::new(&track.file_path)
         .extension()
@@ -1426,7 +1434,7 @@ pub fn queue_missing_deep_analysis_for_tracks_with_priority(
     let mut queued = 0usize;
     let priority = priority.clamp(DEEP_ANALYSIS_PRIORITY_BACKGROUND, 100);
     for track in tracks {
-        if should_skip_deep_analysis(track).is_some() {
+        if should_skip_deep_analysis(track, None).is_some() {
             continue;
         }
         let fingerprint = build_deep_analysis_fingerprint(track);

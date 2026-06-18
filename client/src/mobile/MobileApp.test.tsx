@@ -61,6 +61,7 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
       boogiemixOutputFolder: '',
       boogiemixDeepAnalysisBackgroundMode: 'off',
       boogiemixDeepAnalysisPauseBackground: 'false',
+      boogiemixDeepAnalysisMaxDurationMins: '15',
     },
     ffmpegAvailable: true,
     playerState: {

@@ -538,6 +538,7 @@ export default function SettingsPage({
   const [boogiemixDeepLoading, setBoogiemixDeepLoading] = useState(false);
   const [boogiemixDeepBackgroundMode, setBoogiemixDeepBackgroundMode] = useState(settings.boogiemixDeepAnalysisBackgroundMode || 'off');
   const [boogiemixDeepPauseBackground, setBoogiemixDeepPauseBackground] = useState(settings.boogiemixDeepAnalysisPauseBackground === 'true');
+  const [boogiemixDeepMaxDurationMins, setBoogiemixDeepMaxDurationMins] = useState(Number(settings.boogiemixDeepAnalysisMaxDurationMins) || 15);
   const [boogiemixDeepActionBusy, setBoogiemixDeepActionBusy] = useState<string | null>(null);
   const [boogiemixDeepActionResult, setBoogiemixDeepActionResult] = useState<string | null>(null);
   const [boogiemixDeepSelectedLibrary, setBoogiemixDeepSelectedLibrary] = useState<ClientEntityId | ''>('');
@@ -565,6 +566,7 @@ export default function SettingsPage({
     setBoogiemixOutputFolder(settings.boogiemixOutputFolder || '');
     setBoogiemixDeepBackgroundMode(settings.boogiemixDeepAnalysisBackgroundMode || 'off');
     setBoogiemixDeepPauseBackground(settings.boogiemixDeepAnalysisPauseBackground === 'true');
+    setBoogiemixDeepMaxDurationMins(Number(settings.boogiemixDeepAnalysisMaxDurationMins) || 15);
   }, [settings]);
 
   const loadSchedules = useCallback(async () => {
@@ -714,6 +716,7 @@ export default function SettingsPage({
         setBoogiemixOutputFolder(s.boogiemixOutputFolder ?? '');
         setBoogiemixDeepBackgroundMode(s.boogiemixDeepAnalysisBackgroundMode ?? 'off');
         setBoogiemixDeepPauseBackground((s.boogiemixDeepAnalysisPauseBackground ?? 'false') === 'true');
+        setBoogiemixDeepMaxDurationMins(Number(s.boogiemixDeepAnalysisMaxDurationMins ?? '15') || 15);
       });
       refreshLibraries().catch(() => {});
       loadDlnaStatus();
@@ -1723,6 +1726,29 @@ export default function SettingsPage({
                       Full-library deep analysis can take many hours and cause sustained CPU and disk activity.
                     </div>
                   )}
+                  <label style={{ display: 'grid', gap: 4 }}>
+                    <span style={{ color: 'var(--text)', fontWeight: 600 }}>Max track length</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="number"
+                        min={0}
+                        max={480}
+                        value={boogiemixDeepMaxDurationMins}
+                        onChange={(e) => setBoogiemixDeepMaxDurationMins(Math.max(0, Number(e.target.value) || 0))}
+                        onBlur={() => {
+                          const value = String(boogiemixDeepMaxDurationMins);
+                          runBoogieMixDeepAction('max-duration', async () => {
+                            await api.settings.update({ boogiemixDeepAnalysisMaxDurationMins: value });
+                            return 'Max track length saved';
+                          });
+                        }}
+                        style={{ width: 80, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}
+                      />
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                        minutes — tracks longer than this are skipped (0 = no limit). Timeout scales automatically at 5 s per track-second.
+                      </span>
+                    </div>
+                  </label>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                     <select
                       value={boogiemixDeepSelectedLibrary}

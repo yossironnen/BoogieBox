@@ -387,11 +387,22 @@ begin
     '}' + #13#10 +
     'Write-Log "Using Python: $py"' + #13#10 +
     'Write-Log ''Running bootstrap_env.ps1 (auto CUDA/CPU PyTorch + Demucs model download - this may take 10-30 minutes)...''' + #13#10 +
-    '& ''' + PythonDir + '\bootstrap_env.ps1'' -PythonExe $py -Auto -PrimeDemucsModel *>&1 | Tee-Object -Append -FilePath $logPath' + #13#10 +
-    '$exitCode = $LASTEXITCODE' + #13#10 +
-    'Write-Log "Bootstrap exit: $exitCode"' + #13#10 +
-    'if ($exitCode -ne 0) {' + #13#10 +
-    '  Write-Log ''Bootstrap failed. BoogieMix deep analysis will not be available.''' + #13#10 +
+    'try {' + #13#10 +
+    '  & ''' + PythonDir + '\bootstrap_env.ps1'' -PythonExe $py -Auto -PrimeDemucsModel *>&1 | Tee-Object -Append -FilePath $logPath' + #13#10 +
+    '} catch {' + #13#10 +
+    '  Write-Log "Bootstrap threw an exception: $_"' + #13#10 +
+    '}' + #13#10 +
+    'Write-Log ''Verifying BoogieMix environment...''' + #13#10 +
+    '$venvPy = ''' + PythonDir + '\.venv\Scripts\python.exe''' + #13#10 +
+    'if (-not (Test-Path $venvPy)) {' + #13#10 +
+    '  Write-Log ''FAILED: .venv python not found. Bootstrap may have failed before creating the environment.''' + #13#10 +
+    '  Write-Log "Log saved to: $logPath"' + #13#10 +
+    '  Read-Host ''Press Enter to close''' + #13#10 +
+    '  exit 1' + #13#10 +
+    '}' + #13#10 +
+    '& $venvPy -c ''import torch, demucs'' 2>&1 | Out-Null' + #13#10 +
+    'if ($LASTEXITCODE -ne 0) {' + #13#10 +
+    '  Write-Log ''FAILED: torch/demucs not importable after bootstrap.''' + #13#10 +
     '  Write-Log "Log saved to: $logPath"' + #13#10 +
     '  Read-Host ''Press Enter to close''' + #13#10 +
     '  exit 1' + #13#10 +
