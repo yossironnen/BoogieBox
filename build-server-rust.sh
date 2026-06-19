@@ -202,6 +202,9 @@ if [ -d "Services/boogiemix/python" ]; then
   mkdir -p "${DIST_DIR}/resources/Services/boogiemix"
   cp -r Services/boogiemix/python "${DIST_DIR}/resources/Services/boogiemix/python"
   rm -rf "${DIST_DIR}/resources/Services/boogiemix/python/.venv"
+  if [ -f "${DIST_DIR}/resources/Services/boogiemix/python/bootstrap_env.sh" ]; then
+    chmod +x "${DIST_DIR}/resources/Services/boogiemix/python/bootstrap_env.sh"
+  fi
 fi
 
 if [ -d "Services/boogiemix/ai" ]; then

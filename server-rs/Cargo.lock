@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-db"
-version = "0.8.60"
+version = "0.8.69"
 dependencies = [
  "rusqlite",
  "serde",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-server"
-version = "0.8.60"
+version = "0.8.69"
 dependencies = [
  "axum",
  "axum-extra",

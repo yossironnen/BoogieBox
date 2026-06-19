@@ -1006,25 +1006,16 @@ async fn detect_python() -> Option<PythonInvocation> {
 
 fn python_candidates() -> Vec<PythonInvocation> {
     // Check both the dev layout (repo-root/Services/...) and the installed layout
-    // (exe-dir/resources/Services/...) for the managed venv python.exe.
-    let rels: &[&[&str]] = &[
-        &[
-            "Services",
-            "boogiemix",
-            "python",
-            ".venv",
-            "Scripts",
-            "python.exe",
-        ],
-        &[
-            "resources",
-            "Services",
-            "boogiemix",
-            "python",
-            ".venv",
-            "Scripts",
-            "python.exe",
-        ],
+    // (exe-dir/resources/Services/...) for the managed venv Python.
+    // Windows venv: .venv/Scripts/python.exe  Linux venv: .venv/bin/python
+    #[cfg(windows)]
+    let venv_python: &[&str] = &["Scripts", "python.exe"];
+    #[cfg(not(windows))]
+    let venv_python: &[&str] = &["bin", "python"];
+
+    let base_rels: &[&[&str]] = &[
+        &["Services", "boogiemix", "python", ".venv"],
+        &["resources", "Services", "boogiemix", "python", ".venv"],
     ];
     let mut dirs = Vec::new();
     if let Ok(current_exe) = std::env::current_exe() {
@@ -1044,11 +1035,12 @@ fn python_candidates() -> Vec<PythonInvocation> {
 
     let mut candidates = Vec::new();
     for dir in dirs {
-        for rel in rels {
-            let path = rel.iter().fold(dir.clone(), |p, s| p.join(s));
+        for base in base_rels {
+            let venv_root = base.iter().fold(dir.clone(), |p, s| p.join(s));
+            let path = venv_python.iter().fold(venv_root, |p, s| p.join(s));
             if path.is_file() {
                 candidates.push(PythonInvocation {
-                    display_name: "app-local Python runtime".to_string(),
+                    display_name: path.display().to_string(),
                     command: path,
                     base_args: Vec::new(),
                 });

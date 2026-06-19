@@ -479,30 +479,23 @@ async fn detect_python() -> Option<PythonInvocation> {
 
 fn python_candidates() -> Vec<PythonInvocation> {
     // Check both the dev layout (repo-root/Services/...) and the installed layout
-    // (exe-dir/resources/Services/...) for the managed venv python.exe.
-    let rels: &[&[&str]] = &[
-        &[
-            "Services",
-            "boogiemix",
-            "python",
-            ".venv",
-            "Scripts",
-            "python.exe",
-        ],
-        &[
-            "resources",
-            "Services",
-            "boogiemix",
-            "python",
-            ".venv",
-            "Scripts",
-            "python.exe",
-        ],
+    // (exe-dir/resources/Services/...) for the managed venv python.
+    // Windows venv: .venv/Scripts/python.exe  Linux venv: .venv/bin/python
+    #[cfg(windows)]
+    let venv_python: &[&str] = &["Scripts", "python.exe"];
+    #[cfg(not(windows))]
+    let venv_python: &[&str] = &["bin", "python"];
+
+    let base_rels: &[&[&str]] = &[
+        &["Services", "boogiemix", "python", ".venv"],
+        &["resources", "Services", "boogiemix", "python", ".venv"],
     ];
+
     let mut candidates = Vec::new();
     for root in candidate_roots() {
-        for rel in rels {
-            let path = rel.iter().fold(root.clone(), |p, s| p.join(s));
+        for base in base_rels {
+            let venv_root: PathBuf = base.iter().fold(root.clone(), |p, s| p.join(s));
+            let path = venv_python.iter().fold(venv_root, |p, s| p.join(s));
             if path.is_file() {
                 candidates.push(PythonInvocation {
                     display_name: path.display().to_string(),

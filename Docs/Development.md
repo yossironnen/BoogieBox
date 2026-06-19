@@ -23,7 +23,7 @@ Run `setup-dev.bat` from the repo root to install or verify the common developme
 - Rust toolchain (`rustup`)
 - Node.js and npm (for the React client build)
 - FFmpeg and FFprobe (bundled automatically by `build-server-rust.sh`)
-- Optional: Python for BoogieMix deep analysis
+- Optional: Python 3.10+ for BoogieMix deep analysis (`python3.12` / `python3.11` etc. from your distro)
 
 ## Install Dependencies
 
@@ -158,6 +158,33 @@ sudo ./Releases/boogiebox-VERSION-linux-rs/install/install.sh
 ```
 
 This copies the binary and resources to `/opt/boogiebox/`, creates a `boogiebox` system user, installs the systemd unit, and prints the first-run setup URL.
+
+When run interactively the installer will prompt whether to also install BoogieMix deep analysis. Pass `--with-boogiemix` to enable it non-interactively:
+
+```bash
+sudo ./Releases/boogiebox-VERSION-linux-rs/install/install.sh --with-boogiemix
+```
+
+BoogieMix setup requires Python 3.10+, an internet connection, ~2–5 GB of disk space, and 10–30 minutes. It auto-detects an NVIDIA GPU and installs CUDA PyTorch when available, otherwise installs the CPU build. Installer output is logged to `/var/lib/boogiebox/installer-boogiemix.log`.
+
+To install or re-run BoogieMix setup manually after the initial install:
+
+```bash
+sudo -u boogiebox TORCH_HOME=/var/lib/boogiebox/model-cache/torch \
+  bash /opt/boogiebox/resources/Services/boogiemix/python/bootstrap_env.sh \
+  --prime-model
+```
+
+Additional bootstrap flags:
+
+| Flag | Description |
+|------|-------------|
+| `--cpu-only` | Force CPU PyTorch even if an NVIDIA GPU is present |
+| `--cuda` | Force CUDA PyTorch |
+| `--force` | Delete and recreate the existing `.venv` |
+| `--log <file>` | Append output to a log file |
+
+The systemd service sets `TORCH_HOME=/var/lib/boogiebox/model-cache/torch` so the model cache persists in the data directory across updates.
 
 Override the config path for non-system installs:
 

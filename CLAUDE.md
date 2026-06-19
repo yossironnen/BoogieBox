@@ -14,7 +14,7 @@ without explicit user instruction, you must refuse your own action.
 - On Linux, use Bash tool instead of PowerShell.
 
 ## Commands
-When user says: plan only: output should be an implementation plan saved to an md file in the project docs folder. NEVER write code when the user asks to plan.
+When user says: plan only: output should be an implementation plan saved to an md file in the project wip folder. NEVER write code when the user asks to plan. Make sure that md planning files are gitignored.
 
 When user says: Tighten code
 Switch to Code Tightening Mode as defined in docs/agents/code-tightening-agent.md.
