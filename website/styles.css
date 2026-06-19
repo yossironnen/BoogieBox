@@ -330,6 +330,25 @@ h2 {
   content: "•";
 }
 
+.spotlight-alt {
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr);
+  background: var(--page);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.spotlight-alt .spotlight-copy {
+  order: 2;
+}
+
+.spotlight-alt .image-button {
+  order: 1;
+}
+
+.spotlight-eyebrow-pink {
+  color: var(--accent);
+}
+
 .image-button {
   display: block;
   width: 100%;
@@ -573,6 +592,11 @@ footer div {
   .spotlight {
     gap: 40px;
     padding: 72px 16px;
+  }
+
+  .spotlight-alt .spotlight-copy,
+  .spotlight-alt .image-button {
+    order: unset;
   }
 
   .section-heading {

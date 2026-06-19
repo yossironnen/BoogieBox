@@ -58,8 +58,9 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `GET` | `/api/tracks/{id}/stream` | Stream or transcode a track. |
 | `GET` | `/api/tracks/{id}/waveform` | Fetch cached waveform data. |
 | `GET` | `/api/tracks/{id}/lyrics` | Fetch cached or provider lyrics. |
-| `POST` | `/api/playback/history` | Record playback history. |
-| `GET` | `/api/history` | Fetch listening history. |
+| `GET` | `/api/tracks/{id}/sonic-fingerprint` | Fetch Sonic Fingerprint (stem analysis, sections, transition windows) for a track. |
+| `POST` | `/api/tracks/{id}/played` | Record a track play event. |
+| `GET` | `/api/user/history` | Fetch listening history for the current user. |
 
 ## Playlists
 
@@ -104,10 +105,19 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/boogiemix/jobs` | Create a BoogieMix job. |
-| `GET` | `/api/boogiemix/jobs/{id}` | Fetch BoogieMix job status. |
-| `GET` | `/api/boogiemix/outputs/{id}/download` | Download a rendered mix. |
-| `GET` | `/api/boogiemix/deep-analysis/status` | Report optional deep-analysis health and queue state. |
+| `POST` | `/api/boogiemix/create` | Create a BoogieMix job (generic). |
+| `POST` | `/api/playlists/{id}/boogiemix/jobs` | Create a BoogieMix job for a specific playlist. |
+| `GET` | `/api/boogiemix/jobs/{jobId}` | Fetch BoogieMix job status, transitions, and logs. |
+| `POST` | `/api/boogiemix/jobs/{jobId}/cancel` | Cancel a running or pending BoogieMix job. |
+| `GET` | `/api/playlists/{id}/boogiemix/outputs` | List rendered mix outputs for a playlist. |
+| `GET` | `/api/boogiemix/outputs/{outputId}/file` | Download a rendered mix file. |
+| `GET` | `/api/boogiemix/deep-analysis/status` | Report deep-analysis runtime health, queue, and cache state. |
+| `POST` | `/api/boogiemix/deep-analysis/playlists/{playlistId}/queue` | Queue deep analysis for all tracks in a playlist. |
+| `GET` | `/api/boogiemix/deep-analysis/playlists/{playlistId}/progress` | Fetch deep-analysis progress for a playlist. |
+| `POST` | `/api/boogiemix/deep-analysis/libraries/{libraryId}/queue` | Queue deep analysis for all tracks in a library. |
+| `POST` | `/api/boogiemix/deep-analysis/pause` | Pause background deep-analysis jobs. |
+| `POST` | `/api/boogiemix/deep-analysis/resume` | Resume paused background deep-analysis jobs. |
+| `POST` | `/api/boogiemix/deep-analysis/cache/clear` | Clear the deep-analysis cache. |
 
 ## Admin, Settings, And Providers
 
@@ -117,7 +127,14 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `PUT` | `/api/settings` | Update global settings. |
 | `GET` | `/api/user-settings` | Read current user settings. |
 | `PUT` | `/api/user-settings` | Update current user settings. |
+| `GET` | `/api/admin/users` | List all users (admin only). |
+| `POST` | `/api/admin/users` | Create a user (admin only). |
+| `PUT` | `/api/admin/users/{id}/permissions` | Update user scan/edit permissions (admin only). |
+| `PUT` | `/api/admin/users/{id}/pin` | Set or clear a user PIN (admin only). |
+| `DELETE` | `/api/admin/users/{id}` | Delete a user (admin only). |
 | `GET` | `/api/admin/queues` | Fetch scan, post-scan, mix, and analysis queue snapshots. |
+| `POST` | `/api/admin/browse-folder` | Browse the server filesystem for folder selection. |
+| `GET` | `/api/admin/fs/browse` | List directory contents on the server filesystem. |
 | `GET` | `/api/provider-usage` | Fetch provider usage statistics. |
 | `GET` | `/api/lastfm/info` | Fetch Last.fm artist information. |
 | `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist. |

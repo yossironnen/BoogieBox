@@ -18,6 +18,7 @@
       </a>
       <nav aria-label="Primary navigation">
         <a href="#features">Features</a>
+        <a href="#boogiemix">BoogieMix</a>
         <a href="#gallery">Screenshots</a>
         <a href="https://github.com/yossironnen/BoogieBox/tree/main/Docs">Docs</a>
       </nav>
@@ -68,19 +69,41 @@
         </div>
       </section>
 
-      <section class="spotlight">
+      <section class="spotlight" id="boogiemix">
         <div class="spotlight-copy">
           <p class="eyebrow">AI-powered mixing</p>
           <h2>Meet BoogieMix, your experimental AI DJ.</h2>
           <p>Go beyond shuffle. BoogieMix uses AI-assisted planning and local music analysis to choose track order, plan transitions, and render continuous listening sessions from the playlists you already love.</p>
           <ul>
             <li>AI-assisted mix and transition planning</li>
-            <li>Optional local deep analysis</li>
+            <li>Stem-aware crossfades shaped by real drum, bass, and vocal activity</li>
+            <li>Harmonic key compatibility via Camelot detection</li>
+            <li>Precise vocal cue points so transitions never cut mid-lyric</li>
+            <li>Beat-phase alignment using neural beat-grid analysis</li>
+            <li>Spectral energy profiling for smoother playlist flow</li>
             <li>Downloadable rendered mixes</li>
           </ul>
         </div>
         <button class="image-button" type="button" data-lightbox="assets/screenshots/boogiemix.png" aria-label="Open BoogieMix screenshot">
           <img src="assets/screenshots/boogiemix.png" alt="BoogieMix playlist controls and mix generation interface">
+        </button>
+      </section>
+
+      <section class="spotlight spotlight-alt">
+        <div class="spotlight-copy">
+          <p class="eyebrow spotlight-eyebrow-pink">New — stem analysis</p>
+          <h2>Sonic Fingerprint.</h2>
+          <p>Every deeply analyzed track gets a Sonic Fingerprint — a live stem breakdown visible right in the player. See what's happening at the instrument level and understand exactly where BoogieMix will place its transitions.</p>
+          <ul>
+            <li>Per-stem heatmap rows for vocals, drums, bass, and other</li>
+            <li>Section markers and transition windows overlaid on the waveform bar</li>
+            <li>BPM, harmonic key, section type, and confidence badge at a glance</li>
+            <li>Filter Browse and Search to tracks with real stem data</li>
+            <li>Live ANALYZING badge while a track is being processed</li>
+          </ul>
+        </div>
+        <button class="image-button" type="button" data-lightbox="assets/screenshots/sonic_fingerprint.png" aria-label="Open Sonic Fingerprint screenshot">
+          <img src="assets/screenshots/sonic_fingerprint.png" alt="Sonic Fingerprint panel showing per-stem energy heatmaps, section markers, and transition windows">
         </button>
       </section>
 
@@ -95,6 +118,18 @@
 
         <div class="gallery">
           <figure class="gallery-wide">
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/sonic_fingerprint.png" aria-label="Open Sonic Fingerprint screenshot">
+              <img src="assets/screenshots/sonic_fingerprint.png" alt="Sonic Fingerprint panel showing per-stem energy heatmaps and transition windows">
+            </button>
+            <figcaption><strong>Sonic Fingerprint</strong><span>Stem-level analysis, section markers, and transition windows — live in the player.</span></figcaption>
+          </figure>
+          <figure>
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/deep_analysis_settings.png" aria-label="Open deep analysis settings screenshot">
+              <img src="assets/screenshots/deep_analysis_settings.png" alt="BoogieMix deep analysis settings panel">
+            </button>
+            <figcaption><strong>Deep analysis controls</strong><span>Runtime status, background queuing, and cache management for BoogieMix.</span></figcaption>
+          </figure>
+          <figure>
             <button class="image-button" type="button" data-lightbox="assets/screenshots/album_browse.png" aria-label="Open album browser screenshot">
               <img src="assets/screenshots/album_browse.png" alt="BoogieBox album browser">
             </button>
@@ -134,7 +169,7 @@
         </div>
         <div class="detail-list">
           <div><span>Playback</span><p>MP3, FLAC, M4A, OGG, OPUS, WAV, AAC, WMA, AIFF, and APE.</p></div>
-          <div><span>Analysis</span><p>Waveforms, BPM detection, listening history, and optional BoogieMix deep analysis.</p></div>
+          <div><span>Analysis</span><p>Waveforms, BPM detection, Sonic Fingerprint stem analysis, listening history, and optional BoogieMix deep analysis with Demucs.</p></div>
           <div><span>Connected</span><p>Last.fm, lyrics, metadata enrichment, mobile access, and optional DLNA/UPnP.</p></div>
           <div><span>Built with</span><p>Rust, React, TypeScript, Tauri 2, SQLite, and FFmpeg.</p></div>
         </div>

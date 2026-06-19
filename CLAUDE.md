@@ -47,7 +47,7 @@ Self-hosted music library app. Supports Windows and Linux (server-only on Linux)
 - SQLite via `rusqlite` in `server-rs`
 - Music-only libraries; legacy movie/TV/video schema and UI have been removed
 - Async music scanner plus post-scan follow-up jobs for artwork, waveforms, BPM, and BoogieMix deep analysis
-- Optional Python BoogieMix deep-analysis worker under `server/Services/boogiemix/`
+- Optional Python BoogieMix deep-analysis worker under `Services/boogiemix/python/`
 - Standalone Rust server build/package flow via `build-server-rust.bat` for Windows  or 'build-server-rust.sh' for Linux
 
 

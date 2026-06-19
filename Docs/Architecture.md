@@ -7,7 +7,7 @@ BoogieBox is a self-hosted music library application for Windows and Linux. The 
 - `server-rs/` contains the primary backend runtime.
 - `client/` contains the browser/mobile React application.
 - `desktop/` contains the Tauri 2 desktop wrapper.
-- `server/Services/boogiemix/` contains optional Python worker assets for deep music analysis.
+- `Services/boogiemix/python/` contains optional Python worker assets for deep music analysis.
 - `build-server-rust.bat` builds the standalone Windows server release and installer flow.
 - `build-server-rust.sh` builds the standalone Linux server release and tarball flow.
 - `build-desktop.bat` builds the desktop shell release flow.
@@ -33,6 +33,7 @@ Important server modules:
 - `src/mix_worker.rs`: BoogieMix planning and rendering.
 - `src/deep_analysis.rs`: optional BoogieMix deep-analysis queueing and status.
 - `src/ffmpeg.rs`: FFmpeg and FFprobe resolution.
+- `src/settings.rs`: global and per-user settings normalization.
 - `src/server_config.rs`: database locator and packaged runtime config.
 
 ## Frontend

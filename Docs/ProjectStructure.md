@@ -17,7 +17,7 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `client/` | React and TypeScript client. |
 | `server-rs/` | Rust server and database crates. |
 | `desktop/` | Tauri desktop shell. |
-| `server/Services/boogiemix/` | Optional Python BoogieMix deep-analysis worker assets. |
+| `Services/boogiemix/python/` | Optional Python BoogieMix deep-analysis worker assets. |
 | `installer/` | Installer definitions (Inno Setup for Windows, systemd unit and install script for Linux). |
 | `scripts/` | Repo-level helper scripts. |
 | `tools/` | Local binary caches for packaged dependencies such as FFmpeg and WinSW. |
@@ -98,10 +98,12 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 
 | Path | Purpose |
 | --- | --- |
-| `server/Services/boogiemix/README.md` | Python worker notes. |
-| `server/Services/boogiemix/boogiemix_demucs_worker.py` | Optional Demucs-based deep-analysis worker. |
-| `server/Services/boogiemix/bootstrap_env.ps1` | Python environment bootstrap. |
-| `server/Services/boogiemix/requirements.txt` | Python dependency list. |
+| `Services/boogiemix/python/README.md` | Python worker notes. |
+| `Services/boogiemix/python/boogiemix_demucs_worker.py` | Demucs-based deep-analysis worker (main entry point). |
+| `Services/boogiemix/python/demucs_runner.py` | Thin Demucs wrapper that patches torchaudio to use soundfile as the WAV backend. |
+| `Services/boogiemix/python/bootstrap_env.ps1` | Python environment bootstrap for Windows. |
+| `Services/boogiemix/python/bootstrap_env.sh` | Python environment bootstrap for Linux. |
+| `Services/boogiemix/python/requirements.txt` | Python dependency list. |
 
 ## Generated Or Local-Only Paths
 

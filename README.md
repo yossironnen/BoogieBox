@@ -111,7 +111,8 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 ### 🎧 Rich Listening Experience
 
 - Full-featured music player with queue management, shuffle, repeat, and smooth transitions
-- Interactive waveform seek bar for precise navigation
+- Interactive waveform seek bar with Sonic Fingerprint stem-analysis overlay for precise navigation
+- Sonic Fingerprint panel showing per-stem energy, vocal/drum/bass presence, and transition windows from deep analysis
 - Synchronized lyrics and karaoke mode
 - Vinyl Mode for a classic turntable-inspired experience
 - 7-band parametric EQ with presets, custom profiles, and automatic artist-based EQ matching
@@ -169,6 +170,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 | DLNA/UPnP Streaming | ✅ |
 | Last.fm Integration | ✅ |
 | Artwork Enrichment | ✅ |
+| Sonic Fingerprint (stem analysis) | ✅ |
 | Local Music Libraries | ✅ |
 
 ---
