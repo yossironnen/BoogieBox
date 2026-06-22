@@ -1,7 +1,7 @@
 //! Defines Rust API routes for Library Routes server behavior.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post, put},
@@ -12,7 +12,7 @@ use boogiebox_db::{
     music::coerce_entity_id,
 };
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::{fs, net::SocketAddr};
 
 use crate::{
     auth::{AdminUser, AuthenticatedUser},
@@ -656,12 +656,13 @@ struct FsBrowseResponse {
 
 async fn fs_browse_handler(
     State(state): State<SharedState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     auth: Result<AdminUser, (StatusCode, Json<ErrorResponse>)>,
     Query(params): Query<FsBrowseParams>,
 ) -> impl IntoResponse {
     let setup_mode = state.read().expect("state lock").setup_required;
-    if auth.is_err() && !setup_mode {
-        return forbidden();
+    if let Some(response) = filesystem_access_denied(auth.is_err(), setup_mode, &addr) {
+        return response;
     }
     let requested = params
         .path
@@ -793,12 +794,13 @@ struct FsMkdirResponse {
 
 async fn fs_mkdir_handler(
     State(state): State<SharedState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     auth: Result<AdminUser, (StatusCode, Json<ErrorResponse>)>,
     Json(payload): Json<FsMkdirRequest>,
 ) -> impl IntoResponse {
     let setup_mode = state.read().expect("state lock").setup_required;
-    if auth.is_err() && !setup_mode {
-        return forbidden();
+    if let Some(response) = filesystem_access_denied(auth.is_err(), setup_mode, &addr) {
+        return response;
     }
     let parent = payload.parent.trim();
     let name = payload.name.trim();
@@ -973,6 +975,72 @@ async fn fs_mkdir_handler(
             )
                 .into_response()
         }
+    }
+}
+
+fn filesystem_access_denied(
+    unauthenticated: bool,
+    setup_mode: bool,
+    addr: &SocketAddr,
+) -> Option<axum::response::Response> {
+    if !unauthenticated {
+        return None;
+    }
+    if !setup_mode {
+        return Some(forbidden());
+    }
+    if !crate::is_loopback_addr(addr) {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Setup filesystem access is only available from the server machine"
+                        .to_string(),
+                    setup_required: None,
+                }),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_filesystem_access_allows_loopback_without_auth() {
+        let response =
+            filesystem_access_denied(true, true, &SocketAddr::from(([127, 0, 0, 1], 4000)));
+
+        assert!(response.is_none());
+    }
+
+    #[test]
+    fn setup_filesystem_access_rejects_lan_without_auth() {
+        let response =
+            filesystem_access_denied(true, true, &SocketAddr::from(([192, 168, 1, 20], 4000)))
+                .expect("expected forbidden response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn configured_filesystem_access_requires_auth() {
+        let response =
+            filesystem_access_denied(true, false, &SocketAddr::from(([127, 0, 0, 1], 4000)))
+                .expect("expected forbidden response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn authenticated_filesystem_access_is_not_loopback_limited() {
+        let response =
+            filesystem_access_denied(false, false, &SocketAddr::from(([192, 168, 1, 20], 4000)));
+
+        assert!(response.is_none());
     }
 }
 

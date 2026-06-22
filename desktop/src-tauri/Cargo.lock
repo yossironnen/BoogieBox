@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-desktop"
-version = "0.8.27"
+version = "0.8.75"
 dependencies = [
  "directories",
  "libloading 0.8.9",

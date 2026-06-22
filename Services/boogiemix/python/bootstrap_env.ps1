@@ -18,6 +18,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvFull = Join-Path $root $VenvPath
 $torchHome = Join-Path $root "model-cache\torch"
+$constraintsPath = Join-Path $root "constraints.txt"
 $cudaIndexUrl = "https://download.pytorch.org/whl/cu128"
 $cpuIndexUrl = "https://download.pytorch.org/whl/cpu"
 $defaultDemucsModel = "htdemucs"
@@ -55,7 +56,7 @@ $py = Join-Path $venvFull "Scripts\python.exe"
 $pip = Join-Path $venvFull "Scripts\pip.exe"
 
 Invoke-NativeChecked $py @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-Invoke-NativeChecked $pip @("install", "--upgrade", "Cython<3", "numpy>=1.24")
+Invoke-NativeChecked $pip @("install", "--upgrade", "-c", $constraintsPath, "Cython>=3,<4", "numpy>=1.26.4,<3")
 
 New-Item -ItemType Directory -Force -Path $torchHome | Out-Null
 $env:TORCH_HOME = $torchHome
@@ -116,7 +117,7 @@ if ($CpuOnly) {
   $torchMode = "cpu"
 }
 
-Invoke-NativeChecked $pip @("install", "--no-build-isolation", "-r", (Join-Path $root "requirements.txt"))
+Invoke-NativeChecked $pip @("install", "--no-build-isolation", "-c", $constraintsPath, "-r", (Join-Path $root "requirements.txt"))
 
 # madmom: try pre-built bundled wheel first, then fall back to PyPI source build (requires MSVC).
 Write-Host "Installing madmom (neural beat tracking)..."

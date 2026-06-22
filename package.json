@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Music library metadata scanner and search",
   "scripts": {
-    "install:all": "npm install && cd client && npm install",
+    "install:all": "npm install && cd client && npm install && cd ..\\desktop && npm install",
     "build": "npm run lint && npm run security:semgrep && cd client && npx vite build",
     "test": "npm --prefix client test && npm run server-rs:test",
     "typecheck": "npm --prefix client run typecheck && npm run server-rs:check",
@@ -21,9 +21,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.4.0",
+    "eslint": "^10.5.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.6.0",
-    "typescript-eslint": "^8.59.4"
+    "typescript-eslint": "^8.61.1"
   }
 }

@@ -225,14 +225,32 @@ begin
   Result := RunServiceAccessHelper(ScriptBody);
 end;
 
-function InstallBoogieBoxService(UserName: String; Password: String): Boolean;
+function ConfigureServiceLogon(UserName: String; Password: String): Boolean;
 var
-  WrapperParams: String;
+  ScriptBody: String;
+  EscapedUserName: String;
+  EscapedPassword: String;
+begin
+  EscapedUserName := EscapePowerShellSingleQuoted(UserName);
+  EscapedPassword := EscapePowerShellSingleQuoted(Password);
+  ScriptBody :=
+    '$serviceAccount = ''' + EscapedUserName + '''; ' +
+    '$password = ''' + EscapedPassword + '''; ' +
+    'Add-Diagnostic (''Configure service logon started: '' + $serviceAccount); ' +
+    '$service = Get-CimInstance -ClassName Win32_Service -Filter ''Name = "BoogieBoxServer"'' -ErrorAction Stop; ' +
+    '$result = Invoke-CimMethod -InputObject $service -MethodName Change -Arguments @{ StartName = $serviceAccount; StartPassword = $password }; ' +
+    'Add-Diagnostic (''Configure service logon return code: '' + $result.ReturnValue); ' +
+    'if ($result.ReturnValue -ne 0) { throw (''Configure service logon failed with Win32_Service.Change return code '' + $result.ReturnValue + ''.'') }; ';
+  Result := RunServiceAccessHelper(ScriptBody);
+end;
+
+function InstallBoogieBoxService(UserName: String; Password: String): Boolean;
 begin
   RunServiceCommand('stop');
   RunServiceCommand('uninstall');
-  WrapperParams := 'install --username "' + UserName + '" --password "' + Password + '"';
-  Result := RunServiceCommand(WrapperParams);
+  Result := RunServiceCommand('install');
+  if Result then
+    Result := ConfigureServiceLogon(UserName, Password);
   if Result then
     Result := RunServiceCommand('start');
 end;

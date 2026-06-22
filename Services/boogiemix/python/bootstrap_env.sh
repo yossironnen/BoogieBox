@@ -19,6 +19,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONSTRAINTS_FILE="${SCRIPT_DIR}/constraints.txt"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 PYTHON_EXE=""
@@ -134,7 +135,7 @@ echo "[bootstrap_env.sh] Upgrading pip/setuptools/wheel..."
 
 echo "[bootstrap_env.sh] Installing Cython + numpy..."
 # Cython 3.x generates Python 3.13/3.14-compatible C code; the old <3 cap breaks on newer Python.
-"$VENV_PIP" install --upgrade "Cython>=3" "numpy>=1.24"
+"$VENV_PIP" install --upgrade -c "$CONSTRAINTS_FILE" "Cython>=3,<4" "numpy>=1.26.4,<3"
 
 # ── Torch model cache ─────────────────────────────────────────────────────────
 TORCH_HOME_DIR="${SCRIPT_DIR}/model-cache/torch"
@@ -201,7 +202,7 @@ fi
 
 # ── requirements.txt ──────────────────────────────────────────────────────────
 echo "[bootstrap_env.sh] Installing requirements.txt..."
-"$VENV_PIP" install --no-build-isolation -r "${SCRIPT_DIR}/requirements.txt"
+"$VENV_PIP" install --no-build-isolation -c "$CONSTRAINTS_FILE" -r "${SCRIPT_DIR}/requirements.txt"
 
 # ── madmom ────────────────────────────────────────────────────────────────────
 # Requires gcc and python3.X-dev (pre-installed by install.sh on Debian/Ubuntu).

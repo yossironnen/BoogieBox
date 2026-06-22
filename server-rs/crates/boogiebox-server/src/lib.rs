@@ -436,10 +436,11 @@ pub fn resolve_log_file() -> Option<PathBuf> {
 /// Documents the Build App public API surface.
 pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
     let shared_state: SharedState = Arc::new(RwLock::new(state));
+    let allowed_origins = cors::allowed_origins_from_env();
 
     let cors_layer = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin, _req| {
-            cors::is_allowed_origin(origin.to_str().unwrap_or(""))
+        .allow_origin(AllowOrigin::predicate(move |origin, _req| {
+            cors::is_allowed_origin_with_config(origin.to_str().unwrap_or(""), &allowed_origins)
         }))
         .allow_credentials(true)
         .allow_methods([

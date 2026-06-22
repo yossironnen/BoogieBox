@@ -8,10 +8,6 @@
   <env name="BOOGIEBOX_LOG_LEVEL" value="info" />
   <env name="BOOGIEBOX_LOG_DIR" value="%PROGRAMDATA%\BoogieBox\logs" />
   <startmode>Automatic</startmode>
-  <serviceaccount>
-    <username>.\BoogieBoxService</username>
-    <allowservicelogon>true</allowservicelogon>
-  </serviceaccount>
   <onfailure action="restart" delay="10 sec" />
   <logpath>%PROGRAMDATA%\BoogieBox\service-logs</logpath>
   <log mode="roll" />

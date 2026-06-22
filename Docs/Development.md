@@ -28,13 +28,10 @@ Run `setup-dev.bat` from the repo root to install or verify the common developme
 ## Install Dependencies
 
 ```bat
-npm install
-cd client
-npm install
-cd ..
+npm run install:all
 ```
 
-The root `npm install` installs repo-level tooling. The client has its own package manifest under `client/`.
+The root `npm install` installs repo-level tooling. The client and Tauri desktop shell have their own package manifests under `client/` and `desktop/`.
 
 ## Run In Development
 

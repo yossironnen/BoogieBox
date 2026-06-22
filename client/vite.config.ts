@@ -19,8 +19,12 @@ export default defineConfig({
     chunkSizeWarningLimit: 1100,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom'],
+        manualChunks(id) {
+          const normalizedId = id.replaceAll('\\', '/')
+          if (normalizedId.includes('/node_modules/react/') || normalizedId.includes('/node_modules/react-dom/')) {
+            return 'vendor-react'
+          }
+          return undefined
         }
       }
     }

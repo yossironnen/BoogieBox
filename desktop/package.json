@@ -1,6 +1,6 @@
 {
   "name": "boogiebox-desktop",
-  "version": "0.8.69",
+  "version": "0.8.75",
   "private": true,
   "scripts": {
     "dev": "tauri dev",
@@ -11,9 +11,9 @@
     "generate-icons": "powershell -ExecutionPolicy Bypass -File src-tauri/generate-icons.ps1"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2"
+    "@tauri-apps/api": "^2.11.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2.11.3"
   }
 }

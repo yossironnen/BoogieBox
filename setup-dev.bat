@@ -11,51 +11,95 @@ echo.
 
 call :require_windows
 
-call :ensure_git || exit /b 1
+call :ensure_git
+if errorlevel 1 exit /b 1
 
-call :ensure_vscode || exit /b 1
+call :ensure_vscode
+if errorlevel 1 exit /b 1
 
 call :ask "Install or update Node.js 22+ with winget" Y
-if errorlevel 2 call :install_winget "OpenJS.NodeJS.LTS" "Node.js LTS" || exit /b 1
+if errorlevel 2 (
+    call :install_winget "OpenJS.NodeJS.LTS" "Node.js LTS"
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Install or update Rust via rustup with winget" Y
-if errorlevel 2 call :install_winget "Rustlang.Rustup" "Rustup" || exit /b 1
+if errorlevel 2 (
+    call :install_winget "Rustlang.Rustup" "Rustup"
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Install Microsoft C++ Build Tools with winget" Y
-if errorlevel 2 call :install_build_tools || exit /b 1
+if errorlevel 2 (
+    call :install_build_tools
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Install WebView2 Runtime with winget" Y
-if errorlevel 2 call :install_winget "Microsoft.EdgeWebView2Runtime" "Microsoft Edge WebView2 Runtime" || exit /b 1
+if errorlevel 2 (
+    call :install_winget "Microsoft.EdgeWebView2Runtime" "Microsoft Edge WebView2 Runtime"
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Install Python 3.12 with winget" Y
-if errorlevel 2 call :install_winget "Python.Python.3.12" "Python 3.12" || exit /b 1
+if errorlevel 2 (
+    call :install_winget "Python.Python.3.12" "Python 3.12"
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Install Inno Setup 6 with winget" Y
-if errorlevel 2 call :install_winget "JRSoftware.InnoSetup" "Inno Setup 6" || exit /b 1
+if errorlevel 2 (
+    call :install_winget "JRSoftware.InnoSetup" "Inno Setup 6"
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Install Semgrep with Python pip" Y
-if errorlevel 2 call :install_semgrep || exit /b 1
+if errorlevel 2 (
+    call :install_semgrep
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Configure Rust stable MSVC toolchain" Y
-if errorlevel 2 call :configure_rust || exit /b 1
+if errorlevel 2 (
+    call :configure_rust
+    if errorlevel 1 exit /b 1
+)
 
-call :ask "Install root and client npm dependencies" Y
-if errorlevel 2 call :install_npm || exit /b 1
+call :ask "Install root, client, and desktop npm dependencies" Y
+if errorlevel 2 (
+    call :install_npm
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Download pinned FFmpeg and FFprobe into tools\ffmpeg" Y
-if errorlevel 2 call :download_ffmpeg || exit /b 1
+if errorlevel 2 (
+    call :download_ffmpeg
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Download WinSW service wrapper into tools\winsw" Y
-if errorlevel 2 call :download_winsw || exit /b 1
+if errorlevel 2 (
+    call :download_winsw
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Create dev.config template if missing" Y
-if errorlevel 2 call :create_dev_config || exit /b 1
+if errorlevel 2 (
+    call :create_dev_config
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Set BOOGIEBOX_FFMPEG_DIR for this user to tools\ffmpeg" Y
-if errorlevel 2 call :set_ffmpeg_env || exit /b 1
+if errorlevel 2 (
+    call :set_ffmpeg_env
+    if errorlevel 1 exit /b 1
+)
 
 call :ask "Verify installed development tools" Y
-if errorlevel 2 call :verify_tools || exit /b 1
+if errorlevel 2 (
+    call :verify_tools
+    if errorlevel 1 exit /b 1
+)
 
 echo.
 echo Setup complete.
@@ -89,27 +133,33 @@ exit /b 0
 :ensure_git
 where git >nul 2>&1
 if not errorlevel 1 (
-    for /f "usebackq delims=" %%G in (`git --version 2^>nul`) do echo Git already installed: %%G
+    git --version 2>nul
     exit /b 0
 )
 call :ask "Install Git with winget" Y
-if errorlevel 2 call :install_winget "Git.Git" "Git" || exit /b 1
+if errorlevel 2 (
+    call :install_winget "Git.Git" "Git"
+    if errorlevel 1 exit /b 1
+)
 exit /b 0
 
 :ensure_vscode
 where code >nul 2>&1
 if not errorlevel 1 (
-    for /f "usebackq delims=" %%V in (`where code 2^>nul`) do (
-        echo VS Code already installed: %%V
-        exit /b 0
-    )
+    echo VS Code already installed:
+    where code
+    exit /b 0
 )
 call :ask "Install Visual Studio Code with winget" Y
-if errorlevel 2 call :install_winget "Microsoft.VisualStudioCode" "Visual Studio Code" || exit /b 1
+if errorlevel 2 (
+    call :install_winget "Microsoft.VisualStudioCode" "Visual Studio Code"
+    if errorlevel 1 exit /b 1
+)
 exit /b 0
 
 :install_winget
-call :need_winget || exit /b 1
+call :need_winget
+if errorlevel 1 exit /b 1
 echo Installing %~2...
 winget install --id "%~1" --exact --source winget --accept-package-agreements --accept-source-agreements
 if errorlevel 1 (
@@ -119,7 +169,8 @@ if errorlevel 1 (
 exit /b 0
 
 :install_build_tools
-call :need_winget || exit /b 1
+call :need_winget
+if errorlevel 1 exit /b 1
 echo Installing Microsoft C++ Build Tools...
 winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --accept-package-agreements --accept-source-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 if errorlevel 1 (
@@ -159,6 +210,8 @@ if errorlevel 1 (
     echo [ERROR] npm is not available. Install Node.js first, then open a new terminal and rerun.
     exit /b 1
 )
+call :ensure_node_version
+if errorlevel 1 exit /b 1
 call npm install
 if errorlevel 1 exit /b 1
 call npm --prefix client install
@@ -167,6 +220,21 @@ if exist desktop\package.json (
     call npm --prefix desktop install
     if errorlevel 1 exit /b 1
 )
+exit /b 0
+
+:ensure_node_version
+where node >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Node.js is not available. Install Node.js 22+ first, then open a new terminal and rerun.
+    exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$v=(node --version).TrimStart('v');" ^
+  "$p=$v.Split('.');" ^
+  "$major=[int]$p[0]; $minor=[int]$p[1];" ^
+  "if (($major -eq 20 -and $minor -ge 19) -or ($major -eq 22 -and $minor -ge 12) -or ($major -ge 23)) { exit 0 }" ^
+  "Write-Host ('[ERROR] Node.js ' + $v + ' is too old. BoogieBox dev dependencies now require Node 20.19+, 22.12+, or newer.'); exit 1"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :download_ffmpeg

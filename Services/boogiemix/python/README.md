@@ -5,6 +5,10 @@
 - FFmpeg on PATH (`ffmpeg -version`)
 - PowerShell
 
+Python packages are installed from `requirements.txt` with shared bounds in
+`constraints.txt`. Update both files together and verify on the supported
+Python lines before rebuilding installer assets.
+
 ## Automatic setup
 Tries CUDA PyTorch when `nvidia-smi` is available, falls back to CPU PyTorch, and downloads the default Demucs model into the app-local cache.
 

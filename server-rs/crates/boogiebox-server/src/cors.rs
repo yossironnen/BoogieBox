@@ -1,15 +1,45 @@
 //! Defines Rust server support logic for Cors.
 
-/// Returns true if the given origin header value is from localhost,
-/// a private LAN IP address, a `.local` hostname, or a single-label
-/// hostname — matching the Node backend's CORS allowlist behavior.
-/// Documents the Is Allowed Origin public API surface.
+use std::collections::HashSet;
+
+/// Returns true when an origin is trusted for credentialed cross-origin calls.
 pub fn is_allowed_origin(origin: &str) -> bool {
+    is_allowed_origin_with_config(origin, &allowed_origins_from_env())
+}
+
+/// Returns true when an origin is loopback or explicitly allowlisted.
+pub fn is_allowed_origin_with_config(origin: &str, configured_origins: &HashSet<String>) -> bool {
+    let normalized = match normalize_origin(origin) {
+        Some(value) => value,
+        None => return false,
+    };
+    if configured_origins.contains(&normalized) {
+        return true;
+    }
+
     let host = match parse_origin_host(origin) {
         Some(h) => h,
         None => return false,
     };
-    is_loopback_host(&host) || is_private_ip_host(&host) || is_local_hostname(&host)
+    is_loopback_host(&host)
+}
+
+/// Parses `BOOGIEBOX_ALLOWED_ORIGINS` as a comma-separated exact-origin allowlist.
+pub fn allowed_origins_from_env() -> HashSet<String> {
+    std::env::var("BOOGIEBOX_ALLOWED_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(normalize_origin)
+        .collect()
+}
+
+fn normalize_origin(origin: &str) -> Option<String> {
+    let trimmed = origin.trim().trim_end_matches('/');
+    if parse_origin_host(trimmed).is_some() {
+        Some(trimmed.to_lowercase())
+    } else {
+        None
+    }
 }
 
 fn parse_origin_host(origin: &str) -> Option<String> {
@@ -39,86 +69,92 @@ fn is_loopback_host(host: &str) -> bool {
     host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "::ffff:127.0.0.1"
 }
 
-fn is_private_ip_host(host: &str) -> bool {
-    let ip = match host.parse::<std::net::Ipv4Addr>() {
-        Ok(ip) => ip,
-        Err(_) => return false,
-    };
-    let [a, b, ..] = ip.octets();
-    a == 10
-        || (a == 192 && b == 168)
-        || (a == 172 && (16..=31).contains(&b))
-        || (a == 169 && b == 254)
-}
-
-fn is_local_hostname(host: &str) -> bool {
-    // .local mDNS suffix or single-label (no dot → not a public domain)
-    host.ends_with(".local") || !host.contains('.')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn allows_localhost() {
-        assert!(is_allowed_origin("http://localhost:3000"));
-        assert!(is_allowed_origin("http://localhost"));
+    fn allows_loopback_localhost() {
+        assert!(is_allowed_origin_with_config(
+            "http://localhost:3000",
+            &HashSet::new()
+        ));
+        assert!(is_allowed_origin_with_config(
+            "http://localhost",
+            &HashSet::new()
+        ));
     }
 
     #[test]
     fn allows_loopback_ipv4() {
-        assert!(is_allowed_origin("http://127.0.0.1:3001"));
+        assert!(is_allowed_origin_with_config(
+            "http://127.0.0.1:3001",
+            &HashSet::new()
+        ));
     }
 
     #[test]
     fn allows_ipv6_loopback() {
-        assert!(is_allowed_origin("http://[::1]:3001"));
+        assert!(is_allowed_origin_with_config(
+            "http://[::1]:3001",
+            &HashSet::new()
+        ));
     }
 
     #[test]
-    fn allows_private_192_168() {
-        assert!(is_allowed_origin("http://192.168.1.100:3001"));
+    fn rejects_private_lan_origin_by_default() {
+        assert!(!is_allowed_origin_with_config(
+            "http://192.168.1.100:3001",
+            &HashSet::new()
+        ));
+        assert!(!is_allowed_origin_with_config(
+            "http://10.0.0.5:3001",
+            &HashSet::new()
+        ));
+        assert!(!is_allowed_origin_with_config(
+            "http://mymachine.local:3001",
+            &HashSet::new()
+        ));
+        assert!(!is_allowed_origin_with_config(
+            "http://mymachine:3001",
+            &HashSet::new()
+        ));
     }
 
     #[test]
-    fn allows_private_10_x() {
-        assert!(is_allowed_origin("http://10.0.0.5:3001"));
-    }
-
-    #[test]
-    fn allows_private_172_16() {
-        assert!(is_allowed_origin("http://172.16.0.1:3001"));
-    }
-
-    #[test]
-    fn allows_link_local() {
-        assert!(is_allowed_origin("http://169.254.1.1:3001"));
-    }
-
-    #[test]
-    fn allows_local_mdns() {
-        assert!(is_allowed_origin("http://mymachine.local:3001"));
-    }
-
-    #[test]
-    fn allows_single_label_hostname() {
-        assert!(is_allowed_origin("http://mymachine:3001"));
+    fn allows_configured_lan_origin() {
+        let configured = HashSet::from(["http://192.168.1.100:3000".to_string()]);
+        assert!(is_allowed_origin_with_config(
+            "http://192.168.1.100:3000",
+            &configured
+        ));
     }
 
     #[test]
     fn rejects_public_domain() {
-        assert!(!is_allowed_origin("https://example.com"));
-        assert!(!is_allowed_origin("https://attacker.io"));
+        assert!(!is_allowed_origin_with_config(
+            "https://example.com",
+            &HashSet::new()
+        ));
+        assert!(!is_allowed_origin_with_config(
+            "https://attacker.io",
+            &HashSet::new()
+        ));
     }
 
     #[test]
     fn rejects_non_http_scheme() {
-        assert!(!is_allowed_origin("ftp://localhost"));
+        assert!(!is_allowed_origin_with_config(
+            "ftp://localhost",
+            &HashSet::new()
+        ));
     }
 
     #[test]
     fn rejects_public_ip() {
-        assert!(!is_allowed_origin("http://8.8.8.8:3001"));
+        assert!(!is_allowed_origin_with_config(
+            "http://8.8.8.8:3001",
+            &HashSet::new()
+        ));
     }
 }
