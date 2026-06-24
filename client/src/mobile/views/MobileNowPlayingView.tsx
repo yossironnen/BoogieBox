@@ -5,7 +5,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
 import type { PlaybackSnapshot, PlayerState } from '../../components/Player';
-import type { AuthUser, ClientEntityId } from '../../types';
+import type { AuthUser, ClientEntityId, SonicFingerprint, StemWindow } from '../../types';
 import ArtImage from '../../components/ArtImage';
 import { phase2 } from '../../uiPhase2';
 import MobileSettingsView from './MobileSettingsView';
@@ -17,7 +17,7 @@ function fmt(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
-type LyricsPanelMode = 'cover' | 'karaoke' | 'text';
+type LyricsPanelMode = 'cover' | 'karaoke' | 'text' | 'fingerprint';
 type QueueGesture = {
   pointerId: number;
   source: 'row' | 'handle';
@@ -55,6 +55,9 @@ export default function MobileNowPlayingView({
   const [lyricsError, setLyricsError] = useState<string | null>(null);
   const [lyricsText, setLyricsText] = useState('');
   const [lyricsSynced, setLyricsSynced] = useState<Array<{ time: number; text: string }>>([]);
+  const [sonicFingerprint, setSonicFingerprint] = useState<SonicFingerprint | null>(null);
+  const [sonicFingerprintLoading, setSonicFingerprintLoading] = useState(false);
+  const settledFingerprintTrackId = useRef<ClientEntityId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [queueGesture, setQueueGesture] = useState<QueueGesture | null>(null);
   const [queueSwipeOffsets, setQueueSwipeOffsets] = useState<Record<string, number>>({});
@@ -65,6 +68,9 @@ export default function MobileNowPlayingView({
     setLyricsError(null);
     setLyricsText('');
     setLyricsSynced([]);
+    setSonicFingerprint(null);
+    setSonicFingerprintLoading(false);
+    settledFingerprintTrackId.current = null;
   }, [track?.id]);
 
   useEffect(() => {
@@ -88,6 +94,27 @@ export default function MobileNowPlayingView({
     return () => { cancelled = true; };
   }, [panelMode, track?.id]);
 
+  useEffect(() => {
+    if (!track?.id || panelMode !== 'fingerprint') return;
+    if (settledFingerprintTrackId.current === track.id) return;
+    let cancelled = false;
+    setSonicFingerprintLoading(true);
+    api.trackSonicFingerprint(track.id)
+      .then((fp) => {
+        if (cancelled) return;
+        setSonicFingerprint(fp);
+        settledFingerprintTrackId.current = track.id;
+      })
+      .catch(() => {
+        if (cancelled) return;
+        settledFingerprintTrackId.current = track.id;
+      })
+      .finally(() => {
+        if (!cancelled) setSonicFingerprintLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [panelMode, track?.id]);
+
   const activeSyncedLyricIndex = useMemo(() => {
     if (!lyricsSynced.length) return -1;
     const currentTime = snapshot?.currentTime ?? 0;
@@ -107,6 +134,7 @@ export default function MobileNowPlayingView({
     setPanelMode((current) => {
       if (current === 'cover') return 'karaoke';
       if (current === 'karaoke') return 'text';
+      if (current === 'text') return 'fingerprint';
       return 'cover';
     });
   };
@@ -115,7 +143,9 @@ export default function MobileNowPlayingView({
     ? 'Show lyrics'
     : panelMode === 'karaoke'
       ? 'Show plain lyrics'
-      : 'Show album art';
+      : panelMode === 'text'
+        ? 'Show sonic fingerprint'
+        : 'Show album art';
 
   const queueKey = useCallback((id: ClientEntityId, index: number) => `${id}-${index}`, []);
 
@@ -238,7 +268,15 @@ export default function MobileNowPlayingView({
             <div style={styles.coverHint}>Tap for lyrics</div>
           </div>
         )}
-        {panelMode !== 'cover' && (
+        {panelMode === 'fingerprint' && (
+          <MobileSonicFingerprintPanel
+            fingerprint={sonicFingerprint}
+            loading={sonicFingerprintLoading}
+            duration={snapshot?.duration ?? track?.duration ?? 0}
+            currentTime={snapshot?.currentTime ?? 0}
+          />
+        )}
+        {(panelMode === 'karaoke' || panelMode === 'text') && (
           <div style={styles.lyricsShell}>
             <div style={styles.lyricsHeader}>
               <span>Lyrics</span>
@@ -395,3 +433,137 @@ const styles: Record<string, React.CSSProperties> = {
   queueTitle: { fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   queueSub: { fontSize: 13, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
 };
+
+const MOBILE_BINS = 80;
+const STEM_CONFIG = [
+  { key: 'vocalWindowsJson' as const, label: 'VOCALS', color: '#e91e63' },
+  { key: 'drumWindowsJson'  as const, label: 'DRUMS',  color: '#ff9800' },
+  { key: 'bassWindowsJson'  as const, label: 'BASS',   color: '#2196f3' },
+];
+
+function buildMobileStemBins(windows: StemWindow[], duration: number): number[] {
+  const bins = MOBILE_BINS;
+  if (!duration || !windows.length) return new Array<number>(bins).fill(0);
+  const out = new Array<number>(bins).fill(0);
+  for (let i = 0; i < bins; i++) {
+    const s = (i / bins) * duration;
+    const e = ((i + 1) / bins) * duration;
+    let max = 0;
+    for (const w of windows) {
+      if (w.end > s && w.start < e) max = Math.max(max, Math.min(1, Math.max(0, w.strength)));
+    }
+    out[i] = max;
+  }
+  return out;
+}
+
+function MobileSonicFingerprintPanel({
+  fingerprint,
+  loading,
+  duration,
+  currentTime,
+}: {
+  fingerprint: SonicFingerprint | null;
+  loading: boolean;
+  duration: number;
+  currentTime: number;
+}) {
+  const dur = duration || fingerprint?.sourceDurationSec || 0;
+  const playedRatio = dur > 0 ? Math.min(1, Math.max(0, currentTime / dur)) : 0;
+
+  const stemBins = useMemo(() => {
+    if (!fingerprint) return null;
+    return {
+      vocal: buildMobileStemBins(fingerprint.vocalWindowsJson, dur),
+      drums: buildMobileStemBins(fingerprint.drumWindowsJson, dur),
+      bass:  buildMobileStemBins(fingerprint.bassWindowsJson, dur),
+    };
+  }, [fingerprint, dur]);
+
+  return (
+    <div style={{ ...phase2.mobileHeroCard, width: '100%', aspectRatio: '1 / 1', padding: '18px 18px 22px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', color: 'var(--accent)', textTransform: 'uppercase' as const }}>
+          Sonic Fingerprint ✦
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Tap to return</span>
+      </div>
+
+      {loading && (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+          Analyzing…
+        </div>
+      )}
+
+      {!loading && !fingerprint && (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+          No analysis available
+        </div>
+      )}
+
+      {!loading && fingerprint && stemBins && (
+        <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' as const }}>
+            {fingerprint.bpmDetected != null && (
+              <MobileFpBadge label={`♩ ${Math.round(fingerprint.bpmDetected)} BPM`} />
+            )}
+            <MobileFpBadge label={`⚡ ${Math.round(fingerprint.energyScoreRefined * 100)}% energy`} />
+            <MobileFpBadge label={`◎ ${Math.round(fingerprint.confidence * 100)}% conf`} />
+          </div>
+
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 12 }}>
+            {STEM_CONFIG.map(({ key, label, color }) => {
+              const bins = key === 'vocalWindowsJson' ? stemBins.vocal
+                         : key === 'drumWindowsJson'  ? stemBins.drums
+                         : stemBins.bass;
+              const playedCount = Math.round(playedRatio * bins.length);
+              return (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color, width: 46, flexShrink: 0, textAlign: 'right' as const }}>{label}</span>
+                  <div style={{ flex: 1, height: 18, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    {bins.map((strength, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          flex: 1,
+                          minWidth: 1,
+                          height: `${Math.max(2, strength * 18)}px`,
+                          borderRadius: 1,
+                          backgroundColor: color,
+                          opacity: i < playedCount
+                            ? Math.min(1, Math.max(0.35, 0.4 + strength * 0.6))
+                            : Math.min(0.7, Math.max(0.12, 0.18 + strength * 0.55)),
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {fingerprint.demucsModel && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' as const }}>{fingerprint.demucsModel}</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function MobileFpBadge({ label }: { label: string }) {
+  return (
+    <span style={{
+      fontSize: 11,
+      padding: '3px 10px',
+      borderRadius: 6,
+      border: '1px solid color-mix(in srgb, var(--accent) 35%, var(--border))',
+      background: 'color-mix(in srgb, var(--accent) 10%, var(--bg))',
+      color: 'var(--text)',
+      fontWeight: 600,
+      whiteSpace: 'nowrap' as const,
+    }}>
+      {label}
+    </span>
+  );
+}
