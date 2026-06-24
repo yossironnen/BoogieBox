@@ -278,23 +278,24 @@ describe('viz mode helpers', () => {
     expect(normalizeVizMode('bars')).toBe('bars');
     expect(normalizeVizMode('needle')).toBe('needle');
     expect(normalizeVizMode('hifi')).toBe('hifi');
-    expect(normalizeVizMode('tube')).toBe('tube');
+    expect(normalizeVizMode('wave')).toBe('wave');
+    expect(normalizeVizMode('tube')).toBe('bars'); // legacy value falls back
     expect(normalizeVizMode('unknown')).toBe('bars');
     expect(normalizeVizMode(null)).toBe('bars');
   });
 
-  it('cycles visualizer modes bars -> needle -> hifi -> tube -> bars', () => {
+  it('cycles visualizer modes bars -> needle -> hifi -> wave -> bars', () => {
     expect(getNextVizMode('bars')).toBe('needle');
     expect(getNextVizMode('needle')).toBe('hifi');
-    expect(getNextVizMode('hifi')).toBe('tube');
-    expect(getNextVizMode('tube')).toBe('bars');
+    expect(getNextVizMode('hifi')).toBe('wave');
+    expect(getNextVizMode('wave')).toBe('bars');
   });
 
   it('returns mode-toggle titles for each visualizer', () => {
     expect(getVizModeToggleTitle('bars')).toContain('needle');
     expect(getVizModeToggleTitle('needle')).toContain('HiFi');
-    expect(getVizModeToggleTitle('hifi')).toContain('tube');
-    expect(getVizModeToggleTitle('tube')).toContain('bar');
+    expect(getVizModeToggleTitle('hifi')).toContain('visualizer');
+    expect(getVizModeToggleTitle('wave')).toContain('bar');
   });
 });
 

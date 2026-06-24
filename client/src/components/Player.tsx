@@ -467,11 +467,35 @@ function getThemeRgb(value: string, fallbackHex: string): Rgb {
 }
 
 /** Viz Mode is part of this module's public API. */
-export type VizMode = 'bars' | 'needle' | 'hifi' | 'tube';
+export type VizMode = 'bars' | 'needle' | 'hifi' | 'wave';
+
+/** Wave style sub-mode for the wave visualizer. */
+export type WaveStyle = 'freq' | 'mirror' | 'scope' | 'fill';
+
+const WAVE_STYLE_KEY = 'bb_wave_style';
+
+function normalizeWaveStyle(v: string | null | undefined): WaveStyle {
+  if (v === 'freq' || v === 'mirror' || v === 'scope' || v === 'fill') return v;
+  return 'freq';
+}
+
+function getNextWaveStyle(s: WaveStyle): WaveStyle {
+  if (s === 'freq')   return 'mirror';
+  if (s === 'mirror') return 'scope';
+  if (s === 'scope')  return 'fill';
+  return 'freq';
+}
+
+function waveStyleLabel(s: WaveStyle): string {
+  if (s === 'freq')   return 'FREQ';
+  if (s === 'mirror') return 'MIR';
+  if (s === 'scope')  return 'SCP';
+  return 'FILL';
+}
 
 /** Normalize Viz Mode is part of this module's public API. */
 export function normalizeVizMode(value: string | null | undefined): VizMode {
-  if (value === 'needle' || value === 'hifi' || value === 'tube' || value === 'bars') return value;
+  if (value === 'needle' || value === 'hifi' || value === 'wave' || value === 'bars') return value;
   return 'bars';
 }
 
@@ -479,7 +503,7 @@ export function normalizeVizMode(value: string | null | undefined): VizMode {
 export function getNextVizMode(mode: VizMode): VizMode {
   if (mode === 'bars') return 'needle';
   if (mode === 'needle') return 'hifi';
-  if (mode === 'hifi') return 'tube';
+  if (mode === 'hifi') return 'wave';
   return 'bars';
 }
 
@@ -487,7 +511,7 @@ export function getNextVizMode(mode: VizMode): VizMode {
 export function getVizModeToggleTitle(mode: VizMode): string {
   if (mode === 'bars') return 'Switch to needle meter';
   if (mode === 'needle') return 'Switch to HiFi meter';
-  if (mode === 'hifi') return 'Switch to tube meter';
+  if (mode === 'hifi') return 'Switch to visualizer';
   return 'Switch to bar meter';
 }
 
@@ -1179,127 +1203,144 @@ function MeterCanvas({
   );
 }
 
-function TubeVisualizer({
-  analyserL,
-  analyserR,
-  isPlaying,
-  width,
-  height,
+function WaveVisualizer({
+  analyser, isPlaying, style, width, height,
 }: {
-  analyserL: AnalyserNode | null;
-  analyserR: AnalyserNode | null;
+  analyser: AnalyserNode | null;
   isPlaying: boolean;
+  style: WaveStyle;
   width: number;
   height: number;
 }) {
-  const [levels, setLevels] = useState({ l: 0, r: 0 });
-  const rafRef = useRef(0);
-  const lRef = useRef(0);
-  const rRef = useRef(0);
-  const lDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
-  const rDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef    = useRef<number>(0);
 
   useEffect(() => {
-    lDataRef.current = analyserL ? new Uint8Array(analyserL.frequencyBinCount) : null;
-  }, [analyserL]);
-  useEffect(() => {
-    rDataRef.current = analyserR ? new Uint8Array(analyserR.frequencyBinCount) : null;
-  }, [analyserR]);
+    const canvas = canvasRef.current;
+    if (!canvas || !analyser) return;
+    const ctx2d = canvas.getContext('2d')!;
 
-  useEffect(() => {
-    const readRms = (analyser: AnalyserNode | null, data: Uint8Array<ArrayBuffer> | null): number => {
-      if (!analyser || !data || !isPlaying) return 0;
-      analyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) {
-        const v = (data[i] - 128) / 128;
-        sum += v * v;
+    // Resolve CSS variables via documentElement — same approach as readNeedleThemeVarsFromCss().
+    const cs     = getComputedStyle(document.documentElement);
+    const accent = cs.getPropertyValue('--accent').trim() || '#4a9eff';
+    const border = cs.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.12)';
+    // Derive a semi-transparent fill variant from the resolved accent.
+    const accentFill = (() => {
+      const tmp = document.createElement('canvas');
+      tmp.width = tmp.height = 1;
+      const t = tmp.getContext('2d')!;
+      t.fillStyle = accent;
+      t.fillRect(0, 0, 1, 1);
+      const [r, g, b] = t.getImageData(0, 0, 1, 1).data;
+      return `rgba(${r},${g},${b},0.55)`;
+    })();
+
+    const isFreq = style === 'freq' || style === 'mirror';
+    const fftSize = isFreq ? 256 : 1024;
+    if (analyser.fftSize !== fftSize) analyser.fftSize = fftSize;
+    const bufLen = isFreq ? analyser.frequencyBinCount : analyser.fftSize;
+    const buf    = new Uint8Array(bufLen);
+
+    const drawIdle = () => {
+      ctx2d.clearRect(0, 0, width, height);
+      ctx2d.fillStyle = border;
+      ctx2d.fillRect(0, height / 2 - 1, width, 2);
+    };
+
+    const drawFreqBars = () => {
+      analyser.getByteFrequencyData(buf);
+      ctx2d.clearRect(0, 0, width, height);
+      const barW = (width / bufLen) * 2.2;
+      for (let i = 0, x = 0; i < bufLen && x < width; i++, x += barW) {
+        const v    = buf[i] / 255;
+        const barH = v * height;
+        if (barH < 1) continue;
+        const grad = ctx2d.createLinearGradient(0, height - barH, 0, height);
+        grad.addColorStop(0, accent);
+        grad.addColorStop(1, 'rgba(0,0,0,0.15)');
+        ctx2d.fillStyle = grad;
+        ctx2d.fillRect(x, height - barH, Math.max(1, barW - 1), barH);
       }
-      return Math.sqrt(sum / data.length);
     };
 
-    const tick = () => {
-      rafRef.current = requestAnimationFrame(tick);
-      const rawL = readRms(analyserL, lDataRef.current);
-      const rawR = readRms(analyserR, rDataRef.current);
-      const noiseL = (Math.random() - 0.5) * 0.05;
-      const noiseR = (Math.random() - 0.5) * 0.05;
-      const base = isPlaying ? 0.2 : 0.08;
-      const decay = isPlaying ? 0.14 : 0.03;
-      const targetL = Math.max(base, base + rawL * 1.35 + noiseL);
-      const targetR = Math.max(base, base + rawR * 1.35 + noiseR);
-      lRef.current += (targetL - lRef.current) * decay;
-      rRef.current += (targetR - rRef.current) * decay;
-      setLevels({
-        l: Math.max(0.06, Math.min(1.5, lRef.current)),
-        r: Math.max(0.06, Math.min(1.5, rRef.current)),
-      });
+    const drawMirrorBars = () => {
+      analyser.getByteFrequencyData(buf);
+      ctx2d.clearRect(0, 0, width, height);
+      const mid  = height / 2;
+      const barW = (width / bufLen) * 2.2;
+      for (let i = 0, x = 0; i < bufLen && x < width; i++, x += barW) {
+        const v    = buf[i] / 255;
+        const half = v * mid;
+        if (half < 1) continue;
+        const grad = ctx2d.createLinearGradient(0, mid - half, 0, mid + half);
+        grad.addColorStop(0,   'rgba(0,0,0,0.1)');
+        grad.addColorStop(0.5, accent);
+        grad.addColorStop(1,   'rgba(0,0,0,0.1)');
+        ctx2d.fillStyle = grad;
+        ctx2d.fillRect(x, mid - half, Math.max(1, barW - 1), half * 2);
+      }
     };
-    tick();
+
+    const drawScope = () => {
+      analyser.getByteTimeDomainData(buf);
+      ctx2d.clearRect(0, 0, width, height);
+      ctx2d.strokeStyle = accent;
+      ctx2d.lineWidth   = 1.5;
+      ctx2d.beginPath();
+      const sliceW = width / bufLen;
+      for (let i = 0; i < bufLen; i++) {
+        const y = (buf[i] / 128.0) * (height / 2);
+        if (i === 0) ctx2d.moveTo(0, y);
+        else         ctx2d.lineTo(i * sliceW, y);
+      }
+      ctx2d.stroke();
+    };
+
+    const drawFill = () => {
+      analyser.getByteTimeDomainData(buf);
+      ctx2d.clearRect(0, 0, width, height);
+      const sliceW = width / bufLen;
+
+      // filled area
+      const areaGrad = ctx2d.createLinearGradient(0, 0, 0, height);
+      areaGrad.addColorStop(0, accentFill);
+      areaGrad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx2d.fillStyle = areaGrad;
+      ctx2d.beginPath();
+      ctx2d.moveTo(0, height);
+      for (let i = 0; i < bufLen; i++) {
+        ctx2d.lineTo(i * sliceW, (buf[i] / 128.0) * (height / 2));
+      }
+      ctx2d.lineTo(width, height);
+      ctx2d.closePath();
+      ctx2d.fill();
+
+      // outline on top
+      ctx2d.strokeStyle = accent;
+      ctx2d.lineWidth   = 1.5;
+      ctx2d.beginPath();
+      for (let i = 0; i < bufLen; i++) {
+        const y = (buf[i] / 128.0) * (height / 2);
+        if (i === 0) ctx2d.moveTo(0, y);
+        else         ctx2d.lineTo(i * sliceW, y);
+      }
+      ctx2d.stroke();
+    };
+
+    const drawMap: Record<WaveStyle, () => void> = {
+      freq: drawFreqBars, mirror: drawMirrorBars, scope: drawScope, fill: drawFill,
+    };
+
+    const loop = () => {
+      rafRef.current = requestAnimationFrame(loop);
+      drawMap[style]();
+    };
+
+    if (isPlaying) loop(); else drawIdle();
     return () => cancelAnimationFrame(rafRef.current);
-  }, [analyserL, analyserR, isPlaying]);
+  }, [analyser, isPlaying, style, width, height]);
 
-  const tubeStyle = (level: number): React.CSSProperties => {
-    const glow = Math.min(1.25, Math.max(0.08, level));
-    return {
-      width: 30,
-      height: height - 10,
-      borderRadius: 14,
-      border: '1px solid rgba(235,245,255,0.26)',
-      background: [
-        'radial-gradient(65% 18% at 50% 3%, rgba(255,255,255,0.20), rgba(255,255,255,0))',
-        'linear-gradient(180deg, rgba(208,230,255,0.14) 0%, rgba(20,26,34,0.62) 60%, rgba(11,14,20,0.85) 100%)',
-      ].join(','),
-      boxShadow: [
-        'inset 0 0 0 1px rgba(255,255,255,0.05)',
-        'inset 0 -16px 22px rgba(0,0,0,0.55)',
-        `0 0 ${9 + glow * 18}px rgba(255,161,78,${0.18 + glow * 0.24})`,
-      ].join(','),
-      position: 'relative',
-      overflow: 'hidden',
-    };
-  };
-
-  const filamentStyle = (level: number): React.CSSProperties => {
-    const glow = Math.min(1.2, Math.max(0.08, level));
-    const hotness = Math.max(0, level - 0.9) * 3.8;
-    const h = 16 + Math.min(22, level * 18);
-    return {
-      position: 'absolute',
-      left: '50%',
-      bottom: 12,
-      width: 5,
-      height: h,
-      transform: 'translateX(-50%)',
-      borderRadius: 3,
-      background: `linear-gradient(180deg, rgba(255,247,228,${0.55 + hotness * 0.25}) 0%, rgba(255,197,104,${0.45 + glow * 0.36}) 55%, rgba(255,130,54,${0.38 + glow * 0.30}) 100%)`,
-      boxShadow: [
-        `0 0 ${10 + glow * 18}px rgba(255,174,92,${0.24 + glow * 0.44})`,
-        `0 0 ${4 + hotness * 20}px rgba(255,255,255,${Math.min(0.75, hotness * 0.58)})`,
-      ].join(','),
-    };
-  };
-
-  const tubeNode = (level: number, label: string) => (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-      <div style={tubeStyle(level)}>
-        <div style={{ position: 'absolute', left: 6, top: 4, width: 6, height: '65%', borderRadius: 4, background: 'linear-gradient(180deg, rgba(255,255,255,0.34), rgba(255,255,255,0.02))' }} />
-        <div style={{ position: 'absolute', right: 5, top: 8, width: 4, height: '52%', borderRadius: 3, background: 'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.01))' }} />
-        <div style={{ position: 'absolute', left: '50%', top: 15, transform: 'translateX(-50%)', width: 14, height: 12, borderRadius: 2, background: 'rgba(26,30,37,0.62)', border: '1px solid rgba(175,190,210,0.25)' }} />
-        <div style={filamentStyle(level)} />
-        <div style={{ position: 'absolute', left: '50%', bottom: 9, transform: 'translateX(-50%)', width: 11, height: 2, borderRadius: 1, background: 'rgba(255,210,150,0.55)' }} />
-        <div style={{ position: 'absolute', left: '50%', bottom: 2, transform: 'translateX(-50%)', width: 20, height: 8, borderRadius: 4, background: 'linear-gradient(180deg, rgba(70,76,90,0.95), rgba(30,33,40,0.98))', border: '1px solid rgba(155,170,192,0.30)' }} />
-      </div>
-      <span style={{ fontSize: 8, color: PLAYER_THEME_TOKENS.textMuted, fontFamily: PLAYER_THEME_TOKENS.font }}>{label}</span>
-    </div>
-  );
-
-  return (
-    <div style={{ width, height, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
-      {tubeNode(levels.l, 'L')}
-      {tubeNode(levels.r, 'R')}
-    </div>
-  );
+  return <canvas ref={canvasRef} width={width} height={height} style={{ display: 'block' }} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1430,12 +1471,50 @@ function StereoVU({
     };
   }, []);
 
+  // Merged mono analyser for the wave visualizer
+  const mergedAnalyserRef = useRef<AnalyserNode | null>(null);
+  useEffect(() => {
+    if (!analyserL || !analyserR) return;
+    const audioCtx = analyserL.context;
+    const merger   = audioCtx.createChannelMerger(2);
+    analyserL.connect(merger, 0, 0);
+    analyserR.connect(merger, 0, 1);
+    const merged = audioCtx.createAnalyser();
+    merged.fftSize = 256;
+    merged.smoothingTimeConstant = 0.78;
+    merger.connect(merged);
+    mergedAnalyserRef.current = merged;
+    return () => {
+      try { merger.disconnect(); merged.disconnect(); } catch {}
+      mergedAnalyserRef.current = null;
+    };
+  }, [analyserL, analyserR]);
+
+  // Wave sub-style state
+  const [waveStyle, setWaveStyle] = useState<WaveStyle>(() =>
+    normalizeWaveStyle(localStorage.getItem(WAVE_STYLE_KEY))
+  );
+  const cycleWaveStyle = useCallback(() => {
+    setWaveStyle(s => {
+      const next = getNextWaveStyle(s);
+      localStorage.setItem(WAVE_STYLE_KEY, next);
+      return next;
+    });
+  }, []);
+
   // Canvas sizes per mode
   const isNeedleLike = mode !== 'bars';
-  const isTube = mode === 'tube';
   const mW = 112;
   const mH = 90;
   const nextMode = getNextVizMode(mode);
+
+  const miniButtonStyle: React.CSSProperties = {
+    background: 'color-mix(in srgb, var(--text) 6%, transparent)',
+    border: `1px solid ${PLAYER_THEME_TOKENS.border}`,
+    borderRadius: 3, padding: '1px 5px',
+    color: PLAYER_THEME_TOKENS.textMuted, fontSize: 8, fontFamily: PLAYER_THEME_TOKENS.font,
+    cursor: 'pointer', letterSpacing: 0.5, lineHeight: '12px',
+  };
 
   return (
     <div style={{
@@ -1445,21 +1524,13 @@ function StereoVU({
       borderRight: `1px solid ${PLAYER_THEME_TOKENS.border}`,
       height: '100%', position: 'relative',
     }}>
-      {/* Mode toggle button — sits at top-right of the meter block */}
+      {/* Mode toggle button — top-right of the meter block */}
       <button
         onClick={onToggleMode}
         title={getVizModeToggleTitle(mode)}
-        style={{
-          position: 'absolute', top: 6, right: 10,
-          background: 'color-mix(in srgb, var(--text) 6%, transparent)',
-          border: `1px solid ${PLAYER_THEME_TOKENS.border}`,
-          borderRadius: 3, padding: '1px 5px',
-          color: PLAYER_THEME_TOKENS.textMuted, fontSize: 8, fontFamily: PLAYER_THEME_TOKENS.font,
-          cursor: 'pointer', letterSpacing: 0.5,
-          lineHeight: '12px',
-        }}
+        style={{ position: 'absolute', top: 6, right: 10, zIndex: 1, ...miniButtonStyle }}
       >
-        {nextMode === 'needle' ? 'NDL' : nextMode === 'hifi' ? 'HIFI' : nextMode === 'tube' ? 'TUBE' : 'BAR'}
+        {nextMode === 'needle' ? 'NDL' : nextMode === 'hifi' ? 'HIFI' : nextMode === 'wave' ? 'WAVE' : 'BAR'}
       </button>
 
       {mode === 'bars' && (
@@ -1470,14 +1541,24 @@ function StereoVU({
         }}>VU</div>
       )}
 
-      {isTube ? (
-        <TubeVisualizer
-          analyserL={analyserL}
-          analyserR={analyserR}
-          isPlaying={isPlaying}
-          width={mW * 2 + 8}
-          height={mH}
-        />
+      {mode === 'wave' ? (
+        <div style={{ position: 'relative' }}>
+          <WaveVisualizer
+            analyser={mergedAnalyserRef.current}
+            isPlaying={isPlaying}
+            style={waveStyle}
+            width={mW * 2 + 8}
+            height={mH}
+          />
+          {/* Sub-style cycle button — bottom-left of the visualizer canvas */}
+          <button
+            onClick={cycleWaveStyle}
+            title={`Wave style: ${waveStyle} — click to change`}
+            style={{ position: 'absolute', bottom: 6, left: 6, ...miniButtonStyle }}
+          >
+            {waveStyleLabel(waveStyle)}
+          </button>
+        </div>
       ) : (
         <>
           <MeterCanvas analyser={analyserL} channel="left"  label="L" isPlaying={isPlaying} mode={mode} width={mW} height={mH} />
