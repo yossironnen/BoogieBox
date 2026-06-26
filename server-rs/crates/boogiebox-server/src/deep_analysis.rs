@@ -22,6 +22,14 @@ use std::{
 };
 use tokio::{process::Command, time::timeout};
 
+macro_rules! dlog {
+    ($enabled:expr, $($arg:tt)*) => {
+        if $enabled {
+            tracing::info!($($arg)*);
+        }
+    };
+}
+
 const DEEP_ANALYSIS_VERSION: i64 = 1;
 const DEFAULT_MODEL: &str = "htdemucs";
 const DEFAULT_TIMEOUT_MS: u64 = 90 * 60 * 1000;
@@ -38,6 +46,7 @@ struct DeepSettings {
     background_mode: String,
     pause_background: bool,
     max_duration_secs: Option<f64>,
+    debug_logging: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -92,12 +101,31 @@ async fn run_tick(
             return;
         }
     };
-    if !settings.enabled || active.load(Ordering::SeqCst) >= settings.max_concurrent {
+    let dbg = settings.debug_logging;
+    let current_active = active.load(Ordering::SeqCst);
+    if !settings.enabled {
+        dlog!(
+            dbg,
+            "[boogiemix:deep] tick skipped: deep analysis disabled in settings"
+        );
+        return;
+    }
+    if current_active >= settings.max_concurrent {
+        dlog!(
+            dbg,
+            "[boogiemix:deep] tick skipped: at concurrency limit ({current_active}/{max})",
+            max = settings.max_concurrent
+        );
         return;
     }
 
     // Enqueue background jobs before checking queue, so newly-queued work is visible.
     if !settings.pause_background && settings.background_mode != "off" {
+        dlog!(
+            dbg,
+            "[boogiemix:deep] checking background batch queue (mode={})",
+            settings.background_mode
+        );
         if let Err(err) = maybe_queue_background_batch(state, &settings.background_mode) {
             tracing::warn!("[boogiemix:deep] background queue failed: {err}");
         }
@@ -105,31 +133,77 @@ async fn run_tick(
 
     // M-05: Check queue before spawning Python runtime detection processes.
     if !has_queued_jobs(state) {
+        dlog!(
+            dbg,
+            "[boogiemix:deep] tick: no pending or running jobs in queue"
+        );
         return;
     }
 
     // H-01: Cache RuntimeStatus for 60 s to avoid spawning Python on every tick.
     let runtime = match last_runtime.as_ref() {
-        Some((checked_at, rt)) if checked_at.elapsed().as_secs() < RUNTIME_CACHE_SECS => rt.clone(),
+        Some((checked_at, rt)) if checked_at.elapsed().as_secs() < RUNTIME_CACHE_SECS => {
+            dlog!(
+                dbg,
+                "[boogiemix:deep] using cached runtime status (age={}s)",
+                checked_at.elapsed().as_secs()
+            );
+            rt.clone()
+        }
         _ => {
-            let rt = detect_runtime().await;
+            dlog!(
+                dbg,
+                "[boogiemix:deep] detecting Python runtime (cache expired or first tick)"
+            );
+            let rt = detect_runtime_with_debug(dbg).await;
             *last_runtime = Some((Instant::now(), rt.clone()));
             rt
         }
     };
     if !runtime.enabled() {
+        if dbg {
+            tracing::info!(
+                "[boogiemix:deep] runtime not usable — python={}, ffmpeg={}, demucs={}, torch={}, gpu={}",
+                runtime.python.as_ref().map(|p| p.display_name.as_str()).unwrap_or("missing"),
+                runtime.ffmpeg_available,
+                runtime.demucs_callable,
+                runtime.torch_available,
+                runtime.gpu_available,
+            );
+        }
         return;
     }
+    dlog!(
+        dbg,
+        "[boogiemix:deep] runtime ready — python={}, gpu={}",
+        runtime
+            .python
+            .as_ref()
+            .map(|p| p.display_name.as_str())
+            .unwrap_or("?"),
+        runtime.gpu_available,
+    );
 
     while active.load(Ordering::SeqCst) < settings.max_concurrent {
         let job = match claim_job(state, !settings.pause_background) {
             Ok(Some(job)) => job,
-            Ok(None) => break,
+            Ok(None) => {
+                dlog!(dbg, "[boogiemix:deep] no more claimable jobs this tick");
+                break;
+            }
             Err(err) => {
                 tracing::warn!("[boogiemix:deep] claim failed: {err}");
                 break;
             }
         };
+        dlog!(
+            dbg,
+            "[boogiemix:deep] claimed job {} for track {} (duration={:?}s, fingerprint={})",
+            job.id,
+            job.track_id,
+            job.duration,
+            &job.file_fingerprint[..job.file_fingerprint.len().min(20)]
+        );
         active.fetch_add(1, Ordering::SeqCst);
         let state = state.clone();
         let settings = settings.clone();
@@ -191,6 +265,16 @@ async fn process_job(
     runtime: &RuntimeStatus,
     job: ClaimedDeepAnalysisJob,
 ) -> Result<(), String> {
+    let dbg = settings.debug_logging;
+    dlog!(
+        dbg,
+        "[boogiemix:deep] process_job start — job={} track={} file={:?} duration={:?}",
+        job.id,
+        job.track_id,
+        job.file_path,
+        job.duration
+    );
+
     let track = MixTrackInput {
         track_id: job.track_id.clone(),
         file_path: job.file_path.clone(),
@@ -204,6 +288,7 @@ async fn process_job(
         position: 0,
     };
     if let Some(reason) = should_skip_deep_analysis(&track, settings.max_duration_secs) {
+        dlog!(dbg, "[boogiemix:deep] job {} skipped: {reason}", job.id);
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         skip_deep_analysis_job(&conn, &job.id, reason).map_err(|e| e.to_string())?;
         return Ok(());
@@ -212,14 +297,31 @@ async fn process_job(
     let Some(python) = runtime.python.as_ref() else {
         return Err("runtime_unavailable".into());
     };
-    std::fs::create_dir_all(&settings.temp_dir).map_err(|e| e.to_string())?;
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — python={}",
+        job.id,
+        python.display_name
+    );
+
+    let temp_dir_create = std::fs::create_dir_all(&settings.temp_dir);
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — temp_dir={:?} create={:?}",
+        job.id,
+        settings.temp_dir,
+        temp_dir_create.is_ok()
+    );
+    temp_dir_create.map_err(|e| e.to_string())?;
+
+    let use_gpu = settings.prefer_gpu && runtime.gpu_available;
     let payload = serde_json::json!({
         "track_id": job.track_id,
         "file_path": job.file_path,
         "duration_sec": job.duration,
         "analysis_version": DEEP_ANALYSIS_VERSION,
         "demucs_model": DEFAULT_MODEL,
-        "use_gpu": settings.prefer_gpu && runtime.gpu_available,
+        "use_gpu": use_gpu,
         "use_madmom": settings.use_madmom,
         "cleanup_temp": settings.cleanup_temp,
         "temp_root": settings.temp_dir,
@@ -231,15 +333,44 @@ async fn process_job(
         .map(|secs| (secs * 5_000.0) as u64)
         .map(|scaled| scaled.max(settings.timeout_ms))
         .unwrap_or(settings.timeout_ms);
+    dlog!(dbg, "[boogiemix:deep] job {} — use_gpu={} use_madmom={} timeout_ms={} (base={}) prefer_gpu={} gpu_available={}",
+        job.id, use_gpu, settings.use_madmom, effective_timeout_ms, settings.timeout_ms,
+        settings.prefer_gpu, runtime.gpu_available);
+    let worker_script = worker_script_path();
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — worker_script={:?}",
+        job.id,
+        worker_script
+    );
     let start = Instant::now();
-    let output = run_python_worker(python, &payload, effective_timeout_ms).await?;
+    let output = run_python_worker_with_debug(
+        python,
+        &payload,
+        effective_timeout_ms,
+        dbg,
+        &job.id.to_string(),
+    )
+    .await?;
     let processing_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — python worker returned in {}ms",
+        job.id,
+        processing_ms
+    );
     let analysis_version = output["analysis_version"]
         .as_i64()
         .unwrap_or(DEEP_ANALYSIS_VERSION);
     let demucs_model = output["demucs_model"].as_str().unwrap_or(DEFAULT_MODEL);
     let used_gpu = output["used_gpu"].as_bool().unwrap_or(false);
     let energy = output["energy_score_refined"].as_f64().unwrap_or(0.5);
+    let confidence = output["confidence"].as_f64().unwrap_or(0.0);
+    let bpm_refined = output["bpm_refined"].as_f64();
+    let used_demucs = output["used_demucs"].as_bool().unwrap_or(false);
+    let schema_version = output["analysis_schema_version"].as_i64().unwrap_or(2);
+    dlog!(dbg, "[boogiemix:deep] job {} — output summary: schema_v={} analysis_v={} model={} used_gpu={} used_demucs={} confidence={:.3} energy={:.3} bpm_refined={:?}",
+        job.id, schema_version, analysis_version, demucs_model, used_gpu, used_demucs, confidence, energy, bpm_refined);
 
     // Merge key_neural and cue_points into transition_hints_json so they are
     // stored without requiring a DB schema change.
@@ -273,11 +404,17 @@ async fn process_job(
     };
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    upsert_deep_analysis(
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — writing deep analysis to DB for track {}",
+        job.id,
+        job.track_id
+    );
+    let upsert_result = upsert_deep_analysis(
         &conn,
         &job.track_id,
         analysis_version,
-        output["analysis_schema_version"].as_i64().unwrap_or(2),
+        schema_version,
         demucs_model,
         used_gpu,
         &job.file_fingerprint,
@@ -291,19 +428,26 @@ async fn process_job(
         energy,
         &hints_json,
         &json_field(&output, "transition_windows_json", "[]"),
-        output["confidence"].as_f64().unwrap_or(0.0),
+        confidence,
         job.duration,
         output["processing_time_ms"]
             .as_i64()
             .unwrap_or(processing_ms),
-    )
-    .map_err(|e| e.to_string())?;
+    );
+    match &upsert_result {
+        Ok(_) => dlog!(
+            dbg,
+            "[boogiemix:deep] job {} — DB upsert successful",
+            job.id
+        ),
+        Err(e) => tracing::error!("[boogiemix:deep] job {} — DB upsert failed: {e}", job.id),
+    }
+    upsert_result.map_err(|e| e.to_string())?;
 
     // Write bpm_refined back to tracks.bpm_detected so it's available for
     // BPM matching without needing to reload deep features every time.
-    let bpm_from_python = output["bpm_refined"].as_f64();
-    tracing::info!(track_id = %job.track_id, bpm_refined = ?bpm_from_python, "deep analysis bpm_refined");
-    if let Some(bpm) = bpm_from_python.filter(|&b| (60.0..=220.0).contains(&b)) {
+    tracing::info!(track_id = %job.track_id, bpm_refined = ?bpm_refined, "deep analysis bpm_refined");
+    if let Some(bpm) = bpm_refined.filter(|&b| (60.0..=220.0).contains(&b)) {
         match set_track_bpm_detected(&conn, &job.track_id, bpm, "deep_analysis") {
             Ok(_) => tracing::info!(track_id = %job.track_id, bpm, "wrote bpm_detected to tracks"),
             Err(e) => {
@@ -312,7 +456,21 @@ async fn process_job(
         }
     }
 
-    complete_deep_analysis_job(&conn, &job.id).map_err(|e| e.to_string())?;
+    let complete_result = complete_deep_analysis_job(&conn, &job.id);
+    match &complete_result {
+        Ok(_) => dlog!(
+            dbg,
+            "[boogiemix:deep] job {} — marked complete in DB",
+            job.id
+        ),
+        Err(e) => tracing::error!(
+            "[boogiemix:deep] job {} — failed to mark complete: {e}",
+            job.id
+        ),
+    }
+    complete_result.map_err(|e| e.to_string())?;
+    tracing::info!("[boogiemix:deep] job {} completed: track={} confidence={:.3} energy={:.3} processing_ms={}",
+        job.id, job.track_id, confidence, energy, processing_ms);
     Ok(())
 }
 
@@ -324,16 +482,33 @@ fn json_field(output: &Value, key: &str, fallback: &str) -> String {
     }
 }
 
-async fn run_python_worker(
+async fn run_python_worker_with_debug(
     python: &PythonInvocation,
     payload: &Value,
     timeout_ms: u64,
+    dbg: bool,
+    job_id: &str,
 ) -> Result<Value, String> {
     use tokio::io::AsyncWriteExt;
     let script = worker_script_path().ok_or_else(|| "worker_script_missing".to_string())?;
     let mut args = python.base_args.clone();
     args.push(script.display().to_string());
     let payload_bytes = payload.to_string().into_bytes();
+
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — spawning python: {:?} {:?}",
+        job_id,
+        python.command,
+        args
+    );
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — payload_bytes={} timeout_ms={}",
+        job_id,
+        payload_bytes.len(),
+        timeout_ms
+    );
 
     let mut cmd = Command::new(&python.command);
     cmd.args(&args)
@@ -342,25 +517,105 @@ async fn run_python_worker(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut child = cmd.spawn().map_err(|e| {
+        tracing::error!("[boogiemix:deep] job {} — spawn failed: {e}", job_id);
+        e.to_string()
+    })?;
+    let pid = child.id();
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — python pid={:?}",
+        job_id,
+        pid
+    );
+
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(&payload_bytes).await;
+        let write_result = stdin.write_all(&payload_bytes).await;
+        dlog!(
+            dbg,
+            "[boogiemix:deep] job {} — stdin write result: {:?}",
+            job_id,
+            write_result.is_ok()
+        );
         // EOF signals the worker to start processing
     }
-    let output = timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
-        .await
-        .map_err(|_| "process_timeout".to_string())?
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.is_empty() {
-            tracing::debug!(worker_stderr = %stderr.trim(), "python worker stderr");
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — waiting for python (timeout={}ms)…",
+        job_id,
+        timeout_ms
+    );
+    let wait_result = timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await;
+    match wait_result {
+        Err(_) => {
+            tracing::error!(
+                "[boogiemix:deep] job {} — TIMEOUT after {}ms (pid={:?})",
+                job_id,
+                timeout_ms,
+                pid
+            );
+            Err("process_timeout".to_string())
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        serde_json::from_str(stdout.trim()).map_err(|e| format!("invalid worker JSON: {e}"))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(stderr.chars().take(500).collect())
+        Ok(Err(e)) => {
+            tracing::error!(
+                "[boogiemix:deep] job {} — wait_with_output error: {e}",
+                job_id
+            );
+            Err(e.to_string())
+        }
+        Ok(Ok(output)) => {
+            let status = output.status;
+            let stdout_len = output.stdout.len();
+            let stderr_raw = String::from_utf8_lossy(&output.stderr);
+            dlog!(
+                dbg,
+                "[boogiemix:deep] job {} — exit_status={} stdout_bytes={} stderr_bytes={}",
+                job_id,
+                status,
+                stdout_len,
+                output.stderr.len()
+            );
+            if status.success() {
+                if !stderr_raw.is_empty() {
+                    if dbg {
+                        tracing::info!(
+                            "[boogiemix:deep] job {} — python stderr:\n{}",
+                            job_id,
+                            stderr_raw.trim()
+                        );
+                    } else {
+                        tracing::debug!(worker_stderr = %stderr_raw.trim(), "python worker stderr");
+                    }
+                }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parse_result = serde_json::from_str(stdout.trim());
+                match parse_result {
+                    Ok(v) => {
+                        dlog!(dbg, "[boogiemix:deep] job {} — JSON parse OK", job_id);
+                        Ok(v)
+                    }
+                    Err(e) => {
+                        let preview: String = stdout.trim().chars().take(200).collect();
+                        tracing::error!("[boogiemix:deep] job {} — JSON parse error: {e}; stdout preview: {preview}", job_id);
+                        Err(format!("invalid worker JSON: {e}"))
+                    }
+                }
+            } else {
+                let tail: String = stderr_raw
+                    .chars()
+                    .rev()
+                    .take(2000)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                tracing::error!(
+                    "[boogiemix:deep] job {} — python exited with {status}; stderr tail:\n{tail}",
+                    job_id
+                );
+                Err(tail)
+            }
+        }
     }
 }
 
@@ -403,6 +658,10 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         .and_then(|v| v.parse::<f64>().ok())
         .map(|mins| mins * 60.0)
         .filter(|&secs| secs > 0.0);
+    let debug_logging = parse_bool(
+        get_setting(&conn, "deepmixDebugLoggingEnabled").as_deref(),
+        false,
+    );
     Ok(DeepSettings {
         enabled,
         max_concurrent,
@@ -414,34 +673,78 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         background_mode,
         pause_background,
         max_duration_secs,
+        debug_logging,
     })
 }
 
-async fn detect_runtime() -> RuntimeStatus {
-    let python = detect_python().await;
+async fn detect_runtime_with_debug(dbg: bool) -> RuntimeStatus {
+    dlog!(
+        dbg,
+        "[boogiemix:deep] detect_runtime: probing Python candidates"
+    );
+    let python = detect_python_with_debug(dbg).await;
+    let ffmpeg_path = resolve_ffmpeg();
     let ffmpeg_available =
-        command_success(resolve_ffmpeg(), ["-version"], Duration::from_secs(5)).await;
+        command_success(ffmpeg_path.clone(), ["-version"], Duration::from_secs(5)).await;
+    dlog!(
+        dbg,
+        "[boogiemix:deep] detect_runtime: ffmpeg={:?} available={}",
+        ffmpeg_path,
+        ffmpeg_available
+    );
     let mut demucs_callable = false;
     let mut torch_available = false;
     let mut gpu_available = false;
     if let Some(invocation) = python.as_ref() {
+        dlog!(
+            dbg,
+            "[boogiemix:deep] detect_runtime: checking demucs importability"
+        );
         demucs_callable = python_bool(
             invocation,
             "import importlib.util; print('true' if importlib.util.find_spec('demucs') else 'false')",
         )
         .await;
+        dlog!(
+            dbg,
+            "[boogiemix:deep] detect_runtime: demucs_callable={}",
+            demucs_callable
+        );
+        dlog!(
+            dbg,
+            "[boogiemix:deep] detect_runtime: checking torch importability"
+        );
         torch_available = python_bool(
             invocation,
             "import importlib.util; print('true' if importlib.util.find_spec('torch') else 'false')",
         )
         .await;
+        dlog!(
+            dbg,
+            "[boogiemix:deep] detect_runtime: torch_available={}",
+            torch_available
+        );
         if torch_available {
+            dlog!(
+                dbg,
+                "[boogiemix:deep] detect_runtime: checking CUDA availability"
+            );
             gpu_available = python_bool(
                 invocation,
                 "import torch; print('true' if torch.cuda.is_available() else 'false')",
             )
             .await;
+            dlog!(
+                dbg,
+                "[boogiemix:deep] detect_runtime: gpu_available={}",
+                gpu_available
+            );
         }
+    } else {
+        dlog!(
+            dbg,
+            "[boogiemix:deep] detect_runtime: no suitable Python found — skipping package checks"
+        );
     }
     RuntimeStatus {
         python,
@@ -452,8 +755,16 @@ async fn detect_runtime() -> RuntimeStatus {
     }
 }
 
-async fn detect_python() -> Option<PythonInvocation> {
+async fn detect_python_with_debug(dbg: bool) -> Option<PythonInvocation> {
     let mut candidates = python_candidates();
+    dlog!(
+        dbg,
+        "[boogiemix:deep] detect_python: venv candidates found: {}",
+        candidates.len()
+    );
+    for c in &candidates {
+        dlog!(dbg, "[boogiemix:deep]   candidate venv: {:?}", c.command);
+    }
     candidates.push(PythonInvocation {
         command: PathBuf::from("python"),
         base_args: Vec::new(),
@@ -466,14 +777,34 @@ async fn detect_python() -> Option<PythonInvocation> {
     });
 
     for candidate in candidates {
+        dlog!(
+            dbg,
+            "[boogiemix:deep] detect_python: probing {:?}",
+            candidate.command
+        );
         if python_min_version(&candidate).await {
+            dlog!(
+                dbg,
+                "[boogiemix:deep] detect_python: selected {}",
+                candidate.display_name
+            );
             tracing::debug!(
                 "[boogiemix:deep] using Python runtime {}",
                 candidate.display_name
             );
             return Some(candidate);
+        } else {
+            dlog!(
+                dbg,
+                "[boogiemix:deep] detect_python: {:?} failed version check",
+                candidate.command
+            );
         }
     }
+    dlog!(
+        dbg,
+        "[boogiemix:deep] detect_python: no suitable Python found"
+    );
     None
 }
 

@@ -531,6 +531,9 @@ export default function SettingsPage({
   const [scanDebugLoggingEnabled, setScanDebugLoggingEnabled] = useState(settings.scanDebugLoggingEnabled === 'true');
   const [scanDebugSaving, setScanDebugSaving] = useState(false);
   const [scanDebugResult, setScanDebugResult] = useState<string | null>(null);
+  const [deepmixDebugLoggingEnabled, setDeepmixDebugLoggingEnabled] = useState(settings.deepmixDebugLoggingEnabled === 'true');
+  const [deepmixDebugSaving, setDeepmixDebugSaving] = useState(false);
+  const [deepmixDebugResult, setDeepmixDebugResult] = useState<string | null>(null);
   const [boogiemixOutputFolder, setBoogiemixOutputFolder] = useState(settings.boogiemixOutputFolder || '');
   const [boogiemixOutputFolderSaving, setBoogiemixOutputFolderSaving] = useState(false);
   const [boogiemixOutputFolderResult, setBoogiemixOutputFolderResult] = useState<string | null>(null);
@@ -563,6 +566,7 @@ export default function SettingsPage({
     setBpmBackgroundEnabled(settings.bpmBackgroundEnabled === 'true');
     setBpmFrequencyHours(Number(settings.bpmBackgroundFrequencyHours) || 24);
     setScanDebugLoggingEnabled(settings.scanDebugLoggingEnabled === 'true');
+    setDeepmixDebugLoggingEnabled(settings.deepmixDebugLoggingEnabled === 'true');
     setBoogiemixOutputFolder(settings.boogiemixOutputFolder || '');
     setBoogiemixDeepBackgroundMode(settings.boogiemixDeepAnalysisBackgroundMode || 'off');
     setBoogiemixDeepPauseBackground(settings.boogiemixDeepAnalysisPauseBackground === 'true');
@@ -713,6 +717,7 @@ export default function SettingsPage({
         setBpmBackgroundEnabled((s.bpmBackgroundEnabled ?? 'false') === 'true');
         setBpmFrequencyHours(Number(s.bpmBackgroundFrequencyHours ?? '24') || 24);
         setScanDebugLoggingEnabled((s.scanDebugLoggingEnabled ?? 'false') === 'true');
+        setDeepmixDebugLoggingEnabled((s.deepmixDebugLoggingEnabled ?? 'false') === 'true');
         setBoogiemixOutputFolder(s.boogiemixOutputFolder ?? '');
         setBoogiemixDeepBackgroundMode(s.boogiemixDeepAnalysisBackgroundMode ?? 'off');
         setBoogiemixDeepPauseBackground((s.boogiemixDeepAnalysisPauseBackground ?? 'false') === 'true');
@@ -835,6 +840,22 @@ export default function SettingsPage({
     } finally {
       setScanDebugSaving(false);
       setTimeout(() => setScanDebugResult(null), 3000);
+    }
+  };
+
+  const saveDeepmixDebugSettings = async (enabled: boolean) => {
+    setDeepmixDebugSaving(true);
+    setDeepmixDebugResult(null);
+    try {
+      await api.settings.update({ deepmixDebugLoggingEnabled: enabled ? 'true' : 'false' });
+      setDeepmixDebugLoggingEnabled(enabled);
+      setDeepmixDebugResult(enabled ? 'Debug logging enabled' : 'Debug logging disabled');
+    } catch (e: any) {
+      setDeepmixDebugLoggingEnabled(!enabled);
+      setDeepmixDebugResult(`Error: ${e.message}`);
+    } finally {
+      setDeepmixDebugSaving(false);
+      setTimeout(() => setDeepmixDebugResult(null), 3000);
     }
   };
 
@@ -1911,58 +1932,6 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                  Scan debug logging
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  Writes detailed scan and post-scan backend diagnostics to <code style={{ color: 'var(--accent)' }}>logs/debug.log</code>.
-                  Leave this disabled unless you are troubleshooting large-library scans or stuck post-scan work.
-                </div>
-              </div>
-              <div
-                onClick={async () => {
-                  if (scanDebugSaving) return;
-                  const next = !scanDebugLoggingEnabled;
-                  setScanDebugLoggingEnabled(next);
-                  await saveScanDebugSettings(next);
-                }}
-                title={scanDebugLoggingEnabled ? 'On' : 'Off'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12,
-                  cursor: scanDebugSaving ? 'default' : 'pointer',
-                  position: 'relative', flexShrink: 0, marginTop: 2,
-                  opacity: scanDebugSaving ? 0.6 : 1,
-                  backgroundColor: scanDebugLoggingEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: scanDebugLoggingEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-            </div>
-
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-              Debug mode is <strong style={{ color: 'var(--text)' }}>{scanDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
-              When enabled, scan queueing, file and batch checkpoints, follow-up job dispatch, worker progress, failures, and completion events are appended to the shared debug log.
-            </div>
-
-            {(scanDebugSaving || scanDebugResult) && (
-              <div style={{ fontSize: 11, marginTop: 10, color: scanDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
-                {scanDebugSaving ? 'Saving debug logging setting...' : scanDebugResult}
-              </div>
-            )}
-          </div>
-
-          <div style={{
-            padding: '16px 20px', borderRadius: 8, marginBottom: 12,
-            backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
-          }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
@@ -2362,6 +2331,111 @@ export default function SettingsPage({
                 </span>
               )}
             </div>
+          </div>
+
+          {/* ── Debug Logging ───────────────────────────────────────────── */}
+          <div style={{ ...P.sectionTitle, marginTop: 28 }}>Debug Logging</div>
+
+          <div style={{
+            padding: '16px 20px', borderRadius: 8, marginBottom: 12,
+            backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
+          }}>
+            {/* Scan debug */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                  Scan debug logging
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  Writes detailed scan and post-scan backend diagnostics to <code style={{ color: 'var(--accent)' }}>logs/debug.log</code>.
+                  Leave this disabled unless you are troubleshooting large-library scans or stuck post-scan work.
+                </div>
+              </div>
+              <div
+                onClick={async () => {
+                  if (scanDebugSaving) return;
+                  const next = !scanDebugLoggingEnabled;
+                  setScanDebugLoggingEnabled(next);
+                  await saveScanDebugSettings(next);
+                }}
+                title={scanDebugLoggingEnabled ? 'On' : 'Off'}
+                style={{
+                  width: 44, height: 24, borderRadius: 12,
+                  cursor: scanDebugSaving ? 'default' : 'pointer',
+                  position: 'relative', flexShrink: 0, marginTop: 2,
+                  opacity: scanDebugSaving ? 0.6 : 1,
+                  backgroundColor: scanDebugLoggingEnabled ? 'var(--accent)' : 'var(--border)',
+                  transition: 'background 0.2s',
+                }}
+              >
+                <div style={{
+                  position: 'absolute', top: 3,
+                  left: scanDebugLoggingEnabled ? 23 : 3,
+                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
+                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
+                }} />
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
+              Debug mode is <strong style={{ color: 'var(--text)' }}>{scanDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
+              When enabled, scan queueing, file and batch checkpoints, follow-up job dispatch, worker progress, failures, and completion events are appended to the shared debug log.
+            </div>
+            {(scanDebugSaving || scanDebugResult) && (
+              <div style={{ fontSize: 11, marginTop: 6, color: scanDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
+                {scanDebugSaving ? 'Saving…' : scanDebugResult}
+              </div>
+            )}
+
+            <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '16px 0' }} />
+
+            {/* Deep analysis debug */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                  BoogieMix deep analysis debug logging
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  Writes verbose deep analysis diagnostics to the server log. Logs every tick decision, Python runtime
+                  detection step (candidates, venv paths, version checks, demucs/torch/CUDA probes), job claim,
+                  worker spawn, stdin write, process exit status, stdout/stderr, JSON parse result, DB upsert outcome,
+                  and completion. Enable when deep analysis jobs are timing out or producing no output.
+                </div>
+              </div>
+              <div
+                onClick={async () => {
+                  if (deepmixDebugSaving) return;
+                  const next = !deepmixDebugLoggingEnabled;
+                  setDeepmixDebugLoggingEnabled(next);
+                  await saveDeepmixDebugSettings(next);
+                }}
+                title={deepmixDebugLoggingEnabled ? 'On' : 'Off'}
+                style={{
+                  width: 44, height: 24, borderRadius: 12,
+                  cursor: deepmixDebugSaving ? 'default' : 'pointer',
+                  position: 'relative', flexShrink: 0, marginTop: 2,
+                  opacity: deepmixDebugSaving ? 0.6 : 1,
+                  backgroundColor: deepmixDebugLoggingEnabled ? 'var(--accent)' : 'var(--border)',
+                  transition: 'background 0.2s',
+                }}
+              >
+                <div style={{
+                  position: 'absolute', top: 3,
+                  left: deepmixDebugLoggingEnabled ? 23 : 3,
+                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
+                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
+                }} />
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
+              Deep analysis debug is <strong style={{ color: 'var(--text)' }}>{deepmixDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
+              Logs appear in the server log at <code style={{ color: 'var(--accent)' }}>INFO</code> level under the <code style={{ color: 'var(--accent)'}}>[boogiemix:deep]</code> prefix.
+              Disable after investigation to reduce log noise.
+            </div>
+            {(deepmixDebugSaving || deepmixDebugResult) && (
+              <div style={{ fontSize: 11, marginTop: 6, color: deepmixDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
+                {deepmixDebugSaving ? 'Saving…' : deepmixDebugResult}
+              </div>
+            )}
           </div>
 
           {/* ── Database (admin only) ─────────────────────────────────────── */}

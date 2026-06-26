@@ -1783,6 +1783,7 @@ fn seed_default_settings(connection: &Connection) -> Result<(), rusqlite::Error>
         ("bpmBackgroundEnabled", "false"),
         ("bpmBackgroundFrequencyHours", "24"),
         ("scanDebugLoggingEnabled", "false"),
+        ("deepmixDebugLoggingEnabled", "false"),
         ("boogiemixOutputFolder", ""),
         ("boogiemixDeepAnalysisEnabled", "true"),
         ("boogiemixDeepAnalysisBackgroundMode", "off"),

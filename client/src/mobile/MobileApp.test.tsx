@@ -58,6 +58,7 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
       bpmBackgroundEnabled: 'false',
       bpmBackgroundFrequencyHours: '24',
       scanDebugLoggingEnabled: 'false',
+      deepmixDebugLoggingEnabled: 'false',
       boogiemixOutputFolder: '',
       boogiemixDeepAnalysisBackgroundMode: 'off',
       boogiemixDeepAnalysisPauseBackground: 'false',

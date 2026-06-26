@@ -236,6 +236,7 @@ export interface AppSettings {
   bpmBackgroundEnabled: string;
   bpmBackgroundFrequencyHours: string;
   scanDebugLoggingEnabled: string;
+  deepmixDebugLoggingEnabled: string;
   boogiemixOutputFolder: string;
   boogiemixDeepAnalysisBackgroundMode: string;
   boogiemixDeepAnalysisPauseBackground: string;
@@ -320,6 +321,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bpmBackgroundEnabled: 'false',
   bpmBackgroundFrequencyHours: '24',
   scanDebugLoggingEnabled: 'false',
+  deepmixDebugLoggingEnabled: 'false',
   boogiemixOutputFolder: '',
   boogiemixDeepAnalysisBackgroundMode: 'off',
   boogiemixDeepAnalysisPauseBackground: 'false',

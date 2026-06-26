@@ -56,6 +56,7 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "bpmSpotifyFallbackEnabled",
     // Debug
     "scanDebugLoggingEnabled",
+    "deepmixDebugLoggingEnabled",
 ];
 
 /// Documents the ALLOWED USER SETTING KEYS public API surface.
@@ -114,6 +115,7 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         | "bpmBackgroundEnabled"
         | "bpmSpotifyFallbackEnabled"
         | "scanDebugLoggingEnabled"
+        | "deepmixDebugLoggingEnabled"
         | "replayGainEnabled"
         | "boogiemixDeepAnalysisEnabled"
         | "boogiemixDeepAnalysisPreferGpu"
