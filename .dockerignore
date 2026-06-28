@@ -1,0 +1,52 @@
+# Dependency and build output folders
+node_modules/
+client/node_modules/
+desktop/node_modules/
+server-rs/target/
+desktop/src-tauri/target/
+client/build/
+client/coverage/
+Releases/
+tmp/
+logs/
+data/
+data_old/
+
+# Local runtime state
+boogiebox-config.json
+dev.config
+.env
+.env.*
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+changes.log
+desktop/changes.log
+d?ProjectsBoogieBoxchanges.log
+
+# Local/generated Python and tool caches
+Services/boogiemix/python/.venv/
+Services/boogiemix/python/model-cache/
+Services/boogiemix/python/wheels/
+Services/boogiemix/python/__pycache__/
+**/__pycache__/
+*.pyc
+tools/ffmpeg/
+tools/ffmpeg-linux/
+tools/winsw/
+
+# Local assistant/editor state
+.claude/
+.codex/
+.agents/
+.mcp.json
+.vscode/
+Docs/memory/
+wip/
+
+# Unneeded desktop/public-site artifacts for the server container
+desktop/
+website/
+_site/

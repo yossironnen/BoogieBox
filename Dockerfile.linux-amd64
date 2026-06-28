@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:22-bookworm-slim AS client-builder
+WORKDIR /app/client
+
+COPY client/package.json client/package-lock.json ./
+RUN npm ci
+
+COPY client/ ./
+RUN npm run build
+
+FROM rust:1-bookworm AS server-builder
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY server-rs/ server-rs/
+RUN cargo build --release --manifest-path server-rs/Cargo.toml
+
+FROM debian:bookworm-slim AS ffmpeg-builder
+ARG FFMPEG_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+WORKDIR /tmp/ffmpeg
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils tar \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -L --fail --show-error --output ffmpeg.tar.xz "$FFMPEG_URL" \
+    && tar -xJf ffmpeg.tar.xz --strip-components=1 --wildcards --no-anchored "*/ffmpeg" "*/ffprobe" \
+    && chmod +x ffmpeg ffprobe
+
+FROM python:3.12-slim-bookworm AS boogiemix-builder
+ARG BOOGIEMIX_PRIME_MODEL=1
+WORKDIR /opt/boogiebox/resources/Services/boogiemix/python
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Services/boogiemix/python/ ./
+RUN chmod +x bootstrap_env.sh \
+    && if [ "$BOOGIEMIX_PRIME_MODEL" = "1" ]; then \
+         ./bootstrap_env.sh --cpu-only --prime-model --venv .venv; \
+       else \
+         ./bootstrap_env.sh --cpu-only --venv .venv; \
+       fi \
+    && find . -type d -name "__pycache__" -prune -exec rm -rf {} + \
+    && find . -type f -name "*.pyc" -delete
+
+FROM python:3.12-slim-bookworm AS runtime
+
+LABEL org.opencontainers.image.title="BoogieBox"
+LABEL org.opencontainers.image.description="BoogieBox Linux amd64 server with CPU-only BoogieMix deep analysis"
+
+ENV BOOGIEBOX_CONFIG_DIR=/var/lib/boogiebox \
+    BOOGIEBOX_DATA_DIR=/var/lib/boogiebox/data \
+    BOOGIEBOX_FFMPEG_DIR=/opt/boogiebox/resources/ffmpeg \
+    BOOGIEBOX_LOG_DIR=/var/lib/boogiebox/logs \
+    BOOGIEBOX_LOG_LEVEL=info \
+    TORCH_HOME=/var/lib/boogiebox/model-cache/torch \
+    PORT=3001
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gosu libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system boogiebox \
+    && useradd --system --gid boogiebox --home-dir /var/lib/boogiebox --shell /usr/sbin/nologin boogiebox \
+    && mkdir -p /opt/boogiebox/resources/ffmpeg /var/lib/boogiebox/data /var/lib/boogiebox/logs /var/lib/boogiebox/model-cache/torch /var/lib/boogiebox/boogiemix \
+    && chown -R boogiebox:boogiebox /var/lib/boogiebox
+
+WORKDIR /opt/boogiebox
+
+COPY --from=server-builder /app/server-rs/target/release/boogiebox-server /opt/boogiebox/boogiebox-server
+COPY --from=client-builder /app/client/build /opt/boogiebox/client/build
+COPY --from=ffmpeg-builder /tmp/ffmpeg/ffmpeg /tmp/ffmpeg/ffprobe /opt/boogiebox/resources/ffmpeg/
+COPY --from=boogiemix-builder /opt/boogiebox/resources/Services/boogiemix/python /opt/boogiebox/resources/Services/boogiemix/python
+COPY docker/linux-amd64/entrypoint.sh /usr/local/bin/boogiebox-entrypoint
+
+RUN chmod +x /opt/boogiebox/boogiebox-server /opt/boogiebox/resources/ffmpeg/ffmpeg /opt/boogiebox/resources/ffmpeg/ffprobe /usr/local/bin/boogiebox-entrypoint \
+    && chown -R root:root /opt/boogiebox
+
+VOLUME ["/var/lib/boogiebox"]
+EXPOSE 3001
+
+ENTRYPOINT ["/usr/local/bin/boogiebox-entrypoint"]
+CMD []

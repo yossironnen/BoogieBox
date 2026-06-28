@@ -1,0 +1,26 @@
+services:
+  boogiebox:
+    image: boogiebox:linux-amd64-boogiemix-cpu
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.linux-amd64
+      args:
+        BOOGIEMIX_PRIME_MODEL: "1"
+    ports:
+      - "3001:3001"
+    environment:
+      BOOGIEBOX_CONFIG_DIR: /var/lib/boogiebox
+      BOOGIEBOX_DATA_DIR: /var/lib/boogiebox/data
+      BOOGIEBOX_FFMPEG_DIR: /opt/boogiebox/resources/ffmpeg
+      BOOGIEBOX_LOG_DIR: /var/lib/boogiebox/logs
+      BOOGIEBOX_LOG_LEVEL: info
+      TORCH_HOME: /var/lib/boogiebox/model-cache/torch
+      PORT: "3001"
+    volumes:
+      - boogiebox-data:/var/lib/boogiebox
+      - /srv/music:/music:ro
+    restart: unless-stopped
+
+volumes:
+  boogiebox-data:
