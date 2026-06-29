@@ -1,0 +1,95 @@
+name: Docker Linux amd64
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional image tag. Defaults to VERSION-linux-amd64-boogiemix-cpu.
+        required: false
+        type: string
+      publish_latest:
+        description: Also publish latest-linux-amd64-boogiemix-cpu.
+        required: true
+        default: true
+        type: boolean
+      prime_model:
+        description: Prime the Demucs htdemucs model during image build.
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-linux-amd64
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        env:
+          RAW_TAG: ${{ inputs.tag }}
+          PUBLISH_LATEST: ${{ inputs.publish_latest }}
+          PRIME_MODEL_INPUT: ${{ inputs.prime_model }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          tag="${RAW_TAG}"
+          if [[ -z "$tag" ]]; then
+            tag="${version}-linux-amd64-boogiemix-cpu"
+          fi
+
+          owner="$(echo "${REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner}/boogiebox"
+          tags="${image}:${tag}"
+
+          if [[ "${PUBLISH_LATEST}" == "true" ]]; then
+            tags="${tags}"$'\n'"${image}:latest-linux-amd64-boogiemix-cpu"
+          fi
+
+          if [[ "${PRIME_MODEL_INPUT}" == "true" ]]; then
+            prime_model="1"
+          else
+            prime_model="0"
+          fi
+
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "prime_model=${prime_model}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.linux-amd64
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=BoogieBox Linux amd64 image with CPU-only BoogieMix
+          build-args: |
+            BOOGIEMIX_PRIME_MODEL=${{ steps.meta.outputs.prime_model }}

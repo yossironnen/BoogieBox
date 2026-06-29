@@ -117,6 +117,36 @@ Edit the music bind mount before running:
 
 For NAS libraries, mount the NAS on the Docker host first, then bind the mounted host path into the container. Do not use Windows UNC paths directly inside the Linux container.
 
+## Publish From GitHub Actions
+
+The repo includes a manual workflow at `.github/workflows/docker-linux-amd64.yml`.
+
+In GitHub:
+
+1. Open **Actions**.
+2. Select **Docker Linux amd64**.
+3. Click **Run workflow**.
+4. Leave `tag` blank to publish `VERSION-linux-amd64-boogiemix-cpu`, or enter a custom tag.
+5. Keep `publish_latest` enabled to also publish `latest-linux-amd64-boogiemix-cpu`.
+
+The workflow publishes to:
+
+```text
+ghcr.io/<owner>/boogiebox:<tag>
+```
+
+To run a published image on a Linux host:
+
+```bash
+docker pull ghcr.io/<owner>/boogiebox:0.8.82-linux-amd64-boogiemix-cpu
+docker run -d \
+  --name boogiebox \
+  -p 3001:3001 \
+  -v boogiebox-data:/var/lib/boogiebox \
+  -v /srv/music:/music:ro \
+  ghcr.io/<owner>/boogiebox:0.8.82-linux-amd64-boogiemix-cpu
+```
+
 ## Persistent Data
 
 Persist `/var/lib/boogiebox`.
