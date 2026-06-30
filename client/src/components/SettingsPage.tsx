@@ -542,6 +542,7 @@ export default function SettingsPage({
   const [boogiemixDeepBackgroundMode, setBoogiemixDeepBackgroundMode] = useState(settings.boogiemixDeepAnalysisBackgroundMode || 'off');
   const [boogiemixDeepPauseBackground, setBoogiemixDeepPauseBackground] = useState(settings.boogiemixDeepAnalysisPauseBackground === 'true');
   const [boogiemixDeepMaxDurationMins, setBoogiemixDeepMaxDurationMins] = useState(Number(settings.boogiemixDeepAnalysisMaxDurationMins) || 15);
+  const [boogiemixDeepModel, setBoogiemixDeepModel] = useState(settings.boogiemixDeepAnalysisModel || 'mdx_extra_q');
   const [boogiemixDeepActionBusy, setBoogiemixDeepActionBusy] = useState<string | null>(null);
   const [boogiemixDeepActionResult, setBoogiemixDeepActionResult] = useState<string | null>(null);
   const [boogiemixDeepSelectedLibrary, setBoogiemixDeepSelectedLibrary] = useState<ClientEntityId | ''>('');
@@ -571,6 +572,7 @@ export default function SettingsPage({
     setBoogiemixDeepBackgroundMode(settings.boogiemixDeepAnalysisBackgroundMode || 'off');
     setBoogiemixDeepPauseBackground(settings.boogiemixDeepAnalysisPauseBackground === 'true');
     setBoogiemixDeepMaxDurationMins(Number(settings.boogiemixDeepAnalysisMaxDurationMins) || 15);
+    setBoogiemixDeepModel(settings.boogiemixDeepAnalysisModel || 'mdx_extra_q');
   }, [settings]);
 
   const loadSchedules = useCallback(async () => {
@@ -722,6 +724,7 @@ export default function SettingsPage({
         setBoogiemixDeepBackgroundMode(s.boogiemixDeepAnalysisBackgroundMode ?? 'off');
         setBoogiemixDeepPauseBackground((s.boogiemixDeepAnalysisPauseBackground ?? 'false') === 'true');
         setBoogiemixDeepMaxDurationMins(Number(s.boogiemixDeepAnalysisMaxDurationMins ?? '15') || 15);
+        setBoogiemixDeepModel(s.boogiemixDeepAnalysisModel || 'mdx_extra_q');
       });
       refreshLibraries().catch(() => {});
       loadDlnaStatus();
@@ -1770,6 +1773,49 @@ export default function SettingsPage({
                       </span>
                     </div>
                   </label>
+                  {/* Analysis model selector */}
+                  {(() => {
+                    const gpuAvailable = boogiemixDeepStatus?.runtime?.gpuAvailable ?? false;
+                    const effectiveModel = gpuAvailable ? boogiemixDeepModel : 'hpss';
+                    const models: { value: string; label: string; desc: string }[] = [
+                      { value: 'mdx_extra_q', label: 'Full (mdx_extra_q)', desc: 'Best accuracy, GPU recommended' },
+                      { value: 'htdemucs', label: 'Light (htdemucs)', desc: 'Faster, still accurate, GPU recommended' },
+                      { value: 'hpss', label: 'Ultralight (HPSS)', desc: 'Seconds per track, CPU-native, less precise stems' },
+                    ];
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Analysis model</span>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {models.map(({ value, label, desc }) => {
+                            const forced = !gpuAvailable;
+                            const active = effectiveModel === value;
+                            const disabled = forced && value !== 'hpss';
+                            return (
+                              <button
+                                key={value}
+                                disabled={disabled}
+                                title={desc}
+                                onClick={() => {
+                                  if (disabled || forced) return;
+                                  setBoogiemixDeepModel(value);
+                                  runBoogieMixDeepAction('model-select', async () => {
+                                    await api.settings.update({ boogiemixDeepAnalysisModel: value });
+                                    return `Model set to ${label}`;
+                                  });
+                                }}
+                                style={{ fontSize: 11, padding: '5px 10px', borderRadius: 6, border: active ? '1px solid var(--accent)' : '1px solid var(--border)', background: active ? 'color-mix(in srgb, var(--accent) 15%, var(--surface))' : 'var(--surface)', color: disabled ? 'var(--text-muted)' : 'var(--text)', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 }}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {!gpuAvailable && (
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>HPSS forced — no GPU detected on this machine</span>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                     <select
                       value={boogiemixDeepSelectedLibrary}

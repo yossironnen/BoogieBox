@@ -5,8 +5,9 @@ use boogiebox_db::{
     boogiemix::{
         claim_next_deep_analysis_job_with_background, complete_deep_analysis_job,
         fail_deep_analysis_job, get_deep_analysis_queue_status, get_setting,
-        queue_background_deep_analysis_batch, should_skip_deep_analysis, skip_deep_analysis_job,
-        upsert_deep_analysis, ClaimedDeepAnalysisJob, MixTrackInput,
+        queue_background_deep_analysis_batch, reset_stale_deep_analysis_jobs,
+        should_skip_deep_analysis, skip_deep_analysis_job, upsert_deep_analysis,
+        ClaimedDeepAnalysisJob, MixTrackInput,
     },
     music::set_track_bpm_detected,
 };
@@ -31,7 +32,9 @@ macro_rules! dlog {
 }
 
 const DEEP_ANALYSIS_VERSION: i64 = 1;
-const DEFAULT_MODEL: &str = "htdemucs";
+const MODEL_HEAVY: &str = "mdx_extra_q";
+const MODEL_LIGHT: &str = "htdemucs";
+const MODEL_HPSS: &str = "hpss";
 const DEFAULT_TIMEOUT_MS: u64 = 90 * 60 * 1000;
 
 #[derive(Debug, Clone)]
@@ -47,6 +50,7 @@ struct DeepSettings {
     pause_background: bool,
     max_duration_secs: Option<f64>,
     debug_logging: bool,
+    preferred_model: String,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +83,16 @@ const RUNTIME_CACHE_SECS: u64 = 60;
 /// Documents the Start Deep Analysis Worker public API surface.
 pub fn start_deep_analysis_worker(state: PostScanState) {
     tokio::spawn(async move {
+        // Reset any jobs left in 'running' state from a previous unclean shutdown.
+        if let Ok(conn) = state.db.lock() {
+            match reset_stale_deep_analysis_jobs(&conn) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    "[boogiemix:deep] reset {n} stale running jobs to pending on startup"
+                ),
+                Err(e) => tracing::warn!("[boogiemix:deep] stale job reset failed: {e}"),
+            }
+        }
         let active = Arc::new(AtomicUsize::new(0));
         let mut last_runtime: Option<(Instant, RuntimeStatus)> = None;
         let mut interval = tokio::time::interval(Duration::from_millis(1200));
@@ -315,26 +329,31 @@ async fn process_job(
     temp_dir_create.map_err(|e| e.to_string())?;
 
     let use_gpu = settings.prefer_gpu && runtime.gpu_available;
+    // No GPU → force HPSS (fast CPU path). GPU → honour user preference.
+    let demucs_model = if !use_gpu {
+        MODEL_HPSS
+    } else {
+        match settings.preferred_model.as_str() {
+            MODEL_LIGHT => MODEL_LIGHT,
+            MODEL_HPSS => MODEL_HPSS,
+            _ => MODEL_HEAVY,
+        }
+    };
     let payload = serde_json::json!({
         "track_id": job.track_id,
         "file_path": job.file_path,
         "duration_sec": job.duration,
         "analysis_version": DEEP_ANALYSIS_VERSION,
-        "demucs_model": DEFAULT_MODEL,
+        "demucs_model": demucs_model,
         "use_gpu": use_gpu,
         "use_madmom": settings.use_madmom,
         "cleanup_temp": settings.cleanup_temp,
         "temp_root": settings.temp_dir,
     });
-    // Scale timeout by track duration so long tracks on slow (CPU-only) hardware
-    // don't hit a blanket cap. 5 s of processing budget per 1 s of audio.
-    let effective_timeout_ms = job
-        .duration
-        .map(|secs| (secs * 5_000.0) as u64)
-        .map(|scaled| scaled.max(settings.timeout_ms))
-        .unwrap_or(settings.timeout_ms);
-    dlog!(dbg, "[boogiemix:deep] job {} — use_gpu={} use_madmom={} timeout_ms={} (base={}) prefer_gpu={} gpu_available={}",
-        job.id, use_gpu, settings.use_madmom, effective_timeout_ms, settings.timeout_ms,
+    let analysis_secs = job.duration.unwrap_or(300.0);
+    let effective_timeout_ms = ((analysis_secs * 5_000.0) as u64).max(settings.timeout_ms);
+    dlog!(dbg, "[boogiemix:deep] job {} — use_gpu={} model={} use_madmom={} timeout_ms={} (base={}) prefer_gpu={} gpu_available={}",
+        job.id, use_gpu, demucs_model, settings.use_madmom, effective_timeout_ms, settings.timeout_ms,
         settings.prefer_gpu, runtime.gpu_available);
     let worker_script = worker_script_path();
     dlog!(
@@ -362,7 +381,7 @@ async fn process_job(
     let analysis_version = output["analysis_version"]
         .as_i64()
         .unwrap_or(DEEP_ANALYSIS_VERSION);
-    let demucs_model = output["demucs_model"].as_str().unwrap_or(DEFAULT_MODEL);
+    let demucs_model = output["demucs_model"].as_str().unwrap_or(demucs_model);
     let used_gpu = output["used_gpu"].as_bool().unwrap_or(false);
     let energy = output["energy_score_refined"].as_f64().unwrap_or(0.5);
     let confidence = output["confidence"].as_f64().unwrap_or(0.0);
@@ -371,6 +390,25 @@ async fn process_job(
     let schema_version = output["analysis_schema_version"].as_i64().unwrap_or(2);
     dlog!(dbg, "[boogiemix:deep] job {} — output summary: schema_v={} analysis_v={} model={} used_gpu={} used_demucs={} confidence={:.3} energy={:.3} bpm_refined={:?}",
         job.id, schema_version, analysis_version, demucs_model, used_gpu, used_demucs, confidence, energy, bpm_refined);
+
+    // If Demucs failed internally the worker still exits 0 with fallback data.
+    // Treat this as a job failure so it retries rather than storing junk.
+    if !used_demucs {
+        let demucs_err = output["transition_hints_json"]
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .and_then(|v| v["demucsError"].as_str().map(|e| e.to_string()))
+            .unwrap_or_else(|| "demucs did not run".to_string());
+        tracing::warn!(
+            "[boogiemix:deep] job {} — demucs fallback, marking failed: {}",
+            job.id,
+            &demucs_err[..demucs_err.len().min(200)]
+        );
+        return Err(format!(
+            "demucs_fallback: {}",
+            &demucs_err[..demucs_err.len().min(200)]
+        ));
+    }
 
     // Merge key_neural and cue_points into transition_hints_json so they are
     // stored without requiring a DB schema change.
@@ -510,12 +548,22 @@ async fn run_python_worker_with_debug(
         timeout_ms
     );
 
+    let model_cache_dir = model_cache_path();
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — TORCH_HOME={:?}",
+        job_id,
+        model_cache_dir
+    );
+
     let mut cmd = Command::new(&python.command);
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .env("TORCH_HOME", &model_cache_dir)
+        .env("XDG_CACHE_HOME", &model_cache_dir);
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("[boogiemix:deep] job {} — spawn failed: {e}", job_id);
@@ -662,6 +710,10 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         get_setting(&conn, "deepmixDebugLoggingEnabled").as_deref(),
         false,
     );
+    let preferred_model = get_setting(&conn, "boogiemixDeepAnalysisModel")
+        .map(|v| v.trim().to_string())
+        .filter(|v| matches!(v.as_str(), MODEL_HEAVY | MODEL_LIGHT | MODEL_HPSS))
+        .unwrap_or_else(|| MODEL_HEAVY.to_string());
     Ok(DeepSettings {
         enabled,
         max_concurrent,
@@ -674,6 +726,7 @@ fn load_settings(state: &PostScanState) -> Result<DeepSettings, String> {
         pause_background,
         max_duration_secs,
         debug_logging,
+        preferred_model,
     })
 }
 
@@ -864,6 +917,25 @@ fn worker_script_path() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn model_cache_path() -> PathBuf {
+    // Prefer ProgramData (writable by service accounts) over the install dir.
+    #[cfg(windows)]
+    {
+        if let Ok(pd) = std::env::var("PROGRAMDATA") {
+            let p = PathBuf::from(pd).join("BoogieBox").join("model-cache");
+            return p;
+        }
+    }
+    // Linux / fallback: ~/.cache/boogiebox/model-cache
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home)
+            .join(".cache")
+            .join("boogiebox")
+            .join("model-cache");
+    }
+    std::env::temp_dir().join("boogiebox-model-cache")
 }
 
 fn candidate_roots() -> Vec<PathBuf> {

@@ -238,6 +238,14 @@ if [[ "$_MADMOM_OK" -eq 0 ]]; then
 fi
 echo "[bootstrap_env.sh] madmom installed."
 
+# ── diffq ─────────────────────────────────────────────────────────────────────
+# Required by the mdx_extra_q Demucs model. Has a C extension but gcc is
+# standard on Linux so a plain pip install works without pre-built wheels.
+echo "[bootstrap_env.sh] Installing diffq (required by mdx_extra_q Demucs model)..."
+if ! "$VENV_PIP" install "diffq>=0.2.4" 2>&1; then
+  echo "[WARN] diffq install failed — mdx_extra_q Demucs model may not work." >&2
+fi
+
 # ── Verify core imports ───────────────────────────────────────────────────────
 echo "[bootstrap_env.sh] Verifying torch + demucs imports..."
 "$VENV_PY" -c "import torch, demucs"

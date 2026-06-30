@@ -241,6 +241,7 @@ export interface AppSettings {
   boogiemixDeepAnalysisBackgroundMode: string;
   boogiemixDeepAnalysisPauseBackground: string;
   boogiemixDeepAnalysisMaxDurationMins: string;
+  boogiemixDeepAnalysisModel: string;
 }
 
 /** Scan Schedule is part of this module's public API. */
@@ -326,6 +327,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   boogiemixDeepAnalysisBackgroundMode: 'off',
   boogiemixDeepAnalysisPauseBackground: 'false',
   boogiemixDeepAnalysisMaxDurationMins: '15',
+  boogiemixDeepAnalysisModel: 'mdx_extra_q',
 };
 
 /** FONT OPTIONS is part of this module's public API. */

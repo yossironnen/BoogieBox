@@ -106,6 +106,73 @@ def run_demucs(file_path, model, use_gpu, temp_root):
     return code == 0, out_dir, err
 
 
+def extract_segment_clip(file_path, start_sec, duration_sec, out_path):
+    """Extract a time segment from file_path to out_path using ffmpeg."""
+    args = [
+        "ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration_sec),
+        "-i", file_path, "-ar", "44100", "-ac", "2", "-f", "wav", out_path,
+    ]
+    code, _, err = run_cmd(args)
+    return code == 0, err
+
+
+def run_demucs_segment(file_path, model, use_gpu, temp_root, duration_sec, segment_seconds):
+    """Run Demucs only on the intro and outro segments, returning stitched stem arrays
+    padded with zeros for the middle of the track.
+
+    Returns (success, stems_dict_of_arrays, error_str) where each array is the full-length
+    envelope at ENVELOPE_HZ, with zeros for the unprocessed middle region.
+    """
+    import numpy as np
+
+    seg_dur = min(float(segment_seconds), duration_sec / 2.0)
+    outro_start = max(seg_dur, duration_sec - seg_dur)
+    full_len = max(1, int(round(duration_sec * ENVELOPE_HZ)))
+
+    clip_dir = tempfile.mkdtemp(prefix="seg-clips-", dir=temp_root)
+    intro_clip = os.path.join(clip_dir, "intro.wav")
+    outro_clip = os.path.join(clip_dir, "outro.wav")
+
+    ok_i, err_i = extract_segment_clip(file_path, 0.0, seg_dur, intro_clip)
+    ok_o, err_o = extract_segment_clip(file_path, outro_start, seg_dur, outro_clip)
+    if not ok_i or not ok_o:
+        shutil.rmtree(clip_dir, ignore_errors=True)
+        return False, {}, (err_i or err_o or "segment extraction failed")
+
+    stem_arrays = {name: np.zeros(full_len, dtype=np.float32)
+                   for name in ("vocals", "drums", "bass", "other")}
+    any_ok = False
+
+    for clip_path, seg_start in [(intro_clip, 0.0), (outro_clip, outro_start)]:
+        ok, out_dir, err = run_demucs(clip_path, model, use_gpu, temp_root)
+        if not ok:
+            shutil.rmtree(clip_dir, ignore_errors=True)
+            return False, {}, err
+        stems = locate_stems(out_dir, model, clip_path)
+        if stems:
+            any_ok = True
+            seg_offset_frames = int(round(seg_start * ENVELOPE_HZ))
+            for name, path in stems.items():
+                try:
+                    data, sr = load_audio_mono(path)
+                    env = normalize_envelope(rms_envelope(data, sr, ENVELOPE_HZ))
+                    end_frame = min(seg_offset_frames + len(env), full_len)
+                    copy_len = end_frame - seg_offset_frames
+                    if copy_len > 0:
+                        stem_arrays[name][seg_offset_frames:end_frame] = env[:copy_len]
+                except Exception:
+                    pass
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    shutil.rmtree(clip_dir, ignore_errors=True)
+    if not any_ok:
+        return False, {}, "no stems found in segment clips"
+
+    # Return as pseudo-file paths dict but with pre-loaded arrays via a wrapper.
+    # analyze_with_stems expects file paths; we use a different path here.
+    return True, stem_arrays, None
+
+
 def locate_stems(out_dir, model, source_path):
     base = Path(source_path).stem
     candidate = Path(out_dir) / model / base
@@ -659,6 +726,130 @@ def detect_vocal_cue_points(vocal_env, duration_sec, hz=ENVELOPE_HZ):
         return None
 
 
+def _build_analysis_from_envs(envs, duration_sec, bpm_hint, stem_samples=None):
+    """Build analysis dict from pre-computed stem envelope arrays.
+
+    stem_samples: optional dict of name -> (data, sr) for BPM detection from raw audio.
+    When None (segment mode), BPM falls back to detect_beat_grid on the full file.
+    """
+    import numpy as np
+
+    vocal = envs["vocals"]
+    drums = envs["drums"]
+    bass = envs["bass"]
+    other = envs["other"]
+
+    vocal_windows = trim_to_max(
+        windows_from_threshold(vocal, ENVELOPE_HZ, VOCAL_PRESENT_THRESHOLD),
+        MAX_WINDOWS,
+    )
+    drum_windows = trim_to_max(
+        windows_from_threshold(drums, ENVELOPE_HZ, DRUM_PRESENT_THRESHOLD),
+        MAX_WINDOWS,
+    )
+    bass_windows = trim_to_max(
+        windows_from_threshold(bass, ENVELOPE_HZ, BASS_PRESENT_THRESHOLD),
+        MAX_WINDOWS,
+    )
+
+    sections = detect_sections(vocal, drums, bass, other, ENVELOPE_HZ)
+    transitions = transition_safe_windows(duration_sec, vocal, drums, bass,
+                                          sections, ENVELOPE_HZ, other_env=other)
+    cue_points = detect_vocal_cue_points(vocal, duration_sec)
+
+    bpm_refined = None
+    phrase_boundaries = []
+    if stem_samples and "drums" in stem_samples:
+        drum_samples, sr = stem_samples["drums"]
+        phrase_boundaries, bpm_refined = detect_phrase_boundaries(
+            drum_samples, sr, duration_sec, bpm_hint=bpm_hint
+        )
+        if not bpm_refined:
+            try:
+                import librosa, numpy as _np
+                tempo, _ = librosa.beat.beat_track(y=drum_samples.astype(_np.float32), sr=int(sr))
+                tempo = float(_np.atleast_1d(tempo)[0])
+                print(f"[librosa_bpm] drum_sr={sr} tempo={tempo:.2f}", file=sys.stderr)
+                if 60.0 <= tempo <= 200.0:
+                    bpm_refined = tempo
+            except Exception as e:
+                print(f"[librosa_bpm] failed: {e}", file=sys.stderr)
+
+    drum_mean = float(drums.mean()) if drums.size else 0.0
+    bass_mean = float(bass.mean()) if bass.size else 0.0
+    vocal_mean = float(vocal.mean()) if vocal.size else 0.0
+    other_mean = float(other.mean()) if other.size else 0.0
+
+    energy_refined = float(np.clip(
+        drum_mean * 0.4 + bass_mean * 0.25 + other_mean * 0.2 + (1.0 - vocal_mean) * 0.15,
+        0.0, 1.0,
+    ))
+    instrumental_ratio = float(np.clip(
+        1.0 - vocal_mean / max(1e-6, drum_mean + bass_mean + other_mean + 1e-3), 0.0, 1.0
+    ))
+
+    stem_feature_json = {
+        "schemaVersion": ANALYSIS_SCHEMA_VERSION,
+        "envelopeHz": ENVELOPE_HZ,
+        "vocals": round_list(downsample_for_output(vocal), 3),
+        "drums": round_list(downsample_for_output(drums), 3),
+        "bass": round_list(downsample_for_output(bass), 3),
+        "other": round_list(downsample_for_output(other), 3),
+        "summary": {
+            "vocalDensity": round(vocal_mean, 3),
+            "drumDensity": round(drum_mean, 3),
+            "bassDensity": round(bass_mean, 3),
+            "otherDensity": round(other_mean, 3),
+            "instrumentalRatio": round(instrumental_ratio, 3),
+            "hasLongIntro": any(s["kind"] == "intro" and (s["end"] - s["start"]) >= 12.0 for s in sections),
+            "hasLongOutro": any(s["kind"] == "outro" and (s["end"] - s["start"]) >= 12.0 for s in sections),
+        },
+    }
+
+    intro_outro = build_intro_outro_refined(transitions, duration_sec)
+    confidence = float(np.clip(
+        0.55 + 0.25 * min(1.0, drum_mean * 2.0) + 0.20 * min(1.0, (vocal_mean + drum_mean)),
+        0.0, 1.0,
+    ))
+    transition_hints = {
+        "preferLongBlend": instrumental_ratio > 0.35,
+        "avoidVocalTransitions": vocal_mean > 0.2,
+        "rhythmWeak": drum_mean < 0.18,
+        "bassHeavy": bass_mean > 0.45,
+        "safeTransitionTypes": _pick_safe_types(vocal_mean, drum_mean, bass_mean),
+        "bpmRefined": round(bpm_refined, 2) if bpm_refined else None,
+    }
+
+    return {
+        "stem_feature_json": stem_feature_json,
+        "vocal_windows_json": vocal_windows,
+        "drum_windows_json": drum_windows,
+        "bass_windows_json": bass_windows,
+        "section_json": sections,
+        "phrase_boundaries_json": phrase_boundaries[:MAX_PHRASES],
+        "intro_outro_refined_json": intro_outro,
+        "transition_hints_json": transition_hints,
+        "transition_windows_json": transitions,
+        "energy_score_refined": round(energy_refined, 4),
+        "confidence": round(confidence, 3),
+        "bpm_refined": bpm_refined,
+        "cue_points": cue_points,
+    }
+
+
+def analyze_with_stem_arrays(stem_envs, duration_sec, bpm_hint):
+    """Segment mode: accepts pre-stitched envelope arrays (no raw audio samples)."""
+    import numpy as np
+    envs = {}
+    for name in ("vocals", "drums", "bass", "other"):
+        arr = stem_envs.get(name)
+        if arr is not None and len(arr) > 0:
+            envs[name] = arr.astype(np.float32)
+        else:
+            envs[name] = np.zeros(max(1, int(round(duration_sec * ENVELOPE_HZ))), dtype=np.float32)
+    return _build_analysis_from_envs(envs, duration_sec, bpm_hint, stem_samples=None)
+
+
 def analyze_with_stems(stems, duration_sec, bpm_hint):
     import numpy as np
 
@@ -687,116 +878,70 @@ def analyze_with_stems(stems, duration_sec, bpm_hint):
         else:
             envs[name] = np.zeros(max(1, int(round(duration_sec * ENVELOPE_HZ))), dtype=np.float32)
 
-    vocal = envs["vocals"]
-    drums = envs["drums"]
-    bass = envs["bass"]
-    other = envs["other"]
+    return _build_analysis_from_envs(envs, duration_sec, bpm_hint, stem_samples=stem_arrays)
 
-    vocal_windows = trim_to_max(
-        windows_from_threshold(vocal, ENVELOPE_HZ, VOCAL_PRESENT_THRESHOLD),
-        MAX_WINDOWS,
-    )
-    drum_windows = trim_to_max(
-        windows_from_threshold(drums, ENVELOPE_HZ, DRUM_PRESENT_THRESHOLD),
-        MAX_WINDOWS,
-    )
-    bass_windows = trim_to_max(
-        windows_from_threshold(bass, ENVELOPE_HZ, BASS_PRESENT_THRESHOLD),
-        MAX_WINDOWS,
-    )
 
-    sections = detect_sections(vocal, drums, bass, other, ENVELOPE_HZ)
-    transitions = transition_safe_windows(duration_sec, vocal, drums, bass,
-                                          sections, ENVELOPE_HZ, other_env=other)
-    cue_points = detect_vocal_cue_points(vocal, duration_sec)
+def analyze_with_hpss(file_path, duration_sec, bpm_hint):
+    """Fast CPU alternative to Demucs using librosa HPSS.
 
-    bpm_refined = None
-    phrase_boundaries = []
-    if "drums" in stem_arrays:
-        drum_samples, sr = stem_arrays["drums"]
-        phrase_boundaries, bpm_refined = detect_phrase_boundaries(
-            drum_samples, sr, duration_sec, bpm_hint=bpm_hint
-        )
-    # If drum autocorrelation didn't yield a BPM, try librosa on the drum stem.
-    if not bpm_refined and "drums" in stem_arrays:
-        try:
-            import librosa, numpy as _np
-            drum_data, drum_sr = stem_arrays["drums"]
-            tempo, _ = librosa.beat.beat_track(y=drum_data.astype(_np.float32), sr=int(drum_sr))
-            tempo = float(_np.atleast_1d(tempo)[0])
-            import sys
-            print(f"[librosa_bpm] drum_sr={drum_sr} tempo={tempo:.2f}", file=sys.stderr)
-            if 60.0 <= tempo <= 200.0:
-                bpm_refined = tempo
-        except Exception as e:
-            import sys
-            print(f"[librosa_bpm] failed: {e}", file=sys.stderr)
+    Harmonic component → vocal proxy; percussive → drum proxy;
+    low-frequency harmonic bins → bass proxy.  Runs in seconds on CPU.
+    """
+    import numpy as np
+    import librosa
 
-    drum_mean = float(drums.mean()) if drums.size else 0.0
-    bass_mean = float(bass.mean()) if bass.size else 0.0
-    vocal_mean = float(vocal.mean()) if vocal.size else 0.0
-    other_mean = float(other.mean()) if other.size else 0.0
+    # Load at a low sample rate — enough for envelope analysis.
+    SR = 22050
+    y, sr = librosa.load(file_path, sr=SR, mono=True)
 
-    energy_refined = float(np.clip(
-        drum_mean * 0.4 + bass_mean * 0.25 + other_mean * 0.2 + (1.0 - vocal_mean) * 0.15,
-        0.0, 1.0,
-    ))
-    instrumental_ratio = float(np.clip(1.0 - vocal_mean / max(1e-6, drum_mean + bass_mean + other_mean + 1e-3), 0.0, 1.0))
+    if duration_sec <= 0.0:
+        duration_sec = float(len(y)) / sr
 
-    vocal_out = downsample_for_output(vocal)
-    drums_out = downsample_for_output(drums)
-    bass_out = downsample_for_output(bass)
-    other_out = downsample_for_output(other)
+    # STFT → HPSS
+    D = librosa.stft(y, n_fft=2048, hop_length=512)
+    mag = np.abs(D)
+    H_mag, P_mag = librosa.decompose.hpss(mag, margin=3.0)
 
-    stem_feature_json = {
-        "schemaVersion": ANALYSIS_SCHEMA_VERSION,
-        "envelopeHz": ENVELOPE_HZ,
-        "vocals": round_list(vocal_out, 3),
-        "drums": round_list(drums_out, 3),
-        "bass": round_list(bass_out, 3),
-        "other": round_list(other_out, 3),
-        "summary": {
-            "vocalDensity": round(vocal_mean, 3),
-            "drumDensity": round(drum_mean, 3),
-            "bassDensity": round(bass_mean, 3),
-            "otherDensity": round(other_mean, 3),
-            "instrumentalRatio": round(instrumental_ratio, 3),
-            "hasLongIntro": any(s["kind"] == "intro" and (s["end"] - s["start"]) >= 12.0 for s in sections),
-            "hasLongOutro": any(s["kind"] == "outro" and (s["end"] - s["start"]) >= 12.0 for s in sections),
-        },
-    }
+    # Bass: low-frequency bins of harmonic (< ~300 Hz)
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    bass_cutoff_bin = int(np.searchsorted(freqs, 300.0))
+    B_mag = np.zeros_like(H_mag)
+    B_mag[:bass_cutoff_bin] = H_mag[:bass_cutoff_bin]
 
-    intro_outro = build_intro_outro_refined(transitions, duration_sec)
+    # Convert magnitude spectrograms → time-domain power envelopes
+    def mag_to_env(m):
+        power = (m ** 2).mean(axis=0)  # mean power per frame
+        ref = np.percentile(power, 95)
+        if ref <= 1e-8:
+            return np.zeros(len(power), dtype=np.float32)
+        return np.clip(power / ref, 0.0, 1.0).astype(np.float32)
 
-    confidence = float(np.clip(
-        0.55 + 0.25 * min(1.0, drum_mean * 2.0) + 0.20 * min(1.0, (vocal_mean + drum_mean)),
-        0.0, 1.0,
-    ))
+    # HPSS frames are at hop_length resolution; resample to ENVELOPE_HZ (1 Hz)
+    hpss_fps = sr / 512.0
+    h_env_hpss = mag_to_env(H_mag)
+    p_env_hpss = mag_to_env(P_mag)
+    b_env_hpss = mag_to_env(B_mag)
 
-    transition_hints = {
-        "preferLongBlend": instrumental_ratio > 0.35,
-        "avoidVocalTransitions": vocal_mean > 0.2,
-        "rhythmWeak": drum_mean < 0.18,
-        "bassHeavy": bass_mean > 0.45,
-        "safeTransitionTypes": _pick_safe_types(vocal_mean, drum_mean, bass_mean),
-        "bpmRefined": round(bpm_refined, 2) if bpm_refined else None,
-    }
+    n_frames_out = max(1, int(round(duration_sec * ENVELOPE_HZ)))
 
-    return {
-        "stem_feature_json": stem_feature_json,
-        "vocal_windows_json": vocal_windows,
-        "drum_windows_json": drum_windows,
-        "bass_windows_json": bass_windows,
-        "section_json": sections,
-        "phrase_boundaries_json": phrase_boundaries[:MAX_PHRASES],
-        "intro_outro_refined_json": intro_outro,
-        "transition_hints_json": transition_hints,
-        "transition_windows_json": transitions,
-        "energy_score_refined": round(energy_refined, 4),
-        "confidence": round(confidence, 3),
-        "bpm_refined": bpm_refined,
-        "cue_points": cue_points,
-    }
+    def resample_env(env, n_out):
+        if len(env) == 0:
+            return np.zeros(n_out, dtype=np.float32)
+        indices = np.linspace(0, len(env) - 1, n_out)
+        return np.interp(indices, np.arange(len(env)), env).astype(np.float32)
+
+    vocal_env = resample_env(h_env_hpss, n_frames_out)
+    drum_env  = resample_env(p_env_hpss, n_frames_out)
+    bass_env  = resample_env(b_env_hpss, n_frames_out)
+    other_env = np.zeros(n_frames_out, dtype=np.float32)
+
+    envs = {"vocals": vocal_env, "drums": drum_env, "bass": bass_env, "other": other_env}
+
+    # For BPM/phrase detection pass the percussive time-domain signal
+    percussive_td = librosa.istft(P_mag * np.exp(1j * np.angle(D)), hop_length=512)
+    stem_samples = {"drums": (percussive_td.astype(np.float32), sr)}
+
+    return _build_analysis_from_envs(envs, duration_sec, bpm_hint, stem_samples=stem_samples)
 
 
 def _pick_safe_types(vocal_mean, drum_mean, bass_mean):
@@ -977,32 +1122,41 @@ def main():
 
     demucs_used = False
     demucs_error = None
-    stems = {}
     temp_dir = None
-    try:
-        ok, out_dir, err = run_demucs(file_path, model, use_gpu, temp_root)
-        if ok:
-            stems = locate_stems(out_dir, model, file_path)
-            if stems:
-                demucs_used = True
-                temp_dir = out_dir
-            else:
-                demucs_error = "stems_not_found"
-                shutil.rmtree(out_dir, ignore_errors=True)
-        else:
-            demucs_error = (err or "").strip()[-2000:]
-            if out_dir and os.path.isdir(out_dir):
-                shutil.rmtree(out_dir, ignore_errors=True)
-    except Exception as exc:
-        demucs_error = str(exc)[-2000:]
 
     analysis = None
-    if demucs_used:
+    if model == "hpss":
+        # Fast CPU path — librosa HPSS, no neural model needed.
         try:
-            analysis = analyze_with_stems(stems, duration, bpm_hint)
+            analysis = analyze_with_hpss(file_path, duration, bpm_hint)
+            demucs_used = True  # signals Rust that real analysis ran (not synthetic fallback)
         except Exception as exc:
-            demucs_error = f"analysis_failed: {exc}"[-2000:]
-            analysis = None
+            demucs_error = f"hpss_failed: {exc}"[-2000:]
+    else:
+        stems = {}
+        try:
+            ok, out_dir, err = run_demucs(file_path, model, use_gpu, temp_root)
+            if ok:
+                stems = locate_stems(out_dir, model, file_path)
+                if stems:
+                    demucs_used = True
+                    temp_dir = out_dir
+                else:
+                    demucs_error = "stems_not_found"
+                    shutil.rmtree(out_dir, ignore_errors=True)
+            else:
+                demucs_error = (err or "").strip()[-2000:]
+                if out_dir and os.path.isdir(out_dir):
+                    shutil.rmtree(out_dir, ignore_errors=True)
+        except Exception as exc:
+            demucs_error = str(exc)[-2000:]
+
+        if demucs_used:
+            try:
+                analysis = analyze_with_stems(stems, duration, bpm_hint)
+            except Exception as exc:
+                demucs_error = f"analysis_failed: {exc}"[-2000:]
+                analysis = None
 
     if analysis is None:
         analysis = synthetic_fallback(duration, demucs_error, bpm_hint)

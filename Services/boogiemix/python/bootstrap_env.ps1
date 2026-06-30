@@ -146,6 +146,30 @@ if (-not $madmomOk) {
   }
 }
 
+# diffq: required by mdx_extra_q Demucs model. Has a C extension — try bundled wheel first.
+Write-Host "Installing diffq (required by mdx_extra_q Demucs model)..."
+$diffqOk = $false
+
+if (Test-Path $wheelsDir) {
+  & $pip install --find-links $wheelsDir "diffq>=0.2.4" 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    $diffqOk = $true
+    Write-Host "  diffq installed from bundled wheel."
+  } else {
+    Write-Warning "  No compatible bundled diffq wheel found — trying PyPI source build..."
+  }
+}
+
+if (-not $diffqOk) {
+  & $pip install "diffq>=0.2.4" 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "  diffq installed from source."
+  } else {
+    Write-Warning "diffq install failed — mdx_extra_q Demucs model will not work."
+    Write-Warning "To fix: run Services\boogiemix\python\build-wheels.bat on the build machine (requires MSVC Build Tools), then rebuild and redeploy."
+  }
+}
+
 Invoke-NativeChecked $py @("-c", "import torch, demucs")
 
 if ($PrimeDemucsModel) {

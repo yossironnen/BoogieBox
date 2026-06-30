@@ -32,6 +32,7 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "boogiemixDeepAnalysisTempDir",
     "boogiemixDeepAnalysisBackgroundMode",
     "boogiemixDeepAnalysisPauseBackground",
+    "boogiemixDeepAnalysisModel",
     "boogiemixHighQualityWaitMs",
     "boogiemixDebugCandidates",
     // Audio / playback
@@ -124,6 +125,15 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         | "boogiemixDebugCandidates" => {
             if value != "true" && value != "false" {
                 return Err(format!("Setting '{key}' must be 'true' or 'false'"));
+            }
+            Ok(value.to_string())
+        }
+
+        "boogiemixDeepAnalysisModel" => {
+            if !["mdx_extra_q", "htdemucs", "hpss"].contains(&value) {
+                return Err(format!(
+                    "Setting '{key}' must be 'mdx_extra_q', 'htdemucs', or 'hpss'"
+                ));
             }
             Ok(value.to_string())
         }

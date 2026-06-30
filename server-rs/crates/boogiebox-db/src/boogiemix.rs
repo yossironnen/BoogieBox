@@ -1165,6 +1165,18 @@ fn validate_deep_feature_json(label: &str, raw: &str) -> Result<(), JobError> {
     Ok(())
 }
 
+/// Resets any jobs left in 'running' state back to 'pending'.
+/// Called on server startup to recover from a previous unclean shutdown.
+pub fn reset_stale_deep_analysis_jobs(conn: &Connection) -> Result<usize, rusqlite::Error> {
+    let changed = conn.execute(
+        "UPDATE deep_analysis_jobs
+         SET status='pending', started_at=NULL, updated_at=datetime('now')
+         WHERE status='running'",
+        [],
+    )?;
+    Ok(changed)
+}
+
 /// Documents the Claim Next Deep Analysis Job public API surface.
 pub fn claim_next_deep_analysis_job(
     conn: &Connection,

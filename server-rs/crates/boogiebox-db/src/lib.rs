@@ -1788,6 +1788,7 @@ fn seed_default_settings(connection: &Connection) -> Result<(), rusqlite::Error>
         ("boogiemixDeepAnalysisEnabled", "true"),
         ("boogiemixDeepAnalysisBackgroundMode", "off"),
         ("boogiemixDeepAnalysisPauseBackground", "false"),
+        ("boogiemixDeepAnalysisModel", "mdx_extra_q"),
         ("boogiemixDebugCandidates", "false"),
     ];
 
