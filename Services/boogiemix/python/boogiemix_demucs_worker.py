@@ -564,34 +564,58 @@ def extract_neural_embedding(file_path, duration_sec):
     """
     try:
         import numpy as np
-        import librosa
 
         load_dur = min(120.0, duration_sec) if duration_sec > 0 else 120.0
-        y, sr = librosa.load(file_path, sr=22050, mono=True, duration=load_dur)
+        y, sr = _load_audio_safe(file_path, 11025, load_dur)
 
-        # 128-band mel-spectrogram
-        mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128, hop_length=512)
-        mel_db = librosa.power_to_db(mel, ref=np.max)
+        # 128-band mel-spectrogram via pure-numpy STFT (no scipy FFT)
+        _N, _H = 1024, 256
+        _y_pad = np.pad(y, _N // 2, mode='reflect')
+        _nf = 1 + (len(_y_pad) - _N) // _H
+        _frames = np.lib.stride_tricks.as_strided(
+            _y_pad, shape=(_nf, _N),
+            strides=(_y_pad.strides[0] * _H, _y_pad.strides[0]),
+        )
+        _win = np.hanning(_N).astype(np.float32)
+        power_spec = np.abs(np.fft.rfft(np.ascontiguousarray(_frames) * _win, axis=1)) ** 2  # (nf, N//2+1)
+        # Build mel filterbank manually
+        n_mels = 128
+        f_min, f_max = 0.0, sr / 2.0
+        mel_min = 2595 * np.log10(1 + f_min / 700)
+        mel_max = 2595 * np.log10(1 + f_max / 700)
+        mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
+        hz_points = 700 * (10 ** (mel_points / 2595) - 1)
+        bin_points = np.floor((_N + 1) * hz_points / sr).astype(int)
+        mel_fb = np.zeros((n_mels, _N // 2 + 1), dtype=np.float32)
+        for m in range(1, n_mels + 1):
+            lo, ctr, hi = bin_points[m-1], bin_points[m], bin_points[m+1]
+            if ctr > lo:
+                mel_fb[m-1, lo:ctr] = (np.arange(lo, ctr) - lo) / (ctr - lo)
+            if hi > ctr:
+                mel_fb[m-1, ctr:hi] = (hi - np.arange(ctr, hi)) / (hi - ctr)
+        mel_power = mel_fb.dot(power_spec.T)  # (128, nf)
+        mel_db = 10 * np.log10(np.maximum(mel_power, 1e-10))
+        mel_db -= mel_db.max()
 
-        # Segment statistics: mean + std per mel band → 256-dim vector
         mean_v = np.mean(mel_db, axis=1).astype(np.float32)
         std_v  = np.std(mel_db, axis=1).astype(np.float32)
-        feature_v = np.concatenate([mean_v, std_v])  # 256-dim
+        feature_v = np.concatenate([mean_v, std_v])
 
-        # energy_neural: mean log-power of mid-high mels (bands 40-128), normalized
         high_energy = float(np.mean(mel_db[40:, :]))
         energy_neural = round(float(np.clip((high_energy + 80.0) / 80.0, 0.0, 1.0)), 3)
 
-        # danceability: onset strength regularity (coefficient of variation of inter-onset intervals)
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-        if onset_env.size > 4:
-            peaks = librosa.util.peak_pick(onset_env, pre_max=3, post_max=3, pre_avg=3, post_avg=5, delta=0.5, wait=10)
-            if len(peaks) > 2:
-                ioi = np.diff(peaks.astype(np.float32))
-                cv = float(np.std(ioi) / (np.mean(ioi) + 1e-6))
-                danceability = round(float(np.clip(1.0 - cv * 0.5, 0.0, 1.0)), 3)
-            else:
-                danceability = 0.5
+        # Danceability: onset strength from frame-to-frame energy delta (pure numpy)
+        frame_energy = power_spec.sum(axis=1)
+        onset_env = np.maximum(np.diff(frame_energy, prepend=frame_energy[0]), 0)
+        onset_env /= (onset_env.max() + 1e-8)
+        threshold = onset_env.mean() + 0.3 * onset_env.std()
+        peaks = np.where((onset_env[1:-1] > onset_env[:-2]) &
+                         (onset_env[1:-1] > onset_env[2:]) &
+                         (onset_env[1:-1] > threshold))[0] + 1
+        if len(peaks) > 2:
+            ioi = np.diff(peaks.astype(np.float32))
+            cv = float(np.std(ioi) / (np.mean(ioi) + 1e-6))
+            danceability = round(float(np.clip(1.0 - cv * 0.5, 0.0, 1.0)), 3)
         else:
             danceability = 0.5
 
@@ -653,13 +677,32 @@ def detect_beat_grid(file_path, use_madmom=True):
 
 
 def detect_key_neural(file_path, duration_sec):
-    """Chroma-based key detection using Krumhansl-Schmuckler profiles (librosa)."""
+    """Chroma-based key detection using Krumhansl-Schmuckler profiles."""
     try:
-        import librosa
         import numpy as np
         load_dur = min(120.0, duration_sec) if duration_sec > 0 else 120.0
-        y, sr = librosa.load(file_path, sr=22050, mono=True, duration=load_dur)
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+        y, sr = _load_audio_safe(file_path, 11025, load_dur)
+        # Chroma via STFT (pure numpy) — 12 pitch classes from harmonic content
+        _N = 2048
+        _H = 512
+        _y_pad = np.pad(y, _N // 2, mode='reflect')
+        _nf = 1 + (len(_y_pad) - _N) // _H
+        _frames = np.lib.stride_tricks.as_strided(
+            _y_pad, shape=(_nf, _N),
+            strides=(_y_pad.strides[0] * _H, _y_pad.strides[0]),
+        )
+        _win = np.hanning(_N).astype(np.float32)
+        _D = np.abs(np.fft.rfft(np.ascontiguousarray(_frames) * _win, axis=1))  # (nf, N//2+1)
+        freqs = np.fft.rfftfreq(_N, d=1.0 / sr)
+        # Map FFT bins to chroma (pitch class) by closest equal-tempered bin
+        A4 = 440.0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            semitones = np.where(freqs > 0, 12 * np.log2(freqs / A4), -999)
+        pitch_class = (np.round(semitones).astype(int) % 12 + 12) % 12
+        chroma = np.zeros((12, _nf), dtype=np.float32)
+        for pc in range(12):
+            mask = pitch_class == pc
+            chroma[pc] = _D[:, mask].sum(axis=1)
         chroma_mean = np.mean(chroma, axis=1)
         best_key, best_mode, best_corr = None, None, -2.0
         for i in range(12):
@@ -881,6 +924,44 @@ def analyze_with_stems(stems, duration_sec, bpm_hint):
     return _build_analysis_from_envs(envs, duration_sec, bpm_hint, stem_samples=stem_arrays)
 
 
+def _load_audio_safe(file_path, target_sr, max_duration_s):
+    """Load audio without librosa.load or soxr — both hang on some Windows machines.
+
+    Handles NAS/UNC paths by copying to local temp first.
+    Returns (y_float32_mono, sr) or raises.
+    """
+    import numpy as np
+    import soundfile as _sf
+    import scipy.signal as _sig
+
+    load_path = file_path
+    tmp_copy = None
+    if file_path.startswith('\\\\') or file_path.startswith('//'):
+        import shutil, tempfile, concurrent.futures
+        ext = Path(file_path).suffix or '.audio'
+        _fd, tmp_copy = tempfile.mkstemp(suffix=ext, prefix='bbmix_')
+        os.close(_fd)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+            _fut = _ex.submit(shutil.copy2, file_path, tmp_copy)
+            _fut.result(timeout=300)
+        load_path = tmp_copy
+
+    try:
+        info = _sf.info(load_path)
+        native_sr = info.samplerate
+        max_frames = int(native_sr * max_duration_s)
+        data, _ = _sf.read(load_path, frames=max_frames, dtype='float32', always_2d=True)
+        # mono mix
+        y = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
+        # resample if needed
+        if native_sr != target_sr:
+            y = _sig.resample_poly(y, target_sr, native_sr).astype(np.float32)
+        return y, target_sr
+    finally:
+        if tmp_copy and os.path.exists(tmp_copy):
+            os.unlink(tmp_copy)
+
+
 def analyze_with_hpss(file_path, duration_sec, bpm_hint):
     """Fast CPU alternative to Demucs using librosa HPSS.
 
@@ -888,22 +969,104 @@ def analyze_with_hpss(file_path, duration_sec, bpm_hint):
     low-frequency harmonic bins → bass proxy.  Runs in seconds on CPU.
     """
     import numpy as np
+    print("[hpss] importing librosa...", file=sys.stderr, flush=True)
     import librosa
+    print("[hpss] librosa imported", file=sys.stderr, flush=True)
 
     # Load at a low sample rate — enough for envelope analysis.
-    SR = 22050
-    y, sr = librosa.load(file_path, sr=SR, mono=True)
+    SR = 11025
+    MAX_DURATION_S = 300  # cap: beyond 300 s the envelope adds no extra info
+    # For UNC/network paths, copy to local temp first — reading 50-100 MB sequentially
+    # over SMB from a VM can hang mid-transfer even when small reads succeed fine.
+    # libsndfile's seeking behaviour on FLAC also interacts poorly with SMB.
+    load_path = file_path
+    _tmp_copy = None
+    if file_path.startswith('\\\\') or file_path.startswith('//'):
+        import shutil, tempfile, concurrent.futures
+        ext = Path(file_path).suffix or '.audio'
+        _tmp_fd, _tmp_copy = tempfile.mkstemp(suffix=ext, prefix='bbmix_')
+        os.close(_tmp_fd)
+        print(f"[hpss] copying from NAS to local temp: {_tmp_copy!r}", file=sys.stderr, flush=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+            _fut = _ex.submit(shutil.copy2, file_path, _tmp_copy)
+            try:
+                _fut.result(timeout=300)  # 5 min max for copy
+            except concurrent.futures.TimeoutError:
+                raise RuntimeError(f"File copy timed out after 300s (slow NAS?): {file_path!r}")
+        print(f"[hpss] copy done", file=sys.stderr, flush=True)
+        load_path = _tmp_copy
+
+    import time as _time
+    _t0 = _time.time()
+    print(f"[hpss] loading audio: {load_path!r}", file=sys.stderr, flush=True)
+    try:
+        # Use soundfile directly to bypass librosa's resampling (which uses soxr and can be slow).
+        # We read at native SR and downsample manually with scipy — much faster on CPU.
+        import soundfile as _sf
+        import scipy.signal as _sig
+        _info = _sf.info(load_path)
+        _native_sr = _info.samplerate
+        _max_native_frames = int(_native_sr * MAX_DURATION_S)
+        _data, _native_sr = _sf.read(load_path, frames=_max_native_frames, dtype='float32', always_2d=True)
+        print(f"[hpss] soundfile read done in {_time.time()-_t0:.1f}s native_sr={_native_sr} shape={_data.shape}", file=sys.stderr, flush=True)
+        # Mix to mono
+        if _data.ndim > 1 and _data.shape[1] > 1:
+            _data = _data.mean(axis=1)
+        else:
+            _data = _data[:, 0] if _data.ndim > 1 else _data
+        # Resample to target SR if needed
+        if _native_sr != SR:
+            _t1 = _time.time()
+            print(f"[hpss] resampling {_native_sr}->{SR}...", file=sys.stderr, flush=True)
+            _n_out = int(round(len(_data) * SR / _native_sr))
+            _data = _sig.resample_poly(_data, SR, _native_sr).astype(np.float32)
+            print(f"[hpss] resample done in {_time.time()-_t1:.1f}s", file=sys.stderr, flush=True)
+        y, sr = _data, SR
+    finally:
+        if _tmp_copy and os.path.exists(_tmp_copy):
+            os.unlink(_tmp_copy)
+    print(f"[hpss] audio loaded: {len(y)/sr:.1f}s total={_time.time()-_t0:.1f}s", file=sys.stderr, flush=True)
 
     if duration_sec <= 0.0:
         duration_sec = float(len(y)) / sr
 
     # STFT → HPSS
-    D = librosa.stft(y, n_fft=2048, hop_length=512)
-    mag = np.abs(D)
-    H_mag, P_mag = librosa.decompose.hpss(mag, margin=3.0)
+    # Use manual numpy STFT — librosa.stft hangs on scipy.fft dispatch init on some machines.
+    _N_FFT = 1024
+    _HOP = 256
+    _t2 = _time.time()
+    print("[hpss] computing STFT...", file=sys.stderr, flush=True)
+    _y_pad = np.pad(y, _N_FFT // 2, mode='reflect')
+    _n_frames = 1 + (len(_y_pad) - _N_FFT) // _HOP
+    _frames = np.lib.stride_tricks.as_strided(
+        _y_pad,
+        shape=(_n_frames, _N_FFT),
+        strides=(_y_pad.strides[0] * _HOP, _y_pad.strides[0]),
+    )
+    _win = np.hanning(_N_FFT).astype(np.float32)
+    D = np.fft.rfft(np.ascontiguousarray(_frames) * _win, axis=1).T  # (n_fft//2+1, n_frames)
+    print(f"[hpss] STFT done in {_time.time()-_t2:.1f}s, running HPSS...", file=sys.stderr, flush=True)
+    mag = np.abs(D).astype(np.float32)
+    # Pure-numpy HPSS via rolling mean (avoids scipy.ndimage which hangs on this machine).
+    # Rolling mean along time axis → harmonic smoothing
+    _W = 31
+    _mp_t = np.pad(mag, ((0, 0), (_W - 1, 0)), mode='edge')
+    _cs_t = np.cumsum(np.pad(_mp_t, ((0, 0), (1, 0))), axis=1)
+    harm_smooth = (_cs_t[:, _W:] - _cs_t[:, :-_W]) / _W
+    # Rolling mean along freq axis → percussive smoothing
+    _mp_f = np.pad(mag, ((_W - 1, 0), (0, 0)), mode='edge')
+    _cs_f = np.cumsum(np.pad(_mp_f, ((1, 0), (0, 0))), axis=0)
+    perc_smooth = (_cs_f[_W:] - _cs_f[:-_W]) / _W
+    # Soft masks with margin=3.0
+    _tiny = np.finfo(np.float32).tiny
+    _hp = harm_smooth ** 2
+    _pp = perc_smooth ** 2
+    H_mag = mag * _hp / (_hp + _pp * 3.0 + _tiny)
+    P_mag = mag * _pp / (_pp + _hp * 3.0 + _tiny)
+    print(f"[hpss] HPSS done in {_time.time()-_t2:.1f}s total", file=sys.stderr, flush=True)
 
     # Bass: low-frequency bins of harmonic (< ~300 Hz)
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    freqs = np.fft.rfftfreq(_N_FFT, d=1.0 / sr)
     bass_cutoff_bin = int(np.searchsorted(freqs, 300.0))
     B_mag = np.zeros_like(H_mag)
     B_mag[:bass_cutoff_bin] = H_mag[:bass_cutoff_bin]
@@ -917,7 +1080,7 @@ def analyze_with_hpss(file_path, duration_sec, bpm_hint):
         return np.clip(power / ref, 0.0, 1.0).astype(np.float32)
 
     # HPSS frames are at hop_length resolution; resample to ENVELOPE_HZ (1 Hz)
-    hpss_fps = sr / 512.0
+    hpss_fps = sr / _HOP
     h_env_hpss = mag_to_env(H_mag)
     p_env_hpss = mag_to_env(P_mag)
     b_env_hpss = mag_to_env(B_mag)
@@ -937,11 +1100,10 @@ def analyze_with_hpss(file_path, duration_sec, bpm_hint):
 
     envs = {"vocals": vocal_env, "drums": drum_env, "bass": bass_env, "other": other_env}
 
-    # For BPM/phrase detection pass the percussive time-domain signal
-    percussive_td = librosa.istft(P_mag * np.exp(1j * np.angle(D)), hop_length=512)
-    stem_samples = {"drums": (percussive_td.astype(np.float32), sr)}
-
-    return _build_analysis_from_envs(envs, duration_sec, bpm_hint, stem_samples=stem_samples)
+    # Skip stem_samples — avoids triggering numba JIT (librosa.beat.beat_track) which
+    # hangs on first invocation when the numba cache dir is not writable.
+    # BPM is already handled by detect_beat_grid() in main().
+    return _build_analysis_from_envs(envs, duration_sec, bpm_hint, stem_samples=None)
 
 
 def _pick_safe_types(vocal_mean, drum_mean, bass_mean):
@@ -1089,6 +1251,7 @@ def enforce_size(output):
 
 
 def main():
+    print("[worker] startup", file=sys.stderr, flush=True)
     configure_model_cache()
 
     parser = argparse.ArgumentParser()
@@ -1098,7 +1261,6 @@ def main():
     if args.payload:
         payload = json.loads(args.payload)
     else:
-        import sys
         payload = json.loads(sys.stdin.read())
     file_path = payload.get("file_path", "")
     track_id = payload.get("track_id", 0)
@@ -1162,9 +1324,13 @@ def main():
         analysis = synthetic_fallback(duration, demucs_error, bpm_hint)
 
     # Run lightweight features that don't require Demucs stems.
+    print("[worker] detect_key_neural...", file=sys.stderr, flush=True)
     key_neural = detect_key_neural(file_path, duration)
+    print("[worker] detect_beat_grid...", file=sys.stderr, flush=True)
     beat_grid = detect_beat_grid(file_path, use_madmom=use_madmom)
+    print("[worker] extract_neural_embedding...", file=sys.stderr, flush=True)
     neural_embedding = extract_neural_embedding(file_path, duration)
+    print("[worker] features done", file=sys.stderr, flush=True)
 
     output = {
         "track_id": track_id,

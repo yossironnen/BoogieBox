@@ -279,6 +279,10 @@ pub struct ClaimedDeepAnalysisJob {
     pub file_path: String,
     /// Documents the Duration public API surface.
     pub duration: Option<f64>,
+    /// Track title for logging.
+    pub title: Option<String>,
+    /// Track artist for logging.
+    pub artist: Option<String>,
 }
 
 /// Public Stem Window data shape used by BoogieBox.
@@ -1216,10 +1220,12 @@ pub fn claim_next_deep_analysis_job_with_background(
 
     let claimed = conn
         .query_row(
-            "SELECT j.id, j.track_id, j.file_fingerprint, t.file_path, t.duration
-         FROM deep_analysis_jobs j
-         JOIN tracks t ON t.id=j.track_id
-         WHERE j.id=?1",
+            "SELECT j.id, j.track_id, j.file_fingerprint, t.file_path, t.duration,
+                    t.title, ar.name
+             FROM deep_analysis_jobs j
+             JOIN tracks t ON t.id=j.track_id
+             LEFT JOIN artists ar ON ar.id=t.artist_id
+             WHERE j.id=?1",
             params![id],
             |r| {
                 Ok(ClaimedDeepAnalysisJob {
@@ -1228,6 +1234,8 @@ pub fn claim_next_deep_analysis_job_with_background(
                     file_fingerprint: r.get(2)?,
                     file_path: r.get(3)?,
                     duration: r.get(4)?,
+                    title: r.get(5)?,
+                    artist: r.get(6)?,
                 })
             },
         )

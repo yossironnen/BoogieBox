@@ -21,7 +21,11 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::{process::Command, time::timeout};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    process::Command,
+    time::timeout,
+};
 
 macro_rules! dlog {
     ($enabled:expr, $($arg:tt)*) => {
@@ -282,11 +286,13 @@ async fn process_job(
     let dbg = settings.debug_logging;
     dlog!(
         dbg,
-        "[boogiemix:deep] process_job start — job={} track={} file={:?} duration={:?}",
+        "[boogiemix:deep] START job={} track={} | \"{}\" — {} | file={:?} | duration={:.1}s",
         job.id,
         job.track_id,
+        job.artist.as_deref().unwrap_or("?"),
+        job.title.as_deref().unwrap_or("?"),
         job.file_path,
-        job.duration
+        job.duration.unwrap_or(0.0)
     );
 
     let track = MixTrackInput {
@@ -339,6 +345,32 @@ async fn process_job(
             _ => MODEL_HEAVY,
         }
     };
+    let model_reason = if !use_gpu {
+        format!(
+            "forced=hpss (no GPU: prefer_gpu={} gpu_available={})",
+            settings.prefer_gpu, runtime.gpu_available
+        )
+    } else {
+        format!(
+            "setting={} → resolved={demucs_model}",
+            settings.preferred_model
+        )
+    };
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — MODEL: {demucs_model} ({model_reason})",
+        job.id
+    );
+    // Madmom RNNBeatProcessor is an RNN that processes the full audio file on CPU —
+    // on a slow CPU machine a 6-min track can take 10+ min, causing apparent hangs.
+    // Disable madmom when running HPSS (CPU-only) mode.
+    let use_madmom = settings.use_madmom && demucs_model != MODEL_HPSS;
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — use_madmom={use_madmom} (settings={} model={demucs_model})",
+        job.id,
+        settings.use_madmom
+    );
     let payload = serde_json::json!({
         "track_id": job.track_id,
         "file_path": job.file_path,
@@ -346,15 +378,22 @@ async fn process_job(
         "analysis_version": DEEP_ANALYSIS_VERSION,
         "demucs_model": demucs_model,
         "use_gpu": use_gpu,
-        "use_madmom": settings.use_madmom,
+        "use_madmom": use_madmom,
         "cleanup_temp": settings.cleanup_temp,
         "temp_root": settings.temp_dir,
     });
     let analysis_secs = job.duration.unwrap_or(300.0);
     let effective_timeout_ms = ((analysis_secs * 5_000.0) as u64).max(settings.timeout_ms);
-    dlog!(dbg, "[boogiemix:deep] job {} — use_gpu={} model={} use_madmom={} timeout_ms={} (base={}) prefer_gpu={} gpu_available={}",
-        job.id, use_gpu, demucs_model, settings.use_madmom, effective_timeout_ms, settings.timeout_ms,
-        settings.prefer_gpu, runtime.gpu_available);
+    dlog!(
+        dbg,
+        "[boogiemix:deep] job {} — timeout={:.1}min (track={:.1}s base={:.1}min) python={} madmom={}",
+        job.id,
+        effective_timeout_ms as f64 / 60_000.0,
+        analysis_secs,
+        settings.timeout_ms as f64 / 60_000.0,
+        python.display_name,
+        settings.use_madmom
+    );
     let worker_script = worker_script_path();
     dlog!(
         dbg,
@@ -563,7 +602,15 @@ async fn run_python_worker_with_debug(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .env("TORCH_HOME", &model_cache_dir)
-        .env("XDG_CACHE_HOME", &model_cache_dir);
+        .env("XDG_CACHE_HOME", &model_cache_dir)
+        // Disable numba JIT to prevent LLVM cache-write hangs on first run on clean machines.
+        .env("NUMBA_DISABLE_JIT", "1")
+        // Prevent OpenBLAS/OMP from spinning up thread pools when spawned from Rust —
+        // on Windows this can deadlock during numpy initialization in a subprocess.
+        .env("OMP_NUM_THREADS", "1")
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("MKL_NUM_THREADS", "1")
+        .env("BLAS_NUM_THREADS", "1");
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("[boogiemix:deep] job {} — spawn failed: {e}", job_id);
@@ -593,7 +640,35 @@ async fn run_python_worker_with_debug(
         job_id,
         timeout_ms
     );
-    let wait_result = timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await;
+
+    // Stream stderr line-by-line in real-time so we can see which step hangs.
+    let stderr_stream = child.stderr.take();
+    let job_id_log = job_id.to_string();
+    let stderr_task: tokio::task::JoinHandle<String> = tokio::spawn(async move {
+        let mut buf = String::new();
+        if let Some(stderr) = stderr_stream {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                tracing::info!("[boogiemix:deep] job {} [py] {}", job_id_log, line);
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
+        buf
+    });
+
+    // Collect stdout and wait for exit under the timeout.
+    let mut stdout_buf = Vec::new();
+    let wait_result = timeout(Duration::from_millis(timeout_ms), async {
+        if let Some(mut stdout) = child.stdout.take() {
+            let _ = stdout.read_to_end(&mut stdout_buf).await;
+        }
+        child.wait().await
+    })
+    .await;
+
+    let stderr_raw = stderr_task.await.unwrap_or_default();
+
     match wait_result {
         Err(_) => {
             tracing::error!(
@@ -605,37 +680,21 @@ async fn run_python_worker_with_debug(
             Err("process_timeout".to_string())
         }
         Ok(Err(e)) => {
-            tracing::error!(
-                "[boogiemix:deep] job {} — wait_with_output error: {e}",
-                job_id
-            );
+            tracing::error!("[boogiemix:deep] job {} — wait error: {e}", job_id);
             Err(e.to_string())
         }
-        Ok(Ok(output)) => {
-            let status = output.status;
-            let stdout_len = output.stdout.len();
-            let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        Ok(Ok(status)) => {
+            let stdout_len = stdout_buf.len();
             dlog!(
                 dbg,
                 "[boogiemix:deep] job {} — exit_status={} stdout_bytes={} stderr_bytes={}",
                 job_id,
                 status,
                 stdout_len,
-                output.stderr.len()
+                stderr_raw.len()
             );
             if status.success() {
-                if !stderr_raw.is_empty() {
-                    if dbg {
-                        tracing::info!(
-                            "[boogiemix:deep] job {} — python stderr:\n{}",
-                            job_id,
-                            stderr_raw.trim()
-                        );
-                    } else {
-                        tracing::debug!(worker_stderr = %stderr_raw.trim(), "python worker stderr");
-                    }
-                }
-                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stdout = String::from_utf8_lossy(&stdout_buf);
                 let parse_result = serde_json::from_str(stdout.trim());
                 match parse_result {
                     Ok(v) => {
