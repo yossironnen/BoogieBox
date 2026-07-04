@@ -649,7 +649,7 @@ async fn run_python_worker_with_debug(
         if let Some(stderr) = stderr_stream {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                tracing::info!("[boogiemix:deep] job {} [py] {}", job_id_log, line);
+                dlog!(dbg, "[boogiemix:deep] job {} [py] {}", job_id_log, line);
                 buf.push_str(&line);
                 buf.push('\n');
             }

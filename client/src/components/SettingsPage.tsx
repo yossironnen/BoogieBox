@@ -1811,7 +1811,7 @@ export default function SettingsPage({
                           })}
                         </div>
                         {!gpuAvailable && (
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>HPSS forced — no GPU detected on this machine</span>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>HPSS forced — no GPU detected on the server</span>
                         )}
                       </div>
                     );

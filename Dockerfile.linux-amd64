@@ -26,7 +26,7 @@ WORKDIR /tmp/ffmpeg
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl xz-utils tar \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -L --fail --show-error --output ffmpeg.tar.xz "$FFMPEG_URL" \
+    && curl -L --fail --show-error -A "Mozilla/5.0 (X11; Linux x86_64) curl" --output ffmpeg.tar.xz "$FFMPEG_URL" \
     && tar -xJf ffmpeg.tar.xz --strip-components=1 --wildcards --no-anchored "*/ffmpeg" "*/ffprobe" \
     && chmod +x ffmpeg ffprobe
 
