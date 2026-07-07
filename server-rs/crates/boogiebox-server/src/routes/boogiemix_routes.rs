@@ -828,18 +828,21 @@ async fn detect_deep_runtime() -> DeepRuntimeStatus {
     let mut demucs_version = None;
     let mut torch_version = None;
     if let Some(invocation) = python.as_ref() {
-        demucs_callable = python_bool(
+        // Query a real version string rather than importlib.util.find_spec():
+        // find_spec only confirms the package's files are on disk, not that
+        // `import` actually succeeds — a package present but broken (e.g. a
+        // syntax/runtime error, an ABI-incompatible compiled extension, or an
+        // incompatible Python/numpy version) still reports find_spec() truthy
+        // while every real import fails. python_string() returns None when
+        // the subprocess raises, so a successful version fetch is proof the
+        // import genuinely works.
+        demucs_version = python_string(
             invocation,
-            "import importlib.util; print('true' if importlib.util.find_spec('demucs') else 'false')",
+            "import demucs; print(getattr(demucs, '__version__', 'installed'))",
         )
         .await;
-        if demucs_callable {
-            demucs_version = python_string(
-                invocation,
-                "import demucs; print(getattr(demucs, '__version__', 'installed'))",
-            )
-            .await;
-        } else {
+        demucs_callable = demucs_version.is_some();
+        if !demucs_callable {
             missing_capabilities.push("demucs".to_string());
         }
         details.push(
@@ -851,18 +854,13 @@ async fn detect_deep_runtime() -> DeepRuntimeStatus {
             .to_string(),
         );
 
-        torch_available = python_bool(
+        torch_version = python_string(
             invocation,
-            "import importlib.util; print('true' if importlib.util.find_spec('torch') else 'false')",
+            "import torch; print(getattr(torch, '__version__', 'installed'))",
         )
         .await;
-        if torch_available {
-            torch_version = python_string(
-                invocation,
-                "import torch; print(getattr(torch, '__version__', 'installed'))",
-            )
-            .await;
-        } else {
+        torch_available = torch_version.is_some();
+        if !torch_available {
             missing_capabilities.push("torch".to_string());
         }
         details.push(
@@ -883,9 +881,23 @@ async fn detect_deep_runtime() -> DeepRuntimeStatus {
         }
         details.push(if gpu_available { "gpu:cuda" } else { "gpu:cpu" }.to_string());
 
+        // madmom 0.16.1 needs the same collections/numpy compatibility shims
+        // boogiemix_demucs_worker.py applies before importing it, so this
+        // check reflects whether the worker's actual import will succeed.
         madmom_available = python_bool(
             invocation,
-            "import importlib.util; print('true' if importlib.util.find_spec('madmom') else 'false')",
+            "import collections, collections.abc\n\
+             if not hasattr(collections, 'MutableSequence'):\n\
+             \x20   collections.MutableSequence = collections.abc.MutableSequence\n\
+             import numpy as _np\n\
+             if not hasattr(_np, 'float'):\n\
+             \x20   _np.float = float\n\
+             if not hasattr(_np, 'int'):\n\
+             \x20   _np.int = int\n\
+             if not hasattr(_np, 'bool'):\n\
+             \x20   _np.bool = bool\n\
+             import madmom\n\
+             print('true')",
         )
         .await;
         details.push(

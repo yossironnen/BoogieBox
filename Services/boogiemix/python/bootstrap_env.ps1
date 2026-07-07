@@ -21,29 +21,102 @@ $venvFull = Join-Path $root $VenvPath
 # If no explicit -PythonExe was given, resolve Python from known locations before
 # falling back to PATH. Exit code 9009 means "not found" on Windows.
 if ($PythonExe -eq "python") {
-  $pyCmd     = Get-Command "py"     -ErrorAction SilentlyContinue
-  $pythonCmd = Get-Command "python" -ErrorAction SilentlyContinue
-  $candidateList = [System.Collections.Generic.List[string]]::new()
-  if ($pyCmd)     { $candidateList.Add($pyCmd.Source) }
-  foreach ($p in @(
-    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
-    "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-    "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
-    "${env:ProgramFiles}\Python312\python.exe",
-    "${env:ProgramFiles}\Python311\python.exe",
-    "${env:ProgramFiles}\Python310\python.exe",
-    "$env:USERPROFILE\miniconda3\python.exe",
-    "$env:USERPROFILE\miniforge3\python.exe",
-    "$env:USERPROFILE\anaconda3\python.exe"
-  )) { $candidateList.Add($p) }
-  if ($pythonCmd) { $candidateList.Add($pythonCmd.Source) }
-  $candidates = $candidateList | Where-Object {
-    $_ -and ($_ -notlike "*\WindowsApps\*") -and (Test-Path $_)
-  } | Select-Object -First 1
+  $pyLauncher = Get-Command "py"     -ErrorAction SilentlyContinue
+  $pythonCmd  = Get-Command "python" -ErrorAction SilentlyContinue
+  $resolvedExe = $null
+  $resolvedArgs = @()
 
-  if (-not $candidates) {
-    Write-Host "Python not found - downloading and installing Python 3.12..."
-    $pyVersion   = "3.12.10"
+  # Determine which Python version(s) the *bundled* madmom wheel(s) actually
+  # target (parsed from the wheel filename's cpXY ABI tag). A build machine
+  # only produces a wheel for whatever Python version(s) it happens to have
+  # installed (e.g. only 3.11), so this is NOT just a preference — a target
+  # machine that ends up with a *different*, merely "generally compatible"
+  # version (e.g. 3.12, because that's what happens to already be installed)
+  # still gets an ABI mismatch: pip silently skips the incompatible wheel and
+  # falls back to a PyPI source build that needs MSVC Build Tools — not
+  # present on a typical end-user machine — so madmom silently fails to
+  # install. Verified on two real clean-machine installs: the first attempt
+  # only *reordered* preference and still settled for an already-installed
+  # but mismatched 3.12 when 3.11 wasn't present at all. When a wheel is
+  # bundled, only that exact version is acceptable — if it isn't already
+  # installed, download and install it (side by side with whatever else is
+  # already there) rather than settling for a mismatched "compatible" one.
+  $wheelVersions = @()
+  $wheelsDir = Join-Path $root "wheels"
+  if (Test-Path $wheelsDir) {
+    Get-ChildItem -Path $wheelsDir -Filter "madmom-*.whl" -ErrorAction SilentlyContinue | ForEach-Object {
+      if ($_.Name -match 'cp(\d)(\d+)-') {
+        $wheelVersions += "$($Matches[1]).$($Matches[2])"
+      }
+    }
+  }
+  # @(...) forces array semantics even when exactly one wheel matches —
+  # otherwise PowerShell unwraps a single-item pipeline result to a bare
+  # string, and $wheelVersions[0] would then index a *character* of that
+  # string ("3.10"[0] -> "3") instead of the version itself, silently
+  # breaking the download-fallback's version lookup below.
+  $wheelVersions = @($wheelVersions | Select-Object -Unique)
+  $requireExactMatch = $wheelVersions.Count -gt 0
+  # Versions this run will accept: only the wheel's own version(s) if a wheel
+  # is bundled (no substitutes), otherwise the general compatible range.
+  $probeVersions = if ($requireExactMatch) { $wheelVersions } else { @("3.12", "3.11", "3.10") }
+
+  if ($pyLauncher) {
+    foreach ($v in $probeVersions) {
+      & $pyLauncher.Source "-$v" "--version" *> $null
+      if ($LASTEXITCODE -eq 0) {
+        $resolvedExe = $pyLauncher.Source
+        $resolvedArgs = @("-$v")
+        break
+      }
+    }
+  }
+
+  if (-not $resolvedExe) {
+    $candidateList = [System.Collections.Generic.List[string]]::new()
+    foreach ($v in $probeVersions) {
+      $candidateList.Add("$env:LOCALAPPDATA\Programs\Python\Python$($v.Replace('.',''))\python.exe")
+      $candidateList.Add("${env:ProgramFiles}\Python$($v.Replace('.',''))\python.exe")
+    }
+    if (-not $requireExactMatch) {
+      foreach ($p in @(
+        "$env:USERPROFILE\miniconda3\python.exe",
+        "$env:USERPROFILE\miniforge3\python.exe",
+        "$env:USERPROFILE\anaconda3\python.exe"
+      )) { $candidateList.Add($p) }
+    }
+    $resolvedExe = $candidateList | Where-Object {
+      $_ -and ($_ -notlike "*\WindowsApps\*") -and (Test-Path $_)
+    } | Select-Object -First 1
+  }
+
+  # Last resort: whatever py/python resolves to by default. Only acceptable
+  # when no specific wheel version is required — a bare `py`/`python` command
+  # can resolve to whatever is registered as the system default (possibly an
+  # incompatible interpreter like 3.13+, or a compatible-but-mismatched one),
+  # which is exactly what this fix avoids when a wheel is bundled.
+  if ((-not $resolvedExe) -and (-not $requireExactMatch)) {
+    $fallbackList = [System.Collections.Generic.List[string]]::new()
+    if ($pyLauncher) { $fallbackList.Add($pyLauncher.Source) }
+    if ($pythonCmd)  { $fallbackList.Add($pythonCmd.Source) }
+    $resolvedExe = $fallbackList | Where-Object {
+      $_ -and ($_ -notlike "*\WindowsApps\*") -and (Test-Path $_)
+    } | Select-Object -First 1
+    if ($resolvedExe -like "*\py.exe") {
+      $resolvedArgs = @("-3")
+    }
+  }
+
+  if (-not $resolvedExe) {
+    # Download whichever version the bundled wheel targets (falls back to
+    # 3.12 if no wheel is bundled) — installing a mismatched version here
+    # would silently reproduce the exact ABI mismatch this script exists to
+    # avoid, just via the "nothing found" path instead of the probing path.
+    $downloadMinor = if ($wheelVersions.Count -gt 0) { $wheelVersions[0] } else { "3.12" }
+    $patchVersions = @{ "3.12" = "3.12.10"; "3.11" = "3.11.9"; "3.10" = "3.10.11" }
+    $pyVersion = $patchVersions[$downloadMinor]
+    if (-not $pyVersion) { $pyVersion = "3.12.10"; $downloadMinor = "3.12" }
+    Write-Host "No matching Python found - downloading and installing Python $pyVersion..."
     $pyInstaller = Join-Path $env:TEMP "python-$pyVersion-amd64.exe"
     $pyUrl       = "https://www.python.org/ftp/python/$pyVersion/python-$pyVersion-amd64.exe"
     Write-Host "  Downloading $pyUrl ..."
@@ -62,24 +135,29 @@ if ($PythonExe -eq "python") {
     $env:PATH    = $userPath + ";" + $machinePath
     $pyCmd2     = Get-Command "py"     -ErrorAction SilentlyContinue
     $pythonCmd2 = Get-Command "python" -ErrorAction SilentlyContinue
-    $cl2 = [System.Collections.Generic.List[string]]::new()
-    if ($pyCmd2)     { $cl2.Add($pyCmd2.Source) }
-    $cl2.Add("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe")
-    if ($pythonCmd2) { $cl2.Add($pythonCmd2.Source) }
-    $candidates = $cl2 | Where-Object {
-      $_ -and ($_ -notlike "*\WindowsApps\*") -and (Test-Path $_)
-    } | Select-Object -First 1
-    if (-not $candidates) {
+    if ($pyCmd2) {
+      & $pyCmd2.Source "-$downloadMinor" "--version" *> $null
+      if ($LASTEXITCODE -eq 0) {
+        $resolvedExe = $pyCmd2.Source
+        $resolvedArgs = @("-$downloadMinor")
+      }
+    }
+    if (-not $resolvedExe) {
+      $cl2 = [System.Collections.Generic.List[string]]::new()
+      $cl2.Add("$env:LOCALAPPDATA\Programs\Python\Python$($downloadMinor.Replace('.',''))\python.exe")
+      if ((-not $requireExactMatch) -and $pythonCmd2) { $cl2.Add($pythonCmd2.Source) }
+      $resolvedExe = $cl2 | Where-Object {
+        $_ -and ($_ -notlike "*\WindowsApps\*") -and (Test-Path $_)
+      } | Select-Object -First 1
+    }
+    if (-not $resolvedExe) {
       throw "Python was installed but still cannot be found. Please restart the terminal and re-run this script."
     }
   }
 
-  # If we found py.exe, use it with -3 to invoke Python 3
-  if ($candidates -like "*\py.exe") {
-    $PythonExeArgs = @("-3") + $PythonExeArgs
-  }
-  $PythonExe = $candidates
-  Write-Host "Using Python: $PythonExe"
+  $PythonExe = $resolvedExe
+  $PythonExeArgs = $resolvedArgs + $PythonExeArgs
+  Write-Host "Using Python: $PythonExe $($resolvedArgs -join ' ')"
 }
 
 $torchHome       = Join-Path $root "model-cache\torch"

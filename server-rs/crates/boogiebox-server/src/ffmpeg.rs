@@ -325,9 +325,12 @@ fn estimate_bpm_from_samples(
     }
 
     let frames_per_second = sample_rate as f64 / frame_size as f64;
+    const MIN_BPM: u32 = 60;
+    const MAX_BPM: u32 = 200;
+    let mut scores = vec![0.0f64; (MAX_BPM - MIN_BPM + 1) as usize];
     let mut best_bpm = 0.0;
     let mut best_score = 0.0;
-    for bpm in 60..=200 {
+    for bpm in MIN_BPM..=MAX_BPM {
         let lag = ((60.0 / bpm as f64) * frames_per_second).round() as usize;
         if lag == 0 || lag >= flux.len() {
             continue;
@@ -337,6 +340,7 @@ fn estimate_bpm_from_samples(
             .zip(flux.iter().skip(lag))
             .map(|(a, b)| a * b)
             .sum::<f64>();
+        scores[(bpm - MIN_BPM) as usize] = score;
         if score > best_score {
             best_score = score;
             best_bpm = bpm as f64;
@@ -344,10 +348,31 @@ fn estimate_bpm_from_samples(
     }
 
     if best_score <= f64::EPSILON {
-        None
-    } else {
-        Some(best_bpm)
+        return None;
     }
+
+    // Correct common half-tempo (octave) errors: this correlation detector can
+    // lock onto a sub-harmonic — e.g. alternating kick emphasis on
+    // four-on-the-floor dance tracks produces strong periodicity at exactly
+    // half the true beat rate. Dance/club tracks are rarely genuinely below
+    // ~90 BPM, so when the winning candidate is that low and the doubled
+    // tempo still has strong correlation support, prefer the doubled value.
+    // Empirically validated against real mislabeled tracks: a track tagged
+    // 130 BPM but detected at 66.67 had a doubled-tempo score ~74% of the
+    // peak; a track detected at 62 (no tag, but implausible for its dance
+    // genre neighbors) had ~65% — both comfortably clear this threshold,
+    // while unrelated tempos score far lower.
+    if best_bpm < 90.0 {
+        let doubled_bpm = (best_bpm * 2.0).round() as u32;
+        if (MIN_BPM..=MAX_BPM).contains(&doubled_bpm) {
+            let doubled_score = scores[(doubled_bpm - MIN_BPM) as usize];
+            if doubled_score >= best_score * 0.5 {
+                best_bpm = doubled_bpm as f64;
+            }
+        }
+    }
+
+    Some(best_bpm)
 }
 
 /// Spawn FFmpeg to transcode `file_path` → MP3 stream.
@@ -480,5 +505,88 @@ mod tests {
         } else {
             "ffmpeg"
         }));
+    }
+
+    /// Builds a synthetic click track: short broadband bursts spaced at `bpm`,
+    /// alternating between `strong_amp` and `weak_amp` so every other beat can
+    /// be emphasized (mimicking a four-on-the-floor alternating kick pattern).
+    fn synth_beat_track(
+        sample_rate: usize,
+        bpm: f64,
+        duration_s: f64,
+        strong_amp: f64,
+        weak_amp: f64,
+    ) -> Vec<f64> {
+        let n = (sample_rate as f64 * duration_s) as usize;
+        let mut samples = vec![0.0f64; n];
+        let period = 60.0 / bpm;
+        let burst_len = (sample_rate as f64 * 0.03) as usize;
+        let mut beat_index = 0usize;
+        let mut t = 0.0;
+        while t < duration_s {
+            let start = (t * sample_rate as f64) as usize;
+            let amp = if beat_index.is_multiple_of(2) {
+                strong_amp
+            } else {
+                weak_amp
+            };
+            for i in 0..burst_len {
+                if start + i < n {
+                    samples[start + i] = amp * if i % 2 == 0 { 1.0 } else { -1.0 };
+                }
+            }
+            beat_index += 1;
+            t += period;
+        }
+        samples
+    }
+
+    #[test]
+    fn estimate_bpm_does_not_halve_uniform_beats() {
+        // With every beat equally emphasized there is no sub-harmonic bias,
+        // so a fast dance tempo must not be detected as its (implausible)
+        // half-tempo — the octave correction should never need to fire here.
+        let samples = synth_beat_track(11_025, 128.0, 20.0, 1.0, 1.0);
+        let bpm = estimate_bpm_from_samples(&samples, 11_025, 1024).expect("should detect");
+        assert!(
+            bpm > 90.0,
+            "uniform fast beats should not be halved, got {bpm}"
+        );
+    }
+
+    #[test]
+    fn estimate_bpm_corrects_half_tempo_octave_error() {
+        // Regression: a real 130 BPM track was locally detected at 66.67 BPM
+        // (empirically confirmed ~74% correlation support at the doubled
+        // tempo) because alternating kick emphasis makes the raw correlation
+        // favor the half-tempo sub-harmonic. Compare the same true tempo with
+        // alternating vs. uniform beat strength: without correction the
+        // alternating case would lock onto roughly half of the uniform
+        // baseline; with correction the two should land close together.
+        let alternating = synth_beat_track(11_025, 130.0, 24.0, 1.0, 0.5);
+        let uniform = synth_beat_track(11_025, 130.0, 24.0, 1.0, 1.0);
+        let alt_bpm = estimate_bpm_from_samples(&alternating, 11_025, 1024).expect("should detect");
+        let uni_bpm = estimate_bpm_from_samples(&uniform, 11_025, 1024).expect("should detect");
+        assert!(
+            alt_bpm > 90.0,
+            "correction should have fired, got {alt_bpm}"
+        );
+        assert!(
+            (alt_bpm - uni_bpm).abs() <= 8.0,
+            "alternating beats should correct close to the uniform baseline: alt={alt_bpm} uni={uni_bpm}"
+        );
+    }
+
+    #[test]
+    fn estimate_bpm_leaves_genuine_slow_uniform_tempo_uncorrected() {
+        // A genuinely slow, uniformly-emphasized tempo must stay below the
+        // 90 BPM octave-correction threshold: there is no real correlation
+        // support at the doubled lag since beats aren't alternating.
+        let samples = synth_beat_track(11_025, 75.0, 20.0, 1.0, 1.0);
+        let bpm = estimate_bpm_from_samples(&samples, 11_025, 1024).expect("should detect");
+        assert!(
+            bpm < 90.0,
+            "genuine slow tempo should stay uncorrected, got {bpm}"
+        );
     }
 }

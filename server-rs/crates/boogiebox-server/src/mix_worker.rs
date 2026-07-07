@@ -728,10 +728,15 @@ fn build_analysis(
         .unwrap_or(0.0)
         .max(1.0);
 
+    // Prefer the file's own tag BPM over the app's local flux-autocorrelation
+    // detector: the local detector is a lightweight heuristic prone to octave
+    // errors (e.g. locking onto half the true tempo for four-on-the-floor
+    // dance tracks) and clusters toward a generic value on ambiguous rhythms,
+    // while tag BPM is typically curated/verified at encode time.
     let bpm = track
-        .bpm_detected
+        .bpm
         .filter(|&b| (60.0..=220.0).contains(&b))
-        .or_else(|| track.bpm.filter(|&b| (60.0..=220.0).contains(&b)));
+        .or_else(|| track.bpm_detected.filter(|&b| (60.0..=220.0).contains(&b)));
 
     // For long dance tracks (5-9 min), 12s intro and 18s outro caps are far too
     // conservative — the track has already gone quiet before the crossfade starts.
@@ -1660,6 +1665,37 @@ fn score_deep_pair(
     (total, components, phrase_aligned, from_start, to_start)
 }
 
+/// Widens an outro candidate window earlier into the track body when it is
+/// narrower than `target`, so `long_build` can reach its configured blend
+/// length instead of being capped by whatever "safe" outro span deep analysis
+/// happened to detect. Only widens the *start* (the end stays anchored near
+/// the track's end); the hold-then-fade render envelope keeps the outgoing
+/// track at full volume through most of the window regardless of width, so
+/// reaching earlier into the track is low-risk.
+fn widen_outro_window_for_long_build(mut w: TransitionWindow, target: f64) -> TransitionWindow {
+    if (w.end - w.start) < target {
+        w.start = (w.end - target).max(0.0);
+        w.recommended_max_crossfade = w.recommended_max_crossfade.max(target);
+    }
+    w
+}
+
+/// Widens an intro candidate window later into the track when narrower than
+/// `target`, mirroring `widen_outro_window_for_long_build`. The incoming
+/// track's fade-in spans the whole window, so a wider window simply gives it
+/// more time to gradually become prominent, per the same reasoning.
+fn widen_intro_window_for_long_build(
+    mut w: TransitionWindow,
+    target: f64,
+    track_duration: f64,
+) -> TransitionWindow {
+    if (w.end - w.start) < target {
+        w.end = (w.start + target).min(track_duration.max(w.end));
+        w.recommended_max_crossfade = w.recommended_max_crossfade.max(target);
+    }
+    w
+}
+
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn select_transition_deep(
@@ -1750,10 +1786,8 @@ fn select_transition_deep_with_debug(
         })
         .unwrap_or_default();
 
-    let synth_outro;
-    let synth_intro;
-    let outro_iter: Vec<&TransitionWindow> = if outro_windows.is_empty() {
-        synth_outro = TransitionWindow {
+    let outro_iter: Vec<TransitionWindow> = if outro_windows.is_empty() {
+        vec![TransitionWindow {
             role: "outro".into(),
             start: from_a.outro_start_sec,
             end: from_a.duration_sec,
@@ -1768,13 +1802,12 @@ fn select_transition_deep_with_debug(
             drums_rms: None,
             bass_rms: None,
             other_rms: None,
-        };
-        vec![&synth_outro]
+        }]
     } else {
-        outro_windows
+        outro_windows.into_iter().cloned().collect()
     };
-    let intro_iter: Vec<&TransitionWindow> = if intro_windows.is_empty() {
-        synth_intro = TransitionWindow {
+    let intro_iter: Vec<TransitionWindow> = if intro_windows.is_empty() {
+        vec![TransitionWindow {
             role: "intro".into(),
             start: 0.0,
             end: to_a.intro_end_sec.max(8.0),
@@ -1789,10 +1822,30 @@ fn select_transition_deep_with_debug(
             drums_rms: None,
             bass_rms: None,
             other_rms: None,
-        };
-        vec![&synth_intro]
+        }]
     } else {
-        intro_windows
+        intro_windows.into_iter().cloned().collect()
+    };
+
+    // long_build deliberately wants extended overlaps. The hold-then-fade
+    // render envelope keeps the outgoing track at full volume through most of
+    // the window regardless of its width, so it's safe to widen windows that
+    // deep analysis found too narrow toward the user's configured blend
+    // length instead of silently capping the crossfade to whatever "safe"
+    // span happened to be detected.
+    let (outro_iter, intro_iter) = if style == "long_build" && default_crossfade >= 4.0 {
+        (
+            outro_iter
+                .into_iter()
+                .map(|w| widen_outro_window_for_long_build(w, default_crossfade))
+                .collect(),
+            intro_iter
+                .into_iter()
+                .map(|w| widen_intro_window_for_long_build(w, default_crossfade, to_a.duration_sec))
+                .collect(),
+        )
+    } else {
+        (outro_iter, intro_iter)
     };
 
     let mut best: Option<DeepPair> = None;
@@ -2607,6 +2660,24 @@ fn derive_ordered_ids(transitions: &[MixTransition], tracks: &[MixTrackInput]) -
 
 // ── FFmpeg renderer ───────────────────────────────────────────────────────────
 
+/// Maximum pitch-preserving tempo adjustment (as a fraction, e.g. 0.10 = 10%)
+/// applied to beat-match an incoming track's BPM to the outgoing track's
+/// effective BPM during a crossfade. Tweak this to allow more/less aggressive
+/// beat-matching before the mix falls back to an unmatched blend.
+const MAX_BPM_MATCH_ADJUST: f64 = 0.10;
+
+/// Fraction of a crossfade window during which the outgoing track holds at its
+/// regular volume before it starts fading out (e.g. 0.7 = the outgoing track
+/// stays full for the first 70% of the window, then fades over the remaining
+/// 30%). The incoming track fades in gradually across the *entire* window.
+/// This mirrors how a DJ actually blends two tracks: the new track is slowly
+/// layered in underneath the still-playing track, and only once the new track
+/// has become prominent does the old one get pulled out. A single symmetric
+/// crossfade (both tracks fading for the whole window) reads as the outgoing
+/// track visibly fading from the first instant, which sounds abrupt even when
+/// the combined loudness is kept constant. Tweak this to hold longer/shorter.
+const OUTGOING_HOLD_FRACTION: f64 = 0.7;
+
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 struct RenderTiming {
@@ -2619,14 +2690,24 @@ struct RenderTiming {
     bpm_adjust_pct: f64,
 }
 
-fn fade_curves_for_style(style: &str) -> (&'static str, &'static str) {
-    // All styles use equal-power curves (qsin = quarter-sine) so the combined
-    // loudness stays constant across the crossfade. Linear (tri) or convex (ipar)
-    // curves cause a ~3 dB power dip at the midpoint for uncorrelated audio.
-    match style {
-        "long_build" => ("cub", "ihsin"),
-        _ => ("qsin", "qsin"),
+/// Chains per-track pitch-preserving tempo factors so each track's *effective*
+/// BPM (its own BPM times its accumulated factor) is beat-matched toward the
+/// previous track's effective BPM, clamped to ±`MAX_BPM_MATCH_ADJUST` per hop
+/// so large BPM gaps fall back to an unmatched blend instead of an extreme
+/// tempo stretch.
+fn compute_bpm_factors(bpms: &[Option<f64>]) -> Vec<f64> {
+    let n = bpms.len();
+    let mut bpm_factors = vec![1.0f64; n];
+    for i in 1..n {
+        if let (Some(prev_bpm), Some(curr_bpm)) = (bpms[i - 1], bpms[i]) {
+            if prev_bpm > 0.0 && curr_bpm > 0.0 {
+                let prev_eff = prev_bpm * bpm_factors[i - 1];
+                bpm_factors[i] = (prev_eff / curr_bpm)
+                    .clamp(1.0 - MAX_BPM_MATCH_ADJUST, 1.0 + MAX_BPM_MATCH_ADJUST);
+            }
+        }
     }
+    bpm_factors
 }
 
 fn compute_render_timings(
@@ -2679,12 +2760,41 @@ fn compute_render_timings(
     out
 }
 
+/// Crossfade duration actually usable for transition `i` (between track `i`
+/// and `i+1`), clamped to both tracks' available (post-tempo) duration.
+fn resolve_cross_durs(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> Vec<f64> {
+    (0..n.saturating_sub(1))
+        .map(|i| {
+            let max_a = timings.get(i).map(|t| t.effective_dur).unwrap_or(59.0);
+            let max_b = timings.get(i + 1).map(|t| t.effective_dur).unwrap_or(59.0);
+            plan.transitions
+                .get(i)
+                .map(|t| t.crossfade_sec)
+                .unwrap_or(8.0)
+                .clamp(2.0, 120.0)
+                .min(max_a)
+                .min(max_b)
+        })
+        .collect()
+}
+
+/// Output-timeline start offset for each track, given how much each crossfade
+/// overlaps it with the previous track.
+fn resolve_output_starts(timings: &[RenderTiming], cross_durs: &[f64], n: usize) -> Vec<f64> {
+    let mut output_start = vec![0.0f64; n];
+    for i in 1..n {
+        output_start[i] = output_start[i - 1] + timings[i - 1].effective_dur - cross_durs[i - 1];
+    }
+    output_start
+}
+
 fn build_filter_complex(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> String {
     let safe_mode = plan.style == "safe_mix";
-    let (fc_in_default, fc_out_default) = fade_curves_for_style(&plan.style);
     let transitions = &plan.transitions;
+    let cross_durs = resolve_cross_durs(plan, timings, n);
+    let output_starts = resolve_output_starts(timings, &cross_durs, n);
 
-    // capacity: N per-track parts + (N-1) acrossfade parts + 1 limiter
+    // capacity: N per-track parts + (N-1) adelay parts + 1 mix/limiter
     let mut parts: Vec<String> = Vec::with_capacity(n * 2);
 
     // ── Per-track pre-processing ──────────────────────────────────────────────
@@ -2692,6 +2802,8 @@ fn build_filter_complex(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> S
         let outgoing = transitions.get(i);
         let is_first = i == 0;
         let is_last = i == n - 1;
+        let crossfade_dur_in = if i > 0 { cross_durs[i - 1] } else { 0.0 };
+        let crossfade_dur_out = if !is_last { cross_durs[i] } else { 0.0 };
 
         // Pitch-preserving tempo adjustment. aresample/asetrate also shifts pitch;
         // atempo stretches time only, keeping the original pitch.
@@ -2706,25 +2818,42 @@ fn build_filter_complex(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> S
             String::new()
         };
 
-        // Gentle open/close fades only on the very first and very last track.
-        // Middle-track crossfades are handled by acrossfade below.
+        // Incoming: the new track fades in gradually across the *entire*
+        // crossfade window while the outgoing track is still at full/regular
+        // volume (see OUTGOING_HOLD_FRACTION below), so it is "layered in"
+        // underneath rather than racing to full volume alongside a fade-out.
         let fade_in = if is_first {
             ",afade=t=in:st=0:d=2:curve=tri".to_string()
-        } else {
-            String::new()
-        };
-        let fade_out = if is_last {
-            let d = 4.0_f64.min(t.effective_dur);
-            let st = (t.effective_dur - d).max(0.0);
-            format!(",afade=t=out:st={st:.3}:d={d:.3}:curve=tri")
+        } else if crossfade_dur_in > 0.0 {
+            format!(",afade=t=in:st=0:d={crossfade_dur_in:.3}:curve=qsin")
         } else {
             String::new()
         };
 
-        // Effects are timed to the outgoing crossfade window in the track's own
-        // local time (starting from 0 after atrim + asetpts).
-        let crossfade_dur = outgoing.map(|o| o.crossfade_sec).unwrap_or(0.0);
-        let fade_start = (t.effective_dur - crossfade_dur).max(0.0);
+        // Outgoing: hold at full/regular volume for OUTGOING_HOLD_FRACTION of
+        // the crossfade window, then fade out over only the remaining tail, so
+        // the previous track doesn't visibly start fading until the incoming
+        // track has become prominent.
+        let fade_tail_dur = if !is_last && crossfade_dur_out > 0.0 {
+            (crossfade_dur_out * (1.0 - OUTGOING_HOLD_FRACTION)).max(0.5)
+        } else {
+            0.0
+        };
+        let hold_end = (t.effective_dur - fade_tail_dur).max(0.0);
+        let fade_out = if is_last {
+            let d = 4.0_f64.min(t.effective_dur);
+            let st = (t.effective_dur - d).max(0.0);
+            format!(",afade=t=out:st={st:.3}:d={d:.3}:curve=tri")
+        } else if fade_tail_dur > 0.0 {
+            format!(",afade=t=out:st={hold_end:.3}:d={fade_tail_dur:.3}:curve=qsin")
+        } else {
+            String::new()
+        };
+
+        // Bass duck / filter sweep are timed to the actual fade-out tail (not
+        // the whole hold-then-fade window) so they only kick in once the
+        // handover itself begins, in the track's own local time.
+        let fade_start = hold_end;
         let fade_end = t.effective_dur;
 
         let bass_duck_db = outgoing.map(|o| o.bass_duck).unwrap_or(0.0);
@@ -2760,19 +2889,17 @@ fn build_filter_complex(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> S
         // Two-phase drum entry (Phase 1d): when the incoming track has strong drums,
         // briefly reduce its high-frequency content in the first 40% of the crossfade
         // window to let the outgoing track's outro breathe before the full blend.
-        let incoming_transition = if i > 0 { transitions.get(i - 1) } else { None };
         let drum_intro = if !is_first && !safe_mode {
-            if let Some(inc_trans) = incoming_transition {
-                let drums_rms = inc_trans.drums_rms_incoming;
-                if drums_rms > 0.25 {
-                    let phase_a_end = (inc_trans.crossfade_sec * 0.40).min(8.0);
-                    format!(
-                        ",highpass=f=300:enable='lt(t,{phase_a_end:.3})',\
-                         volume=0.75:enable='lt(t,{phase_a_end:.3})'"
-                    )
-                } else {
-                    String::new()
-                }
+            let drums_rms = transitions
+                .get(i - 1)
+                .map(|t| t.drums_rms_incoming)
+                .unwrap_or(0.0);
+            if drums_rms > 0.25 && crossfade_dur_in > 0.0 {
+                let phase_a_end = (crossfade_dur_in * 0.40).min(8.0);
+                format!(
+                    ",highpass=f=300:enable='lt(t,{phase_a_end:.3})',\
+                     volume=0.75:enable='lt(t,{phase_a_end:.3})'"
+                )
             } else {
                 String::new()
             }
@@ -2787,32 +2914,25 @@ fn build_filter_complex(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> S
         ));
     }
 
-    // ── Chain acrossfade transitions ──────────────────────────────────────────
-    // acrossfade properly crossfades both tracks simultaneously over the full
-    // crossfade window, unlike amix+adelay which can leave both at full volume.
+    // ── Combine by output-timeline position instead of acrossfade ─────────────
+    // ffmpeg's acrossfade forces a single symmetric curve pair spanning the
+    // whole window on both streams, which can't express a hold-then-fade
+    // handover. Each track above already carries its own gain envelope (full
+    // volume, gradual fade-in, or hold-then-fade-out), so tracks only need to
+    // be delayed into their output-timeline position and summed.
     if n == 1 {
         parts.push("[t0]alimiter=limit=0.95,aresample=44100:resampler=soxr[mixout]".to_string());
     } else {
-        let mut cur = "t0".to_string();
-        for (i, trans) in transitions.iter().enumerate().take(n - 1) {
-            // Must not exceed either track's effective duration (acrossfade limit).
-            let max_a = timings.get(i).map(|t| t.effective_dur).unwrap_or(59.0);
-            let max_b = timings.get(i + 1).map(|t| t.effective_dur).unwrap_or(59.0);
-            let cross_dur = trans.crossfade_sec.clamp(2.0, 120.0).min(max_a).min(max_b);
-            let next = format!("t{}", i + 1);
-            let out = if i == n - 2 {
-                "mixout_raw".to_string()
-            } else {
-                format!("m{i}")
-            };
-            parts.push(format!(
-                "[{cur}][{next}]acrossfade=d={cross_dur:.3}:c1={fc_out_default}:c2={fc_in_default}[{out}]"
-            ));
-            cur = out;
+        let mut mix_inputs = String::from("[t0]");
+        for (i, &output_start) in output_starts.iter().enumerate().skip(1) {
+            let delay_ms = (output_start * 1000.0).round().max(0.0) as i64;
+            parts.push(format!("[t{i}]adelay={delay_ms}:all=1[d{i}]"));
+            mix_inputs.push_str(&format!("[d{i}]"));
         }
-        parts.push(
-            "[mixout_raw]alimiter=limit=0.95,aresample=44100:resampler=soxr[mixout]".to_string(),
-        );
+        parts.push(format!(
+            "{mix_inputs}amix=inputs={n}:duration=longest:normalize=0,\
+             alimiter=limit=0.95,aresample=44100:resampler=soxr[mixout]"
+        ));
     }
 
     parts.join(";")
@@ -2852,15 +2972,7 @@ async fn render_mix(
 
     tracing::debug!(resolved_bpms = ?bpms, "per-track BPM resolution");
 
-    let mut bpm_factors = vec![1.0f64; n];
-    for i in 1..n {
-        if let (Some(prev_bpm), Some(curr_bpm)) = (bpms[i - 1], bpms[i]) {
-            if prev_bpm > 0.0 && curr_bpm > 0.0 {
-                let prev_eff = prev_bpm * bpm_factors[i - 1];
-                bpm_factors[i] = (prev_eff / curr_bpm).clamp(0.85, 1.15);
-            }
-        }
-    }
+    let bpm_factors = compute_bpm_factors(&bpms);
 
     let timings = compute_render_timings(analyses, transitions, &bpm_factors);
 
@@ -3027,6 +3139,31 @@ mod tests {
             high_energy_end_sec: Some(200.0),
             confidence: 0.85,
         }
+    }
+
+    #[test]
+    fn build_analysis_prefers_tag_bpm_over_local_detection() {
+        // Regression: the local flux-autocorrelation BPM detector is prone to
+        // octave errors (half/double the true tempo) and clusters toward a
+        // generic value on ambiguous rhythms, while tag BPM is normally
+        // curated. A real-world example: Overflow tagged 130 BPM was locally
+        // detected at 66.67 (a clean octave error) — using the tag avoids
+        // beat-matching against a wrong target, which is what actually causes
+        // audible drum desync during a long crossfade.
+        let mut track = input_track("a");
+        track.bpm = Some(130.0);
+        track.bpm_detected = Some(66.67);
+        let a = build_analysis(&track, None, None, None, None);
+        assert_eq!(a.bpm_estimate, Some(130.0));
+    }
+
+    #[test]
+    fn build_analysis_falls_back_to_detected_bpm_without_a_tag() {
+        let mut track = input_track("a");
+        track.bpm = None;
+        track.bpm_detected = Some(118.0);
+        let a = build_analysis(&track, None, None, None, None);
+        assert_eq!(a.bpm_estimate, Some(118.0));
     }
 
     fn input_track(id: &str) -> MixTrackInput {
@@ -3511,14 +3648,6 @@ mod tests {
     }
 
     #[test]
-    fn fade_curves_differ_per_style() {
-        assert_eq!(fade_curves_for_style("safe_mix"), ("qsin", "qsin"));
-        assert_eq!(fade_curves_for_style("club_blend"), ("qsin", "qsin"));
-        assert_eq!(fade_curves_for_style("chill_blend"), ("qsin", "qsin"));
-        assert_eq!(fade_curves_for_style("long_build"), ("cub", "ihsin"));
-    }
-
-    #[test]
     fn build_filter_complex_emits_bass_duck_when_requested() {
         let analyses = [analysis("a", 120.0), analysis("b", 120.0)];
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
@@ -3543,23 +3672,27 @@ mod tests {
         assert!(!filter.contains("aecho"));
         assert!(!filter.contains("highpass=f=200"));
         assert!(!filter.contains("lowpass=f=8000"));
-        // acrossfade uses c1/c2 for curves; safe_mix uses qsin
-        assert!(filter.contains("c1=qsin"));
+        // safe_mix strips extra effects but still needs the base hold-then-fade
+        // crossfade: 12s crossfade -> 30% tail = 3.6s fade, holding until 196.4s.
+        assert!(filter.contains("afade=t=out:st=196.400:d=3.600:curve=qsin"));
+        assert!(filter.contains("afade=t=in:st=0:d=12.000:curve=qsin"));
     }
 
     #[test]
-    fn club_blend_uses_linear_curve_and_emits_sweep_when_requested() {
+    fn club_blend_holds_outgoing_full_volume_then_fades_and_emits_sweep_when_requested() {
         let analyses = [analysis("a", 124.0), analysis("b", 124.0)];
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
         let transition = render_transition("a", "b", 16.0, 0.0, true, 0.0);
         let plan = render_plan("club_blend", transition);
         let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0]);
         let filter = build_filter_complex(&plan, &timings, 2);
-        // club_blend uses equal-power qsin for acrossfade
-        assert!(filter.contains("c1=qsin"));
-        // Sweep filter active when filter_sweep=true and not safe-mode.
-        assert!(filter.contains("highpass=f=200"));
-        assert!(filter.contains("lowpass=f=8000"));
+        // 16s crossfade -> 30% tail = 4.8s fade, holding full volume until 195.2s.
+        assert!(filter.contains("afade=t=out:st=195.200:d=4.800:curve=qsin"));
+        assert!(filter.contains("afade=t=in:st=0:d=16.000:curve=qsin"));
+        // Sweep/bass-duck-style effects are now scoped to the fade tail, not the
+        // whole hold window.
+        assert!(filter.contains("highpass=f=200:enable='between(t,195.200,200.000)'"));
+        assert!(filter.contains("lowpass=f=8000:enable='between(t,195.200,200.000)'"));
     }
 
     #[test]
@@ -3570,8 +3703,118 @@ mod tests {
         let plan = render_plan("chill_blend", transition);
         let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0]);
         let filter = build_filter_complex(&plan, &timings, 2);
-        // Crossfade is 18s → acrossfade must use exactly 18s with equal-power qsin curves
-        assert!(filter.contains("acrossfade=d=18.000:c1=qsin:c2=qsin"));
+        // Incoming fades in across the full 18s window; outgoing holds full volume
+        // until the last 30% (5.4s) of that window before fading out.
+        assert!(filter.contains("afade=t=in:st=0:d=18.000:curve=qsin"));
+        assert!(filter.contains("afade=t=out:st=194.600:d=5.400:curve=qsin"));
+        // Tracks are combined via delayed amix, not the old symmetric acrossfade.
+        assert!(!filter.contains("acrossfade"));
+        assert!(filter.contains("amix=inputs=2:duration=longest:normalize=0"));
+    }
+
+    #[test]
+    fn long_build_45s_holds_outgoing_for_70_percent_before_fading() {
+        // Regression: long_build previously produced a real ~6 dB loudness dip
+        // (measured via ffmpeg acrossfade + ebur128) from a mismatched cub/ihsin
+        // curve pair, and a plain symmetric crossfade still read as "one track
+        // fades while the other starts" even after that fix. The renderer now
+        // holds the outgoing track at full volume for OUTGOING_HOLD_FRACTION of
+        // the window and only fades it over the remaining tail, while the
+        // incoming track fades in gradually across the whole window.
+        let analyses = [analysis("a", 120.0), analysis("b", 120.0)];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transition = render_transition("a", "b", 45.0, 0.0, false, 0.0);
+        let plan = render_plan("long_build", transition);
+        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0]);
+        let filter = build_filter_complex(&plan, &timings, 2);
+        // 45s crossfade -> 30% tail = 13.5s fade, holding full volume until 186.5s.
+        assert!(filter.contains("afade=t=out:st=186.500:d=13.500:curve=qsin"));
+        assert!(filter.contains("afade=t=in:st=0:d=45.000:curve=qsin"));
+        assert!(!filter.contains("acrossfade"));
+        assert!(!filter.contains("c1=cub"));
+        assert!(!filter.contains("c2=ihsin"));
+    }
+
+    #[test]
+    fn resolve_output_starts_delays_each_track_by_prior_overlap() {
+        let analyses = [
+            analysis("a", 120.0),
+            analysis("b", 120.0),
+            analysis("c", 120.0),
+        ];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let t1 = render_transition("a", "b", 20.0, 0.0, false, 0.0);
+        let t2 = render_transition("b", "c", 20.0, 0.0, false, 0.0);
+        let plan = MixPlan {
+            playlist_id: EntityId::Str("p1".into()),
+            default_crossfade_sec: 20.0,
+            target_energy_ramp: vec![0.4, 0.5, 0.6],
+            transitions: vec![t1, t2],
+            style: "long_build".into(),
+            ordered_track_ids: vec![
+                EntityId::Str("a".into()),
+                EntityId::Str("b".into()),
+                EntityId::Str("c".into()),
+            ],
+            energy_curve_phases: vec!["groove".into(), "lift".into(), "peak".into()],
+            per_track_energy: HashMap::new(),
+            anthem_track_id: None,
+        };
+        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0, 1.0]);
+        let cross_durs = resolve_cross_durs(&plan, &timings, 3);
+        let output_starts = resolve_output_starts(&timings, &cross_durs, 3);
+        assert_eq!(output_starts[0], 0.0);
+        // track0 effective_dur=200, minus its 20s crossfade with track1.
+        assert!((output_starts[1] - 180.0).abs() < 1e-6);
+        // track2 starts after track1's own (trimmed) run, minus their crossfade.
+        assert!(output_starts[2] > output_starts[1]);
+    }
+
+    #[test]
+    fn bpm_factors_clamp_large_gaps_to_max_bpm_match_adjust() {
+        // A large BPM gap (100 -> 140, +40%) must clamp to the tunable
+        // MAX_BPM_MATCH_ADJUST fraction rather than fully beat-matching, so
+        // pitch-preserving tempo stretch never exceeds the configured limit.
+        let factors = compute_bpm_factors(&[Some(100.0), Some(140.0)]);
+        assert!((factors[1] - (1.0 - MAX_BPM_MATCH_ADJUST)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bpm_factors_fully_match_small_gaps_within_limit() {
+        // A small BPM gap (120 -> 123, +2.5%) is within the limit, so track 2
+        // should be stretched to exactly track 1's BPM (factor = 120/123).
+        let factors = compute_bpm_factors(&[Some(120.0), Some(123.0)]);
+        assert!((factors[1] - (120.0 / 123.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bpm_factors_chain_effective_bpm_across_three_tracks() {
+        // Each hop (100->105, +4.8%; 105-eff->110, +9.1%) is within the ±10%
+        // limit, so track 2 beat-matches to track 1's *effective* BPM and
+        // track 3 beat-matches to track 2's *effective* (already-adjusted)
+        // BPM, keeping every adjacent pair beat-matched through the chain.
+        let factors = compute_bpm_factors(&[Some(100.0), Some(105.0), Some(110.0)]);
+        assert_eq!(factors[0], 1.0);
+        let eff1 = 100.0 * factors[0];
+        let eff2 = 105.0 * factors[1];
+        let eff3 = 110.0 * factors[2];
+        assert!((eff1 - eff2).abs() < 1e-6);
+        assert!((eff2 - eff3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bpm_factors_clamp_when_chain_gap_exceeds_limit() {
+        // Track 3 is 16% above track 1, but each single hop can only move
+        // ±MAX_BPM_MATCH_ADJUST, so the second hop clamps instead of fully
+        // chasing track 2's effective BPM, and the tracks stay unmatched.
+        let factors = compute_bpm_factors(&[Some(100.0), Some(108.0), Some(116.0)]);
+        assert!((factors[2] - (1.0 - MAX_BPM_MATCH_ADJUST)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bpm_factors_default_to_unity_when_bpm_missing() {
+        let factors = compute_bpm_factors(&[Some(120.0), None, Some(120.0)]);
+        assert_eq!(factors, vec![1.0, 1.0, 1.0]);
     }
 
     #[test]
@@ -3792,6 +4035,70 @@ mod tests {
         assert!(
             section_score >= 0.9,
             "long_build breakdown→drop should score ≥0.9 (got {section_score}); total={build_score}"
+        );
+    }
+
+    #[test]
+    fn long_build_widens_narrow_deep_windows_toward_target_crossfade() {
+        // Regression: deep-analysis "safe" outro/intro windows are often much
+        // narrower (e.g. 16-30s from `deep_for`) than a long_build user's
+        // configured blend length (e.g. 45s), and used to silently cap the
+        // crossfade there. Since the hold-then-fade render envelope keeps the
+        // outgoing track clean through most of the window regardless of its
+        // width, long_build should widen narrow windows toward the user's
+        // target instead of capping to whatever "safe" span deep analysis
+        // happened to detect.
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let from_deep = deep_for("a", 0.2, 0.5, 0.3);
+        let to_deep = deep_for("b", 0.2, 0.5, 0.3);
+        let preset = style_preset("long_build");
+
+        let transition = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "lift",
+            "long_build",
+            &preset,
+            45.0,
+        );
+        assert!(
+            transition.crossfade_sec >= 40.0,
+            "expected crossfade close to the 45s target, got {}",
+            transition.crossfade_sec
+        );
+    }
+
+    #[test]
+    fn other_styles_do_not_widen_narrow_deep_windows() {
+        // club_blend deliberately keeps tighter, vocal/drum-risk-aware windows;
+        // only long_build should widen toward the user's configured target.
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let from_deep = deep_for("a", 0.2, 0.5, 0.3);
+        let to_deep = deep_for("b", 0.2, 0.5, 0.3);
+        let preset = style_preset("club_blend");
+
+        let transition = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "lift",
+            "club_blend",
+            &preset,
+            45.0,
+        );
+        assert!(
+            transition.crossfade_sec < 30.0,
+            "club_blend should stay bounded by the narrow analyzed window, got {}",
+            transition.crossfade_sec
         );
     }
 

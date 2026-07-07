@@ -291,7 +291,7 @@ begin
     'AI-powered audio stem separation for enhanced mix transitions',
     'Selecting this option will perform the following after file installation:' + #13#10 +
     '' + #13#10 +
-    '  - Install Python 3.12 if not already present (via winget or python.org)' + #13#10 +
+    '  - Install a compatible Python version if not already present (via winget or python.org)' + #13#10 +
     '  - Detect NVIDIA/CUDA and install GPU PyTorch when available' + #13#10 +
     '  - Fall back to CPU PyTorch if CUDA is unavailable or cannot be verified' + #13#10 +
     '  - Download and install Demucs plus the default stem-separation model' + #13#10 +
@@ -359,54 +359,10 @@ begin
     '$logPath = ''' + LogPath + '''' + #13#10 +
     'New-Item -ItemType Directory -Force -Path (Split-Path $logPath) | Out-Null' + #13#10 +
     'function Write-Log { param([string]$m); $l = "[$(Get-Date -Format ''yyyy-MM-dd HH:mm:ss'')] $m"; Write-Host $l; Add-Content -Path $logPath -Value $l }' + #13#10 +
-    'function Find-Python {' + #13#10 +
-    '  try { $v = (& py -3 --version 2>&1).ToString(); if ($v -match ''Python 3\.(\d+)'' -and [int]$Matches[1] -ge 10) { $p = (& py -3 -c ''import sys;print(sys.executable)'').Trim(); if ($p -and (Test-Path $p)) { return $p } } } catch {}' + #13#10 +
-    '  try { $v = (& python --version 2>&1).ToString(); if ($v -match ''Python 3\.(\d+)'' -and [int]$Matches[1] -ge 10) { $p = (& python -c ''import sys;print(sys.executable)'').Trim(); if ($p -and (Test-Path $p)) { return $p } } } catch {}' + #13#10 +
-    '  foreach ($hive in @(''HKLM:\SOFTWARE\Python\PythonCore'', ''HKCU:\SOFTWARE\Python\PythonCore'', ''HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore'')) {' + #13#10 +
-    '    $keys = Get-ChildItem $hive -ErrorAction SilentlyContinue | Where-Object { try { [version]$_.PSChildName -ge [version]''3.10'' } catch { $false } } | Sort-Object PSChildName -Descending' + #13#10 +
-    '    foreach ($k in $keys) { $ep = (Get-ItemProperty -Path "$($k.PSPath)\InstallPath" -ErrorAction SilentlyContinue).ExecutablePath; if ($ep -and (Test-Path $ep)) { return $ep } }' + #13#10 +
-    '  }' + #13#10 +
-    '  foreach ($p in @("$env:LOCALAPPDATA\Programs\Python\Python313\python.exe", "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe", "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe", "$env:ProgramFiles\Python313\python.exe", "$env:ProgramFiles\Python312\python.exe", "$env:ProgramFiles\Python311\python.exe", "$env:ProgramFiles\Python310\python.exe")) { if (Test-Path $p) { return $p } }' + #13#10 +
-    '  return $null' + #13#10 +
-    '}' + #13#10 +
     'Write-Log ''BoogieMix setup started.''' + #13#10 +
-    '$py = Find-Python' + #13#10 +
-    'Write-Log "Initial Python check: $py"' + #13#10 +
-    'if (-not $py) {' + #13#10 +
-    '  $wg = $null' + #13#10 +
-    '  try { $wg = (Get-Command winget -ErrorAction Stop).Source } catch {}' + #13#10 +
-    '  if (-not $wg) {' + #13#10 +
-    '    $ai = Get-Item ''C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*\winget.exe'' -ErrorAction SilentlyContinue | Select-Object -Last 1' + #13#10 +
-    '    if ($ai) { $wg = $ai.FullName }' + #13#10 +
-    '  }' + #13#10 +
-    '  if ($wg) {' + #13#10 +
-    '    Write-Log "Installing Python 3.12 via winget: $wg"' + #13#10 +
-    '    & $wg install --id Python.Python.3.12 --source winget --silent --accept-package-agreements --accept-source-agreements' + #13#10 +
-    '    Write-Log "winget exit: $LASTEXITCODE"' + #13#10 +
-    '  } else {' + #13#10 +
-    '    Write-Log ''winget not available. Downloading Python 3.12.10 from python.org...''' + #13#10 +
-    '    $tmp = "$env:TEMP\python-3.12.10-amd64.exe"' + #13#10 +
-    '    try {' + #13#10 +
-    '      Invoke-WebRequest -Uri ''https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe'' -OutFile $tmp -UseBasicParsing' + #13#10 +
-    '      Write-Log ''Downloaded. Running Python 3.12.10 silent install...''' + #13#10 +
-    '      Start-Process -FilePath $tmp -ArgumentList ''/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1'' -Wait' + #13#10 +
-    '      Remove-Item $tmp -Force -ErrorAction SilentlyContinue' + #13#10 +
-    '    } catch { Write-Log "ERROR downloading/installing Python: $_" }' + #13#10 +
-    '  }' + #13#10 +
-    '  $env:Path = [System.Environment]::GetEnvironmentVariable(''Path'', ''Machine'') + '';'' + [System.Environment]::GetEnvironmentVariable(''Path'', ''User'')' + #13#10 +
-    '  $py = Find-Python' + #13#10 +
-    '  Write-Log "Python after install attempt: $py"' + #13#10 +
-    '}' + #13#10 +
-    'if (-not $py) {' + #13#10 +
-    '  Write-Log ''FAILED: Python 3.10+ could not be found or installed. Install from https://www.python.org/ then run bootstrap_env.ps1 manually.''' + #13#10 +
-    '  Write-Log "Log saved to: $logPath"' + #13#10 +
-    '  Read-Host ''Press Enter to close''' + #13#10 +
-    '  exit 1' + #13#10 +
-    '}' + #13#10 +
-    'Write-Log "Using Python: $py"' + #13#10 +
-    'Write-Log ''Running bootstrap_env.ps1 (auto CUDA/CPU PyTorch + Demucs model download - this may take 10-30 minutes)...''' + #13#10 +
+    'Write-Log ''Running bootstrap_env.ps1 (resolves/installs a Python version matching the bundled madmom wheel, auto CUDA/CPU PyTorch, Demucs model download - this may take 10-30 minutes)...''' + #13#10 +
     'try {' + #13#10 +
-    '  & ''' + PythonDir + '\bootstrap_env.ps1'' -PythonExe $py -Auto -PrimeDemucsModel *>&1 | Tee-Object -Append -FilePath $logPath' + #13#10 +
+    '  & ''' + PythonDir + '\bootstrap_env.ps1'' -Auto -PrimeDemucsModel -Force *>&1 | Tee-Object -Append -FilePath $logPath' + #13#10 +
     '} catch {' + #13#10 +
     '  Write-Log "Bootstrap threw an exception: $_"' + #13#10 +
     '}' + #13#10 +

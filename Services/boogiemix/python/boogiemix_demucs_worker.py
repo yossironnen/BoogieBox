@@ -58,6 +58,23 @@ _MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.
 _NOTE_NAMES    = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
 try:
+    # madmom 0.16.1 predates two numpy/Python compatibility removals it still
+    # relies on: `from collections import MutableSequence` (moved to
+    # collections.abc in Python 3.10) and the deprecated `np.float`/`np.int`/
+    # `np.bool` aliases (removed in numpy>=1.24, used across madmom's beat,
+    # tempo, and downbeat feature modules). Shim both back before importing
+    # so madmom works unmodified against this project's pinned toolchain.
+    import collections
+    import collections.abc
+    if not hasattr(collections, 'MutableSequence'):
+        collections.MutableSequence = collections.abc.MutableSequence
+    import numpy as _np_compat
+    if not hasattr(_np_compat, 'float'):
+        _np_compat.float = float
+    if not hasattr(_np_compat, 'int'):
+        _np_compat.int = int
+    if not hasattr(_np_compat, 'bool'):
+        _np_compat.bool = bool
     import madmom  # noqa: F401
     MADMOM_AVAILABLE = True
 except ImportError:

@@ -510,7 +510,9 @@ pub fn enqueue_mix_job(
         return Err(JobError::EmptyFolders); // reuse for "needs at least 2 tracks"
     }
     let job_id = new_id();
-    let crossfade = crossfade_sec.clamp(2, 20);
+    // Must match the route-handler and renderer clamps (4-60s) so UI options up
+    // to the 45s "long build" blend aren't silently truncated before storage.
+    let crossfade = crossfade_sec.clamp(4, 60);
     let style = if ["chill_blend", "club_blend", "long_build", "safe_mix"].contains(&mix_style) {
         mix_style
     } else {
@@ -2324,5 +2326,78 @@ mod tests {
         let track_id = EntityId::Str("does-not-exist".to_string());
         let result = get_track_sonic_fingerprint(&conn, &track_id).unwrap();
         assert!(result.is_none());
+    }
+
+    fn setup_mix_jobs_db() -> Connection {
+        let conn = setup_deep_db();
+        conn.execute_batch(
+            r#"
+            ALTER TABLE playlists ADD COLUMN user_id TEXT;
+            UPDATE playlists SET user_id = 'user-1';
+            INSERT INTO playlist_tracks(id, playlist_id, track_id, position)
+            VALUES('pt2', 'playlist-1', 't2', 1);
+            CREATE TABLE mix_jobs(
+              id TEXT PRIMARY KEY,
+              playlist_id TEXT,
+              user_id TEXT,
+              status TEXT,
+              progress_percent INTEGER,
+              current_step TEXT,
+              default_crossfade_sec INTEGER,
+              mix_style TEXT,
+              mix_quality TEXT,
+              cancel_requested INTEGER
+            );
+            "#,
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn enqueue_mix_job_persists_long_build_45s_crossfade_unclamped() {
+        // Regression: enqueue_mix_job used to clamp crossfade_sec to a max of 20,
+        // silently truncating the UI's 45s "long build" blend option before it
+        // ever reached the renderer (which already supports up to 60s).
+        let conn = setup_mix_jobs_db();
+        let job_id = enqueue_mix_job(
+            &conn,
+            &EntityId::Str("playlist-1".into()),
+            &EntityId::Str("user-1".into()),
+            45,
+            "long_build",
+            "high_quality",
+        )
+        .unwrap();
+        let stored: i64 = conn
+            .query_row(
+                "SELECT default_crossfade_sec FROM mix_jobs WHERE id=?1",
+                params![job_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 45);
+    }
+
+    #[test]
+    fn enqueue_mix_job_clamps_crossfade_to_four_to_sixty_range() {
+        let conn = setup_mix_jobs_db();
+        let job_id = enqueue_mix_job(
+            &conn,
+            &EntityId::Str("playlist-1".into()),
+            &EntityId::Str("user-1".into()),
+            9999,
+            "club_blend",
+            "standard",
+        )
+        .unwrap();
+        let stored: i64 = conn
+            .query_row(
+                "SELECT default_crossfade_sec FROM mix_jobs WHERE id=?1",
+                params![job_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 60);
     }
 }
