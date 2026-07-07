@@ -7,6 +7,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
+use tokio_util::sync::CancellationToken;
 
 const BPM_BATCH_SIZE: i64 = 50;
 
@@ -27,13 +28,15 @@ pub struct BpmBatchResult {
 }
 
 /// Documents the Start Bpm Analysis Scheduler public API surface.
-pub fn start_bpm_analysis_scheduler(db: DbPool) {
+pub fn start_bpm_analysis_scheduler(db: DbPool, cancel: CancellationToken) {
     tokio::spawn(async move {
         run_bpm_analysis_if_due(&db).await;
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
-            interval.tick().await;
-            run_bpm_analysis_if_due(&db).await;
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = interval.tick() => run_bpm_analysis_if_due(&db).await,
+            }
         }
     });
 }

@@ -7,6 +7,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
+use tokio_util::sync::CancellationToken;
 
 static WAVEFORM_MAP_RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -39,13 +40,15 @@ pub struct WaveformMapRunResult {
 }
 
 /// Documents the Start Waveform Map Scheduler public API surface.
-pub fn start_waveform_map_scheduler(db: DbPool) {
+pub fn start_waveform_map_scheduler(db: DbPool, cancel: CancellationToken) {
     tokio::spawn(async move {
         run_waveform_map_if_due(&db).await;
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
-            interval.tick().await;
-            run_waveform_map_if_due(&db).await;
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = interval.tick() => run_waveform_map_if_due(&db).await,
+            }
         }
     });
 }

@@ -350,6 +350,7 @@ mod test_helpers {
             http_client: reqwest::Client::default(),
             db_folder: Some(folder.to_path_buf()),
             dlna_manager: crate::dlna::new_dlna_manager(),
+            worker_cancel: tokio_util::sync::CancellationToken::new(),
         };
         let shared = Arc::new(RwLock::new(state));
         auth_router(shared)

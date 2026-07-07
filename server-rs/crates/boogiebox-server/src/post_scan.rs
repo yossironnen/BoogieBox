@@ -29,6 +29,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio_util::sync::CancellationToken;
 
 const ARTIST_THUMB_SIZES: &[u32] = &[300, 800];
 const ALBUM_THUMB_SIZES: &[u32] = &[300, 800];
@@ -56,6 +57,8 @@ pub struct PostScanState {
     pub http_client: Client,
     /// Documents the DB Folder public API surface.
     pub db_folder: Option<PathBuf>,
+    /// Cancelled when the active database is switched, so stale workers stop touching the old pool.
+    pub cancel: CancellationToken,
 }
 
 // -- Scheduler -----------------------------------------------------------------
@@ -66,8 +69,10 @@ pub fn start_post_scan_scheduler(state: PostScanState) {
         run_one_pending_music_post_scan(&state).await;
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
-            interval.tick().await;
-            run_one_pending_music_post_scan(&state).await;
+            tokio::select! {
+                _ = state.cancel.cancelled() => break,
+                _ = interval.tick() => run_one_pending_music_post_scan(&state).await,
+            }
         }
     });
 }

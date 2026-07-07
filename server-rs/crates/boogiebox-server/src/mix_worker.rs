@@ -92,9 +92,13 @@ pub fn start_mix_worker(state: PostScanState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(1200));
         loop {
-            interval.tick().await;
-            if let Err(e) = try_process_next(&state).await {
-                tracing::error!("[mix_worker] tick error: {e}");
+            tokio::select! {
+                _ = state.cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    if let Err(e) = try_process_next(&state).await {
+                        tracing::error!("[mix_worker] tick error: {e}");
+                    }
+                }
             }
         }
     });

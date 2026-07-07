@@ -101,8 +101,10 @@ pub fn start_deep_analysis_worker(state: PostScanState) {
         let mut last_runtime: Option<(Instant, RuntimeStatus)> = None;
         let mut interval = tokio::time::interval(Duration::from_millis(1200));
         loop {
-            interval.tick().await;
-            run_tick(&state, active.clone(), &mut last_runtime).await;
+            tokio::select! {
+                _ = state.cancel.cancelled() => break,
+                _ = interval.tick() => run_tick(&state, active.clone(), &mut last_runtime).await,
+            }
         }
     });
 }

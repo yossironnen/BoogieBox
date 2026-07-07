@@ -253,6 +253,7 @@ async fn enqueue_scan_handler(
             db: db.clone(),
             http_client: s.http_client.clone(),
             db_folder: s.db_folder.clone(),
+            cancel: s.worker_cancel.clone(),
         })
     };
     with_db(state, move |conn| {
@@ -466,6 +467,7 @@ async fn enqueue_post_scan_handler(
             db: db.clone(),
             http_client: s.http_client.clone(),
             db_folder: s.db_folder.clone(),
+            cancel: s.worker_cancel.clone(),
         })
     };
     let job_type = payload.job_type.unwrap_or_default();

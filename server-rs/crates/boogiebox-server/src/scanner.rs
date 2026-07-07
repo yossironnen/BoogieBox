@@ -64,8 +64,10 @@ pub fn start_scan_scheduler(state: crate::post_scan::PostScanState) {
         run_scheduler_tick(&state).await;
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
-            interval.tick().await;
-            run_scheduler_tick(&state).await;
+            tokio::select! {
+                _ = state.cancel.cancelled() => break,
+                _ = interval.tick() => run_scheduler_tick(&state).await,
+            }
         }
     });
 }

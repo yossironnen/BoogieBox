@@ -115,6 +115,9 @@ pub struct AppState {
     pub db_folder: Option<PathBuf>,
     /// DLNA manager used to start, stop, and report the optional music server.
     pub dlna_manager: dlna::DlnaManager,
+    /// Cancelled and replaced whenever the active database is switched, so background
+    /// workers bound to the previous pool stop instead of continuing to run against it.
+    pub worker_cancel: tokio_util::sync::CancellationToken,
 }
 
 impl Default for AppState {
@@ -157,6 +160,7 @@ impl Default for AppState {
             http_client,
             db_folder,
             dlna_manager: dlna::new_dlna_manager(),
+            worker_cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 }
@@ -272,15 +276,17 @@ pub async fn run_from_env() -> Result<(), ServerError> {
             }
         }
         let dlna_db = db.clone();
+        let cancel = state.worker_cancel.clone();
         let ps_state = post_scan::PostScanState {
             db,
             http_client: state.http_client.clone(),
             db_folder: state.db_folder.clone(),
+            cancel: cancel.clone(),
         };
         scanner::start_scan_scheduler(ps_state.clone());
         post_scan::start_post_scan_scheduler(ps_state.clone());
-        waveform_map::start_waveform_map_scheduler(ps_state.db.clone());
-        bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone());
+        waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
+        bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
         deep_analysis::start_deep_analysis_worker(ps_state.clone());
         mix_worker::start_mix_worker(ps_state);
         let dlna_mgr = state.dlna_manager.clone();
@@ -686,15 +692,19 @@ async fn setup_handler(
                 s.setup_required = false;
                 s.db = Some(db_pool);
                 s.db_folder = Some(PathBuf::from(db_folder));
+                s.worker_cancel.cancel();
+                let cancel = tokio_util::sync::CancellationToken::new();
+                s.worker_cancel = cancel.clone();
                 let ps_state = post_scan::PostScanState {
                     db: s.db.as_ref().expect("db set").clone(),
                     http_client: s.http_client.clone(),
                     db_folder: s.db_folder.clone(),
+                    cancel: cancel.clone(),
                 };
                 scanner::start_scan_scheduler(ps_state.clone());
                 post_scan::start_post_scan_scheduler(ps_state.clone());
-                waveform_map::start_waveform_map_scheduler(ps_state.db.clone());
-                bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone());
+                waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
+                bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
@@ -776,15 +786,19 @@ async fn switch_db_handler(
                 let mut s = state.write().unwrap_or_else(|p| p.into_inner());
                 s.db = Some(db_pool);
                 s.db_folder = Some(PathBuf::from(db_folder));
+                s.worker_cancel.cancel();
+                let cancel = tokio_util::sync::CancellationToken::new();
+                s.worker_cancel = cancel.clone();
                 let ps_state = post_scan::PostScanState {
                     db: s.db.as_ref().expect("db set").clone(),
                     http_client: s.http_client.clone(),
                     db_folder: s.db_folder.clone(),
+                    cancel: cancel.clone(),
                 };
                 scanner::start_scan_scheduler(ps_state.clone());
                 post_scan::start_post_scan_scheduler(ps_state.clone());
-                waveform_map::start_waveform_map_scheduler(ps_state.db.clone());
-                bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone());
+                waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
+                bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
