@@ -5,12 +5,14 @@ setlocal EnableDelayedExpansion
 set RUN_SMOKE=0
 set SKIP_INSTALLER=0
 set SKIP_TESTS=0
+set SKIP_MODEL_CACHE=0
 
 :ParseArgs
 if "%~1"=="" goto ArgsDone
 if /i "%~1"=="--smoke" set RUN_SMOKE=1
 if /i "%~1"=="--no-installer" set SKIP_INSTALLER=1
 if /i "%~1"=="--no-test" set SKIP_TESTS=1
+if /i "%~1"=="--no-model-cache" set SKIP_MODEL_CACHE=1
 shift
 goto ParseArgs
 :ArgsDone
@@ -150,6 +152,12 @@ if exist "Services\boogiemix\python" (
   IF ERRORLEVEL 1 (echo [ERROR] Failed to copy BoogieMix Python assets & exit /b 1)
 )
 if exist "%DIST_DIR%\resources\Services\boogiemix\python\.venv" rmdir /s /q "%DIST_DIR%\resources\Services\boogiemix\python\.venv"
+if "%SKIP_MODEL_CACHE%"=="1" (
+  if exist "%DIST_DIR%\resources\Services\boogiemix\python\model-cache" (
+    echo  Excluding Demucs model cache from release ^(--no-model-cache^) - BoogieMix setup will download models on first use instead.
+    rmdir /s /q "%DIST_DIR%\resources\Services\boogiemix\python\model-cache"
+  )
+)
 
 if exist "Services\boogiemix\ai" (
   mkdir "%DIST_DIR%\resources\Services\boogiemix" >nul 2>nul
@@ -227,6 +235,13 @@ echo  [8/8] Writing release metadata files...
   echo WinSW is MIT licensed. See https://github.com/winsw/winsw for terms.
 ) > "%DIST_DIR%\THIRD_PARTY_NOTICES.md"
 
+set "SETUP_NAME_SUFFIX="
+set "ISCC_MODEL_CACHE_DEFINE="
+if "%SKIP_MODEL_CACHE%"=="1" (
+  set "SETUP_NAME_SUFFIX=-nomodels"
+  set "ISCC_MODEL_CACHE_DEFINE=/DNoModelCache=1"
+)
+
 if "%SKIP_INSTALLER%"=="1" (
   echo.
   echo  Skipping Windows installer ^(--no-installer^).
@@ -235,11 +250,11 @@ if "%SKIP_INSTALLER%"=="1" (
   echo  Building Windows installer...
   call :ResolveIscc
   IF DEFINED ISCC_EXE (
-    "!ISCC_EXE!" /DAppVersion=%APP_VERSION% "/DReleaseDir=%CD%\%DIST_DIR%" installer\boogiebox-server.iss
+    "!ISCC_EXE!" /DAppVersion=%APP_VERSION% "/DReleaseDir=%CD%\%DIST_DIR%" %ISCC_MODEL_CACHE_DEFINE% installer\boogiebox-server.iss
     IF ERRORLEVEL 1 (
       echo [WARN] Installer build failed - release folder %DIST_DIR%\ is still usable directly.
     ) ELSE (
-      echo  Installer: Releases\boogiebox-%APP_VERSION%-win-setup.exe
+      echo  Installer: Releases\boogiebox-%APP_VERSION%-win%SETUP_NAME_SUFFIX%-setup.exe
     )
   ) ELSE (
     echo  [INFO] Inno Setup ^(iscc^) not found - skipping installer.

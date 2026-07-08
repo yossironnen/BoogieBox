@@ -5,12 +5,14 @@ set -euo pipefail
 RUN_SMOKE=0
 SKIP_INSTALLER=0
 SKIP_TESTS=0
+SKIP_MODEL_CACHE=0
 
 for arg in "$@"; do
   case "$arg" in
-    --smoke)        RUN_SMOKE=1 ;;
-    --no-installer) SKIP_INSTALLER=1 ;;
-    --no-test)      SKIP_TESTS=1 ;;
+    --smoke)           RUN_SMOKE=1 ;;
+    --no-installer)    SKIP_INSTALLER=1 ;;
+    --no-test)         SKIP_TESTS=1 ;;
+    --no-model-cache)  SKIP_MODEL_CACHE=1 ;;
   esac
 done
 
@@ -202,6 +204,10 @@ if [ -d "Services/boogiemix/python" ]; then
   mkdir -p "${DIST_DIR}/resources/Services/boogiemix"
   cp -r Services/boogiemix/python "${DIST_DIR}/resources/Services/boogiemix/python"
   rm -rf "${DIST_DIR}/resources/Services/boogiemix/python/.venv"
+  if [ "$SKIP_MODEL_CACHE" -eq 1 ] && [ -d "${DIST_DIR}/resources/Services/boogiemix/python/model-cache" ]; then
+    echo "  Excluding Demucs model cache from release (--no-model-cache) - BoogieMix setup will download models on first use instead."
+    rm -rf "${DIST_DIR}/resources/Services/boogiemix/python/model-cache"
+  fi
   if [ -f "${DIST_DIR}/resources/Services/boogiemix/python/bootstrap_env.sh" ]; then
     chmod +x "${DIST_DIR}/resources/Services/boogiemix/python/bootstrap_env.sh"
   fi
@@ -297,7 +303,11 @@ if [ "$SKIP_INSTALLER" -eq 1 ]; then
 else
   echo ""
   echo " Creating release tarball..."
-  TARBALL="Releases/boogiebox-${APP_VERSION}-linux-rs.tar.gz"
+  TARBALL_SUFFIX=""
+  if [ "$SKIP_MODEL_CACHE" -eq 1 ]; then
+    TARBALL_SUFFIX="-nomodels"
+  fi
+  TARBALL="Releases/boogiebox-${APP_VERSION}-linux${TARBALL_SUFFIX}-rs.tar.gz"
   tar -czf "$TARBALL" -C Releases "$RELEASE_NAME"
   echo " Tarball: $TARBALL"
 fi

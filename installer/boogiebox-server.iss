@@ -2,6 +2,10 @@
 ; Built automatically by build-server-rust.bat (calls iscc with /DReleaseDir=<abs-path>).
 ; Manual build from repo root:
 ;   iscc "/DAppVersion=x.x.x" "/DReleaseDir=D:\path\to\Releases\boogiebox-x.x.x-win-rs" installer\boogiebox-server.iss
+; Pass /DNoModelCache=1 when the release folder was built with --no-model-cache
+; (build-server-rust.bat) so the Demucs model weights are excluded and the
+; installer's own filename reflects that (BoogieMix setup then downloads the
+; models itself on first use instead of using a pre-cached copy).
 
 #ifndef AppVersion
   #define AppVersion "0.7.117"
@@ -18,7 +22,11 @@ DefaultDirName={autopf}\BoogieBox
 DefaultGroupName=BoogieBox
 AllowNoIcons=yes
 OutputDir=..\Releases
+#ifdef NoModelCache
+OutputBaseFilename=boogiebox-{#AppVersion}-win-nomodels-setup
+#else
 OutputBaseFilename=boogiebox-{#AppVersion}-win-setup
+#endif
 SetupIconFile=..\desktop\src-tauri\icons\icon.ico
 Compression=lzma2
 SolidCompression=yes
@@ -294,7 +302,7 @@ begin
     '  - Install a compatible Python version if not already present (via winget or python.org)' + #13#10 +
     '  - Detect NVIDIA/CUDA and install GPU PyTorch when available' + #13#10 +
     '  - Fall back to CPU PyTorch if CUDA is unavailable or cannot be verified' + #13#10 +
-    '  - Download and install Demucs plus the default stem-separation model' + #13#10 +
+    '  - Download and install Demucs plus its stem-separation models' + #13#10 +
     '  - Create a managed Python environment inside the BoogieBox install folder' + #13#10 +
     '' + #13#10 +
     'Requirements:' + #13#10 +
@@ -358,7 +366,7 @@ begin
     '$host.UI.RawUI.WindowTitle = ''BoogieBox - Installing BoogieMix (may take 10-30 minutes)''' + #13#10 +
     '$logPath = ''' + LogPath + '''' + #13#10 +
     'New-Item -ItemType Directory -Force -Path (Split-Path $logPath) | Out-Null' + #13#10 +
-    'function Write-Log { param([string]$m); $l = "[$(Get-Date -Format ''yyyy-MM-dd HH:mm:ss'')] $m"; Write-Host $l; Add-Content -Path $logPath -Value $l }' + #13#10 +
+    'function Write-Log { param([string]$m); $l = "[$(Get-Date -Format ''yyyy-MM-dd HH:mm:ss'')] $m"; Write-Host $l; Add-Content -Path $logPath -Value $l -Encoding Unicode }' + #13#10 +
     'Write-Log ''BoogieMix setup started.''' + #13#10 +
     'Write-Log ''Running bootstrap_env.ps1 (resolves/installs a Python version matching the bundled madmom wheel, auto CUDA/CPU PyTorch, Demucs model download - this may take 10-30 minutes)...''' + #13#10 +
     'try {' + #13#10 +

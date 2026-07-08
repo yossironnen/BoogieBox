@@ -164,7 +164,13 @@ $torchHome       = Join-Path $root "model-cache\torch"
 $constraintsPath = Join-Path $root "constraints.txt"
 $cudaIndexUrl    = "https://download.pytorch.org/whl/cu128"
 $cpuIndexUrl     = "https://download.pytorch.org/whl/cpu"
-$defaultDemucsModel = "htdemucs"
+# Both GPU-tier models the 3-tier selector can actually choose at runtime
+# (server-rs deep_analysis.rs: MODEL_LIGHT="htdemucs", MODEL_HEAVY="mdx_extra_q",
+# the default heavy tier when GPU is available). The third tier, "hpss", needs
+# no downloaded weights (pure numpy/librosa/scipy heuristics), so it's not
+# primed here. Priming both up front means the app never has to opportunistically
+# download+cache a model mid-analysis on first use of a given tier.
+$demucsModelsToPrime = @("htdemucs", "mdx_extra_q")
 
 if ($CpuOnly -and $Cuda) {
   throw "Use only one of -CpuOnly or -Cuda."
@@ -181,8 +187,19 @@ function Invoke-NativeChecked {
     [string[]]$Arguments = @()
   )
 
-  & $Command @Arguments
+  $previousEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $Command @Arguments 2>&1 | ForEach-Object { $_.ToString() }
+  } finally {
+    $ErrorActionPreference = $previousEap
+  }
+  if ($output) { $output | Write-Host }
   if ($LASTEXITCODE -ne 0) {
+    $detail = ($output -join "`n").Trim()
+    if ($detail) {
+      throw "$Command failed with exit code $LASTEXITCODE`n$detail"
+    }
     throw "$Command failed with exit code $LASTEXITCODE"
   }
 }
@@ -316,11 +333,13 @@ if (-not $diffqOk) {
 Invoke-NativeChecked $py @("-c", "import torch, demucs")
 
 if ($PrimeDemucsModel) {
-  Write-Host "Priming Demucs model cache for $defaultDemucsModel..."
-  try {
-    Invoke-NativeChecked $py @("-c", "from demucs.pretrained import get_model; get_model('$defaultDemucsModel'); print('Demucs model ready: $defaultDemucsModel')")
-  } catch {
-    Write-Warning "Model priming failed (model will be downloaded on first analysis run): $($_.Exception.Message)"
+  foreach ($model in $demucsModelsToPrime) {
+    Write-Host "Priming Demucs model cache for $model..."
+    try {
+      Invoke-NativeChecked $py @("-c", "from demucs.pretrained import get_model; get_model('$model'); print('Demucs model ready: $model')")
+    } catch {
+      Write-Warning "Model priming failed for $model (will be downloaded on first analysis run instead): $($_.Exception.Message)"
+    }
   }
 }
 
