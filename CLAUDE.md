@@ -78,7 +78,6 @@ routes/ — Axum route modules per domain (auth, settings, library, music, playl
 `Player.tsx` — `<audio>` playback, queue, crossfade/preload logic  
 `components/BrowseView.tsx` — music browse  
 `components/HomeView.tsx` — home dashboard  
-`components/SearchView.tsx` — music search  
 `components/PlaylistsView.tsx` — playlists + BoogieMix controls  
 `components/SettingsPage.tsx` — settings/admin surfaces  
 `components/ContextMenu.tsx` — shared context menu  

@@ -69,7 +69,7 @@ providers.rs — Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh
 artwork_cache.rs — SHA-1 cache-key shards, UUID v7 markers, folder.jpg discovery  
 image_thumb.rs — JPEG thumbnail generation (pure Rust `image` crate)  
 deep_analysis.rs — Python/Demucs/Torch capability detection and job orchestration  
-routes/ — Axum route modules per domain (auth, settings, library, music, playlist, playback, crossfade, artwork, provider, scan, schedule, boogiemix, dlna)
+routes/ — Axum route modules per domain (admin, auth, settings, library, music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna)
 
 
 ### Client (`client/src`)
@@ -79,7 +79,6 @@ routes/ — Axum route modules per domain (auth, settings, library, music, playl
 `Player.tsx` — `<audio>` playback, queue, crossfade/preload logic  
 `components/BrowseView.tsx` — music browse  
 `components/HomeView.tsx` — home dashboard  
-`components/SearchView.tsx` — music search  
 `components/PlaylistsView.tsx` — playlists + BoogieMix controls  
 `components/SettingsPage.tsx` — settings/admin surfaces  
 `components/ContextMenu.tsx` — shared context menu  

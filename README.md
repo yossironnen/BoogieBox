@@ -177,7 +177,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 
 ## 🎼 Supported Formats
 
-**Music:** MP3, FLAC, M4A/MP4 Audio, OGG, OPUS, WAV, AAC, WMA, AIFF, APE
+**Music:** MP3, FLAC, M4A/MP4 Audio, OGG, OPUS, WAV, AAC, WMA, AIFF
 
 ---
 

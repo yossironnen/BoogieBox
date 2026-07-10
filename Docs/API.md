@@ -35,7 +35,7 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `PUT` | `/api/libraries/{id}` | Update library settings. |
 | `DELETE` | `/api/libraries/{id}` | Remove a library. |
 | `POST` | `/api/libraries/{id}/scan` | Start a scan for one library. |
-| `GET` | `/api/scan-jobs` | List scan jobs and status. |
+| `GET` | `/api/scan-jobs/active` | List active scan jobs and status. |
 
 ## Music Browse And Search
 
@@ -72,25 +72,28 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `PUT` | `/api/playlists/{id}` | Update playlist metadata. |
 | `DELETE` | `/api/playlists/{id}` | Delete a playlist. |
 | `POST` | `/api/playlists/{id}/tracks` | Add tracks to a playlist. |
-| `PUT` | `/api/playlists/{id}/tracks/reorder` | Reorder playlist tracks. |
+| `PUT` | `/api/playlists/{id}/tracks/order` | Reorder playlist tracks. |
 
 ## Ratings And Metadata
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `PUT` | `/api/artists/{id}/rating` | Set an artist rating. |
-| `PUT` | `/api/albums/{id}/rating` | Set an album rating. |
-| `PUT` | `/api/tracks/{id}/rating` | Set a track rating. |
-| `POST` | `/api/metadata/search` | Search metadata providers. |
-| `POST` | `/api/metadata/apply` | Apply selected metadata. |
+| `PATCH` | `/api/artists/{id}/rating` | Set an artist rating. |
+| `PATCH` | `/api/albums/{id}/rating` | Set an album rating. |
+| `PATCH` | `/api/tracks/{id}/rating` | Set a track rating. |
+| `GET` | `/api/integrations/metadata-search` | Search metadata providers. |
+| `PUT` | `/api/albums/{id}/metadata` | Apply metadata to an album. |
+| `PUT` | `/api/artists/{id}/metadata` | Apply metadata to an artist. |
 
 ## Artwork
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/artwork/album/{id}` | Serve album artwork. |
-| `GET` | `/api/artwork/artist/{id}` | Serve artist artwork. |
-| `POST` | `/api/artwork/cache` | Queue or refresh artwork cache work. |
+| `GET` | `/api/albums/{id}/cover` | Serve cached album cover thumbnail. |
+| `GET` | `/api/albums/{id}/art` | Serve full-size album artwork. |
+| `POST` | `/api/albums/{id}/artwork` | Upload or assign album artwork. |
+| `GET` | `/api/artists/{id}/photo` | Serve artist photo. |
+| `POST` | `/api/artists/{id}/artwork` | Upload or assign artist artwork. |
 
 ## Analysis Jobs
 
@@ -125,8 +128,8 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | --- | --- | --- |
 | `GET` | `/api/settings` | Read global settings. |
 | `PUT` | `/api/settings` | Update global settings. |
-| `GET` | `/api/user-settings` | Read current user settings. |
-| `PUT` | `/api/user-settings` | Update current user settings. |
+| `GET` | `/api/user/settings` | Read current user settings. |
+| `PUT` | `/api/user/settings` | Update current user settings. |
 | `GET` | `/api/admin/users` | List all users (admin only). |
 | `POST` | `/api/admin/users` | Create a user (admin only). |
 | `PUT` | `/api/admin/users/{id}/permissions` | Update user scan/edit permissions (admin only). |
@@ -135,7 +138,7 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `GET` | `/api/admin/queues` | Fetch scan, post-scan, mix, and analysis queue snapshots. |
 | `POST` | `/api/admin/browse-folder` | Browse the server filesystem for folder selection. |
 | `GET` | `/api/admin/fs/browse` | List directory contents on the server filesystem. |
-| `GET` | `/api/provider-usage` | Fetch provider usage statistics. |
+| `GET` | `/api/admin/provider-usage` | Fetch provider usage statistics. |
 | `GET` | `/api/lastfm/info` | Fetch Last.fm artist information. |
 | `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist. |
 
