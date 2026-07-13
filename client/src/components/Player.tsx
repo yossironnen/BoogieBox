@@ -1348,128 +1348,26 @@ function WaveVisualizer({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function StereoVU({
-  audioEl, isPlaying, mode, onToggleMode,
+  analyser, isPlaying, mode, onToggleMode,
 }: {
-  audioEl: HTMLAudioElement | null;
+  analyser: AnalyserNode | null;
   isPlaying: boolean;
   mode: VizMode;
   onToggleMode: () => void;
 }) {
-  const [analyserL, setAnalyserL] = useState<AnalyserNode | null>(null);
-  const [analyserR, setAnalyserR] = useState<AnalyserNode | null>(null);
-  const ctxRef      = useRef<AudioContext | null>(null);
-  const sourceRef   = useRef<MediaElementAudioSourceNode | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const unlockBoundRef = useRef(false);
+  // The analyser is created and owned by Player (tapped off the same
+  // MediaElementAudioSourceNode the parametric EQ chain uses for the active
+  // slot) and swapped in here as it changes. A <audio> element may only ever
+  // be associated with ONE MediaElementAudioSourceNode for its lifetime, so
+  // this component must not create its own — doing so throws on the second
+  // caller and previously left the meter stuck on its synthetic fallback
+  // animation whenever the EQ chain's setup won that race.
+  const analyserL = analyser;
+  const analyserR = analyser;
 
-  // Connects the Web Audio graph once AudioContext + audioEl are ready.
-  // Does NOT create the AudioContext — that is deferred to ensureCtxRunning
-  // so it always happens inside a user gesture handler on iOS Safari.
-  const setupAudioGraph = useCallback(() => {
-    const audioCtx = ctxRef.current;
-    if (!audioEl || !audioCtx) return false;
-
-    if (!sourceRef.current) {
-      try {
-        sourceRef.current = audioCtx.createMediaElementSource(audioEl);
-      } catch (err) {
-        console.error('[VU] createMediaElementSource failed:', err);
-        return false;
-      }
-    }
-
-    if (analyserRef.current) {
-      return true;
-    }
-
-    try {
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.4;
-
-      sourceRef.current.connect(analyser);
-      analyser.connect(audioCtx.destination);
-
-      analyserRef.current = analyser;
-      setAnalyserL(analyser);
-      setAnalyserR(analyser);
-      return true;
-    } catch (err) {
-      console.error('[VU] analyser setup failed:', err);
-      return false;
-    }
-  }, [audioEl]);
-
-  // Must be called synchronously within a user gesture handler on iOS Safari.
-  // Creates the AudioContext lazily here (not on mount) so iOS treats the
-  // context as gesture-initiated, allowing resume() to succeed.
-  const ensureCtxRunning = useCallback(() => {
-    if (!ctxRef.current && audioEl) {
-      try {
-        ctxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      } catch (err) {
-        console.error('[VU] AudioContext creation failed:', err);
-        return;
-      }
-    }
-    const ctx = ctxRef.current;
-    if (!ctx) return;
-    if (shouldResumeAudioContext(ctx.state)) {
-      ctx.resume().catch(err => console.error('[VU] resume failed:', err));
-    }
-    setupAudioGraph();
-  }, [audioEl, setupAudioGraph]);
-
-  useEffect(() => {
-    if (isPlaying) ensureCtxRunning();
-  }, [isPlaying, ensureCtxRunning]);
-
-  // iOS Safari requires the <audio> element to be in an active/playing state
-  // before createMediaElementSource() succeeds. The 'playing' event is the
-  // earliest reliable point where the element is guaranteed to be activated.
-  // We keep the setupAudioGraph() call in ensureCtxRunning too so desktop
-  // browsers (where no activation is required) still work without waiting.
-  useEffect(() => {
-    if (!audioEl) return;
-    const onPlaying = () => {
-      if (ctxRef.current) setupAudioGraph();
-    };
-    audioEl.addEventListener('playing', onPlaying);
-    // Handle the case where audio is already playing when this effect runs
-    // (e.g. audioEl was set after playback started).
-    if (!audioEl.paused && ctxRef.current) setupAudioGraph();
-    return () => audioEl.removeEventListener('playing', onPlaying);
-  }, [audioEl, setupAudioGraph]);
-
-  // iOS Safari: AudioContext must be created and resumed from a direct user
-  // gesture. window listeners fire synchronously during the native DOM event,
-  // before React's synthetic event system processes it — keeping us inside the
-  // gesture call stack that iOS requires for Web Audio API to work.
-  useEffect(() => {
-    if (unlockBoundRef.current) return;
-    const onUserGesture = () => ensureCtxRunning();
-    const opts: AddEventListenerOptions = { passive: true };
-    window.addEventListener('touchstart', onUserGesture, opts);
-    window.addEventListener('pointerdown', onUserGesture, opts);
-    window.addEventListener('click', onUserGesture, opts);
-    unlockBoundRef.current = true;
-    return () => {
-      window.removeEventListener('touchstart', onUserGesture);
-      window.removeEventListener('pointerdown', onUserGesture);
-      window.removeEventListener('click', onUserGesture);
-      unlockBoundRef.current = false;
-    };
-  }, [ensureCtxRunning]);
-
-  useEffect(() => {
-    return () => {
-      try {
-        sourceRef.current?.disconnect();
-        analyserRef.current?.disconnect();
-      } catch {}
-      analyserRef.current = null;
-    };
-  }, []);
+  // TEMP DIAGNOSTIC — remove once the iPad/Safari VU meter fix is confirmed.
+  // Enable with ?vudebug=1 in the URL; no effect otherwise on any platform.
+  const vuDebugOn = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('vudebug') === '1';
 
   // Merged mono analyser for the wave visualizer
   const mergedAnalyserRef = useRef<AnalyserNode | null>(null);
@@ -1564,6 +1462,16 @@ function StereoVU({
           <MeterCanvas analyser={analyserL} channel="left"  label="L" isPlaying={isPlaying} mode={mode} width={mW} height={mH} />
           <MeterCanvas analyser={analyserR} channel="right" label="R" isPlaying={isPlaying} mode={mode} width={mW} height={mH} />
         </>
+      )}
+      {vuDebugOn && (
+        <div style={{
+          position: 'fixed', left: 4, bottom: 4, zIndex: 9999,
+          background: 'rgba(0,0,0,0.85)', color: '#0f0', fontSize: 11,
+          fontFamily: 'monospace', padding: '4px 6px', borderRadius: 4,
+          maxWidth: '90vw', wordBreak: 'break-all', pointerEvents: 'none',
+        }}>
+          VU: analyser={analyser ? 'set' : 'null'} | ctx={analyser?.context.state ?? 'none'}
+        </div>
       )}
     </div>
   );
@@ -1740,7 +1648,26 @@ export default function Player({
   const eqCtxBRef = useRef<AudioContext | null>(null);
   const eqSourceARef = useRef<MediaElementAudioSourceNode | null>(null);
   const eqSourceBRef = useRef<MediaElementAudioSourceNode | null>(null);
+  // VU meter analysers tap the same MediaElementAudioSourceNode the EQ chain
+  // creates for each slot. A media element can only ever be associated with
+  // ONE MediaElementAudioSourceNode for its lifetime, so the VU meter must
+  // NOT create its own — doing so throws (and previously left the VU meter
+  // permanently stuck on its synthetic fallback animation).
+  const eqAnalyserARef = useRef<AnalyserNode | null>(null);
+  const eqAnalyserBRef = useRef<AnalyserNode | null>(null);
+  const [analyserForVu, setAnalyserForVu] = useState<AnalyserNode | null>(null);
   const autoEqLoadedRef = useRef(false);
+
+  // Keeps the VU meter's analyser in lockstep with whichever audio element is
+  // currently active (mirrors setAudioElForVu). Returns null if the EQ chain
+  // (and therefore the analyser tap) hasn't been created for that element yet
+  // — it will follow once the first user-gesture EQ setup runs.
+  const selectVuElement = useCallback((el: HTMLAudioElement | null) => {
+    setAudioElForVu(el);
+    if (el && el === audioRef.current) setAnalyserForVu(eqAnalyserARef.current);
+    else if (el && el === audioBRef.current) setAnalyserForVu(eqAnalyserBRef.current);
+    else setAnalyserForVu(null);
+  }, []);
 
   // ─── Progress-tracking refs ─────────────────────────────────────────────
   const currentTimeRef = useRef(0);       // stale-closure-safe current time
@@ -1987,15 +1914,26 @@ export default function Player({
     for (let i = 0; i < parametricFilters.length - 1; i += 1) parametricFilters[i].connect(parametricFilters[i + 1]);
     parametricFilters[parametricFilters.length - 1].connect(ctx.destination);
 
+    // VU meter tap — parallel branch off the raw source, silent (not
+    // connected onward), so it doesn't affect the audible EQ chain above.
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.4;
+    source.connect(analyser);
+
     if (slot === 'A') {
       eqCtxARef.current = ctx;
       eqSourceARef.current = source;
       eqParametricFiltersARef.current = parametricFilters;
+      eqAnalyserARef.current = analyser;
     } else {
       eqCtxBRef.current = ctx;
       eqSourceBRef.current = source;
       eqParametricFiltersBRef.current = parametricFilters;
+      eqAnalyserBRef.current = analyser;
     }
+
+    if (activeSlotRef.current === slot) setAnalyserForVu(analyser);
 
     applyParametricEqToFilters(parametricFilters, parametricBands);
   }, [parametricBands]);
@@ -2240,7 +2178,7 @@ export default function Player({
           crossfadeRafRef.current = null;
 
           // Update VU meter to new active element
-          setAudioElForVu(standby);
+          selectVuElement(standby);
 
           // Advance the queue index without incrementing playToken (track is already playing)
           loadedUrlRef.current = url;
@@ -2287,7 +2225,7 @@ export default function Player({
     crossfadeActiveRef.current = false;
     crossfadeTriggeredRef.current = false;
 
-    setAudioElForVu(standby);
+    selectVuElement(standby);
     loadedUrlRef.current = url;
     handoffInProgressRef.current = true;
     onStateChange({ ...state, currentIndex: nextIndex, isPlaying: true });
@@ -2562,7 +2500,7 @@ export default function Player({
       <audio
         ref={(el) => {
           audioRef.current = el;
-          if (activeSlotRef.current === 'A') setAudioElForVu(el);
+          if (activeSlotRef.current === 'A') selectVuElement(el);
         }}
         onTimeUpdate={e => {
           if (activeSlotRef.current !== 'A') return;
@@ -2963,7 +2901,7 @@ export default function Player({
         <div style={P.rightCluster} data-testid="player-right-cluster">
           {/* Visualizer */}
           {audioReady && (
-            <StereoVU audioEl={audioElForVu} isPlaying={isPlaying} mode={vizMode} onToggleMode={toggleMode} />
+            <StereoVU analyser={analyserForVu} isPlaying={isPlaying} mode={vizMode} onToggleMode={toggleMode} />
           )}
 
           {/* Playback modes + Volume + Queue */}
