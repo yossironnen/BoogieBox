@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1.7
+#
+# Base images are pinned by digest for reproducible builds. Update policy: refresh
+# digests (docker pull <image>:<tag> && docker inspect --format '{{index .RepoDigests 0}}')
+# on a deliberate schedule, not automatically, and re-run the full image test/smoke
+# suite before merging a digest bump.
 
-FROM node:22-bookworm-slim AS client-builder
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS client-builder
 WORKDIR /app/client
 
 COPY client/package.json client/package-lock.json ./
@@ -9,7 +14,7 @@ RUN npm ci
 COPY client/ ./
 RUN npm run build
 
-FROM rust:1-bookworm AS server-builder
+FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS server-builder
 WORKDIR /app
 
 RUN apt-get update \
@@ -19,7 +24,7 @@ RUN apt-get update \
 COPY server-rs/ server-rs/
 RUN cargo build --release --manifest-path server-rs/Cargo.toml
 
-FROM debian:bookworm-slim AS ffmpeg-builder
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS ffmpeg-builder
 ARG FFMPEG_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
 WORKDIR /tmp/ffmpeg
 
@@ -27,10 +32,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl xz-utils tar \
     && rm -rf /var/lib/apt/lists/* \
     && curl -L --fail --show-error -A "Mozilla/5.0 (X11; Linux x86_64) curl" --output ffmpeg.tar.xz "$FFMPEG_URL" \
+    && curl -L --fail --show-error -A "Mozilla/5.0 (X11; Linux x86_64) curl" --output ffmpeg.tar.xz.md5 "${FFMPEG_URL}.md5" \
+    && echo "$(cat ffmpeg.tar.xz.md5 | awk '{print $1}')  ffmpeg.tar.xz" | md5sum -c - \
     && tar -xJf ffmpeg.tar.xz --strip-components=1 --wildcards --no-anchored "*/ffmpeg" "*/ffprobe" \
-    && chmod +x ffmpeg ffprobe
+    && chmod +x ffmpeg ffprobe \
+    && ./ffmpeg -version && ./ffprobe -version
 
-FROM python:3.12-slim-bookworm AS boogiemix-builder
+FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b AS boogiemix-builder
 ARG BOOGIEMIX_PRIME_MODEL=1
 WORKDIR /opt/boogiebox/resources/Services/boogiemix/python
 
@@ -48,7 +56,7 @@ RUN chmod +x bootstrap_env.sh \
     && find . -type d -name "__pycache__" -prune -exec rm -rf {} + \
     && find . -type f -name "*.pyc" -delete
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b AS runtime
 
 LABEL org.opencontainers.image.title="BoogieBox"
 LABEL org.opencontainers.image.description="BoogieBox Linux amd64 server with CPU-only BoogieMix deep analysis"

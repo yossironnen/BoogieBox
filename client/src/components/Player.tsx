@@ -2190,7 +2190,7 @@ export default function Player({
     };
 
     standby.addEventListener('canplay', startPlaying, { once: true });
-  }, [getActiveAudio, getStandbyAudio, queue, crossfadeConfig.duration, volume, muted, state, onStateChange]);
+  }, [getActiveAudio, getStandbyAudio, queue, crossfadeConfig.duration, volume, muted, state, onStateChange, selectVuElement]);
 
   // ─── Zero-gap preload + immediate swap ──────────────────────────────────
   const beginZeroGap = useCallback((nextIndex: number) => {
@@ -2229,7 +2229,7 @@ export default function Player({
     loadedUrlRef.current = url;
     handoffInProgressRef.current = true;
     onStateChange({ ...state, currentIndex: nextIndex, isPlaying: true });
-  }, [getActiveAudio, getStandbyAudio, queue, state, onStateChange]);
+  }, [getActiveAudio, getStandbyAudio, queue, state, onStateChange, selectVuElement]);
 
   // Cancel crossfade when playToken changes (user skipped)
   useEffect(() => {

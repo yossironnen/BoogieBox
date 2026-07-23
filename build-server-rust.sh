@@ -133,12 +133,25 @@ if [ ! -f "$FFMPEG_EXE" ] || [ ! -f "$FFPROBE_EXE" ]; then
 
   if command -v curl &>/dev/null; then
     curl -L --progress-bar -o "$ARCHIVE" "$FFMPEG_URL"
+    curl -sL -o "${ARCHIVE}.md5" "${FFMPEG_URL}.md5"
   elif command -v wget &>/dev/null; then
     wget -q --show-progress -O "$ARCHIVE" "$FFMPEG_URL"
+    wget -q -O "${ARCHIVE}.md5" "${FFMPEG_URL}.md5"
   else
     echo "[ERROR] curl or wget is required to download FFmpeg."
     exit 1
   fi
+
+  # johnvansickle.com does not publish versioned URLs, so this only pins
+  # against upstream tampering/corruption in transit, not to a fixed version.
+  EXPECTED_MD5="$(awk '{print $1}' "${ARCHIVE}.md5" 2>/dev/null)"
+  ACTUAL_MD5="$(md5sum "$ARCHIVE" | awk '{print $1}')"
+  if [ -z "$EXPECTED_MD5" ] || [ "$EXPECTED_MD5" != "$ACTUAL_MD5" ]; then
+    echo "[ERROR] FFmpeg archive checksum mismatch (expected '$EXPECTED_MD5', got '$ACTUAL_MD5')"
+    rm -f "$ARCHIVE" "${ARCHIVE}.md5"
+    exit 1
+  fi
+  rm -f "${ARCHIVE}.md5"
 
   # Extract only ffmpeg and ffprobe from the archive (they live in the top dir)
   tar -xJf "$ARCHIVE" --strip-components=1 \
@@ -167,6 +180,16 @@ if [ ! -f "$FFPROBE_EXE" ]; then
   echo "[ERROR] Missing ${FFMPEG_CACHE_DIR}/ffprobe"
   exit 1
 fi
+
+if ! "$FFMPEG_EXE" -version >/dev/null 2>&1; then
+  echo "[ERROR] Cached ffmpeg binary failed to execute: ${FFMPEG_EXE}"
+  exit 1
+fi
+if ! "$FFPROBE_EXE" -version >/dev/null 2>&1; then
+  echo "[ERROR] Cached ffprobe binary failed to execute: ${FFPROBE_EXE}"
+  exit 1
+fi
+echo " $("$FFMPEG_EXE" -version | head -1)"
 
 # ------------------------------------------------------------------
 # [5/8] Create release folder

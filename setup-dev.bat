@@ -238,12 +238,17 @@ if errorlevel 1 exit /b 1
 exit /b 0
 
 :download_ffmpeg
+REM Pinned to gyan.dev's versioned FFmpeg 8.1.2 essentials build; verified against
+REM its published SHA-256 so a corrupted/tampered download fails loudly.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop';" ^
   "$dir=Join-Path $PWD 'tools\ffmpeg'; New-Item -ItemType Directory -Force $dir | Out-Null;" ^
-  "$zip=Join-Path $env:TEMP 'boogiebox-ffmpeg-release-essentials.zip';" ^
-  "$url='https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip';" ^
+  "$zip=Join-Path $env:TEMP 'boogiebox-ffmpeg-8.1.2-essentials.zip';" ^
+  "$url='https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip';" ^
+  "$expectedSha256='db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec';" ^
   "Invoke-WebRequest -Uri $url -OutFile $zip;" ^
+  "$actualSha256=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower();" ^
+  "if ($actualSha256 -ne $expectedSha256) { Remove-Item -LiteralPath $zip -Force; throw \"FFmpeg archive checksum mismatch (expected $expectedSha256, got $actualSha256)\" }" ^
   "$extract=Join-Path $env:TEMP ('boogiebox-ffmpeg-' + [guid]::NewGuid()); New-Item -ItemType Directory -Force $extract | Out-Null;" ^
   "Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force;" ^
   "$root=Get-ChildItem -LiteralPath $extract -Directory | Select-Object -First 1;" ^
@@ -256,14 +261,30 @@ if errorlevel 1 (
     echo [ERROR] Failed to download FFmpeg.
     exit /b 1
 )
+tools\ffmpeg\ffmpeg.exe -version | findstr /b "ffmpeg version" >nul
+if errorlevel 1 (
+    echo [ERROR] Downloaded ffmpeg.exe failed to execute.
+    exit /b 1
+)
+tools\ffmpeg\ffprobe.exe -version | findstr /b "ffprobe version" >nul
+if errorlevel 1 (
+    echo [ERROR] Downloaded ffprobe.exe failed to execute.
+    exit /b 1
+)
 exit /b 0
 
 :download_winsw
+REM Pinned to WinSW v2.12.0 x64 and verified against its SHA-256 (computed from
+REM the release asset) so a corrupted/tampered download fails loudly.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop';" ^
   "$dir=Join-Path $PWD 'tools\winsw'; New-Item -ItemType Directory -Force $dir | Out-Null;" ^
+  "$out=Join-Path $dir 'boogiebox-service.exe';" ^
   "$url='https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe';" ^
-  "Invoke-WebRequest -Uri $url -OutFile (Join-Path $dir 'boogiebox-service.exe')"
+  "$expectedSha256='05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da';" ^
+  "Invoke-WebRequest -Uri $url -OutFile $out;" ^
+  "$actualSha256=(Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash.ToLower();" ^
+  "if ($actualSha256 -ne $expectedSha256) { Remove-Item -LiteralPath $out -Force; throw \"WinSW checksum mismatch (expected $expectedSha256, got $actualSha256)\" }"
 if errorlevel 1 (
     echo [ERROR] Failed to download WinSW.
     exit /b 1
