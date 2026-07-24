@@ -215,7 +215,10 @@ if (-not (Test-Path $venvFull)) {
 $py  = Join-Path $venvFull "Scripts\python.exe"
 $pip = Join-Path $venvFull "Scripts\pip.exe"
 
-Invoke-NativeChecked $py @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+# torch 2.11.0 itself declares `setuptools<82`, so the torch/torchaudio install
+# below re-downgrades this on its own (re-asserted again afterward - see the
+# setuptools floor comment near the PyTorch install branch for the CVE detail).
+Invoke-NativeChecked $py @("-m", "pip", "install", "--upgrade", "pip", "setuptools>=78.1.1,<82", "wheel")
 Invoke-NativeChecked $pip @("install", "--upgrade", "-c", $constraintsPath, "Cython>=3,<4", "numpy>=1.26.4,<3")
 
 New-Item -ItemType Directory -Force -Path $torchHome | Out-Null
@@ -237,19 +240,27 @@ function Test-TorchCuda {
 
 function Reset-TorchPackages {
   # pip uninstall warns (to stderr) when packages aren't installed yet; that's fine - suppress.
+  # torchvision is not a dependency of demucs/openunmix/dora-search - it's uninstalled here
+  # in case a prior venv still has it, so its Pillow dependency doesn't linger unpatched.
   try { & $pip uninstall -y torch torchvision torchaudio 2>&1 | Out-Null } catch { }
 }
 
 function Install-TorchCpu {
   Write-Host "Installing CPU PyTorch..."
   Reset-TorchPackages
-  Invoke-NativeChecked $pip @("install", "--upgrade", "--force-reinstall", "torch", "torchvision", "torchaudio", "--index-url", $cpuIndexUrl)
+  # Deliberately NOT passing -c constraintsPath here: pip's resolver has previously
+  # picked a torch/torchaudio version *mismatch* (e.g. torch 2.10.0 + torchaudio
+  # 2.11.0 - never released as a pair) when a constraints file gave it a reason to
+  # explore alternate torch versions during this --force-reinstall. Let torch and
+  # torchaudio resolve to their natural matched-latest pair; the setuptools floor
+  # is re-asserted afterward without touching torch/torchaudio (see below).
+  Invoke-NativeChecked $pip @("install", "--upgrade", "--force-reinstall", "torch", "torchaudio", "--index-url", $cpuIndexUrl)
 }
 
 function Install-TorchCuda {
   Write-Host "Installing CUDA PyTorch from $cudaIndexUrl..."
   Reset-TorchPackages
-  Invoke-NativeChecked $pip @("install", "--upgrade", "--force-reinstall", "torch", "torchvision", "torchaudio", "--index-url", $cudaIndexUrl)
+  Invoke-NativeChecked $pip @("install", "--upgrade", "--force-reinstall", "torch", "torchaudio", "--index-url", $cudaIndexUrl)
   if (-not (Test-TorchCuda)) {
     throw "CUDA PyTorch installed, but torch.cuda.is_available() is false."
   }
@@ -276,6 +287,12 @@ if ($CpuOnly) {
   Install-TorchCpu
   $torchMode = "cpu"
 }
+
+# torch's --force-reinstall re-resolves its own `setuptools<82` requirement from
+# scratch and lands on whatever pip finds first (observed: 78.1.0, one patch below
+# the GHSA-5rjg-fvgr-3xxf fix). Re-assert the floor now, naming only setuptools so
+# pip has no reason to touch the already-installed, already-matched torch/torchaudio.
+Invoke-NativeChecked $py @("-m", "pip", "install", "--upgrade", "setuptools>=78.1.1,<82")
 
 Invoke-NativeChecked $pip @("install", "--no-build-isolation", "-c", $constraintsPath, "-r", (Join-Path $root "requirements.txt"))
 

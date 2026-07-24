@@ -131,7 +131,10 @@ PY_MINOR="$("$PYTHON_EXE" -c 'import sys; print(f"{sys.version_info.major}.{sys.
 
 # ── Base packages ─────────────────────────────────────────────────────────────
 echo "[bootstrap_env.sh] Upgrading pip/setuptools/wheel..."
-"$VENV_PY" -m pip install --upgrade pip setuptools wheel
+# torch 2.11.0 itself declares `setuptools<82`, so the torch/torchaudio install
+# below re-downgrades this on its own (re-asserted again afterward - see the
+# setuptools floor comment near the PyTorch install branch for the CVE detail).
+"$VENV_PY" -m pip install --upgrade pip "setuptools>=78.1.1,<82" wheel
 
 echo "[bootstrap_env.sh] Installing Cython + numpy..."
 # Cython 3.x generates Python 3.13/3.14-compatible C code; the old <3 cap breaks on newer Python.
@@ -152,6 +155,8 @@ test_torch_cuda() {
   "$VENV_PY" -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)" 2>/dev/null
 }
 
+# torchvision is not a dependency of demucs/openunmix/dora-search - it's uninstalled here
+# in case a prior venv still has it, so its Pillow dependency doesn't linger unpatched.
 reset_torch_packages() {
   "$VENV_PIP" uninstall -y torch torchvision torchaudio 2>/dev/null || true
 }
@@ -159,14 +164,20 @@ reset_torch_packages() {
 install_torch_cpu() {
   echo "[bootstrap_env.sh] Installing CPU PyTorch..."
   reset_torch_packages
-  "$VENV_PIP" install --upgrade --force-reinstall torch torchvision torchaudio \
+  # Deliberately NOT passing -c "$CONSTRAINTS_FILE" here: pip's resolver has
+  # previously picked a torch/torchaudio version *mismatch* (e.g. torch 2.10.0 +
+  # torchaudio 2.11.0 - never released as a pair) when a constraints file gave it
+  # a reason to explore alternate torch versions during --force-reinstall. Let
+  # torch and torchaudio resolve to their natural matched-latest pair; the
+  # setuptools floor is re-asserted afterward without touching torch/torchaudio.
+  "$VENV_PIP" install --upgrade --force-reinstall torch torchaudio \
     --index-url "$CPU_INDEX_URL"
 }
 
 install_torch_cuda() {
   echo "[bootstrap_env.sh] Installing CUDA PyTorch from $CUDA_INDEX_URL..."
   reset_torch_packages
-  "$VENV_PIP" install --upgrade --force-reinstall torch torchvision torchaudio \
+  "$VENV_PIP" install --upgrade --force-reinstall torch torchaudio \
     --index-url "$CUDA_INDEX_URL"
   if ! test_torch_cuda; then
     echo "[ERROR] CUDA PyTorch installed but torch.cuda.is_available() is false." >&2
@@ -199,6 +210,12 @@ elif [[ "$AUTO" -eq 1 ]]; then
     TORCH_MODE="cpu"
   fi
 fi
+
+# torch's --force-reinstall re-resolves its own `setuptools<82` requirement from
+# scratch and lands on whatever pip finds first (observed: 78.1.0, one patch below
+# the GHSA-5rjg-fvgr-3xxf fix). Re-assert the floor now, naming only setuptools so
+# pip has no reason to touch the already-installed, already-matched torch/torchaudio.
+"$VENV_PY" -m pip install --upgrade "setuptools>=78.1.1,<82"
 
 # ── requirements.txt ──────────────────────────────────────────────────────────
 echo "[bootstrap_env.sh] Installing requirements.txt..."

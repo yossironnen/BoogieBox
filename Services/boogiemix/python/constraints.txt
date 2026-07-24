@@ -3,6 +3,11 @@
 # Keep this file in sync with requirements.txt and verify changes with a fresh
 # bootstrap_env.ps1 / bootstrap_env.sh run on the supported Python lines.
 
+# torch 2.11.0 declares `setuptools<82`; 78.1.1 is the highest version under that
+# ceiling that still fixes GHSA-5rjg-fvgr-3xxf (path traversal, HIGH). Keep this
+# floor so no pip invocation in bootstrap_env.ps1/.sh silently resolves below it.
+setuptools>=78.1.1,<82
+
 Cython>=3,<4
 demucs==4.0.1
 numpy>=1.26.4,<3
