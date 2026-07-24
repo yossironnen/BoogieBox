@@ -29,7 +29,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   deezer: '#a238ff',
 };
 
-function normalizeMetadataYear(year: MetadataSearchResult['year']): number | undefined {
+export function normalizeMetadataYear(year: MetadataSearchResult['year']): number | undefined {
   if (typeof year === 'number' && Number.isFinite(year)) return Math.trunc(year);
   if (typeof year === 'string') {
     const match = year.trim().match(/^\d{4}/);

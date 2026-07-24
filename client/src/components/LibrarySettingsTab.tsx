@@ -22,7 +22,7 @@ type PathTestResult = {
   error?: string;
 };
 
-function formatPendingStatus(job: ScanJob): string {
+export function formatPendingStatus(job: ScanJob): string {
   const queuePos = job.queue_position;
   const running = job.running_job;
   const startedAtMs = Date.parse(job.started_at || '');

@@ -13,10 +13,10 @@ import FolderPickerModal from './FolderPickerModal';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function fmtNextRun(iso: string | null): string {
+export function fmtNextRun(iso: string | null): string {
   if (!iso) return 'Not scheduled';
   const d = parseServerDate(iso);
-  if (!d) return 'Not scheduled';
+  if (!d || Number.isNaN(d.getTime())) return 'Not scheduled';
   const now = new Date();
   const diff = d.getTime() - now.getTime();
   if (diff < 0) return 'Overdue';
@@ -27,12 +27,12 @@ function fmtNextRun(iso: string | null): string {
   return `in ${m}m`;
 }
 
-function fmtLastRun(iso: string | null): string {
+export function fmtLastRun(iso: string | null): string {
   if (!iso) return 'Never';
   return (parseServerDate(iso) ?? new Date(iso)).toLocaleString();
 }
 
-function formatBytes(bytes: number | null | undefined): string {
+export function formatBytes(bytes: number | null | undefined): string {
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
   let value = bytes;
@@ -49,7 +49,7 @@ function fmtQueueTime(iso: string | null): string {
   return (parseServerDate(iso) ?? new Date(iso)).toLocaleString();
 }
 
-function formatProviderLabel(provider: string): string {
+export function formatProviderLabel(provider: string): string {
   switch (provider) {
     case 'lastfm':
       return 'Last.fm';
@@ -94,7 +94,7 @@ export function formatQueueSnapshot(snapshot: AdminQueueSnapshot | null): string
   return lines.join('\n');
 }
 
-function formatQueueStateLabel(status: string): string {
+export function formatQueueStateLabel(status: string): string {
   switch (status) {
     case 'running':
       return 'Running';

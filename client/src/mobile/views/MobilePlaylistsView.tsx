@@ -42,7 +42,7 @@ const PLAYLIST_SORT_LABELS: Record<PlaylistSortMode, string> = {
   rating: 'By rating',
 };
 
-function fmtDuration(seconds: number | null | undefined): string {
+export function fmtDuration(seconds: number | null | undefined): string {
   if (!seconds) return '0m';
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -50,7 +50,7 @@ function fmtDuration(seconds: number | null | undefined): string {
   return `${Math.max(1, minutes)}m`;
 }
 
-function fmtTrackDuration(seconds: number | null | undefined): string {
+export function fmtTrackDuration(seconds: number | null | undefined): string {
   if (!seconds) return '--';
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.floor(seconds % 60);
@@ -61,7 +61,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function buildCollageAlbumIds(tracks: PlaylistTrack[]): ClientEntityId[] {
+export function buildCollageAlbumIds(tracks: PlaylistTrack[]): ClientEntityId[] {
   const ids = new Set<ClientEntityId>();
   for (const track of tracks) {
     if (!track.album_id || ids.has(track.album_id)) continue;
@@ -71,7 +71,7 @@ function buildCollageAlbumIds(tracks: PlaylistTrack[]): ClientEntityId[] {
   return Array.from(ids);
 }
 
-function updatePlaylistSummary(
+export function updatePlaylistSummary(
   playlist: Playlist,
   trackDelta: number,
   durationDelta: number,
@@ -83,17 +83,17 @@ function updatePlaylistSummary(
   };
 }
 
-function createFallbackTiles(count: number): number[] {
+export function createFallbackTiles(count: number): number[] {
   return Array.from({ length: Math.max(0, 4 - count) }, (_, index) => index);
 }
 
-function resolvePlaylistDuration(playlist: Playlist | null, tracks: PlaylistTrack[]): number {
+export function resolvePlaylistDuration(playlist: Playlist | null, tracks: PlaylistTrack[]): number {
   const summaryDuration = playlist?.total_duration ?? 0;
   if (summaryDuration > 0 || tracks.length === 0) return summaryDuration;
   return tracks.reduce((total, track) => total + (track.duration ?? 0), 0);
 }
 
-function sortPlaylistTracks(tracks: PlaylistTrack[], sortMode: PlaylistSortMode): PlaylistTrack[] {
+export function sortPlaylistTracks(tracks: PlaylistTrack[], sortMode: PlaylistSortMode): PlaylistTrack[] {
   if (sortMode === 'manual') return tracks;
   return [...tracks].sort((a, b) => {
     if (sortMode === 'rating') {

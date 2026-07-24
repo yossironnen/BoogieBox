@@ -49,5 +49,27 @@ describe('mobileArtistBrowse helpers', () => {
     expect(window.paddingTop).toBe(MOBILE_ARTIST_ROW_HEIGHT * 4);
     expect(window.paddingBottom).toBe(MOBILE_ARTIST_ROW_HEIGHT * 80);
   });
+
+  it('uses default cache filters and replaces rows on reset', () => {
+    expect(buildArtistBrowseCacheKey({})).toBe('asc::::');
+    expect(buildArtistBrowseCacheKey({ query: ' ', startsWith: null })).toBe('asc::::');
+    const incoming = [{ id: '2', name: 'Beta', album_count: 2, track_count: 2 }];
+    const reset = mergeArtistBrowseRows(
+      [{ id: '1', name: 'Alpha', album_count: 1, track_count: 1 }],
+      incoming,
+      true,
+    );
+    expect(reset).toEqual(incoming);
+    expect(reset).not.toBe(incoming);
+  });
+
+  it('handles empty, invalid-height, default-overscan, and bottom-clamped windows', () => {
+    expect(computeVirtualWindow({ itemCount: 0, rowHeight: 84, viewportHeight: 100, scrollTop: 0 }))
+      .toEqual({ start: 0, end: 0, paddingTop: 0, paddingBottom: 0 });
+    expect(computeVirtualWindow({ itemCount: 10, rowHeight: 0, viewportHeight: 100, scrollTop: 0 }))
+      .toEqual({ start: 0, end: 0, paddingTop: 0, paddingBottom: 0 });
+    expect(computeVirtualWindow({ itemCount: 3, rowHeight: 84, viewportHeight: -1, scrollTop: 999 }))
+      .toEqual({ start: 11, end: 3, paddingTop: 924, paddingBottom: 0 });
+  });
 });
 

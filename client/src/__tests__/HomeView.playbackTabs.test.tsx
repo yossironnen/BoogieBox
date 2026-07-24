@@ -11,6 +11,7 @@ import type { Artist, ClientEntityId, Stats } from '../types';
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     latestAlbums: vi.fn(),
+    albumTracks: vi.fn(),
     homeTopRated: vi.fn(),
     homeGenres: vi.fn(),
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number) => `/api/albums/${albumId}/art?size=${size}`),
@@ -64,10 +65,11 @@ function renderHome(
   refreshKey = 0,
   onBrowseMusic?: () => void,
   onOpenArtist?: (artist: Artist) => void,
+  stats: Stats | null = STATS,
 ){
   return render(
     <HomeView
-      stats={STATS}
+      stats={stats}
       refreshKey={refreshKey}
       onOpenAlbum={() => {}}
       onOpenArtist={onOpenArtist ?? (() => {})}
@@ -83,8 +85,10 @@ function renderHome(
 describe('HomeView playback activity tabs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     mockIntersectionObserver();
     apiMock.latestAlbums.mockResolvedValue([]);
+    apiMock.albumTracks.mockResolvedValue([]);
     apiMock.homeTopRated.mockResolvedValue({ artists: [], albums: [], tracks: [] });
     apiMock.homeGenres.mockResolvedValue([]);
     apiMock.genres.mockResolvedValue([]);
@@ -468,6 +472,128 @@ describe('HomeView playback activity tabs', () => {
     await waitFor(() => expect(apiMock.crossfade.removeOverride).toHaveBeenCalledWith('autodj', '0'));
     await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByText('Using global default')).toBeInTheDocument());
+  });
+
+  it('persists collapsed dashboard panes and expands a previously collapsed pane', async () => {
+    localStorage.setItem('boogiebox-pane-collapsed-Library', 'true');
+    renderHome();
+
+    expect(screen.getByTitle('Expand')).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Expand'));
+    expect(screen.getByText('Tracks')).toBeInTheDocument();
+
+    const collapseButtons = screen.getAllByTitle('Collapse');
+    expect(collapseButtons).toHaveLength(6);
+    for (const button of collapseButtons) fireEvent.click(button);
+
+    expect(screen.getAllByTitle('Expand')).toHaveLength(6);
+    expect(localStorage.getItem('boogiebox-pane-collapsed-Genres')).toBe('true');
+  });
+
+  it('shows null-stat and rejected-service fallbacks without breaking the dashboard', async () => {
+    apiMock.latestAlbums.mockRejectedValue(new Error('albums unavailable'));
+    apiMock.homeTopRated.mockRejectedValue(new Error('ratings unavailable'));
+    apiMock.homeGenres.mockRejectedValue(new Error('genres unavailable'));
+    apiMock.genres.mockRejectedValue(new Error('genres unavailable'));
+    apiMock.recentlyPlayed.mockRejectedValue(new Error('history unavailable'));
+    apiMock.crossfade.config.mockRejectedValue(new Error('crossfade unavailable'));
+
+    renderHome(undefined, undefined, 0, undefined, undefined, null);
+
+    expect(screen.getAllByText('--')).toHaveLength(3);
+    await waitFor(() => expect(screen.getByText('No albums yet')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Rate some artists, albums, or tracks to build your rankings')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('No genre data yet')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/No playlists yet/i)).toBeInTheDocument());
+  });
+
+  it('handles recent-album hover, unknown artists, empty playback, and successful playback', async () => {
+    const onOpenAlbum = vi.fn();
+    const onPlayTrack = vi.fn();
+    const track = {
+      id: 'track-1',
+      title: 'Playable',
+      file_name: 'playable.mp3',
+    };
+    apiMock.latestAlbums.mockResolvedValue([
+      { id: '11', title: 'Mystery Album', artist: null, album_artist: null },
+      { id: '12', title: 'Playable Album', artist: 'Known Artist', album_artist: null },
+    ]);
+    apiMock.albumTracks
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([track]);
+
+    render(
+      <HomeView
+        stats={STATS}
+        onOpenAlbum={onOpenAlbum}
+        onOpenArtist={() => {}}
+        onOpenGenre={() => {}}
+        onBrowseMusic={() => {}}
+        onOpenPlaylist={() => {}}
+        onPlayTrack={onPlayTrack}
+        onStartAutoDj={async () => 0}
+      />,
+    );
+
+    const mystery = await screen.findByTitle('Mystery Album — Unknown Artist');
+    fireEvent.mouseEnter(mystery);
+    fireEvent.click(screen.getByRole('button', { name: 'Play album Mystery Album' }));
+    await waitFor(() => expect(apiMock.albumTracks).toHaveBeenCalledWith('11'));
+    expect(onPlayTrack).not.toHaveBeenCalled();
+    fireEvent.mouseLeave(mystery);
+    fireEvent.click(mystery);
+    expect(onOpenAlbum).toHaveBeenCalledWith(expect.objectContaining({ id: '11' }));
+
+    const playable = screen.getByTitle('Playable Album — Known Artist');
+    fireEvent.mouseEnter(playable);
+    fireEvent.click(screen.getByRole('button', { name: 'Play album Playable Album' }));
+    await waitFor(() => expect(onPlayTrack).toHaveBeenCalledWith(track, [track]));
+  });
+
+  it('handles Auto DJ validation, launch failure, and transition persistence failures', async () => {
+    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
+    apiMock.genres.mockResolvedValue([{ genre: 'Rock', track_count: 3 }]);
+    apiMock.crossfade.config.mockResolvedValue({ mode: 'crossfade', duration: 4, source: 'override' });
+    apiMock.crossfade.upsertOverride.mockRejectedValue(new Error('save failed'));
+    apiMock.crossfade.removeOverride.mockRejectedValue(new Error('reset failed'));
+    const onStartAutoDj = vi.fn().mockRejectedValue({});
+    renderHome(undefined, onStartAutoDj);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Home Auto DJ with Rock' }));
+    expect(await screen.findByText('Failed to start Auto DJ.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle more Home Auto DJ genres' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start Home Auto DJ from picker' }));
+    expect(screen.getByText('Select at least one genre for Auto DJ.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle Home Auto DJ options' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set Home Auto DJ transition mode Zero-gap' }));
+    await waitFor(() => expect(apiMock.crossfade.upsertOverride).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Home Auto DJ transition override' }));
+    await waitFor(() => expect(apiMock.crossfade.removeOverride).toHaveBeenCalled());
+  });
+
+  it('handles cancelled, blank, id-less, and rejected Home playlist creation', async () => {
+    apiMock.playlists.list.mockResolvedValue([]);
+    apiMock.playlists.create
+      .mockResolvedValueOnce({ name: 'Missing ID' })
+      .mockRejectedValueOnce({});
+    const promptSpy = vi.spyOn(window, 'prompt')
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce('   ')
+      .mockReturnValueOnce('Missing ID')
+      .mockReturnValueOnce('Rejected');
+    renderHome();
+    const create = await screen.findByRole('button', { name: 'Create playlist from home' });
+
+    fireEvent.click(create);
+    fireEvent.click(create);
+    expect(apiMock.playlists.create).not.toHaveBeenCalled();
+    fireEvent.click(create);
+    expect(await screen.findByText('Could not create playlist')).toBeInTheDocument();
+    fireEvent.click(create);
+    expect(await screen.findByText('Could not create playlist')).toBeInTheDocument();
+    promptSpy.mockRestore();
   });
 });
 

@@ -12,7 +12,7 @@ import ArtImage from './ArtImage';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmtDur(s: number | null | undefined): string {
+export function fmtDur(s: number | null | undefined): string {
   if (!s) return '';
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -20,11 +20,11 @@ function fmtDur(s: number | null | undefined): string {
   return `${m}m`;
 }
 
-function normalizePlaylistName(name: string): string {
+export function normalizePlaylistName(name: string): string {
   return name.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function buildPlaylistCollageAlbumIds(tracks: PlaylistTrack[]): ClientEntityId[] {
+export function buildPlaylistCollageAlbumIds(tracks: PlaylistTrack[]): ClientEntityId[] {
   const ids = new Set<ClientEntityId>();
   for (const track of tracks) {
     if (!track.album_id || ids.has(track.album_id)) continue;
@@ -34,11 +34,11 @@ function buildPlaylistCollageAlbumIds(tracks: PlaylistTrack[]): ClientEntityId[]
   return Array.from(ids);
 }
 
-function createPlaylistFallbackTiles(count: number): number[] {
+export function createPlaylistFallbackTiles(count: number): number[] {
   return Array.from({ length: Math.max(0, 4 - count) }, (_, index) => index);
 }
 
-function fmtTrackDur(s: number | null): string {
+export function fmtTrackDur(s: number | null): string {
   if (!s) return '–';
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);

@@ -498,6 +498,88 @@ describe('SettingsPage component flows', () => {
     }));
   });
 
+  it('renders enabled background-service variants and resumes paused deep analysis', async () => {
+    apiMock.settings.get.mockResolvedValue({
+      dlnaEnabled: 'false',
+      dlnaFriendlyName: '',
+      dlnaPort: '65535',
+      waveformGenerateOnMissing: 'false',
+      waveformBackgroundEnabled: 'true',
+      waveformBackgroundFrequencyHours: '1',
+      waveformBackgroundBatchSize: '250',
+      scanDebugLoggingEnabled: 'true',
+      boogiemixOutputFolder: '',
+      boogiemixDeepAnalysisBackgroundMode: 'all_music',
+    });
+    apiMock.dlna.status.mockResolvedValue({ running: false, port: 65535, friendlyName: null });
+    apiMock.waveforms.status.mockResolvedValue({
+      enabled: true,
+      generateOnMissing: false,
+      frequencyHours: 1,
+      batchSize: 250,
+      lastRun: '2026-03-14T10:00:00.000Z',
+      nextRun: '2026-03-14T11:00:00.000Z',
+      inProgress: true,
+      totalTracks: 0,
+      mappedTracks: 0,
+      missingTracks: 0,
+      activeRun: { processed: 5, totalMissing: 10, generated: 3, skipped: 1, errors: 1 },
+    });
+    apiMock.waveforms.runMap.mockResolvedValue({
+      started: false,
+      inProgress: true,
+      reason: 'already_running',
+      startedAt: null,
+      finishedAt: null,
+      batchSize: 250,
+      totalMissing: 0,
+      processed: 0,
+      generated: 0,
+      skipped: 0,
+      errors: 0,
+    });
+    apiMock.boogiemix.deepAnalysisStatus.mockResolvedValue({
+      enabled: true,
+      runtime: {
+        pythonAvailable: true,
+        ffmpegAvailable: true,
+        demucsCallable: true,
+        torchAvailable: true,
+        gpuAvailable: true,
+        enabled: true,
+        details: ['ready'],
+        missingCapabilities: [],
+        summary: 'Ready',
+        python: { available: true, version: null, detail: null },
+        ffmpeg: { available: true, version: '7', detail: 'bundled' },
+        demucs: { available: true, version: '4', detail: null },
+        torch: { available: true, version: '2', detail: null },
+        gpu: { available: true, version: 'CUDA', detail: null },
+      },
+      queue: { pending: 0, running: 0, failed: 0, skipped: 0, done: 0 },
+      cache: { analyzedTracks: 0, estimatedBytes: 0, oldestCreatedAt: null, newestCreatedAt: null },
+      controls: { backgroundMode: 'all_music', pauseBackground: true },
+    });
+
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    expect(await screen.findByText('Ready')).toBeInTheDocument();
+    expect(screen.getByText(/Cache:/i)).toHaveTextContent('0 tracks analyzed, about 0 B stored in SQLite');
+    expect(screen.getByText(/In progress: 5\/10 processed/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Background' }));
+    await waitFor(() => expect(apiMock.boogiemix.resumeDeepAnalysisBackground).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /Run Mapping Now/i }));
+    await waitFor(() => expect(apiMock.waveforms.runMap).toHaveBeenCalled());
+    expect(screen.getByDisplayValue('65535')).toBeInTheDocument();
+  });
+
   it('executes integrations test/save actions for Discogs, Spotify, and Last.fm', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
@@ -572,5 +654,201 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show usage rows' }));
     expect(screen.getByText('artist_info')).toBeInTheDocument();
     expect(screen.getByText('artist_artwork')).toBeInTheDocument();
+  });
+
+  it('reports integration test and save failures with an empty provider-usage snapshot', async () => {
+    apiMock.admin.providerUsage.mockResolvedValue({ fetched_at: null, providers: [], rows: [] });
+    apiMock.integrations.spotifyTest.mockRejectedValue(new Error('spotify offline'));
+    apiMock.settings.update.mockRejectedValue(new Error('save denied'));
+    vi.mocked(fetch).mockImplementation(async (input) => ({
+      ok: false,
+      status: 401,
+      headers: { get: () => 'application/json' },
+      json: async () => String(input).includes('audioscrobbler')
+        ? { error: 10, message: 'bad key' }
+        : { message: 'bad token' },
+    } as unknown as Response));
+
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Integrations/i }));
+    await screen.findByText('Provider Usage');
+    expect(screen.getByText(/No provider usage has been recorded/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Discogs personal access token/i), { target: { value: 'bad' } });
+    fireEvent.change(screen.getByPlaceholderText(/Last\.fm API key/i), { target: { value: 'bad' } });
+    fireEvent.change(screen.getByPlaceholderText(/Spotify Client ID/i), { target: { value: 'id' } });
+    fireEvent.change(screen.getByPlaceholderText(/Spotify Client Secret/i), { target: { value: 'secret' } });
+    for (const button of screen.getAllByRole('button', { name: 'Test' })) fireEvent.click(button);
+    expect(await screen.findByText(/Discogs returned 401: bad token/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Last\.fm error/i)).toBeInTheDocument();
+    expect(await screen.findByText(/spotify offline/i)).toBeInTheDocument();
+    for (const button of screen.getAllByRole('button', { name: 'Save' })) fireEvent.click(button);
+    expect(await screen.findAllByText(/save denied/i)).not.toHaveLength(0);
+  });
+
+  it('applies appearance presets, fonts, adaptive accent, reset, color edits, and logout', () => {
+    const onSettingsChange = vi.fn();
+    const onAdaptiveAccentEnabledChange = vi.fn();
+    const onLogout = vi.fn();
+    render(
+      <SettingsPage
+        currentUser={{ id: '2', username: 'listener', role: 'user', canScan: false, canEditMetadata: false }}
+        onLogout={onLogout}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={onSettingsChange}
+        adaptiveAccentEnabled
+        onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Vintage Radio' }));
+    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+      bgTexture: 'wood',
+      fontFamily: 'IBM Plex Mono',
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'Inter' }));
+    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ fontFamily: 'Inter' }));
+    fireEvent.click(screen.getByTitle('Adaptive accent is enabled'));
+    expect(onAdaptiveAccentEnabledChange).toHaveBeenCalledWith(false);
+
+    const backgroundInputs = screen.getAllByDisplayValue('#6a472f');
+    fireEvent.change(backgroundInputs[backgroundInputs.length - 1], { target: { value: '#123456' } });
+    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ colorBg: '#123456' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to Default' }));
+    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ colorBg: DEFAULT_SETTINGS.colorBg }));
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    expect(onLogout).toHaveBeenCalled();
+  });
+
+  it('forwards every vinyl playback control and clamps needle intensity', async () => {
+    const callbacks = {
+      onPlaybackModeChange: vi.fn(),
+      onVinylHardcoreChange: vi.fn(),
+      onVinylNeedleDropChange: vi.fn(),
+      onVinylAnalogFxDisabledChange: vi.fn(),
+      onVinylNeedleDropIntensityChange: vi.fn(),
+    };
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+        playbackMode="vinyl"
+        vinylNeedleDropIntensity={0.65}
+        {...callbacks}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    await screen.findByText('Vinyl Mode');
+    fireEvent.click(screen.getByLabelText('Enable Vinyl Mode'));
+    fireEvent.click(screen.getByLabelText(/Hardcore Vinyl/i));
+    fireEvent.click(screen.getByLabelText(/Needle-drop sound/i));
+    fireEvent.click(screen.getByLabelText(/Disable analog noise/i));
+    fireEvent.change(screen.getAllByRole('slider')[0], { target: { value: '100' } });
+    expect(callbacks.onPlaybackModeChange).toHaveBeenCalledWith('standard');
+    expect(callbacks.onVinylHardcoreChange).toHaveBeenCalledWith(true);
+    expect(callbacks.onVinylNeedleDropChange).toHaveBeenCalledWith(true);
+    expect(callbacks.onVinylAnalogFxDisabledChange).toHaveBeenCalledWith(true);
+    expect(callbacks.onVinylNeedleDropIntensityChange).toHaveBeenCalledWith(1);
+  });
+
+  it('disables and removes schedules and exercises post-scan failure/retry actions', async () => {
+    const snapshot = await apiMock.admin.queues();
+    snapshot.queues.postScan[0].status = 'running';
+    apiMock.admin.queues.mockResolvedValue(snapshot);
+    apiMock.admin.queues.mockClear();
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Auto-Scan/i }));
+    await screen.findByText('Queue & Maintenance');
+    fireEvent.click(screen.getByTitle('Remove schedule'));
+    await waitFor(() => expect(apiMock.schedules.remove).toHaveBeenCalledWith('1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop task' }));
+    await waitFor(() => expect(apiMock.admin.failPostScanJob).toHaveBeenCalledWith('21'));
+  });
+
+  it('reports advanced settings, waveform, and deep-analysis action failures', async () => {
+    apiMock.settings.update.mockRejectedValue(new Error('settings denied'));
+    apiMock.waveforms.runMap.mockRejectedValue(new Error('mapping denied'));
+    apiMock.boogiemix.queueLibraryDeepAnalysis.mockRejectedValue(new Error('queue denied'));
+    apiMock.boogiemix.pauseDeepAnalysisBackground.mockRejectedValue(new Error('pause denied'));
+    apiMock.boogiemix.clearDeepAnalysisCache.mockRejectedValue(new Error('clear denied'));
+    const confirmMock = vi.mocked(confirm);
+
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    await screen.findByRole('button', { name: 'Run Mapping Now' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Crossfade' }));
+    expect(await screen.findByText('Error')).toBeInTheDocument();
+    const crossfadeSlider = screen.getAllByRole('slider').find((slider) => slider.getAttribute('max') === '10');
+    if (!crossfadeSlider) throw new Error('Crossfade slider not found');
+    fireEvent.change(crossfadeSlider, { target: { value: '7' } });
+    await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ crossfadeDuration: '7' }));
+
+    fireEvent.click(screen.getAllByTitle('On')[0]);
+    expect(await screen.findByText(/Error: settings denied/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Run Mapping Now' }));
+    expect(await screen.findByText(/Error: mapping denied/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('BoogieMix deep-analysis library'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze Library' }));
+    expect(await screen.findByText(/Error: queue denied/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Pause Background' }));
+    expect(await screen.findByText(/Error: pause denied/i)).toBeInTheDocument();
+
+    confirmMock.mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Cache' }));
+    expect(apiMock.boogiemix.clearDeepAnalysisCache).not.toHaveBeenCalled();
+    confirmMock.mockReturnValueOnce(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Cache' }));
+    expect(await screen.findByText(/Error: clear denied/i)).toBeInTheDocument();
+  });
+
+  it('renders queue, provider-usage, and advanced status load failures', async () => {
+    apiMock.admin.queues.mockRejectedValue(new Error('queues offline'));
+    apiMock.admin.providerUsage.mockRejectedValue(new Error('usage offline'));
+    apiMock.dlna.status.mockRejectedValue(new Error('dlna offline'));
+    apiMock.waveforms.status.mockRejectedValue(new Error('waveforms offline'));
+    apiMock.boogiemix.deepAnalysisStatus.mockRejectedValue(new Error('analysis offline'));
+    apiMock.systemStatus.mockRejectedValue(new Error('status offline'));
+
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Auto-Scan/i }));
+    expect(await screen.findByText('queues offline')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Integrations/i }));
+    expect(await screen.findByText('usage offline')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    expect(await screen.findByText(/Deep analysis status unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText('Waveform mapping status unavailable.')).toBeInTheDocument();
   });
 });

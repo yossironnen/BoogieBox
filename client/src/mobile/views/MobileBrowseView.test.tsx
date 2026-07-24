@@ -103,4 +103,50 @@ describe('MobileBrowseView', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Pocket Mix' }));
     await waitFor(() => expect(apiMock.playlists.addTrack).toHaveBeenCalledWith('77', '99'));
   });
+
+  it('renders unknown metadata, highlights playback, rates tracks, and navigates both back levels', async () => {
+    const onSelectionChange = vi.fn();
+    const onPlayTrack = vi.fn();
+    apiMock.playlists.list.mockRejectedValue(new Error('ignored'));
+    const sparseTrack = {
+      id: '100', file_path: 'x', file_name: 'unknown.mp3', file_size: 1, format: 'MP3',
+      duration: null, bitrate: null, sample_rate: null, channels: null, title: '',
+      artist: '', album: '', library_name: 'Main', track_number: null, disc_number: null,
+      year: null, genre: null, composer: null, comment: null, bpm: null, scanned_at: '2026-01-01',
+      rating: null,
+    };
+    apiMock.albumTracks.mockResolvedValue([sparseTrack]);
+    const artist = { id: '2', name: 'Fallback Artist', track_count: 1, album_count: 1 };
+    const album = { id: '11', title: 'Unknown Year Album', artist: null, album_artist: null, year: null, genre: null, track_count: 1 };
+    const view = render(
+      <MobileBrowseView
+        onPlayTrack={onPlayTrack}
+        onAddToQueue={vi.fn()}
+        selection={{ artist, album, tracks: [] }}
+        onSelectionChange={onSelectionChange}
+        playbackSnapshot={{ currentTrack: sparseTrack, currentTime: 0, duration: 0, isPlaying: true, volume: 1, muted: false, loading: false, audioError: null } as any}
+      />,
+    );
+
+    const trackButton = (await screen.findByText('unknown.mp3')).closest('button');
+    if (!trackButton) throw new Error('Track play button not found');
+    expect(screen.getByText('Fallback Artist')).toBeInTheDocument();
+    fireEvent.click(trackButton);
+    expect(onPlayTrack).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Set rating to 1 stars' }));
+    await waitFor(() => expect(apiMock.setTrackRating).toHaveBeenCalledWith('100', 1));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ album: null, tracks: [] }));
+
+    view.rerender(
+      <MobileBrowseView
+        onPlayTrack={onPlayTrack}
+        onAddToQueue={vi.fn()}
+        selection={{ artist, album: null, tracks: [] }}
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(onSelectionChange).toHaveBeenCalledWith({ artist: null, album: null, tracks: [] });
+  });
 });

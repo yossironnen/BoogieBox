@@ -17,6 +17,8 @@ vi.mock('../../api', () => ({
       create: vi.fn(),
     },
     setTrackRating: vi.fn(),
+    artistPhotoUrl: vi.fn((id) => `/artist/${id}`),
+    albumArtUrl: vi.fn((id) => `/album/${id}`),
   },
 }));
 
@@ -201,5 +203,71 @@ describe('MobileSearchView', () => {
     expect(screen.queryByText('Movies')).not.toBeInTheDocument();
     expect(screen.queryByText('TV Shows')).not.toBeInTheDocument();
     expect(screen.getByText('Arrival')).toBeInTheDocument();
+  });
+
+  it('covers grouped results, rating, filters, sorting, pagination, and search errors', async () => {
+    vi.useRealTimers();
+    const onPlayTrack = vi.fn();
+    const result = {
+      tracks: [{
+        id: '44', file_path: 'x', file_name: 'anthem.mp3', title: '', artist: '', album: '',
+        duration: 120, rating: null,
+      }],
+      artists: [{ id: 'a1', name: 'Artist One' }],
+      albums: [{ id: 'b1', title: 'Album One' }],
+      top_results: [
+        { type: 'track', id: '44', title: 'Top Anthem', subtitle: '' },
+        { type: 'artist', id: 'missing', title: 'No Local Track', subtitle: null },
+      ],
+      total: 2,
+      page: 1,
+      limit: 20,
+      hasMore: true,
+    } as any;
+    vi.mocked(api.search).mockResolvedValue(result);
+    render(<MobileSearchView onPlayTrack={onPlayTrack} onAddToQueue={vi.fn()} />);
+    const input = screen.getByPlaceholderText(/songs, artists, albums/i);
+    fireEvent.change(input, { target: { value: '  an  ' } });
+    expect(await screen.findByText('Artist One')).toBeInTheDocument();
+    expect(screen.getByText('Album One')).toBeInTheDocument();
+    expect(screen.getByText('Unknown track')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Top Anthem' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open No Local Track' }));
+    expect(onPlayTrack).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Set rating to 4 stars' }));
+    await waitFor(() => expect(api.setTrackRating).toHaveBeenCalledWith('44', 4));
+
+    for (const name of ['Title', 'Artist', 'Rating', 'Duration', 'Relevance']) {
+      fireEvent.click(screen.getByRole('button', { name }));
+      await waitFor(() => expect(api.search).toHaveBeenCalledWith(expect.objectContaining({ sort: name.toLowerCase() })));
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unrated' }));
+    fireEvent.change(screen.getByPlaceholderText('From year'), { target: { value: '1999' } });
+    fireEvent.change(screen.getByPlaceholderText('To year'), { target: { value: '2020' } });
+    await waitFor(() => expect(api.search).toHaveBeenCalledWith(expect.objectContaining({
+      track_rating_filter: 'unrated',
+      year: 1999,
+    })));
+    fireEvent.click(screen.getByRole('button', { name: '3+ stars' }));
+    fireEvent.click(screen.getByRole('button', { name: '4+ stars' }));
+    fireEvent.click(screen.getByRole('button', { name: 'All ratings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    vi.mocked(api.search).mockResolvedValueOnce({
+      ...result,
+      tracks: [{ ...result.tracks[0], id: '55', file_name: 'next.mp3' }],
+      page: 2,
+      hasMore: false,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('next.mp3')).toBeInTheDocument();
+
+    vi.mocked(api.search).mockRejectedValueOnce(new Error('offline'));
+    fireEvent.change(input, { target: { value: 'failure' } });
+    expect(await screen.findByText(/Search failed/)).toBeInTheDocument();
+    expect(screen.getByText('No music matches.')).toBeInTheDocument();
   });
 });

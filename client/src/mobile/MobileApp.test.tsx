@@ -13,20 +13,55 @@ vi.mock('../components/Player', () => ({
 }));
 
 vi.mock('./views/MobileBrowseView', () => ({
-  default: () => <div>browse-view</div>,
+  default: ({ onPlayTrack, onAddToQueue, onSelectionChange }: any) => (
+    <div>
+      browse-view
+      <button onClick={() => onPlayTrack({ id: 'browse-track' }, [])}>browse-play</button>
+      <button onClick={() => onAddToQueue({ id: 'browse-track' })}>browse-queue</button>
+      <button onClick={() => onSelectionChange({ artist: null, album: null, tracks: [] })}>browse-select</button>
+    </div>
+  ),
 }));
 
 vi.mock('./views/MobileSearchView', () => ({
-  default: () => <div>search-view</div>,
+  default: ({ onPlayTrack, onAddToQueue }: any) => (
+    <div>
+      search-view
+      <button onClick={() => onPlayTrack({ id: 'search-track' }, [])}>search-play</button>
+      <button onClick={() => onAddToQueue({ id: 'search-track' })}>search-queue</button>
+    </div>
+  ),
 }));
 
 vi.mock('./views/MobilePlaylistsView', () => ({
-  default: () => <div>playlists-view</div>,
+  default: ({ initialPlaylistId, onSelectionChange, onPlayTrack, onAddToQueue }: any) => (
+    <div>
+      playlists-view-{initialPlaylistId}
+      <button onClick={() => onSelectionChange({ playlist: { id: 'p1', remember_progress: true }, tracks: [] })}>playlist-select</button>
+      <button onClick={() => onPlayTrack({ id: 'playlist-track' }, [])}>playlist-play</button>
+      <button onClick={() => onAddToQueue({ id: 'playlist-track' })}>playlist-queue</button>
+    </div>
+  ),
 }));
 
 vi.mock('./views/MobileNowPlayingView', () => ({
   default: () => <div>Up Next</div>,
 }));
+
+vi.mock('./views/MobileHomeView', () => ({
+  default: ({ onOpenAlbum, onOpenPlaylist, onOpenBrowse, onPlayTrack }: any) => (
+    <div>
+      home-view
+      <button onClick={() => onOpenAlbum({ id: 'a1', title: 'Album' })}>home-album</button>
+      <button onClick={() => onOpenPlaylist('p9')}>home-playlist</button>
+      <button onClick={onOpenBrowse}>home-browse</button>
+      <button onClick={() => onPlayTrack({ id: 'home-track' }, [])}>home-play</button>
+    </div>
+  ),
+}));
+
+const { setTrackRating } = vi.hoisted(() => ({ setTrackRating: vi.fn().mockResolvedValue({ ok: true }) }));
+vi.mock('../api', () => ({ api: { setTrackRating, albumArtUrl: (id: string) => `/art/${id}` } }));
 
 function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedProps {
   return {
@@ -96,6 +131,42 @@ describe('MobileApp', () => {
     render(<MobileApp {...createProps()} />);
     fireEvent.click(screen.getByRole('button', { name: /Open now playing for/i }));
     expect(screen.getByText('Up Next')).toBeInTheDocument();
+  });
+
+  it('routes every tab and forwards child playback and selection actions', () => {
+    const props = createProps();
+    render(<MobileApp {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'home-play' }));
+    expect(props.onPlayTrack).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'home-album' }));
+    expect(screen.getByText('browse-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'browse-play' }));
+    fireEvent.click(screen.getByRole('button', { name: 'browse-queue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'browse-select' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Search/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'search-play' }));
+    fireEvent.click(screen.getByRole('button', { name: 'search-queue' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Home/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'home-playlist' }));
+    expect(screen.getByText('playlists-view-p9')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'playlist-select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'playlist-play' }));
+    fireEvent.click(screen.getByRole('button', { name: 'playlist-queue' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Now/ }));
+    expect(screen.getByText('Up Next')).toBeInTheDocument();
+    expect(props.onAddToQueue).toHaveBeenCalledTimes(3);
+  });
+
+  it('consumes externally requested playlists and quick-rates the active track', () => {
+    const props = createProps({ openPlaylistId: 'external' });
+    render(<MobileApp {...props} />);
+    expect(screen.getByText('playlists-view-external')).toBeInTheDocument();
+    expect(props.onConsumeOpenPlaylist).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Quick rate/i }));
+    expect(setTrackRating).toHaveBeenCalledWith('1', 4);
   });
 });
 

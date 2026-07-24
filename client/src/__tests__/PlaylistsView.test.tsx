@@ -5,7 +5,13 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import PlaylistsView from '../components/PlaylistsView';
+import PlaylistsView, {
+  buildPlaylistCollageAlbumIds,
+  createPlaylistFallbackTiles,
+  fmtDur,
+  fmtTrackDur,
+  normalizePlaylistName,
+} from '../components/PlaylistsView';
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -92,6 +98,28 @@ describe('PlaylistsView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(apiMock.playlists.remove).toHaveBeenCalledWith('1'));
+  });
+
+  it('formats playlist names, durations, collage ids, and fallback tiles at boundaries', () => {
+    expect(normalizePlaylistName('  Road   TRIP ')).toBe('road trip');
+    expect([fmtDur(null), fmtDur(59), fmtDur(60), fmtDur(3660)])
+      .toEqual(['', '0m', '1m', '1h 1m']);
+    expect([fmtTrackDur(null), fmtTrackDur(5), fmtTrackDur(65)])
+      .toEqual(['–', '0:05', '1:05']);
+    expect(createPlaylistFallbackTiles(0)).toEqual([0, 1, 2, 3]);
+    expect(createPlaylistFallbackTiles(3)).toEqual([0]);
+    expect(createPlaylistFallbackTiles(5)).toEqual([]);
+
+    const rows = [
+      { id: '1', album_id: null },
+      { id: '2', album_id: 'a' },
+      { id: '3', album_id: 'a' },
+      { id: '4', album_id: 'b' },
+      { id: '5', album_id: 'c' },
+      { id: '6', album_id: 'd' },
+      { id: '7', album_id: 'e' },
+    ] as any;
+    expect(buildPlaylistCollageAlbumIds(rows)).toEqual(['a', 'b', 'c', 'd']);
   });
 });
 

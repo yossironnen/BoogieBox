@@ -20,14 +20,14 @@ const ALPHA_RAIL_LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
 const ROOT_SCROLL_BY_VIEW: Record<string, number> = {};
 const ROOT_ANCHOR_BY_VIEW: Record<string, ClientEntityId> = {};
 
-function toAlphaBucket(raw: string | null | undefined): string {
+export function toAlphaBucket(raw: string | null | undefined): string {
   const normalized = (raw ?? '').trim();
   if (!normalized) return '#';
   const first = normalized[0].toUpperCase();
   return first >= 'A' && first <= 'Z' ? first : '#';
 }
 
-function buildLetterFirstIndexMap<T>(
+export function buildLetterFirstIndexMap<T>(
   items: T[],
   getName: (item: T) => string | null | undefined,
 ): Record<string, number> {
@@ -56,7 +56,7 @@ export function sortArtists(
   return copy;
 }
 
-function parseSortDir(value: string | null): 'asc' | 'desc' {
+export function parseSortDir(value: string | null): 'asc' | 'desc' {
   return value === 'desc' ? 'desc' : 'asc';
 }
 
@@ -118,7 +118,7 @@ const RATING_FILTER_OPTIONS: Array<[RatingFilter, string]> = [
   ['gte3', '3+'],
 ];
 
-function matchesRatingFilter(rating: number | null | undefined, filter: RatingFilter): boolean {
+export function matchesRatingFilter(rating: number | null | undefined, filter: RatingFilter): boolean {
   if (filter === 'all') return true;
   if (filter === 'rated') return rating != null;
   if (filter === 'unrated') return rating == null;
@@ -127,24 +127,24 @@ function matchesRatingFilter(rating: number | null | undefined, filter: RatingFi
   return true;
 }
 
-function getRatingFilterLabel(filter: RatingFilter): string {
+export function getRatingFilterLabel(filter: RatingFilter): string {
   return RATING_FILTER_OPTIONS.find(([value]) => value === filter)?.[1] ?? 'All';
 }
 
-function getAlbumSortLabel(field: 'title' | 'year' | 'rating', dir: 'asc' | 'desc'): string {
+export function getAlbumSortLabel(field: 'title' | 'year' | 'rating', dir: 'asc' | 'desc'): string {
   const label = field === 'title' ? 'Name' : field === 'year' ? 'Year' : 'Rating';
   return `${label} ${dir === 'asc' ? '↑' : '↓'}`;
 }
 
-function filterAlbumsByRating(albums: Album[], filter: RatingFilter): Album[] {
+export function filterAlbumsByRating(albums: Album[], filter: RatingFilter): Album[] {
   return albums.filter((album) => matchesRatingFilter(album.rating ?? null, filter));
 }
 
-function filterArtistsByRating(artists: Artist[], filter: RatingFilter): Artist[] {
+export function filterArtistsByRating(artists: Artist[], filter: RatingFilter): Artist[] {
   return artists.filter((artist) => matchesRatingFilter(artist.rating ?? null, filter));
 }
 
-function sortTracks(tracks: Track[], mode: TrackSortMode, dir: 'asc' | 'desc'): Track[] {
+export function sortTracks(tracks: Track[], mode: TrackSortMode, dir: 'asc' | 'desc'): Track[] {
   const copy = [...tracks];
   if (mode === 'album') {
     copy.sort((a, b) => {
@@ -178,11 +178,11 @@ function sortTracks(tracks: Track[], mode: TrackSortMode, dir: 'asc' | 'desc'): 
   return copy;
 }
 
-function filterTracksByRating(tracks: Track[], filter: RatingFilter): Track[] {
+export function filterTracksByRating(tracks: Track[], filter: RatingFilter): Track[] {
   return tracks.filter((track) => matchesRatingFilter(track.rating ?? null, filter));
 }
 
-function getAlbumDisplayArtist(album: Album, groupBy: 'artist' | 'album_artist'): string | null {
+export function getAlbumDisplayArtist(album: Album, groupBy: 'artist' | 'album_artist'): string | null {
   return groupBy === 'album_artist'
     ? (album.album_artist || album.artist || null)
     : (album.artist || null);
@@ -221,7 +221,7 @@ export function shouldApplyBrowseRootFetchResult(fetchToken: number, activeToken
   return fetchToken === activeToken;
 }
 
-function fmtDur(s: number | null | undefined): string {
+export function fmtDur(s: number | null | undefined): string {
   if (!s) return '';
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -231,7 +231,7 @@ function fmtDur(s: number | null | undefined): string {
   return `${sec}s`;
 }
 
-function fmtTrackDur(s: number | null): string {
+export function fmtTrackDur(s: number | null): string {
   if (!s) return '–';
   const m = Math.floor(s / 60);
   const sec = Math.floor(s % 60);
@@ -240,13 +240,13 @@ function fmtTrackDur(s: number | null): string {
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
-function matchesAlbumRatingTarget(candidate: Album, target: Album): boolean {
+export function matchesAlbumRatingTarget(candidate: Album, target: Album): boolean {
   if (candidate.id === target.id) return true;
   return (candidate.title ?? '').trim().toLowerCase() === (target.title ?? '').trim().toLowerCase()
     && (candidate.album_artist ?? '').trim().toLowerCase() === (target.album_artist ?? '').trim().toLowerCase();
 }
 
-function applyAlbumRating(list: Album[], target: Album, rating: number | null): Album[] {
+export function applyAlbumRating(list: Album[], target: Album, rating: number | null): Album[] {
   return list.map((album) => (
     matchesAlbumRatingTarget(album, target)
       ? { ...album, rating }
@@ -254,11 +254,11 @@ function applyAlbumRating(list: Album[], target: Album, rating: number | null): 
   ));
 }
 
-function applyTrackRating(list: Track[], trackId: ClientEntityId, rating: number | null): Track[] {
+export function applyTrackRating(list: Track[], trackId: ClientEntityId, rating: number | null): Track[] {
   return list.map((track) => (track.id === trackId ? { ...track, rating } : track));
 }
 
-function applyArtistRating(list: Artist[], artistId: ClientEntityId, rating: number | null): Artist[] {
+export function applyArtistRating(list: Artist[], artistId: ClientEntityId, rating: number | null): Artist[] {
   return list.map((artist) => (artist.id === artistId ? { ...artist, rating } : artist));
 }
 

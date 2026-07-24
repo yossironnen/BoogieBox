@@ -35,6 +35,15 @@ describe('getStreamDirect / setStreamDirect', () => {
     setStreamDirect(true);
     expect(getStreamDirect()).toBe(true);
   });
+
+  it('falls back to false when cookie access is unavailable', () => {
+    const cookieGetter = vi.spyOn(document, 'cookie', 'get').mockImplementation(() => {
+      throw new Error('cookie access denied');
+    });
+
+    expect(getStreamDirect()).toBe(false);
+    cookieGetter.mockRestore();
+  });
 });
 
 // ── Pure URL helpers ────────────────────────────────────────────────────────
@@ -61,6 +70,14 @@ describe('api.trackStreamUrl', () => {
     setStreamDirect(true);
     setStreamDirect(false);
     expect(api.trackStreamUrl('7')).toBe('/api/tracks/7/stream');
+  });
+});
+
+describe('api artwork URLs', () => {
+  it('omits cache versions that are absent, non-finite, or non-positive', () => {
+    expect(api.albumArtUrl('42', 300)).toBe('/api/albums/42/art?size=300');
+    expect(api.albumArtUrl('42', 300, Number.NaN)).toBe('/api/albums/42/art?size=300');
+    expect(api.artistPhotoUrl('7', 800, -1)).toBe('/api/artists/7/photo?size=800');
   });
 });
 
@@ -181,6 +198,56 @@ describe('api.libraries', () => {
     const [url] = vi.mocked(fetch).mock.calls[0] as [string];
     expect(url).toContain(`/api/libraries/${libraryId}/scan`);
     expect(result).toEqual({ jobId });
+  });
+
+  it('normalizes network failures for GET, POST, PUT, DELETE, and PATCH requests', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('Failed to fetch'));
+    await expect(api.libraries.list()).rejects.toThrow(/Network request failed/);
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('socket closed'));
+    await expect(api.libraries.add(['/music'])).rejects.toThrow('socket closed');
+    vi.mocked(fetch).mockRejectedValueOnce(null);
+    await expect(api.libraries.rename('1', 'Name')).rejects.toThrow('Network request failed');
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('delete failed'));
+    await expect(api.libraries.remove('1')).rejects.toThrow('delete failed');
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('patch failed'));
+    await expect(api.setTrackRating('1', 4)).rejects.toThrow('patch failed');
+  });
+
+  it('handles JSON, text, HTML, and empty server error responses', async () => {
+    const response = (
+      status: number,
+      contentType: string,
+      text: string,
+      json: () => Promise<unknown> = async () => ({}),
+    ) => Promise.resolve({
+      ok: false,
+      status,
+      headers: { get: () => contentType },
+      text: async () => text,
+      json,
+    } as unknown as Response);
+
+    vi.mocked(fetch).mockReturnValueOnce(response(502, 'text/plain', 'proxy unavailable'));
+    await expect(api.libraries.list()).rejects.toThrow('proxy unavailable');
+    vi.mocked(fetch).mockReturnValueOnce(response(502, 'text/html', '<h1>Bad Gateway</h1>'));
+    await expect(api.libraries.list()).rejects.toThrow('Server error 502');
+    vi.mocked(fetch).mockReturnValueOnce(response(503, 'text/plain', '   '));
+    await expect(api.libraries.list()).rejects.toThrow('Server error 503');
+    vi.mocked(fetch).mockReturnValueOnce(response(500, 'application/json', '', async () => { throw new Error('bad json'); }));
+    await expect(api.libraries.list()).rejects.toThrow('Server error 500');
+  });
+
+  it('rejects successful non-JSON responses with safe text and HTML messages', async () => {
+    const response = (status: number, text: string) => Promise.resolve({
+      ok: true,
+      status,
+      headers: { get: () => 'text/plain' },
+      text: async () => text,
+    } as unknown as Response);
+    vi.mocked(fetch).mockReturnValueOnce(response(200, 'unexpected payload'));
+    await expect(api.libraries.list()).rejects.toThrow('unexpected payload');
+    vi.mocked(fetch).mockReturnValueOnce(response(200, '<html>login</html>'));
+    await expect(api.libraries.list()).rejects.toThrow('Server error 200');
   });
 
   it('scanJobs.active() calls GET /api/scan-jobs/active', async () => {

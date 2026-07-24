@@ -25,10 +25,20 @@ vi.mock('../api', () => ({
 vi.mock('../platform', () => ({
   platform: platformMock,
 }));
+vi.mock('./FolderPickerModal', () => ({
+  default: ({ initialPath, onSelect, onClose }: any) => (
+    <div>
+      picker-{initialPath || 'root'}
+      <button onClick={() => onSelect('/web/data')}>select-web-folder</button>
+      <button onClick={onClose}>close-web-folder</button>
+    </div>
+  ),
+}));
 
 describe('SetupView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    platformMock.isDesktop = true;
     apiMock.systemStatus.mockResolvedValue({
       ffmpegAvailable: true,
       setupRequired: true,
@@ -81,5 +91,34 @@ describe('SetupView', () => {
     render(<SetupView onComplete={vi.fn()} />);
 
     expect(screen.getByLabelText(/Database folder/i)).toHaveValue('C:\\Users\\Public\\BoogieBox');
+  });
+
+  it('uses and cancels the web folder picker, including an empty initial path', async () => {
+    platformMock.isDesktop = false;
+    apiMock.systemStatus.mockResolvedValue({ setupRequired: true, suggestedDbFolder: '   ' });
+    render(<SetupView onComplete={vi.fn()} />);
+    const input = screen.getByLabelText(/Database folder/i);
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /Browse/i }));
+    expect(screen.getByText('picker-root')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'close-web-folder' }));
+    expect(input).toHaveValue('');
+
+    fireEvent.click(screen.getByRole('button', { name: /Browse/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'select-web-folder' }));
+    await waitFor(() => expect(input).toHaveValue('/web/data'));
+  });
+
+  it('ignores blank submission and reports setup failures with a fallback message', async () => {
+    apiMock.systemSetup.mockRejectedValue({});
+    render(<SetupView onComplete={vi.fn()} />);
+    const input = screen.getByLabelText(/Database folder/i);
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: /Set up BoogieBox/i }));
+    expect(apiMock.systemSetup).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: '/broken' } });
+    fireEvent.click(screen.getByRole('button', { name: /Set up BoogieBox/i }));
+    expect(await screen.findByText('Setup failed')).toBeInTheDocument();
   });
 });

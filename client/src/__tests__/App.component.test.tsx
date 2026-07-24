@@ -26,6 +26,9 @@ const { apiMock, getStreamDirectMock, openContextMenuMock } = vi.hoisted(() => (
     search: vi.fn(),
     autoDjTracks: vi.fn(),
     markTrackPlayed: vi.fn(),
+    setArtistRating: vi.fn(),
+    setAlbumRating: vi.fn(),
+    setTrackRating: vi.fn(),
     artists: vi.fn(),
     albums: vi.fn(),
     debugTestPath: vi.fn(),
@@ -54,6 +57,8 @@ vi.mock('../components/HomeView', () => ({
       <button onClick={() => props.onOpenPlaylist('42')}>home-open-playlist</button>
       <button onClick={() => props.onPlayTrack({ id: '1', file_path: 'x', file_name: 'x.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Track One', artist: 'Artist One', album: 'Album One', library_name: 'Main', track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01' })}>home-play-track</button>
       <button onClick={() => props.onStartAutoDj(['Rock'])}>home-start-auto-dj</button>
+      <button onClick={() => props.onBrowseMusic()}>home-browse-music</button>
+      <button onClick={() => props.onOpenGenre('   ')}>home-empty-genre</button>
     </div>
   ),
 }));
@@ -62,7 +67,10 @@ vi.mock('../components/HomeView', () => ({
 vi.mock('../components/BrowseView', () => ({
   default: (props: any) => (
     <div data-testid="browse-view">
-      browse:{props.openArtistRequest ? 'artist' : props.openAlbumRequest ? 'album' : props.openGenreRequest ? 'genre' : 'none'}:libs:{(props.forcedLibraryIds ?? []).join(',') || 'all'}
+      browse:{props.openAlbumRequest ? 'album' : props.openArtistRequest ? 'artist' : props.openGenreRequest ? 'genre' : 'none'}:libs:{(props.forcedLibraryIds ?? []).join(',') || 'all'}
+      <button onClick={() => props.playTrack({ id: 'b1', title: 'Browse Track' }, [{ id: 'b1' }])}>browse-play</button>
+      <button onClick={() => props.addToQueue({ id: 'b1', title: 'Browse Track' })}>browse-queue</button>
+      <button onClick={() => props.playAlbumInVinylMode([{ id: 'v1', title: 'Vinyl One' }, { id: 'v2', title: 'Vinyl Two' }])}>browse-vinyl</button>
     </div>
   ),
 }));
@@ -76,12 +84,28 @@ vi.mock('../components/SettingsPage', () => ({
     <div data-testid="settings-view">
       <button onClick={() => props.onSettingsChange({ ...DEFAULT_SETTINGS, lastfmKey: 'changed' })}>change-settings</button>
       <button onClick={() => props.onStreamDirectChange?.(true)}>set-stream-direct</button>
+      <button onClick={() => props.onAdaptiveAccentEnabledChange(false)}>set-adaptive</button>
+      <button onClick={() => props.onPlaybackModeChange('vinyl')}>set-vinyl-mode</button>
+      <button onClick={() => props.onVinylHardcoreChange(true)}>set-hardcore</button>
+      <button onClick={() => props.onVinylNeedleDropChange(true)}>set-needle</button>
+      <button onClick={() => props.onVinylAnalogFxDisabledChange(true)}>set-analog-off</button>
+      <button onClick={() => props.onVinylNeedleDropIntensityChange(0.9)}>set-intensity</button>
+      <button onClick={() => props.onLibrariesRefresh()}>refresh-libraries</button>
+      <button onClick={() => props.onLogout()}>settings-logout</button>
     </div>
   ),
 }));
 
 vi.mock('../components/Player', () => ({
-  default: () => <div data-testid="player-view">player</div>,
+  default: (props: any) => (
+    <div data-testid="player-view">
+      player
+      <button onClick={() => props.onStateChange({ queue: [{ id: 'p1' }], currentIndex: 0, isPlaying: true, playToken: 1 })}>player-state</button>
+      <button onClick={() => props.onOpenArtist('Artist One')}>player-artist</button>
+      <button onClick={() => props.onOpenAlbum('Album One', 'Artist One')}>player-album</button>
+      <button onClick={() => props.onPlaybackSnapshotChange({ currentTrack: { id: 'p1' }, currentTime: 1, duration: 2 })}>player-snapshot</button>
+    </div>
+  ),
 }));
 
 vi.mock('../components/ContextMenu', async () => {
@@ -154,6 +178,9 @@ describe('App component flows', () => {
       ],
     });
     apiMock.markTrackPlayed.mockResolvedValue({ ok: true });
+    apiMock.setArtistRating.mockResolvedValue({ ok: true });
+    apiMock.setAlbumRating.mockResolvedValue({ ok: true });
+    apiMock.setTrackRating.mockResolvedValue({ ok: true });
     apiMock.artists.mockResolvedValue([{ id: '1', name: 'Artist One', track_count: 2, album_count: 1 }]);
     apiMock.albums.mockResolvedValue([{ id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2 }]);
     apiMock.debugTestPath.mockResolvedValue({ exists: true, isDirectory: true, displayName: 'Music' });
@@ -327,6 +354,138 @@ describe('App component flows', () => {
       limit: 200,
     }));
     await waitFor(() => expect(apiMock.markTrackPlayed).toHaveBeenCalledWith('11'));
+  });
+
+  it('executes Browse, Settings, and Player callback state flows', async () => {
+    render(<App />);
+    await screen.findByTestId('home-view');
+    fireEvent.click(screen.getByText('home-empty-genre'));
+    expect(screen.getByTestId('home-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('home-browse-music'));
+    expect(await screen.findByTestId('browse-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('browse-play'));
+    fireEvent.click(screen.getByText('browse-queue'));
+    fireEvent.click(screen.getByText('browse-vinyl'));
+    await waitFor(() => expect(apiMock.markTrackPlayed).toHaveBeenCalledWith('v1'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    for (const name of [
+      'change-settings',
+      'set-stream-direct',
+      'set-adaptive',
+      'set-vinyl-mode',
+      'set-hardcore',
+      'set-needle',
+      'set-analog-off',
+      'set-intensity',
+      'refresh-libraries',
+    ]) {
+      fireEvent.click(screen.getByText(name));
+    }
+    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByText('player-state'));
+    fireEvent.click(screen.getByText('player-snapshot'));
+    fireEvent.click(screen.getByText('player-artist'));
+    await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:artist'));
+    fireEvent.click(screen.getByText('player-album'));
+    await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:album'));
+  });
+
+  it('exercises Search filters, sorting, ratings, rows, pagination, and quick results', async () => {
+    const secondTrack = {
+      id: '2', file_path: 'D:\\Music\\untitled.flac', file_name: 'untitled.flac', file_size: 2,
+      format: 'FLAC', duration: null, bitrate: null, sample_rate: 48000, channels: 2,
+      title: '', artist: '', album: '', library_name: 'Main',
+      track_number: null, disc_number: null, year: null, genre: '', composer: null, comment: null,
+      bpm: null, scanned_at: '2026-01-01', rating: null,
+    };
+    apiMock.search.mockResolvedValue({
+      tracks: [
+        {
+          id: '1', file_path: 'D:\\Music\\track-one.mp3', file_name: 'track-one.mp3', file_size: 1,
+          format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2,
+          title: 'Track One', artist: 'Artist One', album: 'Album One', library_name: 'Main',
+          track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null,
+          bpm: null, scanned_at: '2026-01-01', rating: 3,
+        },
+        secondTrack,
+      ],
+      total: 201,
+      page: 1,
+      limit: 100,
+      artists: [
+        { id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: 2 },
+        { id: '2', name: 'Artist Two', track_count: 1, album_count: 2, rating: null },
+      ],
+      albums: [
+        { id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2, rating: 4 },
+        { id: '20', title: 'Album Two', artist: null, album_artist: null, year: null, genre: null, track_count: 0, rating: null },
+      ],
+      top_results: [
+        { id: '1', type: 'artist', title: 'Top Artist', subtitle: 'Artist One' },
+        { id: '10', type: 'album', title: 'Top Album', subtitle: '' },
+        { id: '1', type: 'track', title: 'Top Track', subtitle: 'Artist One' },
+        { id: 'missing', type: 'track', title: 'Missing Track', subtitle: null },
+      ],
+    });
+
+    render(<App />);
+    await screen.findByTestId('home-view');
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    const query = screen.getByPlaceholderText(/Search titles, artists, albums/i);
+    fireEvent.change(query, { target: { value: 'music' } });
+    await screen.findByText('Top Results');
+
+    const [librarySelect, genreSelect] = screen.getAllByRole('combobox');
+    fireEvent.change(librarySelect, { target: { value: '1' } });
+    fireEvent.change(genreSelect, { target: { value: 'Rock' } });
+    fireEvent.change(screen.getByPlaceholderText('Year'), { target: { value: '2020' } });
+    fireEvent.click(screen.getByTitle(/Sonic Fingerprint/));
+
+    for (const heading of ['Title', 'Title', 'Artist', 'Album', 'Genre', 'Year', 'Dur', 'Kbps', 'Rating', 'Rating']) {
+      fireEvent.click(screen.getByText(heading));
+    }
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Artist One artist rating' }), { key: 'End' });
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Album One album rating' }), { key: 'Home' });
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Track One search rating' }), { key: 'ArrowRight' });
+    await waitFor(() => expect(apiMock.setArtistRating).toHaveBeenCalled());
+    await waitFor(() => expect(apiMock.setAlbumRating).toHaveBeenCalled());
+    await waitFor(() => expect(apiMock.setTrackRating).toHaveBeenCalled());
+
+    fireEvent.mouseEnter(screen.getByText('Track One').closest('[style*="cursor: pointer"]')!);
+    fireEvent.click(screen.getAllByTitle('Play')[0]);
+    fireEvent.mouseLeave(screen.getByText('Track One').closest('[style*="cursor: pointer"]')!);
+    fireEvent.click(screen.getByRole('button', { name: /Top Track.*Artist One/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Missing Track.*track/ }));
+    fireEvent.click(screen.getByText('→'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenCalledWith(expect.objectContaining({ page: 2 })));
+    fireEvent.click(screen.getByText('←'));
+    await waitFor(() => expect(apiMock.search).toHaveBeenCalledWith(expect.objectContaining({ page: 1 })));
+
+    fireEvent.click(screen.getByRole('button', { name: /Artist Two.*2 albums/i }));
+    await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:artist'));
+  });
+
+  it('uses Home album lookup exact, fallback, and failure paths', async () => {
+    const { unmount } = render(<App />);
+    await screen.findByTestId('home-view');
+    fireEvent.click(screen.getByText('home-open-album'));
+    await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:album'));
+    unmount();
+
+    apiMock.albums.mockResolvedValueOnce([{ id: 'different', title: 'Album One', album_artist: 'Artist One' }]);
+    const second = render(<App />);
+    await screen.findByTestId('home-view');
+    fireEvent.click(screen.getByText('home-open-album'));
+    await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:album'));
+    second.unmount();
+
+    apiMock.albums.mockRejectedValueOnce(new Error('offline'));
+    render(<App />);
+    await screen.findByTestId('home-view');
+    fireEvent.click(screen.getByText('home-open-album'));
+    await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:album'));
   });
 
 });

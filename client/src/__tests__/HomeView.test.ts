@@ -6,7 +6,9 @@ import { describe, it, expect } from 'vitest';
 import type { Stats } from '../types';
 import {
   buildBoogieSnapshot,
+  formatMinutes,
   mostPlayedArtistAriaLabel,
+  parseTrackTimestamp,
   recentlyPlayedAriaLabel,
   selectMostPlayedArtists,
   selectRecentlyPlayedTracks,
@@ -186,6 +188,58 @@ describe('HomeView Dashboard', () => {
 
       expect(totalPlays).toBe(2);
       expect(snapshot.dailyCounts.filter((count) => count > 0)).toHaveLength(2);
+    });
+
+    it('handles invalid and out-of-range plays, unknown artists, durations, ties, and streaks', () => {
+      expect(parseTrackTimestamp(null)).toBeNull();
+      expect(parseTrackTimestamp('not-a-date')).toBeNull();
+      expect(parseTrackTimestamp('2026-03-12 10:00:00')).not.toBeNull();
+      expect(parseTrackTimestamp('2026-03-12T10:00:00')).not.toBeNull();
+
+      const tracks = [
+        { id: '1', artist: ' Beta ', duration: 61.9, last_played_at: '2026-03-10 10:00:00' },
+        { id: '2', artist: 'Alpha', duration: 0, last_played_at: '2026-03-11 10:00:00' },
+        { id: '3', artist: '', duration: -1, last_played_at: '2026-03-12 10:00:00' },
+        { id: '4', artist: 'Outside', duration: 100, last_played_at: '2025-01-01 10:00:00' },
+        { id: '5', artist: 'Invalid', duration: 100, last_played_at: 'bad' },
+      ] as any[];
+      const snapshot = buildBoogieSnapshot(tracks as any, 7, new Date('2026-03-12T12:00:00'));
+      expect(snapshot.totalSeconds).toBe(61);
+      expect(snapshot.currentStreak).toBe(3);
+      expect(snapshot.longestStreak).toBe(3);
+      expect(snapshot.topArtist).toBe('Alpha');
+      expect(snapshot.topArtistPlays).toBe(1);
+
+      const empty = buildBoogieSnapshot([], 7, new Date('2026-03-12T12:00:00'));
+      expect(empty.topArtist).toBe('No artist yet');
+      expect(empty.topArtistPlays).toBe(0);
+      expect(empty.currentStreak).toBe(0);
+    });
+
+    it('uses all tie breakers and filename label fallbacks', () => {
+      const tiedTracks = [
+        { id: '1', title: '', file_name: 'one.mp3', play_count: 2, last_played_at: null },
+        { id: '3', title: null, file_name: 'three.mp3', play_count: 2, last_played_at: '2026-01-01' },
+        { id: '2', title: 'Two', file_name: 'two.mp3', play_count: 2, last_played_at: '2026-01-01' },
+        { id: '0', title: 'Zero', file_name: 'zero.mp3', play_count: null },
+      ] as any[];
+      expect(selectTopPlayedTracks(tiedTracks as any).map(track => track.id)).toEqual(['3', '2', '1']);
+      expect(topRatedTrackAriaLabel(tiedTracks[0] as any)).toBe('Play ranked track one.mp3');
+      expect(recentlyPlayedAriaLabel(tiedTracks[0] as any)).toBe('Play one.mp3');
+      expect(topPlayedTrackAriaLabel(tiedTracks[0] as any)).toBe('Play one.mp3');
+
+      const tiedArtists = [
+        { id: '1', name: 'Zulu', play_count: 2, track_count: 1, album_count: 1 },
+        { id: '2', name: 'Alpha', play_count: 2, track_count: 1, album_count: 1 },
+      ] as any[];
+      expect(selectMostPlayedArtists(tiedArtists as any).map(artist => artist.name)).toEqual(['Alpha', 'Zulu']);
+    });
+
+    it('formats zero, minute-only, and hour-plus listening totals', () => {
+      expect(formatMinutes(0)).toBe('0m');
+      expect(formatMinutes(-2)).toBe('0m');
+      expect(formatMinutes(45)).toBe('45m');
+      expect(formatMinutes(125)).toBe('2h 5m');
     });
   });
 });

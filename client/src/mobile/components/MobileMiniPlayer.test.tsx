@@ -128,5 +128,82 @@ describe('MobileMiniPlayer', () => {
     fireEvent.click(screen.getByRole('button', { name: /Aural Static/i }));
     expect(onOpenNowPlaying).toHaveBeenCalledTimes(1);
   });
+
+  it('handles fallback metadata, quick rating, gestures, disabled navigation, and empty queues', () => {
+    const track = {
+      id: '1',
+      file_path: 'x',
+      file_name: 'fallback.mp3',
+      file_size: 1,
+      format: 'MP3',
+      duration: 0,
+      bitrate: null,
+      sample_rate: null,
+      channels: null,
+      title: '',
+      artist: '',
+      album: '',
+      library_name: 'Main',
+      track_number: null,
+      disc_number: null,
+      year: null,
+      genre: null,
+      composer: null,
+      comment: null,
+      bpm: null,
+      scanned_at: '2026-01-01',
+      album_id: null,
+      rating: 4,
+    } as any;
+    const onStateChange = vi.fn();
+    const onOpenNowPlaying = vi.fn();
+    const onQuickRate = vi.fn();
+    const state = { queue: [track], currentIndex: 0, isPlaying: false, playToken: 1 };
+    const { container, rerender } = render(
+      <MobileMiniPlayer
+        snapshot={{
+          currentTrack: null,
+          currentTime: -10,
+          duration: 0,
+          isPlaying: false,
+          volume: 1,
+          muted: false,
+          loading: false,
+          audioError: null,
+        }}
+        playerState={state}
+        onStateChange={onStateChange}
+        onOpenNowPlaying={onOpenNowPlaying}
+        onQuickRate={onQuickRate}
+      />,
+    );
+
+    expect(screen.getByText('Unknown artist')).toBeInTheDocument();
+    expect(screen.getByText('fallback.mp3')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next track' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+    expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ isPlaying: true }));
+    fireEvent.click(screen.getByRole('button', { name: /Quick rate/i }));
+    expect(onQuickRate).toHaveBeenCalledWith(null);
+
+    const wrap = container.firstElementChild!;
+    fireEvent.touchEnd(wrap, { changedTouches: [{ clientX: 10, clientY: 0 }] });
+    fireEvent.touchStart(wrap, { touches: [{ clientX: 10, clientY: 100 }] });
+    fireEvent.touchEnd(wrap, { changedTouches: [{ clientX: 20, clientY: 40 }] });
+    expect(onOpenNowPlaying).toHaveBeenCalled();
+    fireEvent.touchStart(wrap, { touches: [{ clientX: 10, clientY: 100 }] });
+    fireEvent.touchEnd(wrap, { changedTouches: [{ clientX: 200, clientY: 40 }] });
+    expect(onOpenNowPlaying).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <MobileMiniPlayer
+        snapshot={null}
+        playerState={{ ...state, queue: [], currentIndex: 4 }}
+        onStateChange={onStateChange}
+        onOpenNowPlaying={onOpenNowPlaying}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
 });
 

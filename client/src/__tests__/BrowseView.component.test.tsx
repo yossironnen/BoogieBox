@@ -16,6 +16,7 @@ const { apiMock } = vi.hoisted(() => ({
     albums: vi.fn(),
     artistAlbums: vi.fn(),
     artistAppearsOn: vi.fn(),
+    resolveArtistReleaseTypes: vi.fn(),
     albumTracks: vi.fn(),
     albumTracksByGroup: vi.fn(),
     artistRadio: vi.fn(),
@@ -89,6 +90,7 @@ describe('BrowseView component flows', () => {
     apiMock.albums.mockResolvedValue([album]);
     apiMock.artistAlbums.mockResolvedValue([album]);
     apiMock.artistAppearsOn.mockResolvedValue([]);
+    apiMock.resolveArtistReleaseTypes.mockResolvedValue({ updated: false });
     apiMock.albumTracks.mockResolvedValue(tracks);
     apiMock.albumTracksByGroup.mockResolvedValue(tracks);
     apiMock.artistRadio.mockResolvedValue({ artist: 'Artist One', tags: ['rock'], tracks: [tracks[0]] });
@@ -266,6 +268,54 @@ describe('BrowseView component flows', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/i }));
     await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', 120));
+  });
+
+  it('renders every artist release section and handles empty and failed playback builders', async () => {
+    const releases: Album[] = [
+      { id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2, total_duration: 360, releaseType: 'album' },
+      { id: '11', title: 'Single One', artist: 'Artist One', album_artist: 'Artist One', year: null, genre: null, track_count: 1, total_duration: 30, releaseType: 'single' },
+      { id: '12', title: 'Compilation One', artist: 'Artist One', album_artist: 'Artist One', year: 2021, genre: 'Rock', track_count: 1, total_duration: 3600, releaseType: 'compilation' },
+    ];
+    apiMock.artistAlbums.mockResolvedValue(releases);
+    apiMock.artistAppearsOn.mockResolvedValue([
+      { id: '13', title: 'Guest Album', artist: 'Artist One', album_artist: 'Various', year: 2022, genre: 'Pop', track_count: 1, total_duration: null },
+    ]);
+    apiMock.resolveArtistReleaseTypes.mockResolvedValueOnce({ updated: true });
+    apiMock.artistRadio
+      .mockResolvedValueOnce({ artist: 'Artist One', tags: [], tracks: [] })
+      .mockRejectedValueOnce(new Error('radio offline'));
+    apiMock.search.mockRejectedValue(new Error('search offline'));
+    apiMock.albumTracks.mockResolvedValue([]);
+    const playTrack = vi.fn();
+
+    render(
+      <BrowseView
+        libraries={[]}
+        playTrack={playTrack}
+        playAlbumInVinylMode={vi.fn()}
+        addToQueue={vi.fn()}
+        lastfmKey="test-lastfm-key"
+      />,
+    );
+    await screen.findByTitle('Artist One');
+    fireEvent.click(screen.getByText('Artist One'));
+    expect(await screen.findByText('Singles & EPs')).toBeInTheDocument();
+    expect(screen.getByText('Compilations')).toBeInTheDocument();
+    expect(screen.getByText('Appears On')).toBeInTheDocument();
+    expect(screen.getByText('Guest Album')).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.resolveArtistReleaseTypes).toHaveBeenCalledWith('1'));
+
+    fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/i }));
+    await waitFor(() => expect(alert).toHaveBeenCalledWith(expect.stringContaining('No radio tracks')));
+    fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/i }));
+    await waitFor(() => expect(alert).toHaveBeenCalledWith('radio offline'));
+    fireEvent.click(screen.getByRole('button', { name: /Play Top 5/i }));
+    await waitFor(() => expect(alert).toHaveBeenCalledWith('search offline'));
+
+    fireEvent.click(screen.getByText('Single One'));
+    await waitFor(() => expect(apiMock.albumTracks).toHaveBeenCalledWith('11'));
+    expect(await screen.findByText('No tracks found.')).toBeInTheDocument();
+    expect(playTrack).not.toHaveBeenCalled();
   });
 
   it('refetches album root rows when breadcrumb Browse is clicked from an externally opened album', async () => {
@@ -464,6 +514,77 @@ describe('BrowseView component flows', () => {
 
     await waitFor(() => expect(screen.getByTitle('Album One')).toBeInTheDocument());
     expect(screen.queryByText('View: Table')).not.toBeInTheDocument();
+  });
+
+  it('exercises root refinement chips, multi-select filters, layout, grouping, and sort directions', async () => {
+    apiMock.genres.mockResolvedValue([
+      { genre: 'Rock', track_count: 2 },
+      { genre: 'Jazz', track_count: 1 },
+    ]);
+    apiMock.artists.mockResolvedValue([
+      { id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: 4.5 },
+      { id: '2', name: '# Noise', track_count: 1, album_count: 2, rating: null },
+    ]);
+    apiMock.albums.mockResolvedValue([
+      { id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2, total_duration: 3661, rating: 4.5 },
+      { id: '20', title: '# Untitled', artist: null, album_artist: null, year: null, genre: null, track_count: 0, total_duration: 45, rating: null },
+    ]);
+    const libraries: Library[] = [
+      { id: '1', path: 'D:\\Music', name: 'Main', added_at: '2026-01-01', last_scan: null, track_count: 2 },
+      { id: '2', path: 'D:\\Jazz', name: 'Jazz', added_at: '2026-01-01', last_scan: null, track_count: 1 },
+    ];
+
+    render(
+      <BrowseView
+        libraries={libraries}
+        playTrack={vi.fn()}
+        playAlbumInVinylMode={vi.fn()}
+        addToQueue={vi.fn()}
+        lastfmKey="test-lastfm-key"
+      />,
+    );
+    await screen.findByTitle('Artist One');
+
+    fireEvent.click(screen.getByTitle(/Sonic Fingerprint/));
+    fireEvent.click(screen.getByRole('button', { name: 'Library filter menu' }));
+    const libraryMenu = screen.getByRole('menu', { name: 'Library filter options' });
+    for (const checkbox of within(libraryMenu).getAllByRole('checkbox')) fireEvent.click(checkbox);
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+    fireEvent.click(within(libraryMenu).getByRole('button', { name: 'Clear' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
+    let dialog = screen.getByRole('dialog', { name: 'Browse refine options' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Table' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Name ↑' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unrated' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Genre filter menu' }));
+    const genreMenu = screen.getByRole('menu', { name: 'Genre filter options' });
+    fireEvent.click(within(genreMenu).getAllByRole('checkbox')[0]);
+    fireEvent.click(within(genreMenu).getAllByRole('checkbox')[1]);
+    fireEvent.click(within(genreMenu).getByRole('button', { name: 'Clear' }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Browse refine options' })).not.toBeInTheDocument();
+    expect(screen.getAllByText('✦ Sonic Fingerprint')).toHaveLength(2);
+    expect(screen.getByText('Rating: Unrated')).toBeInTheDocument();
+    expect(screen.getByText('Sort: Name ↓')).toBeInTheDocument();
+    expect(screen.getByText('View: Table')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Rating: Unrated'));
+    fireEvent.click(screen.getByText('Sort: Name ↓'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
+    await waitFor(() => expect(apiMock.albums).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
+    dialog = screen.getByRole('dialog', { name: 'Browse refine options' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Artist' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Year' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Year ↑' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rating' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rating ↓' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '3+' }));
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole('dialog', { name: 'Browse refine options' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear refine filters' }));
+    await waitFor(() => expect(screen.getByTitle('Album One')).toBeInTheDocument());
   });
 
   it('shows root browse kebab actions for artist and album grid cards', async () => {
@@ -825,6 +946,32 @@ describe('BrowseView component flows', () => {
     const menu = screen.getByRole('menu', { name: 'Library filter options' });
     expect(within(menu).getByText('Main Music')).toBeInTheDocument();
     expect(within(menu).getByText('Legacy Library')).toBeInTheDocument();
+  });
+
+  it('recovers from root fetch failures and applies only non-empty external genre requests', async () => {
+    apiMock.genres.mockRejectedValue(new Error('genres unavailable'));
+    apiMock.artists.mockRejectedValue(new Error('artists unavailable'));
+    apiMock.albums.mockRejectedValue(new Error('albums unavailable'));
+    const props = {
+      libraries: [] as Library[],
+      playTrack: vi.fn(),
+      playAlbumInVinylMode: vi.fn(),
+      addToQueue: vi.fn(),
+      lastfmKey: '',
+    };
+
+    const view = render(<BrowseView {...props} openGenreRequest={{ genre: '   ', token: 1 }} />);
+    await waitFor(() => expect(screen.getByText('No artists found.')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Albums/ }));
+    await waitFor(() => expect(screen.getByText('No albums found.')).toBeInTheDocument());
+
+    apiMock.artists.mockResolvedValue([]);
+    view.rerender(<BrowseView {...props} openGenreRequest={{ genre: ' Jazz ', token: 2 }} />);
+    await waitFor(() => expect(apiMock.artists).toHaveBeenLastCalledWith(expect.objectContaining({
+      genres: ['Jazz'],
+    })));
+    expect(screen.getByText('No artists found.')).toBeInTheDocument();
   });
 });
 

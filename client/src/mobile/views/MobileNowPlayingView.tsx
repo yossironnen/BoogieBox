@@ -130,13 +130,11 @@ export default function MobileNowPlayingView({
   const canNext = playerState.currentIndex < playerState.queue.length - 1;
   const max = snapshot?.duration && snapshot.duration > 0 ? snapshot.duration : track?.duration ?? 0;
   const pct = max > 0 ? Math.max(0, Math.min(100, ((snapshot?.currentTime ?? 0) / max) * 100)) : 0;
-  const fingerprintAvailable = !!sonicFingerprint;
-
   const advancePanelMode = () => {
     setPanelMode((current) => {
       if (current === 'cover') return 'karaoke';
       if (current === 'karaoke') return 'text';
-      if (current === 'text') return fingerprintAvailable ? 'fingerprint' : 'cover';
+      if (current === 'text') return 'fingerprint';
       return 'cover';
     });
   };
@@ -146,7 +144,7 @@ export default function MobileNowPlayingView({
     : panelMode === 'karaoke'
       ? 'Show plain lyrics'
       : panelMode === 'text'
-        ? (fingerprintAvailable ? 'Show sonic fingerprint' : 'Show album art')
+        ? 'Show sonic fingerprint'
         : 'Show album art';
 
   const queueKey = useCallback((id: ClientEntityId, index: number) => `${id}-${index}`, []);
@@ -443,7 +441,7 @@ const STEM_CONFIG = [
   { key: 'bassWindowsJson'  as const, label: 'BASS',   color: '#2196f3' },
 ];
 
-function buildMobileStemBins(windows: StemWindow[], duration: number): number[] {
+export function buildMobileStemBins(windows: StemWindow[], duration: number): number[] {
   const bins = MOBILE_BINS;
   if (!duration || !windows.length) return new Array<number>(bins).fill(0);
   const out = new Array<number>(bins).fill(0);
