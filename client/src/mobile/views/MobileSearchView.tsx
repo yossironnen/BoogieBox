@@ -44,7 +44,7 @@ export default function MobileSearchView({
   const [yearTo, setYearTo] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [error, setError] = useState('');
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const requestIdRef = useRef(0);
 
   useEffect(() => {

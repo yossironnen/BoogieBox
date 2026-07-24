@@ -5,7 +5,7 @@
 # on a deliberate schedule, not automatically, and re-run the full image test/smoke
 # suite before merging a digest bump.
 
-FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS client-builder
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS client-builder
 WORKDIR /app/client
 
 COPY client/package.json client/package-lock.json ./
@@ -14,7 +14,7 @@ RUN npm ci
 COPY client/ ./
 RUN npm run build
 
-FROM rust:1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS server-builder
+FROM rust:1-trixie@sha256:1bcff4befb740599103a2c7cb51058e14479b2e35e3a34a3f0dc4ede09927488 AS server-builder
 WORKDIR /app
 
 RUN apt-get update \
@@ -24,7 +24,7 @@ RUN apt-get update \
 COPY server-rs/ server-rs/
 RUN cargo build --release --manifest-path server-rs/Cargo.toml
 
-FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS ffmpeg-builder
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS ffmpeg-builder
 ARG FFMPEG_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
 WORKDIR /tmp/ffmpeg
 
@@ -38,7 +38,7 @@ RUN apt-get update \
     && chmod +x ffmpeg ffprobe \
     && ./ffmpeg -version && ./ffprobe -version
 
-FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b AS boogiemix-builder
+FROM python:3.12-slim-trixie@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS boogiemix-builder
 ARG BOOGIEMIX_PRIME_MODEL=1
 WORKDIR /opt/boogiebox/resources/Services/boogiemix/python
 
@@ -56,7 +56,7 @@ RUN chmod +x bootstrap_env.sh \
     && find . -type d -name "__pycache__" -prune -exec rm -rf {} + \
     && find . -type f -name "*.pyc" -delete
 
-FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b AS runtime
+FROM python:3.12-slim-trixie@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS runtime
 
 LABEL org.opencontainers.image.title="BoogieBox"
 LABEL org.opencontainers.image.description="BoogieBox Linux amd64 server with CPU-only BoogieMix deep analysis"

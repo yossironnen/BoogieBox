@@ -276,6 +276,18 @@ exit /b %ERRORLEVEL%
 :ResolveIscc
 set ISCC_EXE=
 where iscc >nul 2>nul && set ISCC_EXE=iscc
+REM Inno Setup 7's winget package (JRSoftware.InnoSetup.7) installs per-user under
+REM LocalAppData\Programs by default, unlike Inno Setup 6 which installed machine-wide
+REM under Program Files (x86) - check both scopes.
+IF NOT DEFINED ISCC_EXE (
+  IF EXIST "!LocalAppData!\Programs\Inno Setup 7\iscc.exe" set "ISCC_EXE=!LocalAppData!\Programs\Inno Setup 7\iscc.exe"
+)
+IF NOT DEFINED ISCC_EXE (
+  IF EXIST "!ProgramFiles(x86)!\Inno Setup 7\iscc.exe" set "ISCC_EXE=!ProgramFiles(x86)!\Inno Setup 7\iscc.exe"
+)
+IF NOT DEFINED ISCC_EXE (
+  IF EXIST "!ProgramFiles!\Inno Setup 7\iscc.exe" set "ISCC_EXE=!ProgramFiles!\Inno Setup 7\iscc.exe"
+)
 IF NOT DEFINED ISCC_EXE (
   IF EXIST "!ProgramFiles(x86)!\Inno Setup 6\iscc.exe" set "ISCC_EXE=!ProgramFiles(x86)!\Inno Setup 6\iscc.exe"
 )

@@ -12,7 +12,7 @@ const CACHE_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".webp"];
 fn cache_key_hash(cache_key: &str) -> String {
     let mut hasher = Sha1::new();
     hasher.update(cache_key.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Documents the Cache Item Dir public API surface.

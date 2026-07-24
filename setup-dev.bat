@@ -47,9 +47,9 @@ if errorlevel 2 (
     if errorlevel 1 exit /b 1
 )
 
-call :ask "Install Inno Setup 6 with winget" Y
+call :ask "Install Inno Setup 7 with winget" Y
 if errorlevel 2 (
-    call :install_winget "JRSoftware.InnoSetup" "Inno Setup 6"
+    call :install_winget "JRSoftware.InnoSetup.7" "Inno Setup 7"
     if errorlevel 1 exit /b 1
 )
 

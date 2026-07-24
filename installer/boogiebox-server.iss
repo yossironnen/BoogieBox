@@ -8,7 +8,7 @@
 ; models itself on first use instead of using a pre-cached copy).
 
 #ifndef AppVersion
-  #define AppVersion "0.7.117"
+  #error AppVersion must be passed explicitly, e.g. /DAppVersion=x.x.x - see the usage comment above.
 #endif
 #ifndef ReleaseDir
   #define ReleaseDir "..\Releases\boogiebox-" + AppVersion + "-win-rs"

@@ -186,7 +186,7 @@ function AddTracksPanel({
   const [results, setResults] = useState<Track[]>([]);
   const [adding, setAdding]   = useState<Set<ClientEntityId>>(new Set());
   const [added, setAdded]     = useState<Set<ClientEntityId>>(new Set(existingTrackIds));
-  const debounce = useRef<ReturnType<typeof setTimeout>>();
+  const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);

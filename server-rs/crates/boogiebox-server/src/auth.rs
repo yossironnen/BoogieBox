@@ -6,7 +6,7 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use pbkdf2::pbkdf2_hmac;
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use sha2::Sha512;
 use std::{
@@ -27,7 +27,7 @@ const SALT_LEN: usize = 32;
 
 /// Documents the Hash Pin public API surface.
 pub fn hash_pin(pin: &str) -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut salt = [0u8; SALT_LEN];
     rng.fill_bytes(&mut salt);
     let mut hash = [0u8; HASH_OUTPUT_LEN];

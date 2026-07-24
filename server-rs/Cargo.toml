@@ -8,30 +8,30 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "UNLICENSED"
-version = "0.8.125"
+version = "0.8.127"
 
 [workspace.dependencies]
 axum = "0.8"
-axum-extra = { version = "0.10", features = ["cookie"] }
-base64 = "0.22"
+axum-extra = { version = "0.12", features = ["cookie"] }
+base64 = "0.23"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
-pbkdf2 = "0.12"
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "stream"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+pbkdf2 = "0.13"
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "stream"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 thiserror = "2"
 time = { version = "0.3", features = ["std"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+tower-http = { version = "0.7", features = ["cors", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7"] }
-socket2 = "0.5"
+socket2 = "0.6"

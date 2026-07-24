@@ -487,7 +487,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
   const [genres, setGenres]       = useState<Genre[]>([]);
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
   const [hoveredTrackId, setHoveredTrackId] = useState<ClientEntityId | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const searchRequestSeqRef = useRef(0);
 
   useEffect(() => { api.genres().then(setGenres).catch(() => {}); }, []);
