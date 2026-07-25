@@ -434,7 +434,9 @@ async fn process_job(
 
     // If Demucs failed internally the worker still exits 0 with fallback data.
     // Treat this as a job failure so it retries rather than storing junk.
-    if !used_demucs {
+    // Only applies when a Demucs model was actually requested — HPSS mode
+    // (forced on no-GPU machines) never runs Demucs by design.
+    if demucs_model != MODEL_HPSS && !used_demucs {
         let demucs_err = output["transition_hints_json"]
             .as_str()
             .and_then(|s| serde_json::from_str::<Value>(s).ok())
