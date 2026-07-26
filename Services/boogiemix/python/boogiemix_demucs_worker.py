@@ -15,6 +15,7 @@ Hard rules:
 """
 
 import argparse
+import faulthandler
 import json
 import math
 import os
@@ -24,6 +25,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+faulthandler.enable()
 
 ANALYSIS_VERSION = 1
 ANALYSIS_SCHEMA_VERSION = 3
@@ -695,21 +698,31 @@ def detect_beat_grid(file_path, use_madmom=True):
 
 def detect_key_neural(file_path, duration_sec):
     """Chroma-based key detection using Krumhansl-Schmuckler profiles."""
+    def _bc(tag):
+        print(f"[keyneural] {tag}", file=sys.stderr, flush=True)
+
     try:
         import numpy as np
+        _bc("numpy imported")
         load_dur = min(120.0, duration_sec) if duration_sec > 0 else 120.0
         y, sr = _load_audio_safe(file_path, 11025, load_dur)
+        _bc(f"audio loaded len={len(y)} sr={sr}")
         # Chroma via STFT (pure numpy) — 12 pitch classes from harmonic content
         _N = 2048
         _H = 512
         _y_pad = np.pad(y, _N // 2, mode='reflect')
+        _bc(f"padded len={len(_y_pad)}")
         _nf = 1 + (len(_y_pad) - _N) // _H
         _frames = np.lib.stride_tricks.as_strided(
             _y_pad, shape=(_nf, _N),
             strides=(_y_pad.strides[0] * _H, _y_pad.strides[0]),
         )
+        _bc(f"framed nf={_nf}")
         _win = np.hanning(_N).astype(np.float32)
-        _D = np.abs(np.fft.rfft(np.ascontiguousarray(_frames) * _win, axis=1))  # (nf, N//2+1)
+        _windowed = np.ascontiguousarray(_frames) * _win
+        _bc("windowed")
+        _D = np.abs(np.fft.rfft(_windowed, axis=1))  # (nf, N//2+1)
+        _bc("rfft done")
         freqs = np.fft.rfftfreq(_N, d=1.0 / sr)
         # Map FFT bins to chroma (pitch class) by closest equal-tempered bin
         A4 = 440.0
@@ -720,6 +733,7 @@ def detect_key_neural(file_path, duration_sec):
         for pc in range(12):
             mask = pitch_class == pc
             chroma[pc] = _D[:, mask].sum(axis=1)
+        _bc("chroma built")
         chroma_mean = np.mean(chroma, axis=1)
         best_key, best_mode, best_corr = None, None, -2.0
         for i in range(12):
@@ -728,6 +742,7 @@ def detect_key_neural(file_path, duration_sec):
                 c = np.corrcoef(chroma_mean.astype(np.float32), rotated)[0, 1]
                 if c > best_corr:
                     best_corr, best_key, best_mode = c, _NOTE_NAMES[i], mode
+        _bc("correlation loop done")
         camelot = (_CAMELOT_MAJOR if best_mode == 'major' else _CAMELOT_MINOR).get(best_key)
         return {
             'key': best_key,
@@ -951,6 +966,9 @@ def _load_audio_safe(file_path, target_sr, max_duration_s):
     import soundfile as _sf
     import scipy.signal as _sig
 
+    def _bc(tag):
+        print(f"[loadsafe] {tag}", file=sys.stderr, flush=True)
+
     load_path = file_path
     tmp_copy = None
     if file_path.startswith('\\\\') or file_path.startswith('//'):
@@ -958,21 +976,27 @@ def _load_audio_safe(file_path, target_sr, max_duration_s):
         ext = Path(file_path).suffix or '.audio'
         _fd, tmp_copy = tempfile.mkstemp(suffix=ext, prefix='bbmix_')
         os.close(_fd)
+        _bc(f"copying from NAS to {tmp_copy!r}")
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
             _fut = _ex.submit(shutil.copy2, file_path, tmp_copy)
             _fut.result(timeout=300)
         load_path = tmp_copy
+        _bc("copy done")
 
     try:
         info = _sf.info(load_path)
         native_sr = info.samplerate
+        _bc(f"sf.info done native_sr={native_sr} frames={info.frames}")
         max_frames = int(native_sr * max_duration_s)
         data, _ = _sf.read(load_path, frames=max_frames, dtype='float32', always_2d=True)
+        _bc(f"sf.read done shape={data.shape}")
         # mono mix
         y = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
+        _bc("mono mix done")
         # resample if needed
         if native_sr != target_sr:
             y = _sig.resample_poly(y, target_sr, native_sr).astype(np.float32)
+            _bc("resample done")
         return y, target_sr
     finally:
         if tmp_copy and os.path.exists(tmp_copy):
@@ -1268,6 +1292,16 @@ def enforce_size(output):
 
 
 def main():
+    # Piped (non-console) stdin on Windows decodes with the system ANSI
+    # codepage by default, not UTF-8 — corrupting any non-ASCII characters
+    # in the JSON payload (accented artist/album/file names) before we ever
+    # see them, which then fails to open() a real file on disk. Rust always
+    # writes the payload as UTF-8, so force-match that here.
+    try:
+        sys.stdin.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
     print("[worker] startup", file=sys.stderr, flush=True)
     configure_model_cache()
 
@@ -1294,10 +1328,26 @@ def main():
 
     Path(temp_root).mkdir(parents=True, exist_ok=True)
 
+    # Copy NAS/UNC sources to local disk once and reuse that copy for every
+    # feature pass below — each of analyze_with_hpss/detect_key_neural/
+    # detect_beat_grid/extract_neural_embedding used to independently re-copy
+    # the same file from NAS, which was crashing the worker (exit 120, no
+    # traceback) on repeated concurrent copies on at least one machine.
+    local_audio_path = file_path
+    shared_nas_copy = None
+    if file_path.startswith('\\\\') or file_path.startswith('//'):
+        ext = Path(file_path).suffix or '.audio'
+        _fd, shared_nas_copy = tempfile.mkstemp(suffix=ext, prefix='bbmix_', dir=temp_root)
+        os.close(_fd)
+        print(f"[worker] copying source from NAS to local temp: {shared_nas_copy!r}", file=sys.stderr, flush=True)
+        shutil.copy2(file_path, shared_nas_copy)
+        print("[worker] NAS copy done", file=sys.stderr, flush=True)
+        local_audio_path = shared_nas_copy
+
     start = time.time()
     duration = float(payload.get("duration_sec") or 0.0)
     if duration <= 0:
-        duration = ffprobe_duration(file_path)
+        duration = ffprobe_duration(local_audio_path)
 
     demucs_used = False
     demucs_error = None
@@ -1307,16 +1357,16 @@ def main():
     if model == "hpss":
         # Fast CPU path — librosa HPSS, no neural model needed.
         try:
-            analysis = analyze_with_hpss(file_path, duration, bpm_hint)
+            analysis = analyze_with_hpss(local_audio_path, duration, bpm_hint)
             demucs_used = True  # signals Rust that real analysis ran (not synthetic fallback)
         except Exception as exc:
             demucs_error = f"hpss_failed: {exc}"[-2000:]
     else:
         stems = {}
         try:
-            ok, out_dir, err = run_demucs(file_path, model, use_gpu, temp_root)
+            ok, out_dir, err = run_demucs(local_audio_path, model, use_gpu, temp_root)
             if ok:
-                stems = locate_stems(out_dir, model, file_path)
+                stems = locate_stems(out_dir, model, local_audio_path)
                 if stems:
                     demucs_used = True
                     temp_dir = out_dir
@@ -1342,12 +1392,15 @@ def main():
 
     # Run lightweight features that don't require Demucs stems.
     print("[worker] detect_key_neural...", file=sys.stderr, flush=True)
-    key_neural = detect_key_neural(file_path, duration)
+    key_neural = detect_key_neural(local_audio_path, duration)
     print("[worker] detect_beat_grid...", file=sys.stderr, flush=True)
-    beat_grid = detect_beat_grid(file_path, use_madmom=use_madmom)
+    beat_grid = detect_beat_grid(local_audio_path, use_madmom=use_madmom)
     print("[worker] extract_neural_embedding...", file=sys.stderr, flush=True)
-    neural_embedding = extract_neural_embedding(file_path, duration)
+    neural_embedding = extract_neural_embedding(local_audio_path, duration)
     print("[worker] features done", file=sys.stderr, flush=True)
+
+    if shared_nas_copy and os.path.exists(shared_nas_copy):
+        os.unlink(shared_nas_copy)
 
     output = {
         "track_id": track_id,
