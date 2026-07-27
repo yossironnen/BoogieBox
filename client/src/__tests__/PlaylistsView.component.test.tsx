@@ -154,10 +154,14 @@ describe('PlaylistsView integration flows', () => {
     const playTrack = vi.fn();
     const addToQueue = vi.fn();
 
-    render(<PlaylistsView playTrack={playTrack} addToQueue={addToQueue} initialPlaylistId={'1'} />);
+    const { container } = render(<PlaylistsView playTrack={playTrack} addToQueue={addToQueue} initialPlaylistId={'1'} />);
 
     await waitFor(() => expect(apiMock.playlists.list).toHaveBeenCalled());
     await waitFor(() => expect(apiMock.playlists.tracks).toHaveBeenCalledWith('1'));
+    expect(container.firstElementChild).toHaveAttribute('data-ui-design', 'hybrid');
+    expect(container.querySelector('[data-ui-region="playlist-sidebar"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-ui-region="playlist-detail"]')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Road Trip.*2 tracks/i })).toHaveAttribute('aria-current', 'true');
     expect(screen.getAllByText('Road Trip').length).toBeGreaterThan(0);
     expect(screen.getByText('Alpha One')).toBeInTheDocument();
     expect(screen.getByText('Alpha Two')).toBeInTheDocument();
@@ -249,6 +253,7 @@ describe('PlaylistsView integration flows', () => {
     await waitFor(() => expect(apiMock.playlists.tracks).toHaveBeenCalledWith('1'));
 
     fireEvent.click(screen.getByTitle('Rename'));
+    expect(screen.getByRole('dialog', { name: 'Rename Playlist' })).toBeInTheDocument();
     const nameInput = screen.getByDisplayValue('Road Trip');
     fireEvent.change(nameInput, { target: { value: 'Road Trip Updated' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -306,6 +311,7 @@ describe('PlaylistsView integration flows', () => {
     expect(await screen.findByText('Edit failed')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     fireEvent.click(screen.getByTitle('Delete playlist'));
+    expect(screen.getByRole('dialog', { name: 'Delete Playlist' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText('Delete failed')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));

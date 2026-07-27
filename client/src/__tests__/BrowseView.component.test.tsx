@@ -948,6 +948,55 @@ describe('BrowseView component flows', () => {
     expect(within(menu).getByText('Legacy Library')).toBeInTheDocument();
   });
 
+  it('applies Hybrid only when requested and limits tile hover to the artwork', async () => {
+    const props = {
+      libraries: [] as Library[],
+      playTrack: vi.fn(),
+      playAlbumInVinylMode: vi.fn(),
+      addToQueue: vi.fn(),
+      lastfmKey: '',
+    };
+    const view = render(<BrowseView {...props} />);
+
+    await screen.findByText('Artist One');
+    expect(view.container.querySelector('[data-hybrid-preview-surface="browse"]')).toBeNull();
+
+    view.rerender(<BrowseView {...props} hybridPreview />);
+
+    const surface = view.container.querySelector('[data-hybrid-preview-surface="browse"]');
+    expect(surface).toBeInTheDocument();
+    expect(surface).toHaveStyle({ background: 'var(--bg)' });
+
+    const artistLabel = screen.getByText('Artist One');
+    const artistTile = artistLabel.closest('[role="button"]') as HTMLElement;
+    const artistArt = screen.getByAltText('Artist One').parentElement?.parentElement as HTMLElement;
+    fireEvent.mouseEnter(artistTile);
+
+    expect(artistTile.style.backgroundColor).toBe('transparent');
+    expect(artistTile.style.borderColor).toBe('transparent');
+    expect(artistTile.style.boxShadow).toBe('none');
+    expect(artistArt.style.outline).toContain('--browse-art-hover-outline');
+    const artistOverlay = artistArt.querySelector('[data-hybrid-art-hover-overlay="artist"]') as HTMLElement;
+    expect(artistOverlay.style.opacity).toBe('1');
+    expect(artistOverlay.style.background).toContain('var(--accent)');
+    expect(artistLabel).toHaveStyle({ color: 'var(--text)' });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Albums/ }));
+    const albumLabel = await screen.findByText('Album One');
+    const albumTile = albumLabel.closest('[role="button"]') as HTMLElement;
+    const albumArt = screen.getByAltText('Album One').parentElement?.parentElement as HTMLElement;
+    fireEvent.mouseEnter(albumTile);
+
+    expect(albumTile.style.backgroundColor).toBe('transparent');
+    expect(albumTile.style.borderColor).toBe('transparent');
+    expect(albumTile.style.boxShadow).toBe('none');
+    expect(albumArt.style.outline).toContain('--browse-art-hover-outline');
+    const albumOverlay = albumArt.querySelector('[data-hybrid-art-hover-overlay="album"]') as HTMLElement;
+    expect(albumOverlay.style.opacity).toBe('1');
+    expect(albumOverlay.style.background).toContain('var(--accent)');
+    expect(albumLabel).toHaveStyle({ color: 'var(--text)' });
+  });
+
   it('recovers from root fetch failures and applies only non-empty external genre requests', async () => {
     apiMock.genres.mockRejectedValue(new Error('genres unavailable'));
     apiMock.artists.mockRejectedValue(new Error('artists unavailable'));

@@ -5,7 +5,11 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import Player, { type PlayerState } from '../components/Player';
+import Player, { resolveDesktopPlayerDockHeight, type PlayerState } from '../components/Player';
+import {
+  DESKTOP_PLAYER_DOCK_HEIGHT,
+  DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
+} from '../hybridPreview';
 import { api } from '../api';
 
 describe('Player artist link', () => {
@@ -62,11 +66,23 @@ describe('Player artist link', () => {
         onStateChange={onStateChange}
         ffmpegAvailable={true}
         onOpenArtist={onOpenArtist}
+        hybridPreview
       />
     );
 
+    const playerBar = document.querySelector('[data-hybrid-preview-surface="player"]');
+    expect(playerBar).toBeInTheDocument();
+    expect(playerBar).toHaveStyle({
+      height: `${DESKTOP_PLAYER_DOCK_HEIGHT}px`,
+      minHeight: `${DESKTOP_PLAYER_DOCK_HEIGHT}px`,
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Open artist Tycho' }));
     expect(onOpenArtist).toHaveBeenCalledWith('Tycho');
+  });
+
+  it('resolves standard and Vinyl dock heights without a thinner Hybrid branch', () => {
+    expect(resolveDesktopPlayerDockHeight(false)).toBe(DESKTOP_PLAYER_DOCK_HEIGHT);
+    expect(resolveDesktopPlayerDockHeight(true)).toBe(DESKTOP_VINYL_PLAYER_DOCK_HEIGHT);
   });
 
   it('opens album page callback when now-playing album is clicked', () => {

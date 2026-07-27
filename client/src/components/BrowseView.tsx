@@ -15,6 +15,7 @@ import { findTopTrackMatch, matchesTrackArtist, resolveTopTrackFromLibrarySearch
 import ArtImage from './ArtImage';
 import StarRating from './StarRating';
 import { phase2 } from '../uiPhase2';
+import { hybridBrowseStyles } from '../hybridPreview';
 
 const ALPHA_RAIL_LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
 const ROOT_SCROLL_BY_VIEW: Record<string, number> = {};
@@ -965,7 +966,7 @@ function AlbumTileImage({ albumId, title }: { albumId: ClientEntityId; title: st
 }
 
 function ArtistGrid({
-  artists, loading, onSelect, onPlay, alphabeticalJump = false, sortDir = 'asc', initialScrollTop = 0, initialAnchorId, onScrollTopChange, onAnchorChange,
+  artists, loading, onSelect, onPlay, alphabeticalJump = false, sortDir = 'asc', initialScrollTop = 0, initialAnchorId, onScrollTopChange, onAnchorChange, hybridPreview = false,
 }: {
   artists: Artist[]; loading: boolean; onSelect: (a: Artist) => void; onPlay: (a: Artist) => void;
   alphabeticalJump?: boolean; sortDir?: 'asc' | 'desc';
@@ -973,6 +974,7 @@ function ArtistGrid({
   initialAnchorId?: ClientEntityId;
   onScrollTopChange?: (top: number) => void;
   onAnchorChange?: (id: ClientEntityId) => void;
+  hybridPreview?: boolean;
 }) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const anchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1067,12 +1069,20 @@ function ArtistGrid({
             data-root-anchor-id={artist.id}
             style={{
               ...L.gridTileBtn,
-              backgroundColor: hoveredArtistId === artist.id
-                ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
-                : 'var(--surface)',
-              borderColor: hoveredArtistId === artist.id
-                ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
-                : 'var(--border)',
+              ...(hybridPreview
+                ? {
+                    backgroundColor: 'transparent',
+                    borderColor: 'transparent',
+                    boxShadow: 'none',
+                  }
+                : {
+                    backgroundColor: hoveredArtistId === artist.id
+                      ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
+                      : 'var(--surface)',
+                    borderColor: hoveredArtistId === artist.id
+                      ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
+                      : 'var(--border)',
+                  }),
             }}
             onClick={() => {
               const container = gridRef.current;
@@ -1093,8 +1103,21 @@ function ArtistGrid({
             }}
             title={artist.name}
           >
-            <div style={L.gridArt}>
+            <div style={{
+              ...L.gridArt,
+              ...(hybridPreview && hoveredArtistId === artist.id ? L.gridArtHovered : {}),
+            }}>
               <ArtistTileImage artistId={artist.id} artist={artist.name} />
+              {hybridPreview && (
+                <div
+                  data-hybrid-art-hover-overlay="artist"
+                  aria-hidden="true"
+                  style={{
+                    ...L.gridArtHoverOverlay,
+                    opacity: hoveredArtistId === artist.id ? 1 : 0,
+                  }}
+                />
+              )}
               <KebabButton
                 target={{ kind: 'artist', artistId: artist.id, name: artist.name }}
                 callbacks={{ onPlay: () => onPlay(artist), onOpen: () => onSelect(artist) }}
@@ -1113,7 +1136,7 @@ function ArtistGrid({
   );
 }
 function AlbumGrid({
-  albums, loading, onSelect, onPlay, onQueue, onArtistSelect, showArtist = false, groupBy = 'artist', alphabeticalJump = false, initialScrollTop = 0, initialAnchorId, onScrollTopChange, onAnchorChange,
+  albums, loading, onSelect, onPlay, onQueue, onArtistSelect, showArtist = false, groupBy = 'artist', alphabeticalJump = false, initialScrollTop = 0, initialAnchorId, onScrollTopChange, onAnchorChange, hybridPreview = false,
 }: {
   albums: Album[]; loading: boolean; onSelect: (a: Album) => void;
   onPlay: (a: Album) => void;
@@ -1126,6 +1149,7 @@ function AlbumGrid({
   initialAnchorId?: ClientEntityId;
   onScrollTopChange?: (top: number) => void;
   onAnchorChange?: (id: ClientEntityId) => void;
+  hybridPreview?: boolean;
 }) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const anchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1222,12 +1246,20 @@ function AlbumGrid({
             data-root-anchor-id={album.id}
             style={{
               ...L.gridTileBtn,
-              backgroundColor: hoveredAlbumId === album.id
-                ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
-                : 'var(--surface)',
-              borderColor: hoveredAlbumId === album.id
-                ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
-                : 'var(--border)',
+              ...(hybridPreview
+                ? {
+                    backgroundColor: 'transparent',
+                    borderColor: 'transparent',
+                    boxShadow: 'none',
+                  }
+                : {
+                    backgroundColor: hoveredAlbumId === album.id
+                      ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
+                      : 'var(--surface)',
+                    borderColor: hoveredAlbumId === album.id
+                      ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
+                      : 'var(--border)',
+                  }),
             }}
             onClick={() => {
               const container = gridRef.current;
@@ -1248,8 +1280,21 @@ function AlbumGrid({
             }}
             title={album.title}
           >
-            <div style={L.gridArt}>
+            <div style={{
+              ...L.gridArt,
+              ...(hybridPreview && hoveredAlbumId === album.id ? L.gridArtHovered : {}),
+            }}>
               <AlbumTileImage albumId={album.id} title={album.title} />
+              {hybridPreview && (
+                <div
+                  data-hybrid-art-hover-overlay="album"
+                  aria-hidden="true"
+                  style={{
+                    ...L.gridArtHoverOverlay,
+                    opacity: hoveredAlbumId === album.id ? 1 : 0,
+                  }}
+                />
+              )}
               <KebabButton
                 target={{ kind: 'album', albumId: album.id, title: album.title }}
                 callbacks={{ onPlay: () => onPlay(album), onQueue: () => onQueue(album) }}
@@ -1622,6 +1667,7 @@ interface Props {
   openGenreRequest?: { genre: string; token: number } | null;
   adaptiveAccentEnabled?: boolean;
   forcedLibraryIds?: ClientEntityId[] | null;
+  hybridPreview?: boolean;
 }
 
 /** Browse View is part of this module's public API. */
@@ -1636,6 +1682,7 @@ export default function BrowseView({
   openGenreRequest,
   adaptiveAccentEnabled = true,
   forcedLibraryIds = null,
+  hybridPreview = false,
 }: Props) {
   const [tab, setTab]         = useState<BrowseTab>('artists');
   const [rootViewMode, setRootViewMode] = useState<RootViewMode>(() =>
@@ -2403,28 +2450,50 @@ export default function BrowseView({
   );
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div
+      data-hybrid-preview-surface={hybridPreview ? 'browse' : undefined}
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        ...(hybridPreview ? hybridBrowseStyles.root : {}),
+        ...(hybridPreview ? {
+          '--browse-card-background': 'transparent',
+          '--browse-card-border-color': 'transparent',
+          '--browse-card-radius': '14px',
+          '--browse-art-border-color': 'transparent',
+          '--browse-art-radius': '14px',
+          '--browse-art-shadow': 'var(--shadow-subtle)',
+          '--browse-art-hover-outline': '2px solid color-mix(in srgb, var(--accent) 56%, transparent)',
+          '--browse-art-hover-filter': 'brightness(1.04) saturate(1.05)',
+          '--browse-row-border': 'none',
+          '--browse-row-radius': '10px',
+          '--browse-row-margin': '2px 12px',
+        } as React.CSSProperties : {}),
+      }}
+    >
       {/* Tab bar + optional groupBy toggle — only visible at root */}
       {drill.level === 'root' && (
         <>
-          <div style={L.rootHero}>
-            <div style={L.rootHeroInner}>
+          <div style={{ ...L.rootHero, ...(hybridPreview ? hybridBrowseStyles.hero : {}) }}>
+            <div style={{ ...L.rootHeroInner, ...(hybridPreview ? hybridBrowseStyles.heroInner : {}) }}>
               <div style={L.rootHeroCopy}>
                 <div style={L.rootHeroEyebrow}>Collection</div>
-                <div style={L.rootHeroTitle}>Browse Music</div>
-                <div style={L.rootHeroBody}>
+                <div style={{ ...L.rootHeroTitle, ...(hybridPreview ? hybridBrowseStyles.heroTitle : {}) }}>Browse Music</div>
+                <div style={{ ...L.rootHeroBody, ...(hybridPreview ? hybridBrowseStyles.heroBody : {}) }}>
                   {tab === 'artists'
                     ? 'Move through your library like a portrait wall instead of a utility list. Filters stay close, but the collection leads.'
                     : 'Hey, those are not true vinyl albums, but they sure make a nice wall!'}
                 </div>
               </div>
-              <div style={L.rootHeroStats}>
+              <div style={{ ...L.rootHeroStats, ...(hybridPreview ? hybridBrowseStyles.heroStats : {}) }}>
                 <div style={L.rootHeroStat}>{tab === 'artists' ? `${sortedArtists.length} artists` : `${sortedAlbums.length} albums`}</div>
                 <div style={L.rootHeroStatMuted}>{selectedGenres.length ? `${selectedGenres.length} genres active` : 'Full library view'}</div>
               </div>
             </div>
           </div>
-          <div style={L.rootToolbar}>
+          <div style={{ ...L.rootToolbar, ...(hybridPreview ? hybridBrowseStyles.toolbar : {}) }}>
             <div style={L.rootToolbarLeft}>
               {(['artists', 'albums'] as BrowseTab[]).map(t => (
                 <button
@@ -2478,7 +2547,7 @@ export default function BrowseView({
       {drill.level === 'root' && tab === 'artists' && (
         rootViewMode === 'table'
           ? <ArtistList artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} onScrollTopChange={handleRootScrollTopChange} />
-          : <ArtistGrid artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} initialAnchorId={rootInitialAnchorId} onScrollTopChange={handleRootScrollTopChange} onAnchorChange={handleRootAnchorChange} />
+          : <ArtistGrid artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} initialAnchorId={rootInitialAnchorId} onScrollTopChange={handleRootScrollTopChange} onAnchorChange={handleRootAnchorChange} hybridPreview={hybridPreview} />
       )}
       {drill.level === 'root' && tab === 'albums' && (
         rootViewMode === 'table'
@@ -2511,6 +2580,7 @@ export default function BrowseView({
               onScrollTopChange={handleRootScrollTopChange}
               onAnchorChange={handleRootAnchorChange}
               onSelect={a => goAlbum(a, null, groupBy)}
+              hybridPreview={hybridPreview}
             />
           )
       )}
@@ -2996,9 +3066,9 @@ const L: Record<string, React.CSSProperties> = {
     alignContent: 'start',
   },
   gridTileBtn: {
-    background: 'var(--surface)',
-    border: '1px solid var(--border)',
-    borderRadius: 8,
+    background: 'var(--browse-card-background, var(--surface))',
+    border: '1px solid var(--browse-card-border-color, var(--border))',
+    borderRadius: 'var(--browse-card-radius, 8px)',
     padding: 10,
     cursor: 'pointer',
     color: 'var(--text)',
@@ -3010,10 +3080,26 @@ const L: Record<string, React.CSSProperties> = {
     position: 'relative',
     width: '100%',
     aspectRatio: '1 / 1',
-    borderRadius: 6,
+    borderRadius: 'var(--browse-art-radius, 6px)',
     overflow: 'hidden',
     background: 'var(--bg)',
-    border: '1px solid var(--border)',
+    border: '1px solid var(--browse-art-border-color, var(--border))',
+    boxShadow: 'var(--browse-art-shadow, none)',
+    transition: 'outline-color 120ms ease, filter 120ms ease',
+  },
+  gridArtHovered: {
+    outline: 'var(--browse-art-hover-outline, none)',
+    outlineOffset: -2,
+    filter: 'var(--browse-art-hover-filter, none)',
+  },
+  gridArtHoverOverlay: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 1,
+    borderRadius: 'inherit',
+    background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+    pointerEvents: 'none',
+    transition: 'opacity 120ms ease',
   },
   gridArtImg: {
     width: '100%',
@@ -3063,7 +3149,9 @@ const L: Record<string, React.CSSProperties> = {
   empty: { padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 },
   row: {
     display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
-    cursor: 'pointer', borderBottom: '1px solid var(--border)',
+    cursor: 'pointer', borderBottom: 'var(--browse-row-border, 1px solid var(--border))',
+    borderRadius: 'var(--browse-row-radius, 0)',
+    margin: 'var(--browse-row-margin, 0)',
     transition: 'background 0.1s',
   },
   rowIcon: { color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center' },
@@ -3092,7 +3180,7 @@ const L: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     cursor: 'pointer',
     transition: 'opacity 120ms ease',
-    zIndex: 1,
+    zIndex: 2,
   },
   gridArtKebabBtn: {
     position: 'absolute',

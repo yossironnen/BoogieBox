@@ -7,7 +7,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import App from './App';
+import App, { HYBRID_THEME_MODE_STORAGE_KEY } from './App';
 
 vi.mock('./api', () => ({
   getStreamDirect: () => false,
@@ -75,6 +75,7 @@ vi.mock('./components/SettingsPage', () => ({
 describe('App sidebar', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    window.history.replaceState({}, '', '/');
   });
 
   it('collapses the left menu to icon-only navigation and persists the choice', async () => {
@@ -94,5 +95,42 @@ describe('App sidebar', () => {
     expect(screen.queryByText('Browse Music')).toBeNull();
     expect(screen.queryByText('admin')).toBeNull();
     expect(window.localStorage.getItem('boogiebox.sidebar.collapsed.v1')).toBe('true');
+  });
+
+  it('uses the approved production Hybrid shell without preview controls', async () => {
+    const { container } = render(<App />);
+
+    await screen.findByText('home-view');
+    expect(container.querySelector('[data-ui-preview="hybrid"]')).toBeNull();
+    expect(container.querySelector('[data-ui-design="hybrid"]')).toHaveAttribute('data-ui-theme', 'dark');
+    expect(screen.queryByLabelText('Hybrid preview controls')).toBeNull();
+  });
+
+  it('restores the per-user production Hybrid theme mode', async () => {
+    window.localStorage.setItem(`${HYBRID_THEME_MODE_STORAGE_KEY}.u1`, 'light');
+    const { container } = render(<App />);
+
+    await screen.findByText('home-view');
+    await waitFor(() => {
+      expect(container.querySelector('[data-ui-design="hybrid"]')).toHaveAttribute('data-ui-theme', 'light');
+    });
+    expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#f7f5f2');
+  });
+
+  it('opens the guarded real Browse preview and switches temporary theme roles', async () => {
+    window.history.replaceState({}, '', '/?ui-preview=hybrid&ui-preview-theme=dark');
+    const { container } = render(<App />);
+
+    await screen.findByText('browse-view');
+    const root = container.querySelector('[data-ui-preview="hybrid"]');
+    expect(root).toHaveAttribute('data-ui-preview-theme', 'dark');
+    expect(screen.getByRole('button', { name: 'Dark' })).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Light' }));
+
+    expect(root).toHaveAttribute('data-ui-preview-theme', 'light');
+    expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#f7f5f2');
+    expect(window.location.search).toContain('ui-preview-theme=light');
+    expect(screen.getByRole('link', { name: 'Exit preview' })).toHaveAttribute('href', '/');
   });
 });

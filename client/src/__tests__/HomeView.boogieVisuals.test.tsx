@@ -111,8 +111,8 @@ function mockMatchMedia(reduced: boolean): void {
   });
 }
 
-function renderHome(): void {
-  render(
+function renderHome(hybridDesign = false) {
+  return render(
     <HomeView
       stats={STATS}
       onOpenAlbum={() => {}}
@@ -122,6 +122,7 @@ function renderHome(): void {
       onOpenPlaylist={() => {}}
       onPlayTrack={() => {}}
       onStartAutoDj={async () => 0}
+      hybridDesign={hybridDesign}
     />,
   );
 }
@@ -171,6 +172,18 @@ describe('HomeView boogie visuals', () => {
     renderHome();
     await waitFor(() => expect(screen.getByText("Let's Boogie!")).toBeInTheDocument());
     expect(screen.getByText("Let's Boogie!").className).toContain('boogie-title');
+  });
+
+  it('applies the approved Hybrid Home surface without changing its modules', async () => {
+    const { container } = renderHome(true);
+
+    await waitFor(() => expect(screen.getByText('Recent Albums')).toBeInTheDocument());
+    const root = container.querySelector('[data-ui-design="hybrid"]');
+    expect(root).toHaveStyle({ background: 'var(--bg)', padding: '24px 28px 32px' });
+    expect(screen.getByText('Library').parentElement?.parentElement).toHaveStyle({
+      boxShadow: 'none',
+      borderRadius: '16px',
+    });
   });
 });
 

@@ -21,6 +21,13 @@ import {
   migrateGraphicProfileToParametricProfile,
 } from '../audio/eq';
 import ParametricEqEditor from './ParametricEqEditor';
+import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
+import {
+  DESKTOP_PLAYER_DOCK_HEIGHT,
+  DESKTOP_PLAYER_POPUP_GAP,
+  DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
+  hybridPlayerStyles,
+} from '../hybridPreview';
 
 /** Player State is part of this module's public API. */
 export interface PlayerState {
@@ -57,6 +64,12 @@ interface PlayerProps {
   vinylNeedleDropIntensity?: number;
   headless?: boolean;
   onPlaybackSnapshotChange?: (snapshot: PlaybackSnapshot) => void;
+  hybridPreview?: boolean;
+  adaptiveAccentEnabled?: boolean;
+}
+
+export function resolveDesktopPlayerDockHeight(isVinylMode: boolean): number {
+  return isVinylMode ? DESKTOP_VINYL_PLAYER_DOCK_HEIGHT : DESKTOP_PLAYER_DOCK_HEIGHT;
 }
 
 /** Fmt is part of this module's public API. */
@@ -1530,15 +1543,16 @@ function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_T
 // Queue Panel
 // ─────────────────────────────────────────────────────────────────────────────
 
-function QueuePanel({ queue, currentIndex, onSelect, onRemove, onClear, onClose, lockSelect, lockEdit }: {
+function QueuePanel({ queue, currentIndex, onSelect, onRemove, onClear, onClose, lockSelect, lockEdit, bottom = DESKTOP_PLAYER_DOCK_HEIGHT }: {
   queue: Track[]; currentIndex: number;
   onSelect: (i: number) => void; onRemove: (i: number) => void;
   onClear: () => void; onClose: () => void;
   lockSelect?: boolean;
   lockEdit?: boolean;
+  bottom?: number;
 }) {
   return (
-    <div style={{ position: 'fixed', right: 0, bottom: 100, width: 340, backgroundColor: PLAYER_THEME_TOKENS.surface, border: `1px solid ${PLAYER_THEME_TOKENS.border}`, borderRadius: '8px 0 0 0', boxShadow: '-4px -4px 24px rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', maxHeight: 'calc(100vh - 108px)', zIndex: 200, fontFamily: PLAYER_THEME_TOKENS.font }}>
+    <div style={{ position: 'fixed', right: 0, bottom, width: 340, backgroundColor: PLAYER_THEME_TOKENS.surface, border: `1px solid ${PLAYER_THEME_TOKENS.border}`, borderRadius: '8px 0 0 0', boxShadow: '-4px -4px 24px rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', maxHeight: `calc(100vh - ${bottom + 8}px)`, zIndex: 200, fontFamily: PLAYER_THEME_TOKENS.font }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: `1px solid ${PLAYER_THEME_TOKENS.border}` }}>
         <span style={{ fontWeight: 600, fontSize: 13, color: PLAYER_THEME_TOKENS.text }}>Queue ({queue.length})</span>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -1565,6 +1579,11 @@ function QueuePanel({ queue, currentIndex, onSelect, onRemove, onClear, onClose,
   );
 }
 
+function PlayerAdaptiveAccent({ imageUrl, enabled }: { imageUrl: string | null; enabled: boolean }) {
+  useAdaptiveAccentEnabled(imageUrl, enabled);
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Player
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1583,6 +1602,8 @@ export default function Player({
   vinylNeedleDropIntensity = 0.65,
   headless = false,
   onPlaybackSnapshotChange,
+  hybridPreview = false,
+  adaptiveAccentEnabled = true,
 }: PlayerProps) {
   const audioRef    = useRef<HTMLAudioElement | null>(null);
   const audioBRef   = useRef<HTMLAudioElement | null>(null);
@@ -1691,6 +1712,7 @@ export default function Player({
 
   const { queue, currentIndex, isPlaying, playToken, queueSource } = state;
   const isVinylMode = playbackMode === 'vinyl';
+  const playerDockHeight = resolveDesktopPlayerDockHeight(isVinylMode);
   currentIndexRef.current = currentIndex;
 
   // Always-fresh saveProgress — avoids stale closures in useCallback handlers
@@ -2487,12 +2509,19 @@ export default function Player({
 
   return (
     <>
+      {hybridPreview && (
+        <PlayerAdaptiveAccent
+          imageUrl={currentTrackAlbumArt}
+          enabled={adaptiveAccentEnabled}
+        />
+      )}
       {showQueue && (
         <QueuePanel queue={queue} currentIndex={currentIndex}
           onSelect={playIndex} onRemove={removeFromQueue}
           onClear={clearQueue} onClose={() => setShowQueue(false)}
           lockSelect={isVinylMode && vinylHardcore}
           lockEdit={isVinylMode}
+          bottom={playerDockHeight}
         />
       )}
 
@@ -2665,9 +2694,19 @@ export default function Player({
 
       {headless ? null : (
 
-      <div style={{ ...P.bar, ...(isVinylMode ? P.barVinyl : {}) }}>
+      <div
+        data-hybrid-preview-surface={hybridPreview ? 'player' : undefined}
+        style={{
+          ...P.bar,
+          ...(hybridPreview ? hybridPlayerStyles.bar : {}),
+          ...(isVinylMode ? P.barVinyl : {}),
+        }}
+      >
         {/* Album art */}
-        <div style={P.albumArtWrap}>
+        <div style={{
+          ...P.albumArtWrap,
+          ...(hybridPreview ? hybridPlayerStyles.albumArtWrap : {}),
+        }}>
           {currentTrackAlbumArt ? (
             <img
               src={currentTrackAlbumArt}
@@ -2845,7 +2884,7 @@ export default function Player({
             {sonicFingerprint && showSonicFingerprint && (
               <div style={{
                 position: 'fixed',
-                bottom: 108,
+                bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP,
                 left: 0,
                 right: 0,
                 zIndex: 99,
@@ -2954,7 +2993,7 @@ export default function Player({
               vertical verticalHeight={60}
             />
             {eqOpen && (
-              <div style={{ ...P.eqPopup, bottom: isVinylMode ? 178 : 108 }} ref={eqPopupRef} role="dialog" aria-label="Equalizer">
+              <div style={{ ...P.eqPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }} ref={eqPopupRef} role="dialog" aria-label="Equalizer">
                 <div style={P.eqHeader}>
                   <strong style={{ fontSize: 12 }}>Equalizer</strong>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
@@ -3005,7 +3044,7 @@ export default function Player({
           </div>
           {lyricsOpen && (
             <div
-              style={{ ...P.lyricsPopup, bottom: isVinylMode ? 178 : 108 }}
+              style={{ ...P.lyricsPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }}
               role="dialog"
               aria-label="Lyrics popup"
             >
@@ -3058,7 +3097,9 @@ export default function Player({
 
 const P: Record<string, React.CSSProperties> = {
   bar: {
-    height: 100, flexShrink: 0,
+    height: DESKTOP_PLAYER_DOCK_HEIGHT,
+    minHeight: DESKTOP_PLAYER_DOCK_HEIGHT,
+    flexShrink: 0,
     background: [
       `radial-gradient(circle at top left, color-mix(in srgb, ${PLAYER_THEME_TOKENS.accent} 18%, transparent) 0%, transparent 32%)`,
       `linear-gradient(180deg, color-mix(in srgb, ${PLAYER_THEME_TOKENS.surface} 96%, ${PLAYER_THEME_TOKENS.bg}) 0%, color-mix(in srgb, ${PLAYER_THEME_TOKENS.surface} 88%, ${PLAYER_THEME_TOKENS.bg}) 100%)`,
@@ -3069,7 +3110,8 @@ const P: Record<string, React.CSSProperties> = {
     boxShadow: '0 -16px 30px rgba(0,0,0,0.16)',
   },
   barVinyl: {
-    height: 170,
+    height: DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
+    minHeight: DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
   },
   albumArtWrap: {
     width: 62,
@@ -3270,7 +3312,7 @@ const P: Record<string, React.CSSProperties> = {
   lyricsPopup: {
     position: 'fixed',
     right: 20,
-    bottom: 108,
+    bottom: DESKTOP_PLAYER_DOCK_HEIGHT + DESKTOP_PLAYER_POPUP_GAP,
     width: 320,
     maxHeight: 240,
     overflow: 'hidden',

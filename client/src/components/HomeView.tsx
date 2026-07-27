@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import type { Album, LatestAlbum, Artist, ClientEntityId, Genre, HomeGenreSummary, Library, Stats, Track, Playlist, CrossfadeMode, HomeTopRated } from '../types';
 import type { EntityId } from '../entityId';
+import { hybridHomeStyles } from '../hybridPreview';
 import ArtImage from './ArtImage';
 
 function safeLocalStorageGet(key: string): string | null {
@@ -77,11 +78,12 @@ function HomeAlbumCover({ albumId, title, size = 150 }: { albumId: ClientEntityI
 
 // ─── Widget Card wrapper ─────────────────────────────────────────────────────
 
-function WidgetCard({ title, span, className, titleClassName, children }: {
+function WidgetCard({ title, span, className, titleClassName, hybridDesign = false, children }: {
   title: string;
   span?: boolean;
   className?: string;
   titleClassName?: string;
+  hybridDesign?: boolean;
   children: React.ReactNode;
 }) {
   const storageKey = `boogiebox-pane-collapsed-${title}`;
@@ -106,6 +108,7 @@ function WidgetCard({ title, span, className, titleClassName, children }: {
       gridColumn: span ? '1 / -1' : undefined,
       minWidth: 0,
       boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
+      ...(hybridDesign ? hybridHomeStyles.card : {}),
     }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: collapsed ? 0 : 16 }}>
@@ -114,6 +117,7 @@ function WidgetCard({ title, span, className, titleClassName, children }: {
           style={{
           fontSize: 18, fontWeight: 700, color: 'var(--text)',
           letterSpacing: -0.4,
+          ...(hybridDesign ? hybridHomeStyles.cardTitle : {}),
         }}
         >
           {title}
@@ -1564,6 +1568,7 @@ export default function HomeView({
   onOpenPlaylist,
   onPlayTrack,
   onStartAutoDj,
+  hybridDesign = false,
 }: {
   stats: Stats | null;
   libraries?: Library[];
@@ -1575,6 +1580,7 @@ export default function HomeView({
   onOpenPlaylist: (playlistId: EntityId) => void;
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
   onStartAutoDj: (genres: string[]) => Promise<number>;
+  hybridDesign?: boolean;
 }) {
   const [allGenres, setAllGenres] = useState<Genre[]>([]);
   const [homeGenres, setHomeGenres] = useState<HomeGenreSummary[]>([]);
@@ -1589,17 +1595,20 @@ export default function HomeView({
   }
 
   return (
-    <div style={H.root}>
-      <div style={H.grid}>
-        <WidgetCard title="Library" span>
+    <div
+      data-ui-design={hybridDesign ? 'hybrid' : undefined}
+      style={{ ...H.root, ...(hybridDesign ? hybridHomeStyles.root : {}) }}
+    >
+      <div style={{ ...H.grid, ...(hybridDesign ? hybridHomeStyles.grid : {}) }}>
+        <WidgetCard title="Library" span hybridDesign={hybridDesign}>
           <StatsWidget stats={stats} />
         </WidgetCard>
 
-        <WidgetCard title="Recent Albums" span>
+        <WidgetCard title="Recent Albums" span hybridDesign={hybridDesign}>
           <RecentAlbumsWidget refreshKey={refreshKey} onOpenAlbum={onOpenAlbum} onPlayTrack={onPlayTrack} />
         </WidgetCard>
 
-        <WidgetCard title="Let's Boogie!" className="boogie-section" titleClassName="boogie-title" span>
+        <WidgetCard title="Let's Boogie!" className="boogie-section" titleClassName="boogie-title" span hybridDesign={hybridDesign}>
           <RecentlyPlayedWidget
             allGenres={allGenres}
             homeGenres={homeGenres}
@@ -1610,11 +1619,11 @@ export default function HomeView({
         </WidgetCard>
 
 
-        <WidgetCard title="Playlists" span>
+        <WidgetCard title="Playlists" span hybridDesign={hybridDesign}>
           <QuickPlaylistsWidget onOpenPlaylist={onOpenPlaylist} />
         </WidgetCard>
 
-        <WidgetCard title="Top Rated">
+        <WidgetCard title="Top Rated" hybridDesign={hybridDesign}>
           <TopRatedWidget
             refreshKey={refreshKey}
             onOpenArtist={onOpenArtist}
@@ -1623,7 +1632,7 @@ export default function HomeView({
           />
         </WidgetCard>
 
-        <WidgetCard title="Genres">
+        <WidgetCard title="Genres" hybridDesign={hybridDesign}>
           <HomeGenresWidget
             genres={homeGenres}
             onOpenGenre={onOpenGenre}

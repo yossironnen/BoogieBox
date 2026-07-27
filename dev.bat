@@ -78,9 +78,9 @@ if errorlevel 1 (
   exit /b 0
 )
 
-where npx >nul 2>nul
+where npm >nul 2>nul
 if errorlevel 1 (
-  echo  npx was not found, so Vite cannot be started.
+  echo  npm was not found, so Vite cannot be started.
   echo  Open the packaged development server at:
   echo  http://localhost:%SERVER_PORT%
   echo.
@@ -90,13 +90,47 @@ if errorlevel 1 (
   exit /b 0
 )
 
+:: Vite 8 uses a platform-specific Rolldown optional dependency. npm can
+:: occasionally leave that native package absent even though it is present in
+:: package-lock.json. Preflight the real Vite import and repair optional
+:: dependencies before opening the client window.
+pushd "%ROOT_DIR%client"
+node -e "import('vite').then(() => process.exit(0)).catch(() => process.exit(1))" >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo  Vite native dependency is missing. Repairing client dependencies...
+  call npm install --include=optional
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Could not repair the Vite native dependency.
+    echo         Run npm install --include=optional from:
+    echo         %ROOT_DIR%client
+    echo.
+    popd
+    pause
+    exit /b 1
+  )
+
+  node -e "import('vite').then(() => process.exit(0)).catch(() => process.exit(1))" >nul 2>nul
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Vite still cannot load after repairing optional dependencies.
+    echo         Check antivirus/file-locking software, then rerun dev.bat.
+    echo.
+    popd
+    pause
+    exit /b 1
+  )
+)
+popd
+
 echo  Client: http://localhost:3000
 echo.
 echo  Starting Vite client in a separate window.
 echo  Close both windows to stop.
 echo.
 
-start "BoogieBox Client" /D "%ROOT_DIR%client" cmd /k "npx vite --port 3000"
+start "BoogieBox Client" /D "%ROOT_DIR%client" cmd /k "npm run start"
 
 echo  Both windows opened.
 echo  Server logs: BoogieBox Server window

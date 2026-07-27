@@ -64,6 +64,7 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
 pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
     "theme",
     "adaptiveAccent",
+    "uiThemeMode",
     "eqProfiles",
     "autoEqEnabled",
     "eqSelectedProfile",
@@ -78,6 +79,14 @@ pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
 
 /// Documents the USER SETTING MAX VALUE LEN public API surface.
 pub const USER_SETTING_MAX_VALUE_LEN: usize = 4096;
+
+/// Validates user-setting values that have a constrained production contract.
+pub fn validate_user_setting_value(key: &str, value: &str) -> Result<(), String> {
+    if key == "uiThemeMode" && !["light", "dark", "custom"].contains(&value) {
+        return Err("Setting 'uiThemeMode' must be 'light', 'dark', or 'custom'".to_string());
+    }
+    Ok(())
+}
 
 /// Documents the PLAYBACK SETTINGS KEYS public API surface.
 pub const PLAYBACK_SETTINGS_KEYS: &[&str] = &[
@@ -292,5 +301,13 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("transcodeQuality".into(), "high".into());
         assert!(normalize_settings_payload(&map).is_ok());
+    }
+
+    #[test]
+    fn validates_hybrid_theme_modes() {
+        assert!(validate_user_setting_value("uiThemeMode", "light").is_ok());
+        assert!(validate_user_setting_value("uiThemeMode", "dark").is_ok());
+        assert!(validate_user_setting_value("uiThemeMode", "custom").is_ok());
+        assert!(validate_user_setting_value("uiThemeMode", "neon").is_err());
     }
 }

@@ -5,7 +5,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api, getStreamDirect, setStreamDirect } from '../api';
 import type { AppSettings, ScanSchedule, WaveformMappingStatus, BpmAnalysisStatus, BoogieMixDeepAnalysisStatus, AuthUser, AdminQueueEntry, AdminQueueSnapshot, ClientEntityId, Library, AdminPostScanJobType, ProviderUsageSnapshot, ProviderUsageProviderSummary } from '../types';
-import { DEFAULT_SETTINGS, FONT_OPTIONS } from '../types';
+import { DEFAULT_SETTINGS } from '../types';
+import {
+  hybridControlStyles,
+  hybridSettingsStyles,
+  HYBRID_FONT_FAMILY,
+  HYBRID_THEME_MODES,
+  type HybridThemeMode,
+} from '../hybridPreview';
 import { parseServerDate } from '../utils';
 import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
@@ -127,16 +134,18 @@ function getLibraryPostScanActions(library: Library): Array<{ jobType: AdminPost
 // ─── Color Swatch ─────────────────────────────────────────────────────────────
 
 function ColorInput({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  const inputLabel = `${label} custom color`;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
         <input
+          aria-label={`${label} color picker`}
           type="color"
           value={value}
           onChange={e => onChange(e.target.value)}
           style={{
-            width: 40, height: 32, border: '1px solid var(--border)', borderRadius: 6,
-            cursor: 'pointer', backgroundColor: 'transparent', padding: 2,
+            width: 40, height: 36, border: '1px solid var(--border)', borderRadius: 10,
+            cursor: 'pointer', backgroundColor: 'var(--surface-subtle)', padding: 3,
           }}
         />
         <div>
@@ -145,16 +154,39 @@ function ColorInput({ label, value, onChange }: { label: string; value: string; 
         </div>
       </div>
       <input
+        aria-label={inputLabel}
         type="text"
         value={value}
         onChange={e => onChange(e.target.value)}
         style={{
-          width: 100, background: 'var(--surface)', border: '1px solid var(--border)',
-          color: 'var(--text)', borderRadius: 6, padding: '5px 8px', fontSize: 11,
-          fontFamily: 'monospace', outline: 'none',
+          ...hybridControlStyles.field,
+          width: 108, minHeight: 36, padding: '7px 9px', fontSize: 11,
+          fontFamily: 'monospace',
         }}
       />
     </div>
+  );
+}
+
+function SettingsPanel({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section aria-label={title} style={hybridSettingsStyles.panel}>
+      <div style={hybridSettingsStyles.panelHeader}>
+        <div>
+          <div style={hybridSettingsStyles.sectionTitle}>{title}</div>
+          {description && <div style={hybridSettingsStyles.panelDescription}>{description}</div>}
+        </div>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -168,7 +200,6 @@ const ORIGINAL_THEME_KEYS: Array<keyof AppSettings> = [
   'colorText',
   'colorTextMuted',
   'bgTexture',
-  'fontFamily',
 ];
 
 const ORIGINAL_THEME = Object.fromEntries(
@@ -340,22 +371,19 @@ function ScheduleRow({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         {/* Enable toggle */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)' }}>
-          <div
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+          <button
+            type="button"
+            role="switch"
+            aria-label={`Auto-scan ${library.name}`}
+            aria-checked={enabled}
             onClick={() => toggle(!enabled)}
-            style={{
-              width: 36, height: 20, borderRadius: 10, cursor: 'pointer', position: 'relative',
-              backgroundColor: enabled ? 'var(--accent)' : 'var(--border)', transition: 'background 0.2s',
-            }}
+            style={{ ...hybridControlStyles.switchTrack, ...(enabled ? hybridControlStyles.switchTrackActive : {}) }}
           >
-            <div style={{
-              position: 'absolute', top: 2, left: enabled ? 18 : 2,
-              width: 16, height: 16, borderRadius: '50%', backgroundColor: '#fff',
-              transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-            }} />
-          </div>
+            <span style={{ ...hybridControlStyles.switchThumb, ...(enabled ? hybridControlStyles.switchThumbActive : {}) }} />
+          </button>
           {enabled ? 'On' : 'Off'}
-        </label>
+        </div>
 
         {/* Frequency */}
         <select
@@ -363,8 +391,7 @@ function ScheduleRow({
           onChange={e => changeFreq(Number(e.target.value))}
           disabled={!enabled}
           style={{
-            background: 'var(--surface)', border: '1px solid var(--border)', color: enabled ? 'var(--text)' : 'var(--text-muted)',
-            borderRadius: 6, padding: '5px 8px', fontSize: 12, fontFamily: 'inherit', outline: 'none',
+            ...hybridControlStyles.select, color: enabled ? 'var(--text)' : 'var(--text-muted)',
             opacity: enabled ? 1 : 0.4,
           }}
         >
@@ -392,17 +419,19 @@ function ScheduleRow({
 const Sc = {
   row: {
     display: 'flex', alignItems: 'center', gap: 16,
-    padding: '14px 16px', borderRadius: 8, marginBottom: 8,
-    backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
+    padding: '14px 16px', borderRadius: 12, marginBottom: 8,
+    backgroundColor: 'var(--surface)', border: '1px solid var(--divider-subtle)',
   } as React.CSSProperties,
   saveBtn: {
-    background: 'var(--accent)', color: '#fff', border: 'none',
-    borderRadius: 6, padding: '5px 12px', cursor: 'pointer',
-    fontSize: 12, fontFamily: 'inherit', fontWeight: 600,
+    ...hybridControlStyles.primaryButton,
+    minHeight: 34,
+    padding: '6px 12px',
   } as React.CSSProperties,
   deleteBtn: {
-    background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)',
-    borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit',
+    ...hybridControlStyles.iconButton,
+    width: 34,
+    minWidth: 34,
+    height: 34,
   } as React.CSSProperties,
 };
 
@@ -418,6 +447,8 @@ interface Props {
   onStreamDirectChange?: (val: boolean) => void;
   adaptiveAccentEnabled?: boolean;
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
+  hybridThemeMode?: HybridThemeMode;
+  onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
   playbackMode?: 'standard' | 'vinyl';
   onPlaybackModeChange?: (mode: 'standard' | 'vinyl') => void;
   vinylHardcore?: boolean;
@@ -452,6 +483,8 @@ export default function SettingsPage({
   onStreamDirectChange,
   adaptiveAccentEnabled = true,
   onAdaptiveAccentEnabledChange,
+  hybridThemeMode = 'dark',
+  onHybridThemeModeChange,
   playbackMode = 'standard',
   onPlaybackModeChange,
   vinylHardcore = false,
@@ -746,18 +779,23 @@ export default function SettingsPage({
     const next = { ...local, [key]: value };
     setLocal(next);
     onSettingsChange(next); // live preview
+    onHybridThemeModeChange?.('custom');
   };
 
   const applyPreset = (preset: Partial<AppSettings>) => {
-    const next = { ...local, bgTexture: 'none', ...preset };
+    const hybridPreset = { ...preset };
+    delete hybridPreset.fontFamily;
+    const next = { ...local, bgTexture: 'none', ...hybridPreset };
     setLocal(next);
     onSettingsChange(next);
+    onHybridThemeModeChange?.('custom');
   };
 
   const resetTheme = () => {
     const next = { ...local, ...ORIGINAL_THEME };
     setLocal(next);
     onSettingsChange(next);
+    onHybridThemeModeChange?.('custom');
   };
 
   const saveSchedule = async (libraryId: ClientEntityId, enabled: boolean, freq: number) => {
@@ -1002,31 +1040,37 @@ export default function SettingsPage({
   };
 
   return (
-    <div style={P.page}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-        <h2 style={{ ...P.title, margin: 0 }}>Settings</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--text-muted)' }}>
+    <div data-ui-design="hybrid" data-ui-region="settings" style={P.page}>
+      <div style={P.pageHeader}>
+        <div>
+          <h2 style={P.title}>Settings</h2>
+          <div style={P.subtitle}>Personalize BoogieBox and manage this server.</div>
+        </div>
+        <div style={P.account}>
           <span>{currentUser.username}</span>
-          <span style={{ padding: '2px 6px', borderRadius: 4, background: isAdmin ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.06)', color: isAdmin ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600, fontSize: 10 }}>{currentUser.role}</span>
-          <button onClick={onLogout} style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 11 }}>Log out</button>
+          <span style={P.roleBadge}>{currentUser.role}</span>
+          <button type="button" onClick={onLogout} style={P.logoutButton}>Log out</button>
         </div>
       </div>
 
       {/* Tab bar */}
-      <div style={P.tabBar}>
+      <div role="tablist" aria-label="Settings sections" style={P.tabBar}>
         {([
-          ['theme',        '🎨 Appearance'],
-          ['libraries',    '📚 Libraries'],
+          ['theme',        'Appearance'],
+          ['libraries',    'Libraries'],
           ...(isAdmin ? [
-            ['schedules',    '🕐 Auto-Scan'],
-            ['integrations', '🔌 Integrations'],
-            ['advanced',     '⚙ Advanced'],
-            ['users',        '👥 Users'],
+            ['schedules',    'Auto-Scan'],
+            ['integrations', 'Integrations'],
+            ['advanced',     'Advanced'],
+            ['users',        'Users'],
           ] : []),
           ['about',        'About'],
         ] as [string, string][]).map(([t, label]) => (
           <button
             key={t}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t}
             style={{ ...P.tab, ...(activeTab === t ? P.tabActive : {}) }}
             onClick={() => setActiveTab(t as any)}
           >
@@ -1044,104 +1088,117 @@ export default function SettingsPage({
 
       {activeTab === 'theme' && (
         <div style={P.section}>
-
-          {/* Presets */}
-          <div style={P.sectionTitle}>Presets</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 28 }}>
-            {THEME_PRESETS.map(preset => (
-              <button
-                key={preset.label}
-                onClick={() => applyPreset(preset.settings)}
-                style={{
-                  padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
-                  border: '1px solid var(--border)', fontFamily: 'inherit',
-                  background: preset.settings.colorBg ?? 'var(--surface)',
-                  color: preset.settings.colorText ?? 'var(--text)',
-                  transition: 'opacity 0.15s',
-                }}
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Colors */}
-          <div style={P.sectionTitle}>Colors</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 40px', marginBottom: 28 }}>
-            <ColorInput label="Background"    value={local.colorBg}        onChange={v => set('colorBg', v)} />
-            <ColorInput label="Surface"       value={local.colorSurface}   onChange={v => set('colorSurface', v)} />
-            <ColorInput label="Border"        value={local.colorBorder}    onChange={v => set('colorBorder', v)} />
-            <ColorInput label="Accent"        value={local.colorAccent}    onChange={v => set('colorAccent', v)} />
-            <ColorInput label="Text"          value={local.colorText}      onChange={v => set('colorText', v)} />
-            <ColorInput label="Muted Text"    value={local.colorTextMuted} onChange={v => set('colorTextMuted', v)} />
-          </div>
-
-          {/* Font */}
-          <div style={P.sectionTitle}>Font</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 28 }}>
-            {FONT_OPTIONS.map(f => (
-              <button
-                key={f.value}
-                onClick={() => set('fontFamily', f.value)}
-                style={{
-                  padding: '7px 14px', borderRadius: 6, fontSize: 13, cursor: 'pointer',
-                  fontFamily: f.value,
-                  border: `1px solid ${local.fontFamily === f.value ? 'var(--accent)' : 'var(--border)'}`,
-                  backgroundColor: local.fontFamily === f.value ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'var(--surface)',
-                  color: local.fontFamily === f.value ? 'var(--accent)' : 'var(--text)',
-                }}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Preview */}
-          <div style={P.sectionTitle}>Preview</div>
-          <div style={{
-            padding: 20, borderRadius: 8, marginBottom: 24,
-            backgroundColor: local.colorSurface, border: `1px solid ${local.colorBorder}`,
-            fontFamily: local.fontFamily,
-          }}>
-            <div style={{ color: local.colorText, fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
-              The Quick Brown Fox
+          <SettingsPanel
+            title="Theme mode"
+            description="Light and Dark use supported New-design defaults. Custom keeps your own saved palette."
+          >
+            <div role="group" aria-label="New design theme mode" style={hybridControlStyles.segmentedGroup}>
+              {HYBRID_THEME_MODES.map(mode => {
+                const active = hybridThemeMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-label={`Use ${mode} theme`}
+                    aria-pressed={active}
+                    onClick={() => onHybridThemeModeChange?.(mode)}
+                    style={{
+                      ...hybridControlStyles.segment,
+                      ...(active ? hybridControlStyles.segmentActive : {}),
+                      minWidth: 78,
+                    }}
+                  >
+                    {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                  </button>
+                );
+              })}
             </div>
-            <div style={{ color: local.colorTextMuted, fontSize: 12, marginBottom: 10 }}>
-              Artist · Album · 2024 · Jazz
+          </SettingsPanel>
+
+          <SettingsPanel
+            title="Custom palette"
+            description="Choosing a preset or editing a color switches the New design to Custom without changing your saved font."
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+              {THEME_PRESETS.map(preset => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => applyPreset(preset.settings)}
+                  style={{
+                    ...hybridControlStyles.secondaryButton,
+                    minHeight: 34,
+                    padding: '7px 12px',
+                    background: preset.settings.colorBg ?? 'var(--surface-subtle)',
+                    color: preset.settings.colorText ?? 'var(--text)',
+                  }}
+                >
+                  {preset.label}
+                </button>
+              ))}
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <div style={{ padding: '6px 14px', borderRadius: 6, backgroundColor: local.colorAccent, color: '#fff', fontSize: 12, fontWeight: 600 }}>
-                ▶ Play
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(240px, 1fr))', gap: '14px 32px' }}>
+              <ColorInput label="Background" value={local.colorBg} onChange={v => set('colorBg', v)} />
+              <ColorInput label="Surface" value={local.colorSurface} onChange={v => set('colorSurface', v)} />
+              <ColorInput label="Border" value={local.colorBorder} onChange={v => set('colorBorder', v)} />
+              <ColorInput label="Accent" value={local.colorAccent} onChange={v => set('colorAccent', v)} />
+              <ColorInput label="Text" value={local.colorText} onChange={v => set('colorText', v)} />
+              <ColorInput label="Muted Text" value={local.colorTextMuted} onChange={v => set('colorTextMuted', v)} />
+            </div>
+          </SettingsPanel>
+
+          <SettingsPanel
+            title="Typeface & preview"
+            description="Satoshi is fixed for the New design. Your previous font setting remains stored during migration."
+          >
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 0.65fr) minmax(300px, 1.35fr)', gap: 14 }}>
+              <div style={{ padding: '16px', borderRadius: 12, background: 'var(--surface-subtle)' }}>
+                <div style={{ fontFamily: HYBRID_FONT_FAMILY, color: 'var(--text)', fontSize: 18, fontWeight: 750 }}>
+                  Satoshi
+                </div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 5 }}>New design typeface</div>
               </div>
-              <div style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${local.colorBorder}`, color: local.colorTextMuted, fontSize: 12 }}>
-                + Queue
+              <div style={{
+                padding: 18,
+                borderRadius: 12,
+                backgroundColor: local.colorSurface,
+                border: `1px solid ${local.colorBorder}`,
+                fontFamily: HYBRID_FONT_FAMILY,
+              }}>
+                <div style={{ color: local.colorText, fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                  The Quick Brown Fox
+                </div>
+                <div style={{ color: local.colorTextMuted, fontSize: 12, marginBottom: 10 }}>
+                  Artist · Album · 2024 · Jazz
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ padding: '6px 14px', borderRadius: 8, backgroundColor: local.colorAccent, color: 'var(--on-accent)', fontSize: 12, fontWeight: 650 }}>
+                    ▶ Play
+                  </div>
+                  <div style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${local.colorBorder}`, color: local.colorTextMuted, fontSize: 12 }}>
+                    + Queue
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          </SettingsPanel>
 
-          {/* Actions */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: 600, marginBottom: 6 }}>
-              Accent source
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div
+          <SettingsPanel
+            title="Accent source"
+            description="Adaptive follows album and artist artwork; turning it off uses the selected theme accent everywhere."
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={adaptiveAccentEnabled}
+                aria-label="Adaptive accent"
                 onClick={() => onAdaptiveAccentEnabledChange?.(!adaptiveAccentEnabled)}
                 title={adaptiveAccentEnabled ? 'Adaptive accent is enabled' : 'Selected theme accent is enabled'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                  position: 'relative', flexShrink: 0,
-                  backgroundColor: adaptiveAccentEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
+                style={{ ...hybridControlStyles.switchTrack, ...(adaptiveAccentEnabled ? hybridControlStyles.switchTrackActive : {}) }}
               >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: adaptiveAccentEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
+                <span style={{ ...hybridControlStyles.switchThumb, ...(adaptiveAccentEnabled ? hybridControlStyles.switchThumbActive : {}) }} />
+              </button>
               <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
                 {adaptiveAccentEnabled
                   ? 'Adaptive from album/artist artwork (current behavior)'
@@ -1149,14 +1206,15 @@ export default function SettingsPage({
               </div>
             </div>
             <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
-              Applies to album view, artist view, and playback bar. Saved in this browser only.
+              Applies to album view, artist view, and playback bar. Saved for your user profile.
             </div>
-          </div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          </SettingsPanel>
+
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-              Theme and accent settings auto-save in this browser only.
+              Theme, Custom palette, and accent settings auto-save for your user profile.
             </div>
-            <button style={P.btnSecondary} onClick={resetTheme}>
+            <button type="button" style={P.btnSecondary} onClick={resetTheme}>
               Reset to Default
             </button>
           </div>
@@ -1397,11 +1455,31 @@ export default function SettingsPage({
       {/* ── Advanced Tab ──────────────────────────────────────────────────── */}
       {activeTab === 'advanced' && (
         <div style={P.section}>
-          <div style={P.sectionTitle}>Playback</div>
+          <div style={hybridSettingsStyles.advancedIntro}>
+            <div style={P.sectionTitle}>Advanced settings</div>
+            <div style={hybridSettingsStyles.panelDescription}>
+              These controls affect playback behavior, background processing, network access, and server maintenance.
+              Routine appearance and library choices stay in their dedicated sections.
+            </div>
+            <nav aria-label="Advanced settings groups" style={hybridSettingsStyles.advancedNav}>
+              {[
+                ['advanced-playback', 'Playback'],
+                ['advanced-transitions', 'Transitions'],
+                ['advanced-waveforms', 'Waveforms'],
+                ['advanced-bpm', 'BPM'],
+                ['advanced-dlna', 'DLNA'],
+                ['advanced-debug', 'Diagnostics'],
+                ...(isAdmin ? [['advanced-database', 'Database']] : []),
+              ].map(([target, label]) => (
+                <a key={target} href={`#${target}`} style={hybridSettingsStyles.advancedNavItem}>{label}</a>
+              ))}
+            </nav>
+          </div>
+
+          <div id="advanced-playback" style={P.advancedSectionTitle}>Playback</div>
 
           <div style={{
-            padding: '16px 20px', borderRadius: 8, marginBottom: 12,
-            backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
+            ...hybridSettingsStyles.panel,
           }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>
               Vinyl Mode
@@ -1882,7 +1960,7 @@ export default function SettingsPage({
             )}
           </div>
 
-          <div style={{ ...P.sectionTitle, marginTop: 28 }}>Track Transitions</div>
+          <div id="advanced-transitions" style={P.advancedSectionTitle}>Track Transitions</div>
 
           <div style={{
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
@@ -1972,7 +2050,7 @@ export default function SettingsPage({
           </div>
 
           {/* ── Waveforms ───────────────────────────────────────────────── */}
-          <div style={{ ...P.sectionTitle, marginTop: 28 }}>Waveforms</div>
+          <div id="advanced-waveforms" style={P.advancedSectionTitle}>Waveforms</div>
 
           <div style={{
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
@@ -2129,7 +2207,7 @@ export default function SettingsPage({
           </div>
 
           {/* ── BPM Analysis ────────────────────────────────────────────── */}
-          <div style={{ ...P.sectionTitle, marginTop: 28 }}>BPM Analysis</div>
+          <div id="advanced-bpm" style={P.advancedSectionTitle}>BPM Analysis</div>
 
           <div style={{
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
@@ -2247,7 +2325,7 @@ export default function SettingsPage({
           </div>
 
           {/* ── DLNA Server ─────────────────────────────────────────────── */}
-          <div style={{ ...P.sectionTitle, marginTop: 28 }}>DLNA Server</div>
+          <div id="advanced-dlna" style={P.advancedSectionTitle}>DLNA Server</div>
 
           <div style={{
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
@@ -2380,7 +2458,7 @@ export default function SettingsPage({
           </div>
 
           {/* ── Debug Logging ───────────────────────────────────────────── */}
-          <div style={{ ...P.sectionTitle, marginTop: 28 }}>Debug Logging</div>
+          <div id="advanced-debug" style={P.advancedSectionTitle}>Debug Logging</div>
 
           <div style={{
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
@@ -2487,7 +2565,7 @@ export default function SettingsPage({
           {/* ── Database (admin only) ─────────────────────────────────────── */}
           {isAdmin && (
             <>
-              <div style={{ ...P.sectionTitle, marginTop: 28 }}>Database</div>
+              <div id="advanced-database" style={P.advancedSectionTitle}>Database</div>
               <div style={{
                 padding: '16px 20px', borderRadius: 8, marginBottom: 12,
                 backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
@@ -2934,46 +3012,33 @@ export default function SettingsPage({
 
 const P: Record<string, React.CSSProperties> = {
   page: {
-    padding: '24px 32px', maxWidth: 860, flex: 1, overflowY: 'auto',
+    flex: 1,
+    overflowY: 'auto',
+    ...hybridSettingsStyles.page,
   },
-  title: {
-    fontSize: 20, fontWeight: 700, color: 'var(--text)',
-    marginBottom: 20, letterSpacing: '-0.5px',
+  pageHeader: hybridSettingsStyles.pageHeader,
+  title: hybridSettingsStyles.title,
+  subtitle: hybridSettingsStyles.subtitle,
+  account: hybridSettingsStyles.account,
+  roleBadge: hybridSettingsStyles.roleBadge,
+  logoutButton: { ...hybridControlStyles.secondaryButton, minHeight: 32, padding: '6px 10px' },
+  tabBar: hybridSettingsStyles.tabBar,
+  tab: hybridSettingsStyles.tab,
+  tabActive: hybridSettingsStyles.tabActive,
+  section: hybridSettingsStyles.section,
+  sectionTitle: hybridSettingsStyles.sectionTitle,
+  advancedSectionTitle: {
+    ...hybridSettingsStyles.sectionTitle,
+    marginTop: 28,
+    scrollMarginTop: 16,
   },
-  tabBar: {
-    display: 'flex', gap: 2, marginBottom: 24,
-    borderBottom: '1px solid var(--border)', paddingBottom: 0,
-  },
-  tab: {
-    padding: '9px 18px', background: 'transparent', border: 'none',
-    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13,
-    fontFamily: 'inherit', borderBottomWidth: 2, borderBottomStyle: 'solid', borderBottomColor: 'transparent',
-    marginBottom: -1, transition: 'color 0.15s',
-  },
-  tabActive: {
-    color: 'var(--accent)', borderBottomColor: 'var(--accent)',
-  },
-  section: { paddingTop: 4 },
-  sectionTitle: {
-    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-    letterSpacing: 1, color: 'var(--text-muted)', marginBottom: 14,
-  },
-  btnPrimary: {
-    backgroundColor: 'var(--accent)', color: '#fff', border: 'none',
-    borderRadius: 6, padding: '9px 20px', cursor: 'pointer',
-    fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
-  },
-  btnSecondary: {
-    backgroundColor: 'transparent', color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
-    borderRadius: 6, padding: '9px 20px', cursor: 'pointer',
-    fontSize: 13, fontFamily: 'inherit',
-  },
+  btnPrimary: hybridControlStyles.primaryButton,
+  btnSecondary: hybridControlStyles.secondaryButton,
   aboutPanel: {
     padding: '20px 24px',
-    borderRadius: 8,
+    borderRadius: 14,
     backgroundColor: 'var(--surface)',
-    border: '1px solid var(--border)',
+    border: '1px solid var(--divider-subtle)',
   },
   aboutTitle: {
     margin: '0 0 10px',

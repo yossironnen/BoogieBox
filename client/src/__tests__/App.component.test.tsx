@@ -212,8 +212,12 @@ describe('App component flows', () => {
     expect(await screen.findByTestId('playlists-view')).toHaveTextContent('playlist:42');
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    expect(screen.getByPlaceholderText(/Search titles, artists, albums/i)).toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText(/Search titles, artists, albums/i), { target: { value: 'Track' } });
+    expect(screen.getByText('Find artists, albums, and tracks across your music library.')).toBeInTheDocument();
+    const searchInput = screen.getByPlaceholderText(/Search titles, artists, albums/i);
+    expect(searchInput).toBeInTheDocument();
+    fireEvent.focus(searchInput);
+    expect(searchInput.parentElement).toHaveStyle({ boxShadow: 'var(--focus-ring)' });
+    fireEvent.change(searchInput, { target: { value: 'Track' } });
     await waitFor(() => expect(apiMock.search).toHaveBeenCalled(), { timeout: 2000 });
     expect(screen.getByText(/1 artist/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Album One.*Artist One/i }));

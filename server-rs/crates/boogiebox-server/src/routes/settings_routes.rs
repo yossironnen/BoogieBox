@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use crate::{
     auth::{AdminUser, AuthenticatedUser},
     settings::{
-        normalize_settings_payload, ALLOWED_USER_SETTING_KEYS, PLAYBACK_SETTINGS_KEYS,
-        USER_SETTING_MAX_VALUE_LEN,
+        normalize_settings_payload, validate_user_setting_value, ALLOWED_USER_SETTING_KEYS,
+        PLAYBACK_SETTINGS_KEYS, USER_SETTING_MAX_VALUE_LEN,
     },
     DbPool, ErrorResponse, OkResponse, SharedState,
 };
@@ -209,6 +209,16 @@ async fn put_user_settings_handler(
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: format!("Value too long for key: {key}"),
+                    setup_required: None,
+                }),
+            )
+                .into_response();
+        }
+        if let Err(error) = validate_user_setting_value(key, &v_str) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error,
                     setup_required: None,
                 }),
             )

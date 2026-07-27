@@ -269,10 +269,10 @@ describe('SettingsPage component flows', () => {
       />
     );
 
-    const userTabs = screen.getByRole('button', { name: 'About' }).parentElement;
-    expect(within(userTabs!).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      '🎨 Appearance',
-      '📚 Libraries',
+    const userTabs = screen.getByRole('tab', { name: 'About' }).parentElement;
+    expect(within(userTabs!).getAllByRole('tab').map((button) => button.textContent)).toEqual([
+      'Appearance',
+      'Libraries',
       'About',
     ]);
 
@@ -285,18 +285,19 @@ describe('SettingsPage component flows', () => {
       />
     );
 
-    const adminTabs = screen.getByRole('button', { name: 'About' }).parentElement;
-    expect(within(adminTabs!).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      '🎨 Appearance',
-      '📚 Libraries',
-      '🕐 Auto-Scan',
-      '🔌 Integrations',
-      '⚙ Advanced',
-      '👥 Users',
+    const adminTabs = screen.getByRole('tab', { name: 'About' }).parentElement;
+    expect(within(adminTabs!).getAllByRole('tab').map((button) => button.textContent)).toEqual([
+      'Appearance',
+      'Libraries',
+      'Auto-Scan',
+      'Integrations',
+      'Advanced',
+      'Users',
       'About',
     ]);
+    expect(screen.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true');
 
-    fireEvent.click(screen.getByRole('button', { name: 'About' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
 
     expect(screen.getByText(/self-hosted music library/i)).toBeInTheDocument();
     const link = screen.getByRole('link', { name: 'Support BoogieBox on Ko-fi' });
@@ -314,7 +315,7 @@ describe('SettingsPage component flows', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Libraries/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Libraries/i }));
     await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
     expect(screen.getByText('Main Library')).toBeInTheDocument();
 
@@ -361,7 +362,7 @@ describe('SettingsPage component flows', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Libraries/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Libraries/i }));
     await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole('button', { name: /^Rename$/i }));
@@ -381,7 +382,7 @@ describe('SettingsPage component flows', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Auto-Scan/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Auto-Scan/i }));
     await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(apiMock.admin.queues).toHaveBeenCalledTimes(1));
     expect(screen.getByText('Queue & Maintenance')).toBeInTheDocument();
@@ -421,7 +422,7 @@ describe('SettingsPage component flows', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
     await waitFor(() => expect(apiMock.dlna.status).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(apiMock.settings.get).toHaveBeenCalled());
     await waitFor(() => expect(apiMock.waveforms.status).toHaveBeenCalledTimes(1));
@@ -569,7 +570,7 @@ describe('SettingsPage component flows', () => {
         onSettingsChange={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
     expect(await screen.findByText('Ready')).toBeInTheDocument();
     expect(screen.getByText(/Cache:/i)).toHaveTextContent('0 tracks analyzed, about 0 B stored in SQLite');
     expect(screen.getByText(/In progress: 5\/10 processed/i)).toBeInTheDocument();
@@ -598,7 +599,7 @@ describe('SettingsPage component flows', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Integrations/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Integrations/i }));
     await waitFor(() => expect(apiMock.settings.get).toHaveBeenCalled());
     await waitFor(() => expect(apiMock.admin.providerUsage).toHaveBeenCalledTimes(1));
 
@@ -677,7 +678,7 @@ describe('SettingsPage component flows', () => {
         onSettingsChange={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Integrations/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Integrations/i }));
     await screen.findByText('Provider Usage');
     expect(screen.getByText(/No provider usage has been recorded/i)).toBeInTheDocument();
 
@@ -693,36 +694,50 @@ describe('SettingsPage component flows', () => {
     expect(await screen.findAllByText(/save denied/i)).not.toHaveLength(0);
   });
 
-  it('applies appearance presets, fonts, adaptive accent, reset, color edits, and logout', () => {
+  it('applies Hybrid modes, Custom presets, adaptive accent, reset, color edits, and logout', () => {
     const onSettingsChange = vi.fn();
     const onAdaptiveAccentEnabledChange = vi.fn();
+    const onHybridThemeModeChange = vi.fn();
     const onLogout = vi.fn();
     render(
       <SettingsPage
         currentUser={{ id: '2', username: 'listener', role: 'user', canScan: false, canEditMetadata: false }}
         onLogout={onLogout}
-        settings={DEFAULT_SETTINGS}
+        settings={{ ...DEFAULT_SETTINGS, fontFamily: 'Inter' }}
         onSettingsChange={onSettingsChange}
         adaptiveAccentEnabled
         onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
+        hybridThemeMode="dark"
+        onHybridThemeModeChange={onHybridThemeModeChange}
       />,
     );
+
+    expect(screen.getByText('Satoshi')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Theme mode' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Custom palette' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Use light theme' }));
+    expect(onHybridThemeModeChange).toHaveBeenCalledWith('light');
 
     fireEvent.click(screen.getByRole('button', { name: 'Vintage Radio' }));
     expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
       bgTexture: 'wood',
-      fontFamily: 'IBM Plex Mono',
+      fontFamily: 'Inter',
     }));
-    fireEvent.click(screen.getByRole('button', { name: 'Inter' }));
-    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ fontFamily: 'Inter' }));
-    fireEvent.click(screen.getByTitle('Adaptive accent is enabled'));
+    expect(onHybridThemeModeChange).toHaveBeenCalledWith('custom');
+    expect(screen.queryByRole('button', { name: 'Inter' })).not.toBeInTheDocument();
+    const adaptiveSwitch = screen.getByRole('switch', { name: 'Adaptive accent' });
+    expect(adaptiveSwitch).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(adaptiveSwitch);
     expect(onAdaptiveAccentEnabledChange).toHaveBeenCalledWith(false);
 
     const backgroundInputs = screen.getAllByDisplayValue('#6a472f');
     fireEvent.change(backgroundInputs[backgroundInputs.length - 1], { target: { value: '#123456' } });
     expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ colorBg: '#123456' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reset to Default' }));
-    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ colorBg: DEFAULT_SETTINGS.colorBg }));
+    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+      colorBg: DEFAULT_SETTINGS.colorBg,
+      fontFamily: 'Inter',
+    }));
     fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
     expect(onLogout).toHaveBeenCalled();
   });
@@ -746,7 +761,9 @@ describe('SettingsPage component flows', () => {
         {...callbacks}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
+    expect(screen.getByRole('navigation', { name: 'Advanced settings groups' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Diagnostics' })).toHaveAttribute('href', '#advanced-debug');
     await screen.findByText('Vinyl Mode');
     fireEvent.click(screen.getByLabelText('Enable Vinyl Mode'));
     fireEvent.click(screen.getByLabelText(/Hardcore Vinyl/i));
@@ -773,7 +790,7 @@ describe('SettingsPage component flows', () => {
         onSettingsChange={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Auto-Scan/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Auto-Scan/i }));
     await screen.findByText('Queue & Maintenance');
     fireEvent.click(screen.getByTitle('Remove schedule'));
     await waitFor(() => expect(apiMock.schedules.remove).toHaveBeenCalledWith('1'));
@@ -797,7 +814,7 @@ describe('SettingsPage component flows', () => {
         onSettingsChange={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
     await screen.findByRole('button', { name: 'Run Mapping Now' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Crossfade' }));
@@ -843,11 +860,11 @@ describe('SettingsPage component flows', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Auto-Scan/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Auto-Scan/i }));
     expect(await screen.findByText('queues offline')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Integrations/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Integrations/i }));
     expect(await screen.findByText('usage offline')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
     expect(await screen.findByText(/Deep analysis status unavailable/i)).toBeInTheDocument();
     expect(screen.getByText('Waveform mapping status unavailable.')).toBeInTheDocument();
   });

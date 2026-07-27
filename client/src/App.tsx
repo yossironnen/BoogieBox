@@ -24,6 +24,19 @@ import { parseServerDate } from './utils';
 import MobileApp from './mobile/MobileApp';
 import { phase2 } from './uiPhase2';
 import { useMobileShell } from './mobile/useMobileShell';
+import {
+  getClassicPreviewHref,
+  getHybridSemanticTokens,
+  hybridSearchStyles,
+  hybridShellStyles,
+  HYBRID_THEME_MODES,
+  HYBRID_SEMANTIC_TOKEN_KEYS,
+  mountHybridFont,
+  parseHybridPreview,
+  parseHybridThemeMode,
+  resolveHybridThemeSettings,
+  type HybridThemeMode,
+} from './hybridPreview';
 
 // ─── CSS Variable injection ───────────────────────────────────────────────────
 // Injects theme as CSS custom properties on :root so ALL components pick them up.
@@ -50,6 +63,16 @@ function applyTheme(s: AppSettings) {
   document.body.style.color = s.colorText;
 }
 
+function applyHybridSemanticTokens(
+  tokens: ReturnType<typeof getHybridSemanticTokens> | null,
+): void {
+  const style = document.documentElement.style;
+  for (const key of HYBRID_SEMANTIC_TOKEN_KEYS) {
+    if (tokens) style.setProperty(key, tokens[key]);
+    else style.removeProperty(key);
+  }
+}
+
 type ThemeSettings = Pick<AppSettings,
   'colorBg' | 'colorSurface' | 'colorBorder' | 'colorAccent' | 'colorText' | 'colorTextMuted' | 'bgTexture' | 'fontFamily'
 >;
@@ -68,6 +91,8 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 export const THEME_STORAGE_KEY = 'boogiebox.theme.v1';
 /** ADAPTIVE ACCENT STORAGE KEY is part of this module's public API. */
 export const ADAPTIVE_ACCENT_STORAGE_KEY = 'boogiebox.theme.adaptiveAccent.v1';
+/** HYBRID THEME MODE STORAGE KEY is part of this module's public API. */
+export const HYBRID_THEME_MODE_STORAGE_KEY = 'boogiebox.ui.hybridThemeMode.v1';
 const THEME_TEXTURE_VALUES = new Set(['none', 'wood']);
 const WOOD_BG_TEXTURE = [
   'linear-gradient(90deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 8%, rgba(0,0,0,0.07) 16%, rgba(255,255,255,0.02) 24%, rgba(0,0,0,0.06) 32%, rgba(255,255,255,0.02) 40%, rgba(0,0,0,0.08) 48%, rgba(255,255,255,0.03) 56%, rgba(0,0,0,0.07) 64%, rgba(255,255,255,0.02) 72%, rgba(0,0,0,0.06) 80%, rgba(255,255,255,0.02) 88%, rgba(0,0,0,0.08) 100%)',
@@ -124,6 +149,9 @@ export function parseThemeSettings(raw: string | null): Partial<ThemeSettings> |
 
 function themeKey(userId: EntityId) { return `${THEME_STORAGE_KEY}.u${userId}`; }
 function accentKey(userId: EntityId) { return `${ADAPTIVE_ACCENT_STORAGE_KEY}.u${userId}`; }
+function hybridThemeModeKey(userId: EntityId) {
+  return `${HYBRID_THEME_MODE_STORAGE_KEY}.u${userId}`;
+}
 
 function safeLocalStorageGet(key: string): string | null {
   if (typeof window === 'undefined') return null;
@@ -145,6 +173,10 @@ function getStoredAdaptiveAccentEnabled(userId: EntityId): boolean {
   return raw !== 'false';
 }
 
+function getStoredHybridThemeMode(userId: EntityId): HybridThemeMode | null {
+  return parseHybridThemeMode(safeLocalStorageGet(hybridThemeModeKey(userId)));
+}
+
 function saveThemeToStorage(settings: AppSettings, userId: EntityId): void {
   if (typeof window === 'undefined') return;
   try {
@@ -160,6 +192,15 @@ function saveAdaptiveAccentToStorage(enabled: boolean, userId: EntityId): void {
     window.localStorage.setItem(accentKey(userId), enabled ? 'true' : 'false');
   } catch {
     // Best effort only.
+  }
+}
+
+function saveHybridThemeModeToStorage(mode: HybridThemeMode, userId: EntityId): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(hybridThemeModeKey(userId), mode);
+  } catch {
+    // Best effort only (private mode/quota issues).
   }
 }
 
@@ -487,6 +528,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
   const [genres, setGenres]       = useState<Genre[]>([]);
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
   const [hoveredTrackId, setHoveredTrackId] = useState<ClientEntityId | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const searchRequestSeqRef = useRef(0);
 
@@ -610,29 +652,55 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
   }, [displayedAlbums, displayedArtists, displayedTracks, onOpenAlbum, onOpenArtist, playTrack]);
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div
+      data-ui-design="hybrid"
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        ...hybridSearchStyles.root,
+      }}
+    >
 
       {/* ── Filter bar ── */}
-      <div style={S.filterBar}>
-        <div style={S.searchWrap}>
+      <div style={{ ...S.filterBar, ...hybridSearchStyles.filterBar }}>
+        <div style={hybridSearchStyles.heroCopy}>
+          <div style={hybridSearchStyles.heroTitle}>Search</div>
+          <div style={hybridSearchStyles.heroBody}>
+            Find artists, albums, and tracks across your music library.
+          </div>
+        </div>
+        <div
+          style={{
+            ...S.searchWrap,
+            ...hybridSearchStyles.searchWrap,
+            ...(searchFocused ? hybridSearchStyles.searchWrapFocused : {}),
+          }}
+        >
           <Icon.Search />
           <input style={S.searchInput} placeholder="Search titles, artists, albums..."
-            value={query} onChange={e => setQuery(e.target.value)} autoFocus />
-          {query && <button style={S.clearBtn} onClick={() => setQuery('')}><Icon.X /></button>}
+            value={query} onChange={e => setQuery(e.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            autoFocus />
+          {query && <button type="button" aria-label="Clear search" style={S.clearBtn} onClick={() => setQuery('')}><Icon.X /></button>}
         </div>
-        <select style={S.select} value={libraryId ?? ''} onChange={e => setLibraryId(e.target.value || undefined)}>
+        <select style={{ ...S.select, ...hybridSearchStyles.select }} value={libraryId ?? ''} onChange={e => setLibraryId(e.target.value || undefined)}>
           <option value="">All Libraries</option>
           {libraries.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
-        <select style={S.select} value={genre} onChange={e => setGenre(e.target.value)}>
+        <select style={{ ...S.select, ...hybridSearchStyles.select }} value={genre} onChange={e => setGenre(e.target.value)}>
           <option value="">All Genres</option>
           {genres.map(g => <option key={g.genre} value={g.genre}>{g.genre} ({g.track_count})</option>)}
         </select>
-        <input style={{ ...S.select, width: 90 }} placeholder="Year" value={year}
+        <input style={{ ...S.select, ...hybridSearchStyles.select, width: 90 }} placeholder="Year" value={year}
           onChange={e => setYear(e.target.value)} type="number" min="1900" max="2099" />
         <button
+          type="button"
           style={{
             ...S.select,
+            ...hybridSearchStyles.select,
             cursor: 'pointer',
             fontFamily: 'inherit',
             fontWeight: 700,
@@ -655,12 +723,12 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
 
       {/* ── Artists + Albums quick results ── */}
       {showQuick && (
-        <div style={S.quickPanel}>
+        <div style={{ ...S.quickPanel, ...hybridSearchStyles.quickPanel }}>
           {hasTopResults && (
-            <div style={S.quickSection}>
+            <div style={{ ...S.quickSection, ...hybridSearchStyles.quickSection }}>
               <div style={S.quickSectionLabel}>Top Results</div>
               {displayedTopResults.map((item) => (
-                <button key={`${item.type}-${item.id}`} style={S.quickRow} onClick={() => openTopResult(item)}>
+                <button type="button" key={`${item.type}-${item.id}`} style={{ ...S.quickRow, ...hybridSearchStyles.quickRow }} onClick={() => openTopResult(item)}>
                   <span style={S.quickIcon}>
                     {item.type === 'artist' ? <ArtistRowIcon /> : item.type === 'album' ? <AlbumRowIcon /> : <Icon.Music />}
                   </span>
@@ -672,10 +740,10 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
             </div>
           )}
           {hasArtists && (
-            <div style={S.quickSection}>
+            <div style={{ ...S.quickSection, ...hybridSearchStyles.quickSection }}>
               <div style={S.quickSectionLabel}>Artists</div>
               {displayedArtists.map(artist => (
-                <button key={artist.id} style={S.quickRow} onClick={() => onOpenArtist(artist)}>
+                <button type="button" key={artist.id} style={{ ...S.quickRow, ...hybridSearchStyles.quickRow }} onClick={() => onOpenArtist(artist)}>
                   <span style={S.quickIcon}><ArtistRowIcon /></span>
                   <span style={S.quickName}>{artist.name}</span>
                   <span style={S.quickMeta}>
@@ -690,10 +758,10 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
             </div>
           )}
           {hasAlbums && (
-            <div style={S.quickSection}>
+            <div style={{ ...S.quickSection, ...hybridSearchStyles.quickSection }}>
               <div style={S.quickSectionLabel}>Albums</div>
               {displayedAlbums.map((album: Album) => (
-                <button key={album.id} style={S.quickRow} onClick={() => onOpenAlbum(album)}>
+                <button type="button" key={album.id} style={{ ...S.quickRow, ...hybridSearchStyles.quickRow }} onClick={() => onOpenAlbum(album)}>
                   <span style={S.quickIcon}><AlbumRowIcon /></span>
                   <span style={S.quickName}>{album.title}</span>
                   <span style={S.quickMeta}>
@@ -712,7 +780,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
       )}
 
       {/* ── Tracks section ── */}
-      <div style={S.resultsMeta}>
+      <div style={{ ...S.resultsMeta, ...hybridSearchStyles.resultsMeta }} aria-live="polite">
         <div style={S.resultsMetaRow}>
           {result != null && (
             <span style={S.muted}>
@@ -729,13 +797,13 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
       </div>
 
       {showQuick && (
-        <div style={S.sectionDivider}>
+        <div style={{ ...S.sectionDivider, ...hybridSearchStyles.sectionDivider }}>
           <span style={S.sectionDividerLabel}>Tracks</span>
         </div>
       )}
 
       <>
-      <div style={S.tableHeader}>
+      <div style={{ ...S.tableHeader, ...hybridSearchStyles.tableHeader }}>
         <div style={{ ...S.thCell, width: 32, flexShrink: 0 }} />
         {cols.map(col => (
           <div key={col.field} style={{ ...S.thCell, ...col.style }} onClick={() => toggleSort(col.field)}>
@@ -753,13 +821,14 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
             {result != null ? 'No tracks found.' : 'Search your library above.'}
           </div>
         )}
-        {displayedTracks.map((track: Track, i: number) => (
+        {displayedTracks.map((track: Track) => (
           <div key={track.id}
             style={{
               ...S.tableRow,
+              ...hybridSearchStyles.tableRow,
               backgroundColor: hoveredTrackId === track.id
-                ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
-                : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
+                ? 'color-mix(in srgb, var(--accent) 12%, transparent)'
+                : 'transparent',
             }}
             onClick={() => playTrack(track, displayedTracks)}
             onMouseEnter={() => setHoveredTrackId(track.id)}
@@ -869,8 +938,17 @@ function getStoredSidebarCollapsed(): boolean {
 /** App is part of this module's public API. */
 export default function App() {
   const isMobileShell = useMobileShell();
+  const initialHybridPreview = useMemo(
+    () => parseHybridPreview(typeof window === 'undefined' ? '' : window.location.search),
+    [],
+  );
+  const hybridPreviewActive = initialHybridPreview.enabled && !isMobileShell;
+  const hybridDesignActive = !isMobileShell;
+  const [hybridPreviewMode, setHybridPreviewMode] = useState<HybridThemeMode>(initialHybridPreview.mode);
+  const [hybridThemeMode, setHybridThemeMode] = useState<HybridThemeMode>('dark');
+  const activeHybridThemeMode = hybridPreviewActive ? hybridPreviewMode : hybridThemeMode;
   const [currentUser, setCurrentUser] = useState<AuthUser | null | 'loading'>('loading');
-  const [view, setView]         = useState<View>('home');
+  const [view, setView]         = useState<View>(() => hybridPreviewActive ? 'browse' : 'home');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [activeSidebarLibraryId, setActiveSidebarLibraryId] = useState<ClientEntityId | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -900,8 +978,40 @@ export default function App() {
   const lastRecordedPlayKeyRef = useRef<string>('');
   const themeSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Apply theme on mount and whenever settings change
-  useEffect(() => { applyTheme(settings); }, [settings]);
+  // Apply the approved Hybrid foundation without overwriting saved Custom values.
+  useEffect(() => {
+    if (!hybridDesignActive) return undefined;
+    return mountHybridFont();
+  }, [hybridDesignActive]);
+
+  useEffect(() => {
+    const activeSettings = hybridDesignActive
+      ? resolveHybridThemeSettings(settings, activeHybridThemeMode)
+      : settings;
+    applyTheme(activeSettings);
+    applyHybridSemanticTokens(
+      hybridDesignActive ? getHybridSemanticTokens(settings, activeHybridThemeMode) : null,
+    );
+    return () => {
+      if (hybridDesignActive) applyHybridSemanticTokens(null);
+    };
+  }, [activeHybridThemeMode, hybridDesignActive, settings]);
+
+  const selectHybridPreviewMode = useCallback((mode: HybridThemeMode) => {
+    setHybridPreviewMode(mode);
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('ui-preview-theme', mode);
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  const selectHybridThemeMode = useCallback((mode: HybridThemeMode) => {
+    setHybridThemeMode(mode);
+    if (!currentUser || currentUser === 'loading') return;
+    const userId = (currentUser as AuthUser).id;
+    saveHybridThemeModeToStorage(mode, userId);
+    api.userSettings.update({ uiThemeMode: mode }).catch(() => {});
+  }, [currentUser]);
 
   // Persist appearance per-user: localStorage for instant load, server for cross-browser sync.
   useEffect(() => {
@@ -966,6 +1076,7 @@ export default function App() {
     // Apply localStorage immediately to avoid flash, then override with server (cross-browser source of truth).
     setSettings(prev => ({ ...DEFAULT_SETTINGS, ...prev, ...(getStoredTheme(userId) ?? {}) }));
     setAdaptiveAccentEnabled(getStoredAdaptiveAccentEnabled(userId));
+    setHybridThemeMode(getStoredHybridThemeMode(userId) ?? 'dark');
     api.userSettings.get().then(userSettings => {
       if (userSettings.theme) {
         const serverTheme = parseThemeSettings(userSettings.theme);
@@ -978,6 +1089,11 @@ export default function App() {
         const val = userSettings.adaptiveAccent !== 'false';
         setAdaptiveAccentEnabled(val);
         saveAdaptiveAccentToStorage(val, userId);
+      }
+      const serverHybridThemeMode = parseHybridThemeMode(userSettings.uiThemeMode);
+      if (serverHybridThemeMode) {
+        setHybridThemeMode(serverHybridThemeMode);
+        saveHybridThemeModeToStorage(serverHybridThemeMode, userId);
       }
     }).catch(() => {});
     api.playbackSettings().then(shared => {
@@ -1173,13 +1289,54 @@ export default function App() {
   }
 
   return (
-    <div style={S.root}>
+    <div
+      data-ui-design="hybrid"
+      data-ui-theme={activeHybridThemeMode}
+      data-ui-preview={hybridPreviewActive ? 'hybrid' : undefined}
+      data-ui-preview-theme={hybridPreviewActive ? hybridPreviewMode : undefined}
+      style={{ ...S.root, ...(hybridDesignActive ? hybridShellStyles.root : {}) }}
+    >
+      {hybridPreviewActive && (
+        <div style={hybridShellStyles.previewBar} aria-label="Hybrid preview controls">
+          <span style={hybridShellStyles.previewLabel}>Hybrid preview</span>
+          <div style={hybridShellStyles.previewModes} role="group" aria-label="Preview theme">
+            {HYBRID_THEME_MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={hybridPreviewMode === mode}
+                style={{
+                  ...hybridShellStyles.previewMode,
+                  ...(hybridPreviewMode === mode ? hybridShellStyles.previewModeActive : {}),
+                }}
+                onClick={() => selectHybridPreviewMode(mode)}
+              >
+                {mode.charAt(0).toUpperCase() + mode.slice(1)}
+              </button>
+            ))}
+          </div>
+          <a
+            href={getClassicPreviewHref(window.location.href)}
+            style={hybridShellStyles.classicLink}
+          >
+            Exit preview
+          </a>
+        </div>
+      )}
       {/* Body row: sidebar + main */}
       <div style={S.body}>
         {/* Sidebar */}
-        <aside style={{ ...S.sidebar, ...(sidebarCollapsed ? S.sidebarCollapsed : {}) }}>
+        <aside style={{
+          ...S.sidebar,
+          ...(hybridDesignActive ? hybridShellStyles.sidebar : {}),
+          ...(sidebarCollapsed ? S.sidebarCollapsed : {}),
+        }}>
           <div
-            style={{ ...S.logo, ...(sidebarCollapsed ? S.logoCollapsed : {}) }}
+            style={{
+              ...S.logo,
+              ...(hybridDesignActive ? hybridShellStyles.logo : {}),
+              ...(sidebarCollapsed ? S.logoCollapsed : {}),
+            }}
             title={`BoogieBox v${serverVersion ?? APP_VERSION}`}
           >
             <img src="/boogiebox.png" alt="BoogieBox logo" style={S.logoImage} />
@@ -1221,7 +1378,13 @@ export default function App() {
                   aria-current={isActive ? 'page' : undefined}
                   aria-label={label}
                   title={label}
-                  style={{ ...S.navItem, ...(sidebarCollapsed ? S.navItemCollapsed : {}), ...(isActive ? S.navItemActive : {}) }}
+                  style={{
+                    ...S.navItem,
+                    ...(hybridDesignActive ? hybridShellStyles.navItem : {}),
+                    ...(sidebarCollapsed ? S.navItemCollapsed : {}),
+                    ...(isActive ? S.navItemActive : {}),
+                    ...(isActive && hybridDesignActive ? hybridShellStyles.navItemActive : {}),
+                  }}
                   onClick={() => openView(id)}
                 >
                   {icon}
@@ -1313,7 +1476,7 @@ export default function App() {
         </aside>
 
         {/* Main */}
-        <main style={S.main}>
+        <main style={{ ...S.main, ...(hybridDesignActive ? hybridShellStyles.main : {}) }}>
           {view !== 'settings' && view !== 'playlists' && view !== 'home' && <StatsBar stats={stats} />}
           {view === 'home'      && (
             <HomeView
@@ -1366,6 +1529,7 @@ export default function App() {
                 playTrack(track, allTracks ?? [track]);
               }}
               onStartAutoDj={(selectedGenres) => startAutoDj(selectedGenres)}
+              hybridDesign={hybridDesignActive}
             />
           )}
           {view === 'search'    && (
@@ -1389,6 +1553,7 @@ export default function App() {
                 openArtistRequest={browseOpenArtistRequest}
                 openGenreRequest={browseOpenGenreRequest}
                 adaptiveAccentEnabled={adaptiveAccentEnabled}
+                hybridPreview={hybridDesignActive}
               />
           )}
           {view === 'playlists' && (
@@ -1409,6 +1574,8 @@ export default function App() {
               onStreamDirectChange={setStreamDirect}
               adaptiveAccentEnabled={adaptiveAccentEnabled}
               onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
+              hybridThemeMode={hybridThemeMode}
+              onHybridThemeModeChange={selectHybridThemeMode}
               playbackMode={playbackMode}
               onPlaybackModeChange={setPlaybackMode}
               vinylHardcore={vinylHardcore}
@@ -1436,6 +1603,8 @@ export default function App() {
         vinylAnalogFxDisabled={vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={vinylNeedleDropIntensity}
         onPlaybackSnapshotChange={setPlaybackSnapshot}
+        hybridPreview={hybridDesignActive}
+        adaptiveAccentEnabled={adaptiveAccentEnabled}
       />
       <ContextMenuRoot />
     </div>
