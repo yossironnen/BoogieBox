@@ -233,6 +233,57 @@ describe('Player artist link', () => {
     expect(await screen.findByRole('dialog', { name: 'Lyrics popup' })).toBeInTheDocument();
     expect(trackLyricsMock).toHaveBeenCalledWith('77');
     expect(screen.getByRole('checkbox', { name: 'Karaoke' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Close lyrics' }));
+    expect(screen.queryByRole('dialog', { name: 'Lyrics popup' })).not.toBeInTheDocument();
+  });
+
+  it('opens an accessible Hybrid queue with geometry-derived spacing and keyboard selection', () => {
+    const onStateChange = vi.fn();
+    const baseTrack = {
+      file_path: 'D:\\Music\\Queued.mp3',
+      file_name: 'Queued.mp3',
+      file_size: 123,
+      format: 'mp3',
+      duration: 180,
+      bitrate: 320,
+      sample_rate: 44100,
+      channels: 2,
+      artist: 'Artist',
+      album: 'Album',
+      library_name: 'Main',
+      track_number: 1,
+      disc_number: 1,
+      year: 2026,
+      genre: 'Electronic',
+      composer: null,
+      comment: null,
+      bpm: null,
+      scanned_at: '2026-07-27T00:00:00Z',
+    };
+    const state: PlayerState = {
+      queue: [
+        { ...baseTrack, id: 'queue-1', title: 'Current song' },
+        { ...baseTrack, id: 'queue-2', title: 'Next song' },
+      ],
+      currentIndex: 0,
+      isPlaying: false,
+      playToken: 1,
+    };
+
+    render(<Player state={state} onStateChange={onStateChange} ffmpegAvailable />);
+    fireEvent.click(screen.getByRole('button', { name: 'Playback queue' }));
+
+    const queueDialog = screen.getByRole('dialog', { name: 'Playback queue' });
+    expect(queueDialog).toHaveStyle(`bottom: ${DESKTOP_PLAYER_DOCK_HEIGHT + 8}px`);
+    const nextTrack = screen.getByRole('option', { name: /Next song/i });
+    fireEvent.keyDown(nextTrack, { key: 'Enter' });
+    expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 1, isPlaying: true }));
+    expect(screen.getByRole('option', { name: /Current song/i })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Next song from queue' }));
+    expect(onStateChange).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Close queue' }));
+    expect(screen.queryByRole('dialog', { name: 'Playback queue' })).not.toBeInTheDocument();
   });
 
   it('opens the 7-band parametric equalizer and persists band edits', async () => {

@@ -1,23 +1,24 @@
 import React, { useMemo } from 'react';
 import type { SonicFingerprint, StemWindow, TrackSection } from '../types';
+import { hybridAudioPanelStyles, hybridControlStyles } from '../hybridPreview';
 import WaveformBar, { type WaveformBarStatus } from './WaveformBar';
 
 const DISPLAY_BINS = 180;
 
 const SECTION_LABEL_COLORS: Record<string, string> = {
-  intro: '#9e9e9e',
+  intro: 'var(--text-faint)',
   verse: 'var(--accent)',
-  chorus: '#f5a623',
-  breakdown: '#7b61ff',
-  build: '#e91e63',
-  drop: '#ff5722',
-  outro: '#9e9e9e',
+  chorus: 'var(--warning)',
+  breakdown: 'var(--info)',
+  build: 'color-mix(in srgb, var(--accent) 58%, var(--danger))',
+  drop: 'var(--danger)',
+  outro: 'var(--text-faint)',
 };
 
 const STEM_CONFIG = [
-  { key: 'vocalWindowsJson' as const, label: 'VOCALS', color: '#e91e63' },
-  { key: 'drumWindowsJson'  as const, label: 'DRUMS',  color: '#ff9800' },
-  { key: 'bassWindowsJson'  as const, label: 'BASS',   color: '#2196f3' },
+  { key: 'vocalWindowsJson' as const, label: 'VOCALS', color: 'var(--danger)' },
+  { key: 'drumWindowsJson'  as const, label: 'DRUMS',  color: 'var(--warning)' },
+  { key: 'bassWindowsJson'  as const, label: 'BASS',   color: 'var(--info)' },
 ];
 
 function clamp(v: number, lo: number, hi: number) {
@@ -85,26 +86,21 @@ export default function SonicFingerprintPanel({
     <div
       data-testid="sonic-fingerprint-panel"
       style={{
-        width: '100%',
-        background: 'var(--surface)',
-        borderTop: '2px solid var(--accent)',
-        boxShadow: '0 -4px 24px color-mix(in srgb, var(--accent) 18%, transparent), inset 0 1px 0 color-mix(in srgb, var(--accent) 20%, transparent)',
-        padding: '10px 14px 14px',
+        ...hybridAudioPanelStyles.fingerprint,
         display: 'flex',
         flexDirection: 'column',
-        gap: 9,
+        gap: 10,
         boxSizing: 'border-box',
       }}
     >
       {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={hybridAudioPanelStyles.fingerprintHeader}>
         <span style={{
           fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: '0.12em',
+          fontWeight: 750,
+          letterSpacing: '0.09em',
           color: 'var(--accent)',
           textTransform: 'uppercase' as const,
-          opacity: 0.9,
         }}>
           Sonic Fingerprint ✦
         </span>
@@ -118,17 +114,9 @@ export default function SonicFingerprintPanel({
         )}
         <button
           data-testid="sfp-close-button"
+          type="button"
           onClick={onClose}
-          style={{
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            color: 'var(--text-muted)',
-            fontSize: 16,
-            padding: '0 4px',
-            lineHeight: 1,
-            marginLeft: 2,
-          }}
+          style={{ ...hybridControlStyles.iconButton, width: 30, minWidth: 30, height: 30, marginLeft: 2 }}
           aria-label="Close Sonic Fingerprint"
         >
           ×
@@ -185,16 +173,9 @@ function Badge({ label, testId, title }: { label: string; testId?: string; title
       data-testid={testId}
       title={title}
       style={{
-        fontSize: 10,
-        lineHeight: '16px',
-        padding: '2px 8px',
-        borderRadius: 4,
-        border: '1px solid color-mix(in srgb, var(--accent) 35%, var(--border))',
-        backgroundColor: 'color-mix(in srgb, var(--accent) 10%, var(--bg))',
-        color: 'var(--text)',
+        ...hybridAudioPanelStyles.badge,
         whiteSpace: 'nowrap' as const,
         fontVariantNumeric: 'tabular-nums',
-        fontWeight: 600,
       }}
     >
       {label}

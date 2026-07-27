@@ -19,6 +19,7 @@ describe('VinylTurntable', () => {
         onSeekEnd={onSeekEnd}
       />,
     );
+    expect(screen.getByRole('group', { name: 'Track vinyl turntable, playing' })).toBeInTheDocument();
     expect(screen.getByAltText('Track vinyl')).toBeInTheDocument();
     expect(screen.getByTitle('Vinyl platter')).toHaveStyle({ animationPlayState: 'running' });
     const wrap = container.firstElementChild as HTMLDivElement;

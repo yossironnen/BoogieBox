@@ -815,6 +815,106 @@ export const hybridSettingsStyles: Record<string, React.CSSProperties> = {
   },
 };
 
+export const hybridAudioPanelStyles: Record<string, React.CSSProperties> = {
+  popup: {
+    overflow: 'hidden',
+    border: '1px solid var(--border-strong)',
+    borderRadius: 16,
+    background: 'var(--surface-raised)',
+    boxShadow: 'var(--shadow-raised)',
+  },
+  header: {
+    minHeight: 48,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: '10px 12px 10px 16px',
+    borderBottom: '1px solid var(--divider-subtle)',
+    background: 'var(--surface)',
+  },
+  title: {
+    color: 'var(--text)',
+    fontSize: 13,
+    fontWeight: 750,
+    letterSpacing: -0.1,
+  },
+  headerActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  list: {
+    flex: 1,
+    minHeight: 0,
+    padding: 6,
+    overflowY: 'auto',
+  },
+  listRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 9,
+    marginBottom: 2,
+    padding: '9px 8px 9px 10px',
+    border: '1px solid transparent',
+    borderRadius: 10,
+    background: 'transparent',
+    color: 'var(--text)',
+  },
+  listRowActive: {
+    background: 'var(--accent-soft)',
+    boxShadow: 'inset 3px 0 0 var(--accent)',
+  },
+  badge: {
+    padding: '3px 8px',
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 999,
+    background: 'var(--surface-subtle)',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 650,
+    lineHeight: 1.2,
+  },
+  badgeAccent: {
+    borderColor: 'transparent',
+    background: 'var(--accent-soft)',
+    color: 'var(--accent)',
+  },
+  body: {
+    minHeight: 0,
+    padding: 14,
+    overflowY: 'auto',
+  },
+  empty: {
+    padding: '40px 20px',
+    color: 'var(--text-muted)',
+    fontSize: 12,
+    lineHeight: 1.5,
+    textAlign: 'center',
+  },
+  fingerprint: {
+    width: '100%',
+    padding: '12px 14px 14px',
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 14,
+    background: 'var(--surface-raised)',
+    boxShadow: 'var(--shadow-raised)',
+  },
+  fingerprintHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    paddingBottom: 8,
+    borderBottom: '1px solid var(--divider-subtle)',
+  },
+  vinylDeck: {
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 18,
+    background: 'var(--surface-subtle)',
+    boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent)',
+  },
+};
+
 export const hybridPlayerStyles: Record<string, React.CSSProperties> = {
   bar: {
     height: DESKTOP_PLAYER_DOCK_HEIGHT,

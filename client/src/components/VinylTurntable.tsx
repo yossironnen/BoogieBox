@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import { hybridAudioPanelStyles } from '../hybridPreview';
 
 interface Props {
   albumArtUrl: string | null;
@@ -96,7 +97,13 @@ export default function VinylTurntable({
   }, [duration, onSeekEnd, progressFromPointer, seekFromPointer]);
 
   return (
-    <div ref={wrapRef} style={V.wrap}>
+    <div
+      ref={wrapRef}
+      data-ui-region="vinyl-turntable"
+      role="group"
+      aria-label={`${title} vinyl turntable${isPlaying ? ', playing' : ', paused'}`}
+      style={V.wrap}
+    >
       <div
         style={{
           ...V.disc,
@@ -142,6 +149,7 @@ export default function VinylTurntable({
 
 const V: Record<string, React.CSSProperties> = {
   wrap: {
+    ...hybridAudioPanelStyles.vinylDeck,
     position: 'relative',
     width: 130,
     height: 142,
@@ -151,13 +159,13 @@ const V: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
   },
   disc: {
-    width: 124,
-    height: 124,
+    width: 118,
+    height: 118,
     borderRadius: '50%',
     position: 'relative',
     background: 'radial-gradient(circle at 50% 50%, #303034 0%, #111113 55%, #050506 100%)',
-    border: '1px solid var(--border)',
-    boxShadow: '0 8px 18px rgba(0,0,0,0.5)',
+    border: '1px solid var(--border-strong)',
+    boxShadow: '0 8px 18px color-mix(in srgb, var(--overlay) 72%, transparent)',
     animation: 'vinyl-spin 2.6s linear infinite',
   },
   grooves: {

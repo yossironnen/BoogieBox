@@ -10,6 +10,7 @@ import {
   DESKTOP_PLAYER_DOCK_HEIGHT,
   DESKTOP_PLAYER_POPUP_GAP,
   DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
+  hybridAudioPanelStyles,
   hybridControlStyles,
   hybridMediaStyles,
   hybridPlayerStyles,
@@ -121,6 +122,14 @@ describe('Hybrid preview', () => {
     expect(hybridSettingsStyles.panel).toMatchObject({
       borderRadius: 14,
       boxShadow: 'none',
+    });
+    expect(hybridAudioPanelStyles.popup).toMatchObject({
+      borderRadius: 16,
+      background: 'var(--surface-raised)',
+      boxShadow: 'var(--shadow-raised)',
+    });
+    expect(hybridAudioPanelStyles.listRowActive).toMatchObject({
+      background: 'var(--accent-soft)',
     });
   });
 

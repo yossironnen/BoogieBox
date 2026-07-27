@@ -288,7 +288,8 @@ describe('Player comprehensive behavior', () => {
     fireEvent.mouseUp(window, { clientY: 15 });
 
     fireEvent.click(rightButtons[rightButtons.length - 1]);
-    expect(screen.getByText('Queue (3)')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Playback queue' })).toBeInTheDocument();
+    expect(screen.getByRole('listbox', { name: 'Queued tracks' })).toBeInTheDocument();
     const thirdRow = screen.getAllByText('Track 3')[0].closest<HTMLElement>('div[style*="align-items: center"]')!;
     fireEvent.click(thirdRow);
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 2 }));

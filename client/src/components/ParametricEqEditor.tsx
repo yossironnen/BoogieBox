@@ -11,6 +11,7 @@ import {
   clampDb, clampFreq, clampQ,
   type ParametricEqBand, type ParametricEqProfile, type ParametricEqBandType,
 } from '../audio/eq';
+import { hybridControlStyles } from '../hybridPreview';
 import EqCurveCanvas from './EqCurveCanvas';
 
 const BAND_TYPES: { value: ParametricEqBandType; label: string }[] = [
@@ -22,27 +23,36 @@ const BAND_TYPES: { value: ParametricEqBandType; label: string }[] = [
 ];
 
 const STYLE = {
-  root: { display: 'flex', flexDirection: 'column' as const, gap: 8 },
+  root: { display: 'flex', flexDirection: 'column' as const, gap: 10 },
   profileRow: { display: 'flex', alignItems: 'center', gap: 6 },
   select: {
-    flex: 1, backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-    color: 'var(--text)', borderRadius: 6, padding: '4px 6px', fontSize: 11, fontFamily: 'inherit',
+    ...hybridControlStyles.select,
+    flex: 1,
+    minHeight: 34,
+    padding: '6px 30px 6px 9px',
+    fontSize: 11,
   },
   input: {
-    flex: 1, minWidth: 120, backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-    color: 'var(--text)', borderRadius: 6, padding: '4px 6px', fontSize: 11, fontFamily: 'inherit', outline: 'none',
+    ...hybridControlStyles.field,
+    flex: 1,
+    minWidth: 120,
+    minHeight: 34,
+    padding: '6px 9px',
+    fontSize: 11,
   },
   btn: {
-    backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-    color: 'var(--text)', borderRadius: 6, padding: '4px 8px', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer',
+    ...hybridControlStyles.secondaryButton,
+    minHeight: 34,
+    padding: '6px 10px',
+    fontSize: 11,
   },
   status: { fontSize: 10, color: 'var(--text-muted)' },
   bandStrip: { display: 'flex', gap: 4, flexWrap: 'nowrap' as const },
   bandChip: (active: boolean, enabled: boolean): React.CSSProperties => ({
     flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
-    padding: '4px 2px', borderRadius: 6, cursor: 'pointer', fontSize: 9,
-    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-    backgroundColor: active ? 'color-mix(in srgb, var(--accent) 16%, transparent)' : 'transparent',
+    padding: '6px 2px', borderRadius: 9, cursor: 'pointer', fontSize: 9,
+    border: '1px solid transparent',
+    backgroundColor: active ? 'var(--accent-soft)' : 'var(--surface-subtle)',
     opacity: enabled ? 1 : 0.45,
     color: active ? 'var(--accent)' : 'var(--text-muted)',
     fontFamily: 'inherit',
@@ -51,12 +61,17 @@ const STYLE = {
   controlRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const },
   controlLabel: { fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' as const, minWidth: 28 },
   numberInput: {
-    width: 72, backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-    color: 'var(--text)', borderRadius: 6, padding: '3px 6px', fontSize: 11, fontFamily: 'inherit', outline: 'none',
+    ...hybridControlStyles.field,
+    width: 72,
+    minHeight: 32,
+    padding: '5px 7px',
+    fontSize: 11,
   },
   smallSelect: {
-    backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-    color: 'var(--text)', borderRadius: 6, padding: '3px 4px', fontSize: 11, fontFamily: 'inherit',
+    ...hybridControlStyles.select,
+    minHeight: 32,
+    padding: '5px 28px 5px 8px',
+    fontSize: 11,
   },
 } as const;
 
@@ -122,10 +137,11 @@ export default function ParametricEqEditor({
   const hasGain = selectedBand?.type !== 'highpass' && selectedBand?.type !== 'lowpass';
 
   return (
-    <div style={STYLE.root}>
+    <div data-ui-region="parametric-equalizer" style={STYLE.root}>
       {/* Profile selector */}
       <div style={STYLE.profileRow}>
         <select
+          aria-label="EQ profile"
           style={STYLE.select}
           value={profile}
           disabled={autoEqEnabled}
@@ -149,6 +165,7 @@ export default function ParametricEqEditor({
       {/* Save row */}
       <div style={STYLE.profileRow}>
         <input
+          aria-label="New EQ profile name"
           style={STYLE.input}
           placeholder="Save as..."
           value={newProfileName}
@@ -194,10 +211,11 @@ export default function ParametricEqEditor({
 
       {/* Selected band controls */}
       {selectedBand && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0', borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 0 2px', borderTop: '1px solid var(--divider-subtle)' }}>
           <div style={STYLE.controlRow}>
             <span style={STYLE.controlLabel}>Type</span>
             <select
+              aria-label={`Band ${selectedBandIndex + 1} type`}
               style={STYLE.smallSelect}
               value={selectedBand.type}
               disabled={autoEqEnabled}
@@ -221,6 +239,7 @@ export default function ParametricEqEditor({
           <div style={STYLE.controlRow}>
             <span style={STYLE.controlLabel}>Freq</span>
             <input
+              aria-label={`Band ${selectedBandIndex + 1} frequency`}
               type="number"
               style={STYLE.numberInput}
               min={PARAMETRIC_FREQ_MIN}
@@ -237,6 +256,7 @@ export default function ParametricEqEditor({
 
             <span style={{ ...STYLE.controlLabel, marginLeft: 8 }}>Q</span>
             <input
+              aria-label={`Band ${selectedBandIndex + 1} Q`}
               type="number"
               style={STYLE.numberInput}
               min={PARAMETRIC_Q_MIN}
@@ -254,6 +274,7 @@ export default function ParametricEqEditor({
           <div style={STYLE.controlRow}>
             <span style={STYLE.controlLabel}>Gain</span>
             <input
+              aria-label={`Band ${selectedBandIndex + 1} gain value`}
               type="number"
               style={{ ...STYLE.numberInput, opacity: hasGain ? 1 : 0.4 }}
               min={PARAMETRIC_DB_MIN}

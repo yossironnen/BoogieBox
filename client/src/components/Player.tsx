@@ -26,6 +26,8 @@ import {
   DESKTOP_PLAYER_DOCK_HEIGHT,
   DESKTOP_PLAYER_POPUP_GAP,
   DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
+  hybridAudioPanelStyles,
+  hybridControlStyles,
   hybridPlayerStyles,
 } from '../hybridPreview';
 
@@ -1551,27 +1553,86 @@ function QueuePanel({ queue, currentIndex, onSelect, onRemove, onClear, onClose,
   lockEdit?: boolean;
   bottom?: number;
 }) {
+  const popupBottom = bottom + DESKTOP_PLAYER_POPUP_GAP;
   return (
-    <div style={{ position: 'fixed', right: 0, bottom, width: 340, backgroundColor: PLAYER_THEME_TOKENS.surface, border: `1px solid ${PLAYER_THEME_TOKENS.border}`, borderRadius: '8px 0 0 0', boxShadow: '-4px -4px 24px rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', maxHeight: `calc(100vh - ${bottom + 8}px)`, zIndex: 200, fontFamily: PLAYER_THEME_TOKENS.font }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: `1px solid ${PLAYER_THEME_TOKENS.border}` }}>
-        <span style={{ fontWeight: 600, fontSize: 13, color: PLAYER_THEME_TOKENS.text }}>Queue ({queue.length})</span>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button disabled={lockEdit} onClick={onClear} style={{ background: 'transparent', border: `1px solid ${PLAYER_THEME_TOKENS.border}`, color: PLAYER_THEME_TOKENS.textMuted, borderRadius: 4, padding: '2px 8px', cursor: lockEdit ? 'not-allowed' : 'pointer', opacity: lockEdit ? 0.5 : 1, fontSize: 11, fontFamily: 'inherit' }}>Clear</button>
-          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: PLAYER_THEME_TOKENS.textMuted, cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', borderRadius: 4 }}><CloseIcon /></button>
+    <div
+      role="dialog"
+      aria-label="Playback queue"
+      data-ui-region="playback-queue"
+      style={{
+        ...hybridAudioPanelStyles.popup,
+        position: 'fixed',
+        right: 12,
+        bottom: popupBottom,
+        width: 352,
+        display: 'flex',
+        flexDirection: 'column',
+        maxHeight: `calc(100vh - ${popupBottom + 12}px)`,
+        zIndex: 200,
+        fontFamily: PLAYER_THEME_TOKENS.font,
+      }}
+    >
+      <div style={hybridAudioPanelStyles.header}>
+        <span style={hybridAudioPanelStyles.title}>Up next <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>· {queue.length}</span></span>
+        <div style={hybridAudioPanelStyles.headerActions}>
+          <button
+            type="button"
+            disabled={lockEdit}
+            onClick={onClear}
+            style={{
+              ...hybridControlStyles.secondaryButton,
+              minHeight: 32,
+              padding: '6px 10px',
+              ...(lockEdit ? hybridControlStyles.disabled : {}),
+            }}
+          >
+            Clear
+          </button>
+          <button type="button" aria-label="Close queue" onClick={onClose} style={{ ...hybridControlStyles.iconButton, width: 32, minWidth: 32, height: 32 }}>
+            <CloseIcon />
+          </button>
         </div>
       </div>
-      <div style={{ overflowY: 'auto', flex: 1 }}>
-        {queue.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: PLAYER_THEME_TOKENS.textMuted, fontSize: 12 }}>Queue is empty.</div>}
+      <div role="listbox" aria-label="Queued tracks" style={hybridAudioPanelStyles.list}>
+        {queue.length === 0 && <div style={hybridAudioPanelStyles.empty}>Your queue is empty.</div>}
         {queue.map((track, i) => (
-          <div key={`${track.id}-${i}`}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', cursor: 'pointer', backgroundColor: i === currentIndex ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent', borderLeft: i === currentIndex ? `2px solid ${PLAYER_THEME_TOKENS.accent}` : '2px solid transparent' }}
+          <div
+            key={`${track.id}-${i}`}
+            role="option"
+            aria-selected={i === currentIndex}
+            tabIndex={lockSelect ? -1 : 0}
+            style={{
+              ...hybridAudioPanelStyles.listRow,
+              ...(i === currentIndex ? hybridAudioPanelStyles.listRowActive : {}),
+              cursor: lockSelect ? 'default' : 'pointer',
+            }}
             onClick={() => { if (!lockSelect) onSelect(i); }}
+            onKeyDown={(event) => {
+              if (lockSelect || (event.key !== 'Enter' && event.key !== ' ')) return;
+              event.preventDefault();
+              onSelect(i);
+            }}
           >
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: i === currentIndex ? 600 : 400, color: i === currentIndex ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.title || track.file_name}</div>
+              <div style={{ fontSize: 12, fontWeight: i === currentIndex ? 700 : 550, color: PLAYER_THEME_TOKENS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.title || track.file_name}</div>
               <div style={{ fontSize: 11, color: PLAYER_THEME_TOKENS.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.artist || 'Unknown artist'}</div>
             </div>
-            <button disabled={lockEdit} onClick={e => { e.stopPropagation(); if (!lockEdit) onRemove(i); }} style={{ background: 'transparent', border: 'none', color: PLAYER_THEME_TOKENS.textMuted, cursor: lockEdit ? 'not-allowed' : 'pointer', opacity: lockEdit ? 0.5 : 1, padding: 4, display: 'flex', alignItems: 'center', borderRadius: 4 }}><CloseIcon /></button>
+            <button
+              type="button"
+              aria-label={`Remove ${track.title || track.file_name} from queue`}
+              disabled={lockEdit}
+              onClick={e => { e.stopPropagation(); if (!lockEdit) onRemove(i); }}
+              style={{
+                ...hybridControlStyles.iconButton,
+                width: 30,
+                minWidth: 30,
+                height: 30,
+                background: 'transparent',
+                ...(lockEdit ? hybridControlStyles.disabled : {}),
+              }}
+            >
+              <CloseIcon />
+            </button>
           </div>
         ))}
       </div>
@@ -2856,9 +2917,7 @@ export default function Player({
                       style={{
                         ...P.fpBadge,
                         cursor: 'pointer',
-                        border: '1px solid var(--border)',
-                        backgroundColor: showSonicFingerprint ? 'var(--accent)' : 'var(--surface)',
-                        color: showSonicFingerprint ? '#fff' : 'var(--text-muted)',
+                        ...(showSonicFingerprint ? hybridAudioPanelStyles.badgeAccent : {}),
                       }}
                       data-testid="fp-toggle-button"
                       onClick={() => setShowSonicFingerprint(v => !v)}
@@ -2885,12 +2944,9 @@ export default function Player({
               <div style={{
                 position: 'fixed',
                 bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP,
-                left: 0,
-                right: 0,
+                left: 12,
+                right: 12,
                 zIndex: 99,
-                borderRadius: '10px 10px 0 0',
-                overflow: 'hidden',
-                boxShadow: '0 -8px 32px rgba(0,0,0,0.45)',
               }}>
                 <SonicFingerprintPanel
                   fingerprint={sonicFingerprint}
@@ -3040,7 +3096,14 @@ export default function Player({
               </div>
             )}
             {/* Queue */}
-            <button style={{ ...P.ctrlBtn, color: showQueue ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted }} onClick={() => setShowQueue(q => !q)}><QueueIcon /></button>
+            <button
+              style={{ ...P.ctrlBtn, color: showQueue ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(showQueue ? P.ctrlBtnActive : {}) }}
+              onClick={() => setShowQueue(q => !q)}
+              title="Playback queue"
+              aria-label="Playback queue"
+            >
+              <QueueIcon />
+            </button>
           </div>
           {lyricsOpen && (
             <div
@@ -3049,8 +3112,8 @@ export default function Player({
               aria-label="Lyrics popup"
             >
               <div style={P.lyricsHeader}>
-                <strong style={{ fontSize: 12 }}>Lyrics</strong>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <strong style={hybridAudioPanelStyles.title}>Lyrics</strong>
+                <div style={hybridAudioPanelStyles.headerActions}>
                   {lyricsSource && <span style={P.lyricsSource}>Source: {lyricsSource}</span>}
                   <label style={P.karaokeToggle}>
                     <input
@@ -3061,6 +3124,14 @@ export default function Player({
                     />
                     <span>Karaoke</span>
                   </label>
+                  <button
+                    type="button"
+                    aria-label="Close lyrics"
+                    onClick={() => setLyricsOpen(false)}
+                    style={{ ...hybridControlStyles.iconButton, width: 30, minWidth: 30, height: 30 }}
+                  >
+                    <CloseIcon />
+                  </button>
                 </div>
               </div>
               <div style={P.lyricsBody} ref={lyricsBodyRef}>
@@ -3188,13 +3259,7 @@ const P: Record<string, React.CSSProperties> = {
     gap: 10,
   },
   fpBadge: {
-    fontSize: 10,
-    lineHeight: '14px',
-    padding: '2px 7px',
-    borderRadius: 4,
-    border: '1px solid var(--border)',
-    backgroundColor: 'var(--surface)',
-    color: 'var(--text-muted)',
+    ...hybridAudioPanelStyles.badge,
     whiteSpace: 'nowrap' as const,
     fontVariantNumeric: 'tabular-nums',
     cursor: 'default',
@@ -3213,33 +3278,27 @@ const P: Record<string, React.CSSProperties> = {
   volumeStack: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 },
   modeControls: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 },
   eqPopup: {
+    ...hybridAudioPanelStyles.popup,
     position: 'fixed',
     right: 20,
     width: 560,
-    borderRadius: 8,
-    border: `1px solid ${PLAYER_THEME_TOKENS.border}`,
-    backgroundColor: 'var(--surface)',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
     zIndex: 220,
     display: 'flex',
     flexDirection: 'column',
-    padding: 10,
-    gap: 10,
+    padding: 12,
+    gap: 12,
   },
   eqHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    ...hybridAudioPanelStyles.header,
+    minHeight: 38,
+    margin: '-12px -12px 0',
+    padding: '8px 8px 8px 14px',
   },
   eqCloseBtn: {
-    background: 'transparent',
-    border: 'none',
-    color: PLAYER_THEME_TOKENS.textMuted,
-    cursor: 'pointer',
-    padding: 4,
-    borderRadius: 4,
-    display: 'inline-flex',
-    alignItems: 'center',
+    ...hybridControlStyles.iconButton,
+    width: 30,
+    minWidth: 30,
+    height: 30,
   },
   eqProfileLabel: {
     display: 'flex',
@@ -3310,35 +3369,25 @@ const P: Record<string, React.CSSProperties> = {
     textAlign: 'center',
   },
   lyricsPopup: {
+    ...hybridAudioPanelStyles.popup,
     position: 'fixed',
     right: 20,
     bottom: DESKTOP_PLAYER_DOCK_HEIGHT + DESKTOP_PLAYER_POPUP_GAP,
-    width: 320,
-    maxHeight: 240,
-    overflow: 'hidden',
-    borderRadius: 8,
-    border: `1px solid ${PLAYER_THEME_TOKENS.border}`,
-    backgroundColor: 'var(--surface)',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+    width: 360,
+    maxHeight: 320,
     zIndex: 200,
     display: 'flex',
     flexDirection: 'column',
   },
   lyricsHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '8px 10px',
-    borderBottom: `1px solid ${PLAYER_THEME_TOKENS.border}`,
+    ...hybridAudioPanelStyles.header,
     color: PLAYER_THEME_TOKENS.text,
   },
   lyricsSource: {
-    fontSize: 10,
-    color: PLAYER_THEME_TOKENS.textMuted,
+    ...hybridAudioPanelStyles.badge,
   },
   lyricsBody: {
-    padding: 10,
-    overflowY: 'auto',
+    ...hybridAudioPanelStyles.body,
   },
   lyricsText: {
     margin: 0,
@@ -3354,7 +3403,7 @@ const P: Record<string, React.CSSProperties> = {
   },
   lyricsError: {
     fontSize: 11,
-    color: '#fca5a5',
+    color: 'var(--danger)',
   },
   karaokeToggle: {
     display: 'inline-flex',
@@ -3366,16 +3415,19 @@ const P: Record<string, React.CSSProperties> = {
   syncedLyricsWrap: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 6,
+    gap: 4,
   },
   syncedLine: {
+    padding: '7px 9px',
+    borderRadius: 8,
     fontSize: 12,
     color: PLAYER_THEME_TOKENS.textMuted,
     lineHeight: 1.4,
-    transition: 'color 120ms ease',
+    transition: 'color 120ms ease, background 120ms ease',
   },
   syncedLineActive: {
     color: PLAYER_THEME_TOKENS.accent,
     fontWeight: 700,
+    background: 'var(--accent-soft)',
   },
 };

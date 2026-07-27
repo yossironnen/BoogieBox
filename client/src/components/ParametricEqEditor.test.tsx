@@ -27,20 +27,18 @@ describe('ParametricEqEditor', () => {
         onDeleteProfile={vi.fn()}
       />,
     );
-    const profile = screen.getAllByRole('combobox')[0];
+    const profile = screen.getByRole('combobox', { name: 'EQ profile' });
     fireEvent.change(profile, { target: { value: 'Warm' } });
     expect(onProfileChange).toHaveBeenCalledWith('Warm', BUILTIN_PARAMETRIC_PRESETS.Warm);
     fireEvent.change(profile, { target: { value: 'My Curve' } });
     expect(onProfileChange).toHaveBeenCalledWith('My Curve', DEFAULT_PARAMETRIC_BANDS);
 
     fireEvent.click(screen.getByRole('button', { name: /Band 7/ }));
-    const selects = screen.getAllByRole('combobox');
-    fireEvent.change(selects[1], { target: { value: 'lowpass' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Band 7 type' }), { target: { value: 'lowpass' } });
     fireEvent.click(screen.getByLabelText('Enabled'));
-    const numbers = screen.getAllByRole('spinbutton');
-    fireEvent.change(numbers[0], { target: { value: '99999' } });
-    fireEvent.change(numbers[1], { target: { value: '0' } });
-    fireEvent.change(numbers[2], { target: { value: '-99' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Band 7 frequency' }), { target: { value: '99999' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Band 7 Q' }), { target: { value: '0' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Band 7 gain value' }), { target: { value: '-99' } });
     expect(onBandsChange).toHaveBeenCalled();
     expect(screen.getByRole('slider', { name: 'Band 7 gain' })).toBeEnabled();
   });
