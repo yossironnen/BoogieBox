@@ -2,7 +2,7 @@
  * Defines mobile Mobile Tab Bar behavior for the BoogieBox React client.
  */
 
-import React from 'react';
+import { hybridMobileShellStyles } from '../../hybridPreview';
 import type { MobileTabId } from '../mobileShell';
 
 const TABS: Array<{ id: MobileTabId; label: string; icon: string }> = [
@@ -22,7 +22,7 @@ export default function MobileTabBar({
   onChange: (tab: MobileTabId) => void;
 }) {
   return (
-    <nav style={styles.bar} aria-label="Mobile tabs">
+    <nav style={hybridMobileShellStyles.tabBar} aria-label="Mobile tabs">
       {TABS.map((tab) => {
         const active = tab.id === activeTab;
         return (
@@ -30,10 +30,21 @@ export default function MobileTabBar({
             key={tab.id}
             type="button"
             aria-current={active ? 'page' : undefined}
-            style={{ ...styles.tab, ...(active ? styles.tabActive : null) }}
+            style={{
+              ...hybridMobileShellStyles.tab,
+              ...(active ? hybridMobileShellStyles.tabActive : {}),
+            }}
             onClick={() => onChange(tab.id)}
           >
-            <span style={styles.icon} aria-hidden="true">{tab.icon}</span>
+            <span
+              aria-hidden="true"
+              style={{
+                ...hybridMobileShellStyles.tabIcon,
+                ...(active ? hybridMobileShellStyles.tabIconActive : {}),
+              }}
+            >
+              {tab.icon}
+            </span>
             <span>{tab.label}</span>
           </button>
         );
@@ -41,45 +52,3 @@ export default function MobileTabBar({
     </nav>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  bar: {
-    position: 'fixed',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 50,
-    display: 'grid',
-    gridTemplateColumns: 'repeat(5, 1fr)',
-    gap: 4,
-    padding: '8px 8px calc(env(safe-area-inset-bottom, 0px) + 10px)',
-    background: 'rgba(12, 12, 16, 0.96)',
-    backdropFilter: 'blur(20px)',
-    borderTop: '1px solid color-mix(in srgb, var(--border) 85%, transparent)',
-  },
-  tab: {
-    minHeight: 54,
-    border: 'none',
-    borderRadius: 14,
-    background: 'transparent',
-    color: 'var(--text-muted)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    fontFamily: 'inherit',
-    fontSize: 10,
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
-  tabActive: {
-    color: 'var(--text)',
-    background: 'color-mix(in srgb, var(--accent) 18%, rgba(255,255,255,0.02))',
-    boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent)',
-  },
-  icon: {
-    fontSize: 18,
-    lineHeight: 1,
-  },
-};

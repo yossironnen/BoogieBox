@@ -54,6 +54,9 @@ describe('SetupView', () => {
 
     const input = screen.getByLabelText(/Database folder/i);
     await waitFor(() => expect(input).toHaveValue('C:\\Users\\Yossi\\AppData\\Local\\BoogieBox'));
+    expect(screen.getByRole('heading', { name: 'Set up your server' })).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Setup progress' })).toHaveTextContent('1. Choose storage');
+    expect(screen.getByText(/does not move your music/i)).toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: '\\\\server\\share\\boogieboxdb' } });
     fireEvent.click(screen.getByRole('button', { name: /Set up BoogieBox/i }));
@@ -82,7 +85,7 @@ describe('SetupView', () => {
     await waitFor(() => expect(screen.getByLabelText(/Database folder/i)).toHaveValue('C:\\Users\\Yossi\\AppData\\Local\\BoogieBox'));
     fireEvent.click(screen.getByRole('button', { name: /Browse/i }));
 
-    expect(await screen.findByText('Folder picker failed')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Folder picker failed');
   });
 
   it('keeps the fallback default if the suggestion request fails', async () => {
@@ -119,6 +122,6 @@ describe('SetupView', () => {
 
     fireEvent.change(input, { target: { value: '/broken' } });
     fireEvent.click(screen.getByRole('button', { name: /Set up BoogieBox/i }));
-    expect(await screen.findByText('Setup failed')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Setup failed');
   });
 });

@@ -3,6 +3,7 @@
  */
 
 import type React from 'react';
+import { MOBILE_CONTENT_DOCK_CLEARANCE } from './hybridPreview';
 
 export const phase2 = {
   desktopHero: {
@@ -59,11 +60,9 @@ export const phase2 = {
   },
   mobilePage: {
     minHeight: '100%',
-    padding: '18px 16px 180px',
-    background: [
-      'radial-gradient(circle at top, color-mix(in srgb, var(--accent) 26%, transparent) 0%, transparent 46%)',
-      'linear-gradient(180deg, color-mix(in srgb, var(--surface) 18%, transparent) 0%, transparent 22%)',
-    ].join(','),
+    boxSizing: 'border-box' as const,
+    padding: `18px 16px calc(env(safe-area-inset-bottom, 0px) + ${MOBILE_CONTENT_DOCK_CLEARANCE}px)`,
+    background: 'transparent',
   },
   mobileHeroCard: {
     position: 'relative' as const,

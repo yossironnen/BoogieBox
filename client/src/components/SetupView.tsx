@@ -4,6 +4,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { hybridControlStyles, hybridEntryStyles } from '../hybridPreview';
 import { platform } from '../platform';
 import FolderPickerModal from './FolderPickerModal';
 
@@ -28,19 +29,21 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
         if (!cancelled && suggested && !userEditedFolderRef.current) setFolder(suggested);
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     if (!folder.trim()) return;
     setLoading(true);
     setError(null);
     try {
       await api.systemSetup(folder.trim());
       onComplete();
-    } catch (err: any) {
-      setError(err.message || 'Setup failed');
+    } catch (setupError: any) {
+      setError(setupError.message || 'Setup failed');
     } finally {
       setLoading(false);
     }
@@ -52,141 +55,165 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
       setError(null);
       try {
         const selected = await platform.selectFolder(folder.trim() || DEFAULT_DATABASE_FOLDER);
-        if (selected) setFolder(selected);
-      } catch (err: any) {
-        setError(err.message || 'Folder picker failed');
+        if (selected) {
+          userEditedFolderRef.current = true;
+          setFolder(selected);
+        }
+      } catch (pickerError: any) {
+        setError(pickerError.message || 'Folder picker failed');
       } finally {
         setBrowsing(false);
       }
       return;
     }
-    const selected = await new Promise<string | null>((resolve) => {
+
+    const selected = await new Promise<string | null>(resolve => {
       pickerResolveRef.current = resolve;
       setPickerInitial(folder.trim() || undefined);
       setPickerOpen(true);
     });
-    if (selected) setFolder(selected);
+    if (selected) {
+      userEditedFolderRef.current = true;
+      setFolder(selected);
+    }
   };
+
+  const setupDisabled = loading || !folder.trim();
 
   return (
     <>
-    {pickerOpen && (
-      <FolderPickerModal
-        initialPath={pickerInitial}
-        onSelect={(path) => {
-          setPickerOpen(false);
-          pickerResolveRef.current?.(path);
-          pickerResolveRef.current = null;
+      {pickerOpen && (
+        <FolderPickerModal
+          initialPath={pickerInitial}
+          onSelect={path => {
+            setPickerOpen(false);
+            pickerResolveRef.current?.(path);
+            pickerResolveRef.current = null;
+          }}
+          onClose={() => {
+            setPickerOpen(false);
+            pickerResolveRef.current?.(null);
+            pickerResolveRef.current = null;
+          }}
+        />
+      )}
+
+      <main
+        style={{
+          ...hybridEntryStyles.viewport,
+          position: 'fixed',
+          inset: 0,
         }}
-        onClose={() => {
-          setPickerOpen(false);
-          pickerResolveRef.current?.(null);
-          pickerResolveRef.current = null;
-        }}
-      />
-    )}
-    <div style={{
-      position: 'fixed', inset: 0,
-      background: 'var(--bg)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontFamily: 'var(--font), monospace',
-      color: 'var(--text)',
-    }}>
-      <div style={{
-        width: '100%', maxWidth: 480,
-        background: 'var(--surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 12,
-        padding: '36px 40px',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
-          <img src="/boogiebox.png" alt="BoogieBox" style={{ width: 36, height: 36, borderRadius: 8 }} />
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>Welcome to BoogieBox</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>First-time setup</div>
+      >
+        <section
+          aria-busy={loading}
+          aria-labelledby="setup-title"
+          style={hybridEntryStyles.card}
+        >
+          <div style={hybridEntryStyles.brand}>
+            <img src="/boogiebox.png" alt="" style={hybridEntryStyles.logo} />
+            <div>
+              <div style={hybridEntryStyles.brandName}>BoogieBox</div>
+              <div style={hybridEntryStyles.brandMeta}>First-time setup</div>
+            </div>
           </div>
-        </div>
 
-        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 24, lineHeight: 1.6 }}>
-          Choose a folder where BoogieBox will store its database.
-          This can be a local path or a network path (UNC).
-        </p>
+          <header>
+            <div style={hybridEntryStyles.eyebrow}>Welcome</div>
+            <h1 id="setup-title" style={hybridEntryStyles.title}>Set up your server</h1>
+            <p style={hybridEntryStyles.description}>
+              Choose where BoogieBox will keep its database. Your music stays in its existing
+              folders.
+            </p>
+          </header>
 
-        <form onSubmit={handleSubmit}>
-          <label htmlFor="setup-database-folder" style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-            Database folder
-          </label>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8, marginBottom: 16 }}>
-            <input
-              id="setup-database-folder"
-              type="text"
-              value={folder}
-              onChange={e => {
-                userEditedFolderRef.current = true;
-                setFolder(e.target.value);
-              }}
-              placeholder="e.g. C:\BoogieBox\data or \\server\share\boogieboxdb"
-              autoFocus
-              disabled={loading}
+          <ol aria-label="Setup progress" style={{ ...hybridEntryStyles.progress, listStyle: 'none', padding: 0 }}>
+            <li aria-current="step" style={{ ...hybridEntryStyles.progressItem, ...hybridEntryStyles.progressItemActive }}>
+              1. Choose storage
+            </li>
+            <li style={hybridEntryStyles.progressItem}>2. Create database</li>
+            <li style={hybridEntryStyles.progressItem}>3. Sign in</li>
+          </ol>
+
+          <form onSubmit={handleSubmit} style={hybridEntryStyles.content}>
+            <label
+              htmlFor="setup-database-folder"
               style={{
-                flex: 1, minWidth: 0,
-                background: 'var(--bg)', border: '1px solid var(--border)',
-                borderRadius: 6, padding: '10px 12px',
-                color: 'var(--text)', fontSize: 13,
-                fontFamily: 'var(--font), monospace',
-                boxSizing: 'border-box',
-              }}
-            />
-            <button
-              type="button"
-              onClick={handleBrowse}
-              disabled={loading || browsing}
-              style={{
-                flex: '0 0 auto',
-                minWidth: 88,
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                padding: '0 14px',
+                display: 'block',
+                marginBottom: 8,
                 color: 'var(--text)',
-                fontSize: 13,
-                fontWeight: 700,
-                cursor: loading || browsing ? 'not-allowed' : 'pointer',
-                fontFamily: 'var(--font), monospace',
+                fontSize: 12,
+                fontWeight: 750,
               }}
             >
-              {browsing ? 'Opening...' : 'Browse'}
-            </button>
-          </div>
-
-          {error && (
-            <div style={{
-              marginBottom: 16, padding: '10px 12px',
-              background: 'color-mix(in srgb, #ef4444 12%, var(--surface))',
-              border: '1px solid color-mix(in srgb, #ef4444 40%, var(--border))',
-              borderRadius: 6, fontSize: 12, color: '#f87171',
-            }}>
-              {error}
+              Database folder
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                id="setup-database-folder"
+                type="text"
+                value={folder}
+                onChange={event => {
+                  userEditedFolderRef.current = true;
+                  setFolder(event.target.value);
+                }}
+                placeholder={'e.g. C:\\BoogieBox\\data or \\\\server\\share\\boogieboxdb'}
+                autoFocus
+                disabled={loading}
+                aria-describedby={`setup-folder-help${error ? ' setup-error' : ''}`}
+                aria-invalid={Boolean(error)}
+                style={{
+                  ...hybridControlStyles.field,
+                  flex: 1,
+                  minWidth: 0,
+                  boxSizing: 'border-box',
+                  ...(error ? { borderColor: 'var(--danger)' } : {}),
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => void handleBrowse()}
+                disabled={loading || browsing}
+                style={{
+                  ...hybridControlStyles.secondaryButton,
+                  minWidth: 92,
+                  ...(loading || browsing ? hybridControlStyles.disabled : {}),
+                }}
+              >
+                {browsing ? 'Opening…' : 'Browse'}
+              </button>
             </div>
-          )}
 
-          <button
-            type="submit"
-            disabled={loading || !folder.trim()}
-            style={{
-              width: '100%', padding: '10px 0',
-              background: folder.trim() && !loading ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 40%, var(--surface))',
-              border: 'none', borderRadius: 6,
-              color: '#fff', fontSize: 13, fontWeight: 700,
-              cursor: loading || !folder.trim() ? 'not-allowed' : 'pointer',
-              fontFamily: 'var(--font), monospace',
-            }}
-          >
-            {loading ? 'Setting up…' : 'Set up BoogieBox'}
-          </button>
-        </form>
-      </div>
-    </div>
+            <div id="setup-folder-help" style={hybridEntryStyles.technicalNote}>
+              Local and UNC network paths are supported. BoogieBox stores its database and
+              settings here; it does not move your music.
+            </div>
+
+            {error && (
+              <div id="setup-error" role="alert" style={hybridEntryStyles.error}>
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={setupDisabled}
+              style={{
+                ...hybridControlStyles.primaryButton,
+                width: '100%',
+                marginTop: 20,
+                ...(setupDisabled ? hybridControlStyles.disabled : {}),
+              }}
+            >
+              {loading ? 'Setting up…' : 'Set up BoogieBox'}
+            </button>
+          </form>
+
+          <footer style={hybridEntryStyles.footer}>
+            One-time setup • You can manage libraries after signing in
+          </footer>
+        </section>
+      </main>
     </>
   );
 }

@@ -2,8 +2,9 @@
  * Defines the Login Screen React component and related UI helpers.
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
+import { hybridControlStyles, hybridEntryStyles } from '../hybridPreview';
 import type { AuthUser, LoginUser } from '../types';
 
 interface Props {
@@ -11,17 +12,18 @@ interface Props {
 }
 
 function UserAvatar({ username, size = 64 }: { username: string; size?: number }) {
-  const initials = username.slice(0, 2).toUpperCase();
-  const hue = Array.from(username).reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
   return (
-    <div style={{
-      width: size, height: size, borderRadius: '50%',
-      background: `hsl(${hue}, 55%, 32%)`,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: size * 0.36, fontWeight: 700, color: `hsl(${hue}, 80%, 90%)`,
-      flexShrink: 0,
-    }}>
-      {initials}
+    <div
+      aria-hidden="true"
+      style={{
+        ...hybridEntryStyles.avatar,
+        width: size,
+        height: size,
+        borderRadius: size * 0.34,
+        fontSize: size * 0.32,
+      }}
+    >
+      {username.slice(0, 2).toUpperCase()}
     </div>
   );
 }
@@ -34,13 +36,23 @@ export default function LoginScreen({ onLogin }: Props) {
   const [stayLoggedIn, setStayLoggedIn] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [profilesLoading, setProfilesLoading] = useState(true);
+  const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const pinRefs = useMemo(
-    () => [React.createRef<HTMLInputElement>(), React.createRef<HTMLInputElement>(), React.createRef<HTMLInputElement>(), React.createRef<HTMLInputElement>()],
+    () => [
+      React.createRef<HTMLInputElement>(),
+      React.createRef<HTMLInputElement>(),
+      React.createRef<HTMLInputElement>(),
+      React.createRef<HTMLInputElement>(),
+    ],
     [],
   );
 
   useEffect(() => {
-    api.auth.getLoginUsers().then(setUsers).catch(() => {});
+    api.auth.getLoginUsers()
+      .then(setUsers)
+      .catch(() => {})
+      .finally(() => setProfilesLoading(false));
   }, []);
 
   const handleSelectUser = useCallback(async (user: LoginUser) => {
@@ -50,7 +62,7 @@ export default function LoginScreen({ onLogin }: Props) {
       const { user: authed } = await api.auth.login(user.id, undefined, stayLoggedIn);
       onLogin(authed);
       return;
-    } catch (e: any) {
+    } catch {
       setSelected(user);
       setPin(['', '', '', '']);
       setError('');
@@ -60,38 +72,42 @@ export default function LoginScreen({ onLogin }: Props) {
     }
   }, [onLogin, pinRefs, stayLoggedIn]);
 
-  const handlePinChange = (i: number, val: string) => {
-    const digit = val.replace(/\D/g, '').slice(-1);
-    const next = [...pin];
-    next[i] = digit;
-    setPin(next);
-    setError('');
-    if (digit && i < 3) pinRefs[i + 1].current?.focus();
-    if (next.every(d => d !== '') && i === 3) {
-      submitPin(next.join(''));
-    }
-  };
-
-  const handlePinKeyDown = (i: number, e: React.KeyboardEvent) => {
-    if (e.key === 'Backspace' && !pin[i] && i > 0) {
-      pinRefs[i - 1].current?.focus();
-    }
-  };
-
   const submitPin = async (pinValue: string) => {
     if (!selected) return;
     setLoading(true);
     setError('');
     try {
       const normalizedPin = pinValue.trim();
-      const { user: authed } = await api.auth.login(selected.id, normalizedPin || undefined, stayLoggedIn);
+      const { user: authed } = await api.auth.login(
+        selected.id,
+        normalizedPin || undefined,
+        stayLoggedIn,
+      );
       onLogin(authed);
-    } catch (e: any) {
-      setError(e?.message || 'Invalid credentials');
+    } catch (loginError: any) {
+      setError(loginError?.message || 'Invalid credentials');
       setPin(['', '', '', '']);
       setTimeout(() => pinRefs[0].current?.focus(), 50);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePinChange = (index: number, value: string) => {
+    const digit = value.replace(/\D/g, '').slice(-1);
+    const next = [...pin];
+    next[index] = digit;
+    setPin(next);
+    setError('');
+    if (digit && index < 3) pinRefs[index + 1].current?.focus();
+    if (next.every(candidate => candidate !== '') && index === 3) {
+      void submitPin(next.join(''));
+    }
+  };
+
+  const handlePinKeyDown = (index: number, event: React.KeyboardEvent) => {
+    if (event.key === 'Backspace' && !pin[index] && index > 0) {
+      pinRefs[index - 1].current?.focus();
     }
   };
 
@@ -101,151 +117,187 @@ export default function LoginScreen({ onLogin }: Props) {
     setError('');
   };
 
-  const containerStyle: React.CSSProperties = {
-    minHeight: '100vh', display: 'flex', flexDirection: 'column',
-    alignItems: 'center', justifyContent: 'center',
-    background: '#09090b', color: '#e4e4e7',
-    fontFamily: 'IBM Plex Mono, monospace',
-    padding: 24,
-  };
-
-  const cardStyle: React.CSSProperties = {
-    background: '#111113', border: '1px solid #27272a', borderRadius: 16,
-    padding: '40px 48px', maxWidth: 480, width: '100%',
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 32,
-  };
-
   return (
-    <div style={containerStyle}>
-      <div style={cardStyle}>
-        {/* Logo */}
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-0.5px', color: '#6366f1' }}>
-            BoogieBox
-          </div>
-          <div style={{ fontSize: 12, color: '#71717a', marginTop: 4 }}>
-            {selected ? `Logging in as ${selected.username}` : 'Select a user'}
+    <main style={hybridEntryStyles.viewport}>
+      <section
+        aria-busy={loading}
+        aria-labelledby="login-title"
+        style={hybridEntryStyles.card}
+      >
+        <div style={hybridEntryStyles.brand}>
+          <img src="/boogiebox.png" alt="" style={hybridEntryStyles.logo} />
+          <div>
+            <div style={hybridEntryStyles.brandName}>BoogieBox</div>
+            <div style={hybridEntryStyles.brandMeta}>
+              {selected ? `Logging in as ${selected.username}` : 'Private music, your way'}
+            </div>
           </div>
         </div>
 
-        {!selected ? (
-          <>
-            {/* User grid */}
-            <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
-              gap: 16, width: '100%',
-            }}>
-              {users.map(user => (
-                <button
-                  key={user.id}
-                  onClick={() => handleSelectUser(user)}
-                  disabled={loading}
-                  style={{
-                    background: 'transparent', border: '1px solid #27272a', borderRadius: 12,
-                    padding: '16px 8px', cursor: 'pointer', display: 'flex',
-                    flexDirection: 'column', alignItems: 'center', gap: 10,
-                    color: '#e4e4e7', transition: 'border-color 0.15s, background 0.15s',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#6366f1'; (e.currentTarget as HTMLElement).style.background = '#1a1a1f'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#27272a'; (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-                >
-                  <UserAvatar username={user.username} />
-                  <div style={{ fontSize: 12, fontWeight: 600, textAlign: 'center', wordBreak: 'break-word' }}>
-                    {user.username}
-                  </div>
-                </button>
-              ))}
-            </div>
+        <header>
+          <div style={hybridEntryStyles.eyebrow}>
+            {selected ? 'Secure sign in' : 'Welcome back'}
+          </div>
+          <h1 id="login-title" style={hybridEntryStyles.title}>
+            {selected ? 'Enter your PIN' : 'Select a user'}
+          </h1>
+          <p style={hybridEntryStyles.description}>
+            {selected
+              ? 'Enter PIN if this user has one. Passwordless profiles can continue without a code.'
+              : 'Choose your profile to continue to your BoogieBox library.'}
+          </p>
+        </header>
 
-            {/* Stay logged in */}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, color: '#71717a' }}>
-              <input
-                type="checkbox"
-                checked={stayLoggedIn}
-                onChange={e => setStayLoggedIn(e.target.checked)}
-                style={{ width: 16, height: 16, accentColor: '#6366f1' }}
-              />
-              Stay logged in
-            </label>
-          </>
-        ) : (
-          <>
-            {/* PIN entry */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
-              <UserAvatar username={selected.username} size={80} />
-              <div style={{ fontSize: 15, fontWeight: 600 }}>{selected.username}</div>
-              <div style={{ fontSize: 12, color: '#71717a' }}>Enter PIN if this user has one</div>
-              <div style={{ display: 'flex', gap: 12 }}>
-                {pin.map((digit, i) => (
+        <div style={hybridEntryStyles.content}>
+          {!selected ? (
+            <>
+              {profilesLoading ? (
+                <div role="status" style={hybridEntryStyles.empty}>Loading profiles…</div>
+              ) : users.length > 0 ? (
+                <div aria-label="User profiles" style={hybridEntryStyles.userGrid}>
+                  {users.map(user => {
+                    const isActive = activeUserId === user.id;
+                    return (
+                      <button
+                        key={user.id}
+                        type="button"
+                        aria-label={`Sign in as ${user.username}`}
+                        onClick={() => void handleSelectUser(user)}
+                        onMouseEnter={() => setActiveUserId(user.id)}
+                        onMouseLeave={() => setActiveUserId(null)}
+                        onFocus={() => setActiveUserId(user.id)}
+                        onBlur={() => setActiveUserId(null)}
+                        disabled={loading}
+                        style={{
+                          ...hybridEntryStyles.userButton,
+                          ...(isActive ? hybridEntryStyles.userButtonActive : {}),
+                          ...(loading ? hybridControlStyles.disabled : {}),
+                        }}
+                      >
+                        <UserAvatar username={user.username} />
+                        <span style={hybridEntryStyles.userName}>{user.username}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div role="status" style={hybridEntryStyles.empty}>
+                  No user profiles are available yet. If the server is still starting, try again
+                  in a moment.
+                </div>
+              )}
+
+              <div style={{ ...hybridEntryStyles.optionRow, justifyContent: 'center' }}>
+                <label style={hybridEntryStyles.checkboxLabel}>
                   <input
-                    key={i}
-                    ref={pinRefs[i]}
+                    type="checkbox"
+                    checked={stayLoggedIn}
+                    onChange={event => setStayLoggedIn(event.target.checked)}
+                    style={hybridEntryStyles.checkbox}
+                  />
+                  Stay logged in
+                </label>
+              </div>
+            </>
+          ) : (
+            <form
+              onSubmit={event => {
+                event.preventDefault();
+                void submitPin(pin.join(''));
+              }}
+            >
+              <div style={hybridEntryStyles.profile}>
+                <UserAvatar username={selected.username} size={58} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ ...hybridEntryStyles.userName, textAlign: 'left' }}>
+                    {selected.username}
+                  </div>
+                  <div style={hybridEntryStyles.profileMeta}>Four-digit access PIN</div>
+                </div>
+              </div>
+
+              <div aria-label="PIN" style={hybridEntryStyles.pinRow}>
+                {pin.map((digit, index) => (
+                  <input
+                    key={index}
+                    ref={pinRefs[index]}
                     type="password"
                     inputMode="numeric"
+                    autoComplete={index === 0 ? 'one-time-code' : 'off'}
+                    aria-label={`PIN digit ${index + 1}`}
+                    aria-invalid={Boolean(error)}
                     maxLength={1}
                     value={digit}
-                    onChange={e => handlePinChange(i, e.target.value)}
-                    onKeyDown={e => handlePinKeyDown(i, e)}
+                    onChange={event => handlePinChange(index, event.target.value)}
+                    onKeyDown={event => handlePinKeyDown(index, event)}
+                    onFocus={event => {
+                      event.currentTarget.style.borderColor = error
+                        ? 'var(--danger)'
+                        : 'var(--focus)';
+                      event.currentTarget.style.boxShadow = '0 0 0 3px var(--focus-ring)';
+                    }}
+                    onBlur={event => {
+                      event.currentTarget.style.borderColor = error
+                        ? 'var(--danger)'
+                        : 'var(--border)';
+                      event.currentTarget.style.boxShadow = 'none';
+                    }}
                     disabled={loading}
                     style={{
-                      width: 52, height: 60, textAlign: 'center', fontSize: 24,
-                      background: '#09090b', border: `1px solid ${error ? '#ef4444' : '#27272a'}`,
-                      borderRadius: 10, color: '#e4e4e7', outline: 'none',
-                      caretColor: 'transparent',
+                      ...hybridEntryStyles.pinField,
+                      ...(error ? { borderColor: 'var(--danger)' } : {}),
                     }}
-                    onFocus={e => { e.currentTarget.style.borderColor = error ? '#ef4444' : '#6366f1'; }}
-                    onBlur={e => { e.currentTarget.style.borderColor = error ? '#ef4444' : '#27272a'; }}
                   />
                 ))}
               </div>
+
+              {error && (
+                <div role="alert" style={hybridEntryStyles.error}>
+                  {error}
+                </div>
+              )}
+
+              <div style={hybridEntryStyles.optionRow}>
+                <label style={hybridEntryStyles.checkboxLabel}>
+                  <input
+                    type="checkbox"
+                    checked={stayLoggedIn}
+                    onChange={event => setStayLoggedIn(event.target.checked)}
+                    style={hybridEntryStyles.checkbox}
+                  />
+                  Stay logged in
+                </label>
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  disabled={loading}
+                  style={{
+                    ...hybridControlStyles.secondaryButton,
+                    ...(loading ? hybridControlStyles.disabled : {}),
+                  }}
+                >
+                  ← Back to users
+                </button>
+              </div>
+
               <button
-                onClick={() => submitPin(pin.join(''))}
+                type="submit"
                 disabled={loading}
                 style={{
-                  minWidth: 140,
-                  height: 40,
-                  borderRadius: 999,
-                  border: '1px solid #6366f1',
-                  background: '#6366f1',
-                  color: '#f4f4f5',
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: loading ? 'wait' : 'pointer',
-                  opacity: loading ? 0.75 : 1,
+                  ...hybridControlStyles.primaryButton,
+                  width: '100%',
+                  marginTop: 14,
+                  ...(loading ? hybridControlStyles.disabled : {}),
                 }}
               >
-                {loading ? 'Signing in...' : 'Continue'}
+                {loading ? 'Signing in…' : 'Continue'}
               </button>
-              {error && <div style={{ color: '#ef4444', fontSize: 12 }}>{error}</div>}
-            </div>
+            </form>
+          )}
+        </div>
 
-            {/* Stay logged in + back */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, width: '100%' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, color: '#71717a' }}>
-                <input
-                  type="checkbox"
-                  checked={stayLoggedIn}
-                  onChange={e => setStayLoggedIn(e.target.checked)}
-                  style={{ width: 16, height: 16, accentColor: '#6366f1' }}
-                />
-                Stay logged in
-              </label>
-              <button
-                onClick={handleBack}
-                disabled={loading}
-                style={{
-                  background: 'transparent', border: 'none', color: '#71717a',
-                  cursor: 'pointer', fontSize: 12, textDecoration: 'underline',
-                }}
-              >
-                ← Back to users
-              </button>
-            </div>
-          </>
-        )}
-
-        {error && !selected && <div style={{ color: '#ef4444', fontSize: 12 }}>{error}</div>}
-      </div>
-    </div>
+        <footer style={hybridEntryStyles.footer}>Self-hosted • Private by design</footer>
+      </section>
+    </main>
   );
 }

@@ -12,7 +12,9 @@ import {
   DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
   hybridAudioPanelStyles,
   hybridControlStyles,
+  hybridEntryStyles,
   hybridMediaStyles,
+  hybridMobileShellStyles,
   hybridPlayerStyles,
   hybridPlaylistStyles,
   hybridSettingsStyles,
@@ -20,6 +22,9 @@ import {
   HYBRID_FONT_STYLESHEET_HREF,
   HYBRID_FONT_STYLESHEET_ID,
   HYBRID_SEMANTIC_TOKEN_KEYS,
+  MOBILE_CONTENT_DOCK_CLEARANCE,
+  MOBILE_MINI_PLAYER_HEIGHT,
+  MOBILE_TAB_BAR_DOCK_HEIGHT,
   mountHybridFont,
   parseHybridPreview,
   parseHybridThemeMode,
@@ -107,6 +112,16 @@ describe('Hybrid preview', () => {
       width: 44,
       borderRadius: 999,
     });
+    expect(hybridEntryStyles.card).toMatchObject({
+      maxWidth: 600,
+      background: 'var(--surface-raised)',
+      boxShadow: 'var(--shadow-raised)',
+    });
+    expect(hybridEntryStyles.error.color).toBe('var(--danger)');
+    expect(hybridEntryStyles.userButtonActive).toMatchObject({
+      borderColor: 'var(--accent)',
+      background: 'var(--accent-soft)',
+    });
     expect(hybridMediaStyles.listRow).toMatchObject({
       border: 'none',
       boxShadow: 'none',
@@ -140,6 +155,24 @@ describe('Hybrid preview', () => {
     expect(hybridPlayerStyles.bar).toMatchObject({
       height: DESKTOP_PLAYER_DOCK_HEIGHT,
       minHeight: DESKTOP_PLAYER_DOCK_HEIGHT,
+    });
+  });
+
+  it('keeps mobile navigation and playback touch-safe with shared safe-area geometry', () => {
+    expect(MOBILE_TAB_BAR_DOCK_HEIGHT).toBe(78);
+    expect(MOBILE_MINI_PLAYER_HEIGHT).toBe(66);
+    expect(MOBILE_CONTENT_DOCK_CLEARANCE).toBeGreaterThan(
+      MOBILE_TAB_BAR_DOCK_HEIGHT + MOBILE_MINI_PLAYER_HEIGHT,
+    );
+    expect(hybridMobileShellStyles.tab.minHeight).toBe(56);
+    expect(hybridMobileShellStyles.header.top).toBe('env(safe-area-inset-top, 0px)');
+    expect(hybridMobileShellStyles.miniControl).toMatchObject({
+      width: 44,
+      height: 44,
+    });
+    expect(hybridMobileShellStyles.miniPlayer).toMatchObject({
+      height: MOBILE_MINI_PLAYER_HEIGHT,
+      background: 'color-mix(in srgb, var(--surface-raised) 96%, transparent)',
     });
   });
 

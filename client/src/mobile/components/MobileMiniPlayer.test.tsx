@@ -20,7 +20,7 @@ describe('MobileMiniPlayer', () => {
     const onStateChange = vi.fn();
     const onOpenNowPlaying = vi.fn();
 
-    render(
+    const { container } = render(
       <MobileMiniPlayer
         snapshot={{
           currentTrack: {
@@ -118,6 +118,16 @@ describe('MobileMiniPlayer', () => {
     expect(screen.getByText('Aural Static')).toBeInTheDocument();
     expect(screen.getByText('Velvet Night')).toBeInTheDocument();
     expect(screen.getByRole('presentation')).toHaveAttribute('src', expect.stringContaining('/api/albums/41/art?size=300'));
+    expect(container.firstElementChild).toHaveStyle({
+      height: '66px',
+      left: '8px',
+      bottom: 'calc(env(safe-area-inset-bottom, 0px) + 78px)',
+    });
+    expect(screen.getByRole('button', { name: 'Pause' })).toHaveStyle({
+      width: '44px',
+      height: '44px',
+    });
+    expect(screen.getByRole('button', { name: /Quick rate/i })).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ isPlaying: false }));
@@ -181,6 +191,7 @@ describe('MobileMiniPlayer', () => {
     expect(screen.getByText('Unknown artist')).toBeInTheDocument();
     expect(screen.getByText('fallback.mp3')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next track' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Quick rate/i })).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(screen.getByRole('button', { name: 'Play' }));
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ isPlaying: true }));
     fireEvent.click(screen.getByRole('button', { name: /Quick rate/i }));

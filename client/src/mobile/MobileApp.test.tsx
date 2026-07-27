@@ -129,6 +129,9 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
 describe('MobileApp', () => {
   it('switches tabs and opens now playing from the mini player', () => {
     render(<MobileApp {...createProps()} />);
+    expect(screen.getByRole('banner')).toBeInTheDocument();
+    expect(screen.getByLabelText('Signed in as mobile-user')).toHaveTextContent('Listening');
+    expect(screen.getByRole('navigation', { name: 'Mobile tabs' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Open now playing for/i }));
     expect(screen.getByText('Up Next')).toBeInTheDocument();
   });

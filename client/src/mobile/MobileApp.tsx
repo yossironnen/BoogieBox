@@ -2,7 +2,7 @@
  * Defines mobile Mobile App behavior for the BoogieBox React client.
  */
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Player, { type PlaybackSnapshot } from '../components/Player';
 import { api } from '../api';
 import type { MobileBrowseSelection, MobilePlaylistSelection, MobileSharedProps, MobileTabId } from './mobileShell';
@@ -13,7 +13,7 @@ import MobileHomeView from './views/MobileHomeView';
 import MobileNowPlayingView from './views/MobileNowPlayingView';
 import MobilePlaylistsView from './views/MobilePlaylistsView';
 import MobileSearchView from './views/MobileSearchView';
-import { phase2 } from '../uiPhase2';
+import { hybridMobileShellStyles } from '../hybridPreview';
 
 /** Mobile App is part of this module's public API. */
 export default function MobileApp(props: MobileSharedProps) {
@@ -31,17 +31,28 @@ export default function MobileApp(props: MobileSharedProps) {
   }, [props]);
 
   return (
-    <div style={styles.shell}>
-      <div style={styles.hero}>
-        <div>
-          <div style={styles.kicker}>Your library</div>
-          <div style={styles.brand}>BoogieBox</div>
+    <div style={hybridMobileShellStyles.shell}>
+      <header style={hybridMobileShellStyles.header}>
+        <div style={hybridMobileShellStyles.brandLockup}>
+          <img src="/boogiebox.png" alt="" style={hybridMobileShellStyles.headerLogo} />
+          <div>
+            <div style={hybridMobileShellStyles.headerKicker}>Your library</div>
+            <div style={hybridMobileShellStyles.headerBrand}>BoogieBox</div>
+          </div>
         </div>
-        <div style={styles.userBlock}>
-          <div style={styles.user}>{props.currentUser.username}</div>
-          <div style={styles.userRole}>Mobile listening</div>
+        <div
+          aria-label={`Signed in as ${props.currentUser.username}`}
+          style={hybridMobileShellStyles.userPill}
+        >
+          <div aria-hidden="true" style={hybridMobileShellStyles.userAvatar}>
+            {props.currentUser.username.slice(0, 2).toUpperCase()}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={hybridMobileShellStyles.userName}>{props.currentUser.username}</div>
+            <div style={hybridMobileShellStyles.userMeta}>Listening</div>
+          </div>
         </div>
-      </div>
+      </header>
 
       {tab === 'home' && (
         <MobileHomeView
@@ -115,32 +126,3 @@ export default function MobileApp(props: MobileSharedProps) {
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  shell: {
-    minHeight: '100%',
-    background: [
-      'radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 14%, transparent) 0%, transparent 28%)',
-      'linear-gradient(180deg, color-mix(in srgb, var(--surface) 22%, var(--bg)) 0%, var(--bg) 24%, #060607 100%)',
-    ].join(','),
-    color: 'var(--text)',
-    paddingTop: 'env(safe-area-inset-top, 0px)',
-  },
-  hero: {
-    position: 'sticky',
-    top: 0,
-    zIndex: 20,
-    padding: '18px 16px 10px',
-    background: 'linear-gradient(180deg, color-mix(in srgb, var(--surface) 92%, #050506) 0%, color-mix(in srgb, var(--surface) 74%, transparent) 78%, transparent 100%)',
-    backdropFilter: 'blur(12px)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderBottom: '1px solid color-mix(in srgb, var(--border) 40%, transparent)',
-  },
-  kicker: phase2.mobileKicker,
-  brand: { fontSize: 24, fontWeight: 800, letterSpacing: -0.8, marginTop: 4 },
-  userBlock: { textAlign: 'right' },
-  user: { fontSize: 13, color: 'var(--text)', fontWeight: 700 },
-  userRole: { fontSize: 11, color: 'var(--text-muted)', marginTop: 3 },
-};

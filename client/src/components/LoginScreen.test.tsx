@@ -21,6 +21,7 @@ describe('LoginScreen', () => {
       user: { id: 'user-1', username: 'alice', role: 'user' } as any,
     });
     render(<LoginScreen onLogin={onLogin} />);
+    expect(await screen.findByRole('heading', { name: 'Select a user' })).toBeInTheDocument();
     const alice = await screen.findByRole('button', { name: /alice/i });
     fireEvent.mouseEnter(alice);
     fireEvent.mouseLeave(alice);
@@ -42,12 +43,14 @@ describe('LoginScreen', () => {
     render(<LoginScreen onLogin={onLogin} />);
     fireEvent.click(await screen.findByRole('button', { name: /bob/i }));
     expect(await screen.findByText('Logging in as bob')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Enter your PIN' })).toBeInTheDocument();
+    expect(screen.getByLabelText('PIN digit 1')).toHaveAttribute('inputmode', 'numeric');
 
     ['1', '2', '3', '4'].forEach((digit, index) => {
       const inputs = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
       fireEvent.change(inputs[index], { target: { value: digit } });
     });
-    expect(await screen.findByText('Wrong PIN')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Wrong PIN');
 
     const cleared = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
     fireEvent.keyDown(cleared[1], { key: 'Backspace' });
@@ -63,7 +66,8 @@ describe('LoginScreen', () => {
   it('keeps the user chooser usable when user discovery fails', async () => {
     vi.mocked(api.auth.getLoginUsers).mockRejectedValue(new Error('offline'));
     render(<LoginScreen onLogin={vi.fn()} />);
-    await waitFor(() => expect(api.auth.getLoginUsers).toHaveBeenCalled());
+    expect(screen.getByRole('status')).toHaveTextContent('Loading profiles');
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('No user profiles are available yet'));
     expect(screen.getByText('Select a user')).toBeInTheDocument();
   });
 });
