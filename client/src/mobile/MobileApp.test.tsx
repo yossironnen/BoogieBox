@@ -139,6 +139,8 @@ describe('MobileApp', () => {
     expect(screen.getByRole('navigation', { name: 'Mobile tabs' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Open now playing for/i }));
     expect(screen.getByText('Up Next')).toBeInTheDocument();
+    expect(screen.queryByRole('banner')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Open now playing for/i })).not.toBeInTheDocument();
   });
 
   it('routes every tab and forwards child playback and selection actions', () => {

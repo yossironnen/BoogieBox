@@ -55,7 +55,11 @@ describe('MobileNowPlayingView', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /show lyrics/i }));
+    const mediaStage = screen.getByRole('button', { name: /show lyrics/i });
+    expect(mediaStage).toHaveStyle({ borderRadius: '18px' });
+    expect(screen.getByRole('button', { name: 'Open settings' })).toHaveStyle({ minHeight: '44px' });
+    expect(screen.getByRole('progressbar', { name: 'Playback progress' })).toHaveAttribute('aria-valuemax', '120');
+    fireEvent.click(mediaStage);
     await waitFor(() => expect(apiMock.trackLyrics).toHaveBeenCalledWith('1'));
     expect(await screen.findByText('first line')).toBeInTheDocument();
     expect(screen.getByText('Karaoke')).toBeInTheDocument();
@@ -85,9 +89,9 @@ describe('MobileNowPlayingView', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '‹‹' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Previous track' }));
     fireEvent.click(screen.getByRole('button', { name: 'Play' }));
-    fireEvent.click(screen.getByRole('button', { name: '››' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next track' }));
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 0, playToken: 5 }));
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ isPlaying: true }));
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 2, playToken: 5 }));

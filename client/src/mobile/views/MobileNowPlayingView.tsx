@@ -7,7 +7,11 @@ import { api } from '../../api';
 import type { PlaybackSnapshot, PlayerState } from '../../components/Player';
 import type { AppSettings, AuthUser, ClientEntityId, SonicFingerprint, StemWindow } from '../../types';
 import ArtImage from '../../components/ArtImage';
-import type { HybridThemeMode } from '../../hybridPreview';
+import {
+  hybridMobileContentStyles,
+  MOBILE_TAB_BAR_DOCK_HEIGHT,
+  type HybridThemeMode,
+} from '../../hybridPreview';
 import { phase2 } from '../../uiPhase2';
 import MobileSettingsView from './MobileSettingsView';
 
@@ -265,19 +269,40 @@ export default function MobileNowPlayingView({
   }, [clearQueueGesture, queueGesture, queueSwipeOffsets, removeQueueIndex, reorderQueue]);
 
   if (!track) {
-    return <div style={styles.empty}>Nothing playing yet.</div>;
+    return (
+      <main style={styles.page}>
+        <div role="status" style={styles.empty}>
+          <div style={styles.emptyMark}>♪</div>
+          <div style={styles.emptyTitle}>Nothing playing yet.</div>
+          <p style={styles.emptyBody}>Choose something from Home, Browse, Search, or Playlists.</p>
+        </div>
+      </main>
+    );
   }
 
   return (
-    <div style={styles.page}>
-      <div style={styles.topBar}>
-        <span style={styles.queueHeader}>Now Playing</span>
+    <main style={styles.page}>
+      <header style={styles.topBar}>
+        <div>
+          <div style={styles.eyebrow}>Listening now</div>
+          <h1 style={styles.pageTitle}>Now Playing</h1>
+        </div>
         <button type="button" style={styles.settingsButton} onClick={() => setSettingsOpen(true)} aria-label="Open settings">⚙</button>
-      </div>
-      <button type="button" style={styles.coverButton} onClick={advancePanelMode} aria-label={panelLabel}>
+      </header>
+      <button
+        type="button"
+        style={styles.stageButton}
+        onClick={advancePanelMode}
+        aria-label={panelLabel}
+        data-panel-mode={panelMode}
+      >
         {panelMode === 'cover' && (
           <div style={styles.coverShell}>
-            {track.album_id ? <ArtImage src={api.albumArtUrl(track.album_id, 800)} alt="" eager={true} imgStyle={styles.cover} /> : null}
+            {track.album_id ? (
+              <ArtImage src={api.albumArtUrl(track.album_id, 800)} alt="" eager={true} imgStyle={styles.cover} />
+            ) : (
+              <div style={styles.coverFallback}>♪</div>
+            )}
             <div style={styles.coverHint}>Tap for lyrics</div>
           </div>
         )}
@@ -312,10 +337,24 @@ export default function MobileNowPlayingView({
           </div>
         )}
       </button>
-      <div style={styles.title}>{track.title || track.file_name}</div>
-      <div style={styles.sub}>{[track.artist || 'Unknown artist', track.album || 'Unknown album'].join(' • ')}</div>
+      <div aria-hidden="true" style={styles.stageDots}>
+        {(['cover', 'karaoke', 'text', 'fingerprint'] as LyricsPanelMode[]).map((mode) => (
+          <span key={mode} style={{ ...styles.stageDot, ...(panelMode === mode ? styles.stageDotActive : null) }} />
+        ))}
+      </div>
+      <section aria-labelledby="mobile-now-playing-track" style={styles.trackIdentity}>
+        <h2 id="mobile-now-playing-track" style={styles.title}>{track.title || track.file_name}</h2>
+        <div style={styles.sub}>{[track.artist || 'Unknown artist', track.album || 'Unknown album'].join(' • ')}</div>
+      </section>
       <div style={styles.progressShell}>
-        <div style={styles.progressTrack}>
+        <div
+          role="progressbar"
+          aria-label="Playback progress"
+          aria-valuemin={0}
+          aria-valuemax={Math.max(0, Math.round(max))}
+          aria-valuenow={Math.max(0, Math.round(snapshot?.currentTime ?? 0))}
+          style={styles.progressTrack}
+        >
           <div style={{ ...styles.progressFill, width: `${pct}%` }} />
         </div>
         <div style={styles.progressMeta}>
@@ -324,14 +363,39 @@ export default function MobileNowPlayingView({
         </div>
       </div>
       <div style={styles.controls}>
-        <button type="button" style={styles.ctrl} disabled={!canPrev} onClick={() => canPrev && onStateChange({ ...playerState, currentIndex: playerState.currentIndex - 1, isPlaying: true, playToken: playerState.playToken + 1 })}>‹‹</button>
-        <button type="button" style={styles.play} onClick={() => onStateChange({ ...playerState, isPlaying: !playerState.isPlaying })}>
+        <button
+          type="button"
+          aria-label="Previous track"
+          style={{ ...styles.ctrl, ...(!canPrev ? hybridMobileContentStyles.disabled : null) }}
+          disabled={!canPrev}
+          onClick={() => canPrev && onStateChange({ ...playerState, currentIndex: playerState.currentIndex - 1, isPlaying: true, playToken: playerState.playToken + 1 })}
+        >
+          ‹‹
+        </button>
+        <button
+          type="button"
+          aria-label={playerState.isPlaying ? 'Pause' : 'Play'}
+          style={styles.play}
+          onClick={() => onStateChange({ ...playerState, isPlaying: !playerState.isPlaying })}
+        >
           {playerState.isPlaying ? 'Pause' : 'Play'}
         </button>
-        <button type="button" style={styles.ctrl} disabled={!canNext} onClick={() => canNext && onStateChange({ ...playerState, currentIndex: playerState.currentIndex + 1, isPlaying: true, playToken: playerState.playToken + 1 })}>››</button>
+        <button
+          type="button"
+          aria-label="Next track"
+          style={{ ...styles.ctrl, ...(!canNext ? hybridMobileContentStyles.disabled : null) }}
+          disabled={!canNext}
+          onClick={() => canNext && onStateChange({ ...playerState, currentIndex: playerState.currentIndex + 1, isPlaying: true, playToken: playerState.playToken + 1 })}
+        >
+          ››
+        </button>
       </div>
+      <section aria-labelledby="mobile-up-next" style={styles.queueSection}>
       <div style={styles.queueTitleBar}>
-        <div style={styles.queueHeader}>Up Next</div>
+        <div>
+          <h2 id="mobile-up-next" style={styles.queueHeader}>Up Next</h2>
+          <div style={styles.queueHint}>Tap to play. Drag to reorder. Swipe left to remove.</div>
+        </div>
         <button type="button" style={styles.clearQueue} onClick={() => applyQueue([], 0, false)}>
           Clear queue
         </button>
@@ -349,8 +413,8 @@ export default function MobileNowPlayingView({
               ...styles.queueRow,
               ...(index === playerState.currentIndex ? styles.queueRowActive : null),
               transform: `translateX(${queueSwipeOffsets[key] ?? 0}px)`,
-              borderColor: isDropTarget ? 'color-mix(in srgb, var(--accent) 56%, var(--border))' : undefined,
-              boxShadow: isReordering ? '0 16px 30px rgba(0,0,0,0.28)' : undefined,
+              borderColor: isDropTarget ? 'var(--accent)' : 'var(--divider-subtle)',
+              boxShadow: isReordering ? 'var(--shadow-raised)' : 'none',
             }}
             onDoubleClick={() => {
               const queue = [...playerState.queue];
@@ -374,8 +438,21 @@ export default function MobileNowPlayingView({
                 onStateChange({ ...playerState, currentIndex: index, isPlaying: true, playToken: playerState.playToken + 1 });
               }}
             >
-              <span style={styles.queueTitle}>{entry.title || entry.file_name}</span>
-              <span style={styles.queueSub}>{entry.artist || 'Unknown artist'}</span>
+              <span aria-hidden="true" style={styles.queueArtwork}>
+                {entry.album_id ? (
+                  <ArtImage
+                    src={api.albumArtUrl(entry.album_id, 300)}
+                    alt=""
+                    imgStyle={styles.queueArtworkImage}
+                  />
+                ) : (
+                  <span style={styles.queueArtworkFallback}>♪</span>
+                )}
+              </span>
+              <span style={styles.queueMeta}>
+                <span style={styles.queueTitle}>{entry.title || entry.file_name}</span>
+                <span style={styles.queueSub}>{entry.artist || 'Unknown artist'}</span>
+              </span>
             </button>
             <button
               type="button"
@@ -400,7 +477,11 @@ export default function MobileNowPlayingView({
           </div>
           </div>
         );})}
+        {!playerState.queue.length ? (
+          <div role="status" style={styles.queueEmpty}>The queue is empty.</div>
+        ) : null}
       </div>
+      </section>
       {settingsOpen && currentUser ? (
         <MobileSettingsView
           currentUser={currentUser}
@@ -413,56 +494,370 @@ export default function MobileNowPlayingView({
           onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
         />
       ) : null}
-    </div>
+    </main>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  page: phase2.mobilePage,
-  topBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
-  settingsButton: { minWidth: 44, minHeight: 44, borderRadius: 14, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 18 },
-  empty: { padding: '32px 16px', color: 'var(--text-muted)' },
-  coverButton: { width: '100%', border: 'none', background: 'transparent', padding: 0, textAlign: 'left', cursor: 'pointer' },
-  coverShell: { ...phase2.mobileHeroCard, width: '100%', aspectRatio: '1 / 1' },
+  page: {
+    ...phase2.mobilePage,
+    paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + ${MOBILE_TAB_BAR_DOCK_HEIGHT + 18}px)`,
+  },
+  topBar: {
+    minHeight: 52,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 12,
+  },
+  eyebrow: hybridMobileContentStyles.eyebrow,
+  pageTitle: {
+    margin: '3px 0 0',
+    color: 'var(--text)',
+    fontSize: 22,
+    fontWeight: 800,
+    letterSpacing: -0.5,
+    lineHeight: 1.05,
+  },
+  settingsButton: {
+    minWidth: 44,
+    minHeight: 44,
+    borderRadius: 12,
+    border: '1px solid var(--divider-subtle)',
+    background: 'var(--surface-subtle)',
+    color: 'var(--text-muted)',
+    fontFamily: 'inherit',
+    fontSize: 17,
+  },
+  empty: {
+    ...hybridMobileContentStyles.empty,
+    marginTop: 20,
+  },
+  emptyMark: {
+    width: 48,
+    height: 48,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: 12,
+    background: 'var(--accent-soft)',
+    color: 'var(--accent)',
+    fontSize: 22,
+    fontWeight: 800,
+  },
+  emptyTitle: hybridMobileContentStyles.emptyTitle,
+  emptyBody: hybridMobileContentStyles.emptyBody,
+  stageButton: {
+    width: '100%',
+    display: 'block',
+    padding: 0,
+    overflow: 'hidden',
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 18,
+    background: 'var(--surface)',
+    boxShadow: 'var(--shadow-subtle)',
+    color: 'var(--text)',
+    textAlign: 'left',
+    cursor: 'pointer',
+  },
+  coverShell: {
+    width: '100%',
+    position: 'relative',
+    aspectRatio: '1 / 1',
+    overflow: 'hidden',
+    background: 'var(--surface-subtle)',
+  },
   cover: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
-  coverHint: { position: 'absolute', right: 14, bottom: 14, padding: '8px 12px', borderRadius: 999, background: 'rgba(0,0,0,0.5)', color: '#fff', fontSize: 12, fontWeight: 700 },
-  lyricsShell: { ...phase2.mobileHeroCard, width: '100%', aspectRatio: '1 / 1', padding: '18px 18px 22px', overflowY: 'auto' },
-  lyricsHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text)', fontSize: 14, fontWeight: 800, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 14 },
-  karaokeBadge: { color: 'var(--accent)' },
-  lyricsState: { color: 'var(--text-muted)', fontSize: 14, paddingTop: 16 },
+  coverFallback: {
+    width: '100%',
+    height: '100%',
+    display: 'grid',
+    placeItems: 'center',
+    background: 'linear-gradient(135deg, var(--accent-soft), var(--surface-subtle))',
+    color: 'var(--accent)',
+    fontSize: 64,
+    fontWeight: 800,
+  },
+  coverHint: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    padding: '7px 10px',
+    border: '1px solid color-mix(in srgb, var(--on-accent) 16%, transparent)',
+    borderRadius: 999,
+    background: 'var(--overlay)',
+    color: 'var(--on-accent)',
+    fontSize: 10,
+    fontWeight: 700,
+    backdropFilter: 'blur(10px)',
+  },
+  lyricsShell: {
+    width: '100%',
+    aspectRatio: '1 / 1',
+    boxSizing: 'border-box',
+    padding: '16px 16px 20px',
+    overflowY: 'auto',
+    background: 'linear-gradient(150deg, var(--surface), var(--surface-subtle))',
+  },
+  lyricsHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+    color: 'var(--text)',
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+  },
+  karaokeBadge: {
+    padding: '4px 7px',
+    borderRadius: 999,
+    background: 'var(--accent-soft)',
+    color: 'var(--accent)',
+    fontSize: 9,
+  },
+  lyricsState: { color: 'var(--text-muted)', fontSize: 12, paddingTop: 16 },
   karaokeWrap: { display: 'grid', gap: 10 },
-  karaokeLine: { color: 'var(--text-muted)', fontSize: 20, lineHeight: 1.35, fontWeight: 600 },
-  karaokeLineActive: { color: 'var(--text)', textShadow: '0 0 24px color-mix(in srgb, var(--accent) 45%, transparent)' },
-  lyricsText: { color: 'var(--text)', fontSize: 16, lineHeight: 1.6, whiteSpace: 'pre-wrap' },
-  title: { ...phase2.mobileTitle, marginTop: 24 },
-  sub: { marginTop: 8, color: 'var(--text-muted)', fontSize: 15 },
-  progressShell: { marginTop: 24 },
-  progressTrack: { height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' },
-  progressFill: { height: '100%', background: 'var(--accent)' },
-  progressMeta: { marginTop: 8, display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: 12 },
-  controls: { display: 'grid', gridTemplateColumns: '72px 1fr 72px', gap: 12, marginTop: 24 },
-  ctrl: { minHeight: 56, borderRadius: 20, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)', color: 'var(--text)', fontSize: 24 },
-  play: { minHeight: 56, borderRadius: 20, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 18, fontWeight: 700 },
-  queueTitleBar: { marginTop: 28, marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  queueHeader: { color: 'var(--text)', fontSize: 14, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase' },
-  clearQueue: { minHeight: 38, padding: '0 12px', borderRadius: 999, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', fontFamily: 'inherit', fontSize: 12, fontWeight: 700 },
-  queueList: { display: 'grid', gap: 8 },
-  queueShell: { position: 'relative', overflow: 'hidden', borderRadius: 18 },
-  queueDeleteAction: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 16, background: 'linear-gradient(90deg, rgba(190,44,37,0.12), rgba(190,44,37,0.9))', color: '#fff', fontSize: 12, fontWeight: 900 },
-  queueRow: { ...phase2.mobileMediaRow, width: '100%', textAlign: 'left', padding: '8px 8px 8px 14px', color: 'var(--text)', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 36px 44px', alignItems: 'center', gap: 6, transition: 'transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease', touchAction: 'pan-y' },
-  queueRowActive: { background: 'color-mix(in srgb, var(--accent) 14%, rgba(255,255,255,0.02))', borderColor: 'color-mix(in srgb, var(--accent) 26%, var(--border))' },
-  queueMain: { minWidth: 0, border: 'none', background: 'transparent', color: 'var(--text)', textAlign: 'left', padding: 0, display: 'grid', gap: 4, fontFamily: 'inherit', touchAction: 'pan-y' },
-  queueHandle: { width: 36, minHeight: 44, border: 'none', background: 'transparent', color: 'var(--text-muted)', fontFamily: 'inherit', fontSize: 22, fontWeight: 800, touchAction: 'none' },
-  queueRemove: { minWidth: 44, minHeight: 44, borderRadius: 12, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', fontFamily: 'inherit' },
-  queueTitle: { fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  queueSub: { fontSize: 13, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  karaokeLine: { color: 'var(--text-muted)', fontSize: 18, lineHeight: 1.35, fontWeight: 600 },
+  karaokeLineActive: {
+    color: 'var(--text)',
+    textShadow: '0 0 24px color-mix(in srgb, var(--accent) 45%, transparent)',
+  },
+  lyricsText: { color: 'var(--text)', fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap' },
+  stageDots: {
+    minHeight: 24,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  stageDot: {
+    width: 5,
+    height: 5,
+    display: 'block',
+    borderRadius: '50%',
+    background: 'var(--border-strong)',
+  },
+  stageDotActive: {
+    width: 16,
+    borderRadius: 999,
+    background: 'var(--accent)',
+  },
+  trackIdentity: { minWidth: 0, textAlign: 'center' },
+  title: {
+    margin: 0,
+    overflow: 'hidden',
+    color: 'var(--text)',
+    fontSize: 24,
+    fontWeight: 800,
+    letterSpacing: -0.65,
+    lineHeight: 1.1,
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  sub: {
+    marginTop: 6,
+    overflow: 'hidden',
+    color: 'var(--text-muted)',
+    fontSize: 11,
+    fontWeight: 600,
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  progressShell: { marginTop: 18 },
+  progressTrack: {
+    height: 5,
+    overflow: 'hidden',
+    borderRadius: 999,
+    background: 'var(--surface-subtle)',
+  },
+  progressFill: { height: '100%', borderRadius: 999, background: 'var(--accent)' },
+  progressMeta: {
+    marginTop: 7,
+    display: 'flex',
+    justifyContent: 'space-between',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 650,
+  },
+  controls: {
+    display: 'grid',
+    gridTemplateColumns: '64px minmax(0, 1fr) 64px',
+    gap: 10,
+    marginTop: 16,
+  },
+  ctrl: {
+    minHeight: 56,
+    borderRadius: 16,
+    border: '1px solid var(--divider-subtle)',
+    background: 'var(--surface-subtle)',
+    color: 'var(--text)',
+    fontFamily: 'inherit',
+    fontSize: 21,
+  },
+  play: {
+    minHeight: 56,
+    borderRadius: 16,
+    border: 'none',
+    background: 'var(--accent)',
+    color: 'var(--on-accent)',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    fontWeight: 800,
+  },
+  queueSection: { marginTop: 26 },
+  queueTitleBar: {
+    minHeight: 52,
+    marginBottom: 10,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  queueHeader: {
+    margin: 0,
+    color: 'var(--text)',
+    fontSize: 17,
+    fontWeight: 800,
+    letterSpacing: -0.25,
+  },
+  queueHint: {
+    marginTop: 4,
+    color: 'var(--text-muted)',
+    fontSize: 9,
+    lineHeight: 1.35,
+  },
+  clearQueue: {
+    minHeight: 44,
+    flex: '0 0 auto',
+    padding: '0 11px',
+    borderRadius: 10,
+    border: 'none',
+    background: 'var(--surface-subtle)',
+    color: 'var(--text-muted)',
+    fontFamily: 'inherit',
+    fontSize: 10,
+    fontWeight: 700,
+  },
+  queueList: hybridMobileContentStyles.list,
+  queueShell: { position: 'relative', overflow: 'hidden', borderRadius: 14 },
+  queueDeleteAction: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingRight: 16,
+    background: 'linear-gradient(90deg, color-mix(in srgb, var(--danger) 8%, var(--surface)), var(--danger))',
+    color: 'var(--on-accent)',
+    fontSize: 10,
+    fontWeight: 800,
+  },
+  queueRow: {
+    width: '100%',
+    minHeight: 66,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) 44px 44px',
+    alignItems: 'stretch',
+    overflow: 'hidden',
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 14,
+    background: 'var(--surface)',
+    color: 'var(--text)',
+    textAlign: 'left',
+    transition: 'transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease',
+    touchAction: 'pan-y',
+  },
+  queueRowActive: {
+    background: 'var(--accent-soft)',
+    boxShadow: 'inset 3px 0 0 var(--accent)',
+  },
+  queueMain: {
+    minWidth: 0,
+    minHeight: 64,
+    display: 'grid',
+    gridTemplateColumns: '44px minmax(0, 1fr)',
+    alignItems: 'center',
+    gap: 9,
+    padding: '8px 6px 8px 9px',
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--text)',
+    fontFamily: 'inherit',
+    textAlign: 'left',
+    touchAction: 'pan-y',
+  },
+  queueArtwork: {
+    width: 44,
+    height: 44,
+    overflow: 'hidden',
+    borderRadius: 10,
+    background: 'var(--surface-subtle)',
+  },
+  queueArtworkImage: {
+    width: '100%',
+    height: '100%',
+    display: 'block',
+    objectFit: 'cover',
+  },
+  queueArtworkFallback: {
+    width: '100%',
+    height: '100%',
+    display: 'grid',
+    placeItems: 'center',
+    background: 'var(--surface-subtle)',
+    color: 'var(--accent)',
+    fontSize: 16,
+    fontWeight: 800,
+  },
+  queueMeta: { minWidth: 0, display: 'grid', gap: 3 },
+  queueHandle: {
+    width: 44,
+    minHeight: 44,
+    border: 'none',
+    borderLeft: '1px solid var(--divider-subtle)',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    fontFamily: 'inherit',
+    fontSize: 20,
+    fontWeight: 800,
+    touchAction: 'none',
+  },
+  queueRemove: {
+    minWidth: 44,
+    minHeight: 44,
+    border: 'none',
+    borderLeft: '1px solid var(--divider-subtle)',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    fontFamily: 'inherit',
+    fontSize: 14,
+  },
+  queueTitle: {
+    overflow: 'hidden',
+    color: 'var(--text)',
+    fontSize: 12,
+    fontWeight: 750,
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  queueSub: {
+    overflow: 'hidden',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 600,
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  queueEmpty: hybridMobileContentStyles.feedback,
 };
 
 const MOBILE_BINS = 80;
 const STEM_CONFIG = [
-  { key: 'vocalWindowsJson' as const, label: 'VOCALS', color: '#e91e63' },
-  { key: 'drumWindowsJson'  as const, label: 'DRUMS',  color: '#ff9800' },
-  { key: 'bassWindowsJson'  as const, label: 'BASS',   color: '#2196f3' },
+  { key: 'vocalWindowsJson' as const, label: 'VOCALS', color: 'var(--accent)' },
+  { key: 'drumWindowsJson'  as const, label: 'DRUMS',  color: 'var(--warning)' },
+  { key: 'bassWindowsJson'  as const, label: 'BASS',   color: 'var(--success)' },
 ];
 
 export function buildMobileStemBins(windows: StemWindow[], duration: number): number[] {
@@ -505,7 +900,16 @@ function MobileSonicFingerprintPanel({
   }, [fingerprint, dur]);
 
   return (
-    <div style={{ ...phase2.mobileHeroCard, width: '100%', aspectRatio: '1 / 1', padding: '18px 18px 22px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{
+      width: '100%',
+      aspectRatio: '1 / 1',
+      boxSizing: 'border-box',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 12,
+      padding: '16px 16px 20px',
+      background: 'linear-gradient(150deg, var(--surface), var(--surface-subtle))',
+    }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', color: 'var(--accent)', textTransform: 'uppercase' as const }}>
           Sonic Fingerprint ✦
@@ -582,7 +986,7 @@ function MobileFpBadge({ label }: { label: string }) {
       padding: '3px 10px',
       borderRadius: 6,
       border: '1px solid color-mix(in srgb, var(--accent) 35%, var(--border))',
-      background: 'color-mix(in srgb, var(--accent) 10%, var(--bg))',
+      background: 'var(--accent-soft)',
       color: 'var(--text)',
       fontWeight: 600,
       whiteSpace: 'nowrap' as const,

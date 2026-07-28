@@ -32,27 +32,29 @@ export default function MobileApp(props: MobileSharedProps) {
 
   return (
     <div style={hybridMobileShellStyles.shell}>
-      <header style={hybridMobileShellStyles.header}>
-        <div style={hybridMobileShellStyles.brandLockup}>
-          <img src="/boogiebox.png" alt="" style={hybridMobileShellStyles.headerLogo} />
-          <div>
-            <div style={hybridMobileShellStyles.headerKicker}>Your library</div>
-            <div style={hybridMobileShellStyles.headerBrand}>BoogieBox</div>
+      {tab !== 'now-playing' ? (
+        <header style={hybridMobileShellStyles.header}>
+          <div style={hybridMobileShellStyles.brandLockup}>
+            <img src="/boogiebox.png" alt="" style={hybridMobileShellStyles.headerLogo} />
+            <div>
+              <div style={hybridMobileShellStyles.headerKicker}>Your library</div>
+              <div style={hybridMobileShellStyles.headerBrand}>BoogieBox</div>
+            </div>
           </div>
-        </div>
-        <div
-          aria-label={`Signed in as ${props.currentUser.username}`}
-          style={hybridMobileShellStyles.userPill}
-        >
-          <div aria-hidden="true" style={hybridMobileShellStyles.userAvatar}>
-            {props.currentUser.username.slice(0, 2).toUpperCase()}
+          <div
+            aria-label={`Signed in as ${props.currentUser.username}`}
+            style={hybridMobileShellStyles.userPill}
+          >
+            <div aria-hidden="true" style={hybridMobileShellStyles.userAvatar}>
+              {props.currentUser.username.slice(0, 2).toUpperCase()}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={hybridMobileShellStyles.userName}>{props.currentUser.username}</div>
+              <div style={hybridMobileShellStyles.userMeta}>Listening</div>
+            </div>
           </div>
-          <div style={{ minWidth: 0 }}>
-            <div style={hybridMobileShellStyles.userName}>{props.currentUser.username}</div>
-            <div style={hybridMobileShellStyles.userMeta}>Listening</div>
-          </div>
-        </div>
-      </header>
+        </header>
+      ) : null}
 
       {tab === 'home' && (
         <MobileHomeView
@@ -118,16 +120,18 @@ export default function MobileApp(props: MobileSharedProps) {
         headless
         onPlaybackSnapshotChange={setPlaybackSnapshot}
       />
-      <MobileMiniPlayer
-        snapshot={playbackSnapshot}
-        playerState={props.playerState}
-        onStateChange={props.onPlaybackStateChange}
-        onOpenNowPlaying={() => setTab('now-playing')}
-        onQuickRate={(rating) => {
-          const track = playbackSnapshot?.currentTrack ?? props.playerState.queue[props.playerState.currentIndex];
-          if (track) api.setTrackRating(track.id, rating).catch(() => {});
-        }}
-      />
+      {tab !== 'now-playing' ? (
+        <MobileMiniPlayer
+          snapshot={playbackSnapshot}
+          playerState={props.playerState}
+          onStateChange={props.onPlaybackStateChange}
+          onOpenNowPlaying={() => setTab('now-playing')}
+          onQuickRate={(rating) => {
+            const track = playbackSnapshot?.currentTrack ?? props.playerState.queue[props.playerState.currentIndex];
+            if (track) api.setTrackRating(track.id, rating).catch(() => {});
+          }}
+        />
+      ) : null}
       <MobileTabBar activeTab={tab} onChange={setTab} />
     </div>
   );
