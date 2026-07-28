@@ -43,7 +43,7 @@ describe('MobileHomeView', () => {
       tracks: [track('rated'), track('fallback', { title: '', artist: '' })],
     });
     apiMock.playlists.list.mockResolvedValue([
-      { id: 'p1', name: 'Favorites', track_count: 3 },
+      { id: 'p1', name: 'Favorites', track_count: 3, art_album_ids: ['playlist-art'] },
       { id: 'p2', name: 'Empty', track_count: null },
       { id: 'p3', name: 'Third' },
       { id: 'p4', name: 'Fourth' },
@@ -70,13 +70,18 @@ describe('MobileHomeView', () => {
       />,
     );
 
-    expect(screen.getByText('Listen, rediscover, and pick your next play.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'What will you play next?' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
     expect(await screen.findByText('Recently Added Music')).toBeInTheDocument();
     expect(screen.getByText('Top Rated')).toBeInTheDocument();
     expect(screen.getByText('Your Playlists')).toBeInTheDocument();
     expect(screen.getByText('Recently Played')).toBeInTheDocument();
     expect(screen.getByText('Top Played Tracks')).toBeInTheDocument();
     expect(screen.queryByText('Hidden Fifth')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Recently added albums')).toBeInTheDocument();
+    expect(screen.getByLabelText('Recently played tracks')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Favorites/i })).toHaveStyle({ minHeight: '66px' });
+    expect(apiMock.albumArtUrl).toHaveBeenCalledWith('playlist-art', 300);
 
     fireEvent.click(screen.getByRole('button', { name: /New Album/i }));
     fireEvent.click(screen.getByRole('button', { name: /Rated Album/i }));
@@ -113,6 +118,7 @@ describe('MobileHomeView', () => {
     await waitFor(() => expect(screen.queryByText('Recently Added Music')).not.toBeInTheDocument());
     expect(screen.queryByText('Top Rated')).not.toBeInTheDocument();
     expect(screen.queryByText('Your Playlists')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Home is quiet right now');
     unmount();
   });
 });

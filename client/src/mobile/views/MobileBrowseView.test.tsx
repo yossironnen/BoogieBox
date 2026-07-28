@@ -13,6 +13,7 @@ const { apiMock } = vi.hoisted(() => ({
     artistAlbums: vi.fn(),
     albumTracks: vi.fn(),
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number) => `/api/albums/${albumId}/art?size=${size}`),
+    artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number) => `/api/artists/${artistId}/photo?size=${size}`),
     playlists: {
       list: vi.fn(),
       addTrack: vi.fn(),
@@ -51,6 +52,9 @@ describe('MobileBrowseView', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: /Neon Skyline/i }));
+    expect(screen.getByRole('heading', { name: 'Artists' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Artists')).toBeInTheDocument();
+    expect(apiMock.artistPhotoUrl).toHaveBeenCalledWith('7', 300);
     expect(onSelectionChange).toHaveBeenCalledWith({
       artist: { id: '7', name: 'Neon Skyline', track_count: 14, album_count: 2 },
       album: null,
@@ -130,10 +134,13 @@ describe('MobileBrowseView', () => {
 
     const trackButton = (await screen.findByText('unknown.mp3')).closest('button');
     if (!trackButton) throw new Error('Track play button not found');
+    const ratingButton = screen.getByRole('button', { name: 'Set rating to 1 stars' });
+    expect(trackButton).not.toContainElement(ratingButton);
+    expect(screen.getByLabelText('Album tracks')).toBeInTheDocument();
     expect(screen.getByText('Fallback Artist')).toBeInTheDocument();
     fireEvent.click(trackButton);
     expect(onPlayTrack).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Set rating to 1 stars' }));
+    fireEvent.click(ratingButton);
     await waitFor(() => expect(apiMock.setTrackRating).toHaveBeenCalledWith('100', 1));
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(onSelectionChange).toHaveBeenCalledWith(expect.objectContaining({ album: null, tracks: [] }));
@@ -148,5 +155,31 @@ describe('MobileBrowseView', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(onSelectionChange).toHaveBeenCalledWith({ artist: null, album: null, tracks: [] });
+  });
+
+  it('shows semantic empty and request-failure feedback', async () => {
+    const first = render(
+      <MobileBrowseView
+        onPlayTrack={vi.fn()}
+        onAddToQueue={vi.fn()}
+        selection={{ artist: null, album: null, tracks: [] }}
+        onSelectionChange={vi.fn()}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('No artists are available yet');
+    });
+    first.unmount();
+
+    apiMock.artists.mockRejectedValueOnce(new Error('offline'));
+    render(
+      <MobileBrowseView
+        onPlayTrack={vi.fn()}
+        onAddToQueue={vi.fn()}
+        selection={{ artist: null, album: null, tracks: [] }}
+        onSelectionChange={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Artists could not be loaded');
   });
 });

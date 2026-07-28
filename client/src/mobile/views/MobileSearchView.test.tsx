@@ -38,6 +38,8 @@ describe('MobileSearchView', () => {
 
   it('waits for a minimum query length before searching', () => {
     render(<MobileSearchView onPlayTrack={vi.fn()} onAddToQueue={vi.fn()} />);
+    expect(screen.getByRole('heading', { name: 'Search' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Search your music library')).toHaveStyle({ minHeight: '52px' });
     fireEvent.change(screen.getByPlaceholderText(/songs, artists, albums/i), { target: { value: 'a' } });
     act(() => {
       vi.advanceTimersByTime(500);
@@ -124,6 +126,13 @@ describe('MobileSearchView', () => {
 
     await waitFor(() => expect(api.search).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByRole('button', { name: 'More actions for Anthem' })).toBeInTheDocument());
+    const trackPlayButton = screen.getByText('Anthem').closest('button');
+    const ratingButton = screen.getByRole('button', { name: 'Set rating to 1 stars' });
+    expect(trackPlayButton).not.toContainElement(ratingButton);
+    expect(screen.getByRole('button', { name: 'More actions for Anthem' })).toHaveStyle({
+      width: '44px',
+      height: '44px',
+    });
     fireEvent.click(screen.getByRole('button', { name: 'More actions for Anthem' }));
     fireEvent.click(screen.getByRole('button', { name: 'Add To Queue' }));
     expect(onAddToQueue).toHaveBeenCalledTimes(1);
@@ -244,6 +253,7 @@ describe('MobileSearchView', () => {
     }
 
     fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    expect(screen.getByRole('button', { name: 'Relevance' })).toHaveAttribute('aria-pressed');
     fireEvent.click(screen.getByRole('button', { name: 'Unrated' }));
     fireEvent.change(screen.getByPlaceholderText('From year'), { target: { value: '1999' } });
     fireEvent.change(screen.getByPlaceholderText('To year'), { target: { value: '2020' } });
@@ -267,7 +277,7 @@ describe('MobileSearchView', () => {
 
     vi.mocked(api.search).mockRejectedValueOnce(new Error('offline'));
     fireEvent.change(input, { target: { value: 'failure' } });
-    expect(await screen.findByText(/Search failed/)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Search failed');
     expect(screen.getByText('No music matches.')).toBeInTheDocument();
   });
 });

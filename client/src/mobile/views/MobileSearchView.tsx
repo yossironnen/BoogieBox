@@ -2,11 +2,12 @@
  * Defines mobile Mobile Search View behavior for the BoogieBox React client.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { api } from '../../api';
-import type { Playlist, SearchResult, Track } from '../../types';
-import StarRating from '../../components/StarRating';
 import ArtImage from '../../components/ArtImage';
+import StarRating from '../../components/StarRating';
+import { hybridMobileContentStyles } from '../../hybridPreview';
+import type { Playlist, SearchResult, Track } from '../../types';
 import { phase2 } from '../../uiPhase2';
 import { useMobileTrackActions } from '../components/MobileActionSheets';
 import MobileBottomSheet from '../components/MobileBottomSheet';
@@ -87,9 +88,9 @@ export default function MobileSearchView({
         album_rating_filter: ratingFilter,
         artist_rating_filter: ratingFilter,
       })
-        .then((nextResults) => {
+        .then(nextResults => {
           if (requestIdRef.current !== requestId) return;
-          setResults((current) => page === 1 ? nextResults : {
+          setResults(current => page === 1 ? nextResults : {
             ...nextResults,
             tracks: [...current.tracks, ...nextResults.tracks],
             artists: current.artists,
@@ -112,157 +113,369 @@ export default function MobileSearchView({
   }, [page, query, ratingFilter, sort, yearFrom, yearTo]);
 
   const trimmedQuery = query.trim();
-  const showMinLengthHint = !loading && trimmedQuery.length > 0 && trimmedQuery.length < MOBILE_SEARCH_MIN_QUERY_LENGTH;
+  const showMinLengthHint = !loading
+    && trimmedQuery.length > 0
+    && trimmedQuery.length < MOBILE_SEARCH_MIN_QUERY_LENGTH;
   const showEmptyState = !loading
     && trimmedQuery.length >= MOBILE_SEARCH_MIN_QUERY_LENGTH
     && results.tracks.length === 0
     && results.artists.length === 0
     && results.albums.length === 0
     && (results.top_results?.length ?? 0) === 0;
+  const filtersActive = ratingFilter !== 'all' || Boolean(yearFrom || yearTo);
   const trackActions = useMobileTrackActions<Track>({ playlists, onPlayTrack, onAddToQueue });
 
   const openTopResult = (item: NonNullable<SearchResult['top_results']>[number]) => {
-    const track = results.tracks.find((candidate) => candidate.id === item.id);
+    const track = results.tracks.find(candidate => candidate.id === item.id);
     if (track) onPlayTrack(track, results.tracks);
   };
 
   return (
-    <div style={styles.page}>
-      <div style={styles.hero}>
-        <div style={styles.kicker}>Discovery</div>
-        <div style={styles.header}>Search</div>
-        <div style={styles.copy}>Search across songs, artists, and albums with grouped results tuned for quick discovery.</div>
-      </div>
-      <div style={styles.searchShell}>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Songs, artists, albums" style={styles.input} />
-      </div>
-      {trimmedQuery.length >= MOBILE_SEARCH_MIN_QUERY_LENGTH && (
-        <div style={styles.pillRow}>
-          {(['relevance', 'title', 'artist', 'rating', 'duration'] as SearchSort[]).map((nextSort) => (
-            <button key={nextSort} type="button" style={{ ...styles.pill, ...(sort === nextSort ? styles.pillActive : undefined) }} onClick={() => setSort(nextSort)}>
+    <main
+      aria-busy={loading}
+      style={{ ...phase2.mobilePage, display: 'grid', alignContent: 'start', gap: 16 }}
+    >
+      <header style={hybridMobileContentStyles.pageHeader}>
+        <div style={hybridMobileContentStyles.eyebrow}>Discovery</div>
+        <h1 style={hybridMobileContentStyles.pageTitle}>Search</h1>
+        <p style={hybridMobileContentStyles.pageBody}>
+          Find songs, artists, and albums across your whole library.
+        </p>
+      </header>
+
+      <input
+        value={query}
+        onChange={event => setQuery(event.target.value)}
+        placeholder="Songs, artists, albums"
+        aria-label="Search your music library"
+        style={hybridMobileContentStyles.field}
+      />
+
+      {trimmedQuery.length >= MOBILE_SEARCH_MIN_QUERY_LENGTH ? (
+        <div aria-label="Search sorting and filters" style={hybridMobileContentStyles.chipRow}>
+          {(['relevance', 'title', 'artist', 'rating', 'duration'] as SearchSort[]).map(nextSort => (
+            <button
+              key={nextSort}
+              type="button"
+              aria-pressed={sort === nextSort}
+              style={{
+                ...hybridMobileContentStyles.chip,
+                ...(sort === nextSort ? hybridMobileContentStyles.chipActive : {}),
+              }}
+              onClick={() => setSort(nextSort)}
+            >
               {nextSort[0].toUpperCase() + nextSort.slice(1)}
             </button>
           ))}
-          <button type="button" style={styles.pill} onClick={() => setFiltersOpen(true)}>Filter</button>
-        </div>
-      )}
-      {error ? <div style={styles.errorBanner}>{error}</div> : null}
-      {loading && <div style={styles.state}>Searching...</div>}
-      {!loading && !trimmedQuery && <div style={styles.state}>Type at least {MOBILE_SEARCH_MIN_QUERY_LENGTH} characters to search your library.</div>}
-      {showMinLengthHint && <div style={styles.state}>Keep typing to search your library.</div>}
-      {!!results.top_results?.length && (
-        <div style={styles.section}>
-          <div style={styles.sectionLabel}>Top Results</div>
-          {results.top_results.map((item) => (
-            <button key={`${item.type}-${item.id}`} type="button" style={styles.videoButton} onClick={() => openTopResult(item)} aria-label={`Open ${item.title}`}>
-              <span style={styles.videoTitle}>{item.title}</span>
-              <span style={styles.videoMeta}>{item.subtitle || item.type}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      {!!results.artists.length && (
-        <div style={styles.section}>
-          <div style={styles.sectionLabel}>Artists</div>
-          {results.artists.map((artist) => (
-            <div key={artist.id} style={styles.compactResult}>
-              <ArtImage src={api.artistPhotoUrl(artist.id, 300)} alt="" imgStyle={styles.resultThumb} />
-              <span style={styles.videoTitle}>{artist.name}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {!!results.albums.length && (
-        <div style={styles.section}>
-          <div style={styles.sectionLabel}>Albums</div>
-          {results.albums.map((album) => (
-            <div key={album.id} style={styles.compactResult}>
-              <ArtImage src={api.albumArtUrl(album.id, 300)} alt="" imgStyle={styles.resultThumb} />
-              <span style={styles.videoTitle}>{album.title}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {!loading && results.tracks.map((track) => (
-        <div key={track.id} style={styles.row}>
-          <button type="button" style={styles.main} onClick={() => onPlayTrack(track, results.tracks)}>
-            <span style={styles.title}>{track.title || track.file_name}</span>
-            <span style={styles.sub}>{[track.artist, track.album].filter(Boolean).join(' * ') || 'Unknown track'}</span>
-            <span onClick={(event) => event.stopPropagation()}>
-              <StarRating
-                value={track.rating ?? null}
-                onChange={async (rating) => {
-                  setResults((prev) => ({ ...prev, tracks: prev.tracks.map((t) => t.id === track.id ? { ...t, rating } : t) }));
-                  await api.setTrackRating(track.id, rating);
-                }}
-                ariaLabel={`Rate ${track.title || track.file_name}`}
-                size="compact"
-              />
-            </span>
-          </button>
-          <button type="button" style={styles.queue} onClick={(event) => { event.stopPropagation(); trackActions.openForTrack(track, results.tracks); }} aria-label={`More actions for ${track.title || track.file_name}`}>
-            ...
+          <button
+            type="button"
+            aria-expanded={filtersOpen}
+            aria-pressed={filtersActive}
+            style={{
+              ...hybridMobileContentStyles.chip,
+              ...(filtersActive ? hybridMobileContentStyles.chipActive : {}),
+            }}
+            onClick={() => setFiltersOpen(true)}
+          >
+            Filter
           </button>
         </div>
-      ))}
-      {showEmptyState && <div style={styles.state}>No music matches.</div>}
-      {!loading && results.hasMore ? <button type="button" style={styles.loadMore} onClick={() => setPage((current) => current + 1)}>Load more</button> : null}
+      ) : null}
+
+      {error ? (
+        <div
+          role="alert"
+          style={{
+            ...hybridMobileContentStyles.feedback,
+            ...hybridMobileContentStyles.feedbackError,
+          }}
+        >
+          {error}
+        </div>
+      ) : null}
+      {loading ? (
+        <div role="status" style={hybridMobileContentStyles.feedback}>Searching…</div>
+      ) : null}
+      {!loading && !trimmedQuery ? (
+        <div role="status" style={hybridMobileContentStyles.feedback}>
+          Type at least {MOBILE_SEARCH_MIN_QUERY_LENGTH} characters to search your library.
+        </div>
+      ) : null}
+      {showMinLengthHint ? (
+        <div role="status" style={hybridMobileContentStyles.feedback}>
+          Keep typing to search your library.
+        </div>
+      ) : null}
+
+      {(results.top_results?.length ?? 0) > 0 ? (
+        <section aria-labelledby="mobile-search-top-results" style={styles.section}>
+          <h2 id="mobile-search-top-results" style={styles.sectionTitle}>Top Results</h2>
+          <div style={hybridMobileContentStyles.list}>
+            {(results.top_results ?? []).map(item => (
+              <button
+                key={`${item.type}-${item.id}`}
+                type="button"
+                style={hybridMobileContentStyles.listRow}
+                onClick={() => openTopResult(item)}
+                aria-label={`Open ${item.title}`}
+              >
+                <span style={hybridMobileContentStyles.listArtwork}>
+                  <span aria-hidden="true" style={hybridMobileContentStyles.listArtworkFallback}>
+                    {item.type.slice(0, 1).toUpperCase()}
+                  </span>
+                </span>
+                <span style={hybridMobileContentStyles.listMeta}>
+                  <span style={hybridMobileContentStyles.listTitle}>{item.title}</span>
+                  <span style={hybridMobileContentStyles.listSubtitle}>
+                    {item.subtitle || item.type}
+                  </span>
+                </span>
+                <span style={hybridMobileContentStyles.listBadge}>{item.type}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {results.artists.length > 0 ? (
+        <section aria-labelledby="mobile-search-artists" style={styles.section}>
+          <h2 id="mobile-search-artists" style={styles.sectionTitle}>Artists</h2>
+          <div style={hybridMobileContentStyles.list}>
+            {results.artists.map(artist => (
+              <div key={artist.id} style={{ ...hybridMobileContentStyles.listRow, cursor: 'default' }}>
+                <span style={{ ...hybridMobileContentStyles.listArtwork, borderRadius: 16 }}>
+                  <ArtImage
+                    src={api.artistPhotoUrl(artist.id, 300)}
+                    alt=""
+                    imgStyle={hybridMobileContentStyles.listArtworkImage}
+                  />
+                </span>
+                <span style={hybridMobileContentStyles.listMeta}>
+                  <span style={hybridMobileContentStyles.listTitle}>{artist.name}</span>
+                  <span style={hybridMobileContentStyles.listSubtitle}>Artist</span>
+                </span>
+                <span style={hybridMobileContentStyles.listBadge}>Artist</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {results.albums.length > 0 ? (
+        <section aria-labelledby="mobile-search-albums" style={styles.section}>
+          <h2 id="mobile-search-albums" style={styles.sectionTitle}>Albums</h2>
+          <div style={hybridMobileContentStyles.list}>
+            {results.albums.map(album => (
+              <div key={album.id} style={{ ...hybridMobileContentStyles.listRow, cursor: 'default' }}>
+                <span style={hybridMobileContentStyles.listArtwork}>
+                  <ArtImage
+                    src={api.albumArtUrl(album.id, 300)}
+                    alt=""
+                    imgStyle={hybridMobileContentStyles.listArtworkImage}
+                  />
+                </span>
+                <span style={hybridMobileContentStyles.listMeta}>
+                  <span style={hybridMobileContentStyles.listTitle}>{album.title}</span>
+                  <span style={hybridMobileContentStyles.listSubtitle}>
+                    {album.album_artist || album.artist || 'Unknown artist'}
+                  </span>
+                </span>
+                <span style={hybridMobileContentStyles.listBadge}>Album</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {!loading && results.tracks.length > 0 ? (
+        <section aria-labelledby="mobile-search-tracks" style={styles.section}>
+          <h2 id="mobile-search-tracks" style={styles.sectionTitle}>Tracks</h2>
+          <div style={hybridMobileContentStyles.list}>
+            {results.tracks.map(track => (
+              <div key={track.id} style={styles.trackRow}>
+                <span style={hybridMobileContentStyles.listArtwork}>
+                  {track.album_id ? (
+                    <ArtImage
+                      src={api.albumArtUrl(track.album_id, 300)}
+                      alt=""
+                      imgStyle={hybridMobileContentStyles.listArtworkImage}
+                    />
+                  ) : (
+                    <span aria-hidden="true" style={hybridMobileContentStyles.listArtworkFallback}>♪</span>
+                  )}
+                </span>
+                <div style={styles.trackContent}>
+                  <button
+                    type="button"
+                    style={styles.trackPlay}
+                    onClick={() => onPlayTrack(track, results.tracks)}
+                  >
+                    <span style={hybridMobileContentStyles.listTitle}>
+                      {track.title || track.file_name}
+                    </span>
+                    <span style={hybridMobileContentStyles.listSubtitle}>
+                      {[track.artist, track.album].filter(Boolean).join(' • ') || 'Unknown track'}
+                    </span>
+                  </button>
+                  <StarRating
+                    value={track.rating ?? null}
+                    onChange={async rating => {
+                      setResults(previous => ({
+                        ...previous,
+                        tracks: previous.tracks.map(candidate => (
+                          candidate.id === track.id ? { ...candidate, rating } : candidate
+                        )),
+                      }));
+                      await api.setTrackRating(track.id, rating);
+                    }}
+                    ariaLabel={`Rate ${track.title || track.file_name}`}
+                    size="compact"
+                  />
+                </div>
+                <button
+                  type="button"
+                  style={styles.actionButton}
+                  onClick={() => trackActions.openForTrack(track, results.tracks)}
+                  aria-label={`More actions for ${track.title || track.file_name}`}
+                >
+                  •••
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {showEmptyState ? (
+        <div role="status" style={hybridMobileContentStyles.feedback}>No music matches.</div>
+      ) : null}
+      {!loading && results.hasMore ? (
+        <button
+          type="button"
+          style={{ ...hybridMobileContentStyles.secondaryAction, justifySelf: 'stretch' }}
+          onClick={() => setPage(current => current + 1)}
+        >
+          Load more
+        </button>
+      ) : null}
+
       {trackActions.actionsSheet}
       {trackActions.pickerSheet}
       {trackActions.createSheet}
+
       {filtersOpen ? (
         <MobileBottomSheet title="Search filters" onClose={() => setFiltersOpen(false)}>
           <div style={styles.filterSheet}>
-            <div style={styles.pillRow}>
+            <div style={{ ...hybridMobileContentStyles.chipRow, margin: 0, padding: 0 }}>
               {([
                 ['all', 'All ratings'],
                 ['unrated', 'Unrated'],
                 ['gte3', '3+ stars'],
                 ['gte4', '4+ stars'],
               ] as Array<[RatingFilter, string]>).map(([value, label]) => (
-                <button key={value} type="button" style={{ ...styles.pill, ...(ratingFilter === value ? styles.pillActive : undefined) }} onClick={() => setRatingFilter(value)}>
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={ratingFilter === value}
+                  style={{
+                    ...hybridMobileContentStyles.chip,
+                    ...(ratingFilter === value ? hybridMobileContentStyles.chipActive : {}),
+                  }}
+                  onClick={() => setRatingFilter(value)}
+                >
                   {label}
                 </button>
               ))}
             </div>
             <div style={styles.yearGrid}>
-              <input value={yearFrom} onChange={(event) => setYearFrom(event.target.value)} placeholder="From year" style={styles.yearInput} inputMode="numeric" />
-              <input value={yearTo} onChange={(event) => setYearTo(event.target.value)} placeholder="To year" style={styles.yearInput} inputMode="numeric" />
+              <input
+                value={yearFrom}
+                onChange={event => setYearFrom(event.target.value)}
+                placeholder="From year"
+                aria-label="From year"
+                style={{ ...hybridMobileContentStyles.field, minHeight: 44, fontSize: 13 }}
+                inputMode="numeric"
+              />
+              <input
+                value={yearTo}
+                onChange={event => setYearTo(event.target.value)}
+                placeholder="To year"
+                aria-label="To year"
+                style={{ ...hybridMobileContentStyles.field, minHeight: 44, fontSize: 13 }}
+                inputMode="numeric"
+              />
             </div>
           </div>
         </MobileBottomSheet>
       ) : null}
-    </div>
+    </main>
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
-  page: phase2.mobilePage,
-  hero: { marginBottom: 14 },
-  kicker: phase2.mobileKicker,
-  header: { ...phase2.mobileTitle, marginTop: 8, marginBottom: 10 },
-  copy: { fontSize: 13, lineHeight: 1.5, color: 'var(--text-muted)', maxWidth: 340, marginBottom: 18 },
-  searchShell: { ...phase2.mobileHeroCard, marginBottom: 16, padding: 14 },
-  input: { width: '100%', minHeight: 56, padding: '0 18px', borderRadius: 18, border: '1px solid color-mix(in srgb, var(--border) 68%, transparent)', background: 'rgba(255,255,255,0.04)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 16, outline: 'none' },
-  pillRow: { display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 6, marginBottom: 12 },
-  pill: { minHeight: 40, padding: '0 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 12, fontWeight: 800, whiteSpace: 'nowrap' },
-  pillActive: { background: 'var(--accent)', borderColor: 'var(--accent)', color: 'var(--bg)' },
-  errorBanner: { padding: 12, borderRadius: 14, border: '1px solid var(--border)', background: 'color-mix(in srgb, var(--accent) 12%, var(--surface))', color: 'var(--text)', fontSize: 13, marginBottom: 12 },
-  section: { display: 'grid', gap: 10, marginBottom: 14 },
-  sectionLabel: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-muted)', fontWeight: 700 },
-  videoButton: { ...phase2.mobileMediaRow, padding: '12px 14px', display: 'grid', gap: 4, textAlign: 'left', color: 'var(--text)', fontFamily: 'inherit' },
-  videoTitle: { fontSize: 14, fontWeight: 800, color: 'var(--text)' },
-  videoMeta: { fontSize: 12, color: 'var(--text-muted)' },
-  compactResult: { ...phase2.mobileMediaRow, minHeight: 58, padding: '8px 12px', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', alignItems: 'center', gap: 10 },
-  resultThumb: { width: 42, height: 42, borderRadius: 10, objectFit: 'cover', display: 'block' },
-  state: { color: 'var(--text-muted)', fontSize: 14, paddingTop: 14 },
-  row: { display: 'flex', gap: 10, marginBottom: 12 },
-  main: { ...phase2.mobileMediaRow, flex: 1, minHeight: 72, textAlign: 'left', color: 'var(--text)', padding: '14px 16px', display: 'grid', gap: 5 },
-  title: { fontSize: 15, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  sub: { fontSize: 13, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  queue: { ...phase2.mobileMediaRow, minWidth: 56, color: 'var(--text)', fontSize: 18, fontFamily: 'inherit', letterSpacing: 1 },
-  loadMore: { minHeight: 48, borderRadius: 16, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontFamily: 'inherit', fontWeight: 800, marginTop: 8 },
-  filterSheet: { display: 'grid', gap: 14 },
-  yearGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 },
-  yearInput: { minHeight: 44, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'inherit', padding: '0 12px' },
+const styles: Record<string, CSSProperties> = {
+  section: {
+    display: 'grid',
+    gap: 9,
+  },
+  sectionTitle: {
+    margin: 0,
+    color: 'var(--text)',
+    fontSize: 15,
+    fontWeight: 800,
+    letterSpacing: -0.2,
+  },
+  trackRow: {
+    minHeight: 76,
+    display: 'grid',
+    gridTemplateColumns: '48px minmax(0, 1fr) 44px',
+    alignItems: 'center',
+    gap: 9,
+    boxSizing: 'border-box',
+    padding: '8px 7px 8px 9px',
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 14,
+    background: 'var(--surface)',
+  },
+  trackContent: {
+    minWidth: 0,
+    display: 'grid',
+    gap: 4,
+  },
+  trackPlay: {
+    minWidth: 0,
+    minHeight: 36,
+    display: 'grid',
+    alignContent: 'center',
+    gap: 2,
+    padding: 0,
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    textAlign: 'left',
+  },
+  actionButton: {
+    width: 44,
+    minWidth: 44,
+    height: 44,
+    padding: 0,
+    border: 'none',
+    borderRadius: 12,
+    background: 'var(--surface-subtle)',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: 13,
+    letterSpacing: 1,
+  },
+  filterSheet: {
+    display: 'grid',
+    gap: 14,
+  },
+  yearGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 10,
+  },
 };

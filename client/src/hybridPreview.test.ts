@@ -14,6 +14,7 @@ import {
   hybridControlStyles,
   hybridEntryStyles,
   hybridMediaStyles,
+  hybridMobileContentStyles,
   hybridMobileShellStyles,
   hybridPlayerStyles,
   hybridPlaylistStyles,
@@ -174,6 +175,28 @@ describe('Hybrid preview', () => {
       height: MOBILE_MINI_PLAYER_HEIGHT,
       background: 'color-mix(in srgb, var(--surface-raised) 96%, transparent)',
     });
+  });
+
+  it('defines flat touch-safe mobile content shelves, rows, and actions', () => {
+    expect(hybridMobileContentStyles.secondaryAction.minHeight).toBe(44);
+    expect(hybridMobileContentStyles.sectionAction.minHeight).toBe(44);
+    expect(hybridMobileContentStyles.artworkCard).toMatchObject({
+      flex: '0 0 136px',
+      background: 'transparent',
+    });
+    expect(hybridMobileContentStyles.listRow).toMatchObject({
+      minHeight: 66,
+      background: 'var(--surface)',
+    });
+    expect(hybridMobileContentStyles.listRow.boxShadow).toBeUndefined();
+    expect(hybridMobileContentStyles.empty.border).toBe('1px dashed var(--border)');
+    expect(hybridMobileContentStyles.detailHero).toMatchObject({
+      gridTemplateColumns: '88px minmax(0, 1fr)',
+      background: 'var(--surface)',
+    });
+    expect(hybridMobileContentStyles.field.minHeight).toBe(52);
+    expect(hybridMobileContentStyles.chip.minHeight).toBe(44);
+    expect(hybridMobileContentStyles.feedbackError.color).toBe('var(--danger)');
   });
 
   it('mounts one removable official Satoshi stylesheet', () => {
