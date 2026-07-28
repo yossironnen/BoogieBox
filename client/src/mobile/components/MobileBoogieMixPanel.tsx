@@ -13,6 +13,7 @@ import type {
 } from '../../types';
 import type { EntityId } from '../../entityId';
 import { hybridMobileContentStyles } from '../../hybridPreview';
+import MobileConfirmationSheet from './MobileConfirmationSheet';
 
 type MixStyle = 'chill_blend' | 'club_blend' | 'long_build' | 'safe_mix';
 type MixQuality = 'standard' | 'high_quality';
@@ -73,6 +74,7 @@ export default function MobileBoogieMixPanel({
   const [mixJob, setMixJob] = useState<BoogieMixJob | null>(null);
   const [mixOutputs, setMixOutputs] = useState<BoogieMixOutput[]>([]);
   const [mixError, setMixError] = useState('');
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   useEffect(() => {
     if (!expanded || !boogieMix) return;
@@ -304,7 +306,7 @@ export default function MobileBoogieMixPanel({
                   {activeJob ? 'Building mix…' : `Build ${playlistName}`}
                 </button>
                 {isCancelableJob(mixJob) ? (
-                  <button type="button" style={S.secondaryButton} onClick={() => void cancelMix()}>
+                  <button type="button" style={S.secondaryButton} onClick={() => setCancelOpen(true)}>
                     Cancel
                   </button>
                 ) : null}
@@ -347,6 +349,16 @@ export default function MobileBoogieMixPanel({
                   </a>
                 </div>
               ) : null}
+              <MobileConfirmationSheet
+                open={cancelOpen}
+                title="Cancel this BoogieMix?"
+                description="The current render and transition planning will stop. You can start a new mix later."
+                itemLabel={playlistName}
+                confirmLabel="Cancel mix"
+                busyLabel="Canceling…"
+                onClose={() => setCancelOpen(false)}
+                onConfirm={cancelMix}
+              />
             </>
           )}
         </div>

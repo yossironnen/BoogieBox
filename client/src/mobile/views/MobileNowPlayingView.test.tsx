@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_PARAMETRIC_BANDS } from '../../audio/eq';
 import MobileNowPlayingView, { buildMobileStemBins } from './MobileNowPlayingView';
@@ -100,6 +100,9 @@ describe('MobileNowPlayingView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove Song 1 from queue' }));
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 0 }));
     fireEvent.click(screen.getByRole('button', { name: 'Clear queue' }));
+    const clearDialog = screen.getByRole('alertdialog', { name: 'Clear the queue?' });
+    expect(onStateChange).not.toHaveBeenCalledWith(expect.objectContaining({ queue: [] }));
+    fireEvent.click(within(clearDialog).getByRole('button', { name: 'Clear queue' }));
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ queue: [], isPlaying: false }));
 
     const song3 = screen.getByRole('button', { name: 'Song 3Unknown artist' });

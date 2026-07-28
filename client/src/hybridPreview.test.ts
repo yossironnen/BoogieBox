@@ -32,6 +32,23 @@ import {
   resolveHybridThemeSettings,
 } from './hybridPreview';
 
+function relativeLuminance(hex: string): number {
+  const channels = hex.match(/[a-f\d]{2}/gi)?.map((channel) => {
+    const value = Number.parseInt(channel, 16) / 255;
+    return value <= 0.04045
+      ? value / 12.92
+      : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  if (!channels || channels.length !== 3) throw new Error(`Expected six-digit hex color, received ${hex}`);
+  return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2]);
+}
+
+function contrastRatio(first: string, second: string): number {
+  const lighter = Math.max(relativeLuminance(first), relativeLuminance(second));
+  const darker = Math.min(relativeLuminance(first), relativeLuminance(second));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 describe('Hybrid preview', () => {
   it('stays disabled without the explicit development query flag', () => {
     expect(parseHybridPreview('', true)).toEqual({ enabled: false, mode: 'dark' });
@@ -100,6 +117,30 @@ describe('Hybrid preview', () => {
     expect(dark['--text-faint']).toBe('#887a72');
     expect(dark['--focus-ring']).toContain('0.28');
   });
+
+  it.each(['light', 'dark'] as const)(
+    'keeps supported %s theme text, muted text, accent, and focus pairs at WCAG AA contrast',
+    (mode) => {
+      const settings = resolveHybridThemeSettings(DEFAULT_SETTINGS, mode);
+      const tokens = getHybridSemanticTokens(settings, mode);
+      const pairs = [
+        [settings.colorText, settings.colorBg],
+        [settings.colorText, settings.colorSurface],
+        [settings.colorTextMuted, settings.colorBg],
+        [settings.colorTextMuted, settings.colorSurface],
+        [tokens['--on-accent'], settings.colorAccent],
+        [tokens['--focus'], settings.colorBg],
+      ];
+
+      for (const [foreground, background] of pairs) {
+        expect(
+          contrastRatio(foreground, background),
+          `${foreground} on ${background}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+      expect(Object.values(tokens).every((value) => value.trim().length > 0)).toBe(true);
+    },
+  );
 
   it('defines flat reusable control and media roles for rollout screens', () => {
     expect(hybridControlStyles.primaryButton).toMatchObject({

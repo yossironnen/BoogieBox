@@ -4,17 +4,22 @@
 
 import React, { useEffect, useId, useRef } from 'react';
 
+export const MOBILE_BOTTOM_SHEET_BODY_PADDING =
+  '14px 0 calc(env(safe-area-inset-bottom, 0px) + 18px)';
+
 /** Mobile Bottom Sheet is part of this module's public API. */
 export default function MobileBottomSheet({
   title,
   onClose,
   children,
   closeLabel = 'Close',
+  dialogRole = 'dialog',
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   closeLabel?: string;
+  dialogRole?: 'dialog' | 'alertdialog';
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -57,7 +62,7 @@ export default function MobileBottomSheet({
         aria-label={`Dismiss ${title}`}
       />
       <section
-        role="dialog"
+        role={dialogRole}
         aria-modal="true"
         aria-labelledby={titleId}
         style={styles.sheet}
@@ -164,6 +169,6 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
     overflowY: 'auto',
     overscrollBehaviorY: 'contain',
-    padding: '14px 0 calc(env(safe-area-inset-bottom, 0px) + 18px)',
+    padding: MOBILE_BOTTOM_SHEET_BODY_PADDING,
   },
 };

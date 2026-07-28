@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { ClientEntityId, Playlist, PlaylistTrack } from '../../types';
 import type { MobilePlaylistSelection } from '../mobileShell';
@@ -218,6 +218,9 @@ describe('MobilePlaylistsView', () => {
     fireEvent.pointerMove(row, { pointerId: 2, clientX: 40, clientY: 20 });
     fireEvent.pointerUp(row, { pointerId: 2, clientX: 40, clientY: 20 });
 
+    const removeDialog = await screen.findByRole('alertdialog', { name: 'Remove this track?' });
+    expect(apiMock.playlists.removeTrack).not.toHaveBeenCalled();
+    fireEvent.click(within(removeDialog).getByRole('button', { name: 'Remove track' }));
     await waitFor(() => expect(apiMock.playlists.removeTrack).toHaveBeenCalledWith('7', '501'));
     await waitFor(() => expect(screen.queryByText('Neon One')).not.toBeInTheDocument());
   });
@@ -401,6 +404,8 @@ describe('MobilePlaylistsView', () => {
     fireEvent.pointerDown(row, { button: 0, pointerId: 4, clientX: 180, clientY: 20 });
     fireEvent.pointerMove(row, { pointerId: 4, clientX: 40, clientY: 20 });
     fireEvent.pointerUp(row, { pointerId: 4, clientX: 40, clientY: 20 });
+    const removeDialog = await screen.findByRole('alertdialog', { name: 'Remove this track?' });
+    fireEvent.click(within(removeDialog).getByRole('button', { name: 'Remove track' }));
     expect(await screen.findByText('Could not remove track.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));

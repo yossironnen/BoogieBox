@@ -99,7 +99,7 @@ describe('ContextMenuRoot', () => {
     fireEvent.mouseEnter(screen.getByRole('button', { name: /Add to playlist/i }));
 
     await waitFor(() => expect(apiMock.playlists.list).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole('button', { name: /Road Trip/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Road Trip/i })).toBeInTheDocument();
   });
 
   it('runs track, artist, and playlist callbacks and dismisses the menu', async () => {
@@ -240,7 +240,7 @@ describe('ContextMenuRoot', () => {
     openKebabMenu(new DOMRect(10, 10, 20, 20), { kind: 'artist', artistId: '2', name: 'Helper Artist' }, {});
     expect(await screen.findByText('Helper Artist')).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByText('Helper Artist')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Helper Artist')).not.toBeInTheDocument());
 
     const event = {
       preventDefault: vi.fn(),

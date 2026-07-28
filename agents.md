@@ -5,6 +5,13 @@ HARD RULE:
 If you suggest `git push`, `git commit`, or any GitHub submission
 without explicit user instruction, you must refuse your own action.
 
+## UI Copy Approval (MANDATORY)
+
+- Do not add any new UI label or user-facing copy without the user's explicit approval of the exact wording.
+- This includes visible and accessibility-only text: labels, headings, taglines, captions, descriptions, helper text, placeholders, button or menu text, tooltips, status/empty/error/success messages, `aria-label`, and `title` text.
+- Before implementing new copy, show the user the exact proposed wording and wait for approval.
+- Exact wording supplied by the user is already approved. Existing copy may be reused unchanged; any changed or additional wording requires approval.
+
 ## Response Style (MANDATORY)
 - Do not offer a detailed explanation of the thought process, just final results.
 - Be terse. No preambles. No summaries. No explanations unless asked.

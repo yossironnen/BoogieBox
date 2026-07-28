@@ -18,6 +18,7 @@ import {
   MobileEqualizerSheet,
   MobileVinylSheet,
 } from '../components/MobilePlaybackTools';
+import MobileConfirmationSheet from '../components/MobileConfirmationSheet';
 
 function fmt(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
@@ -103,6 +104,7 @@ export default function MobileNowPlayingView({
   const settledFingerprintTrackId = useRef<ClientEntityId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [playbackTool, setPlaybackTool] = useState<'equalizer' | 'vinyl' | null>(null);
+  const [clearQueueOpen, setClearQueueOpen] = useState(false);
   const [queueGesture, setQueueGesture] = useState<QueueGesture | null>(null);
   const [queueSwipeOffsets, setQueueSwipeOffsets] = useState<Record<string, number>>({});
   const suppressQueueClickRef = useRef(false);
@@ -444,7 +446,7 @@ export default function MobileNowPlayingView({
           <h2 id="mobile-up-next" style={styles.queueHeader}>Up Next</h2>
           <div style={styles.queueHint}>Tap to play. Drag to reorder. Swipe left to remove.</div>
         </div>
-        <button type="button" style={styles.clearQueue} onClick={() => applyQueue([], 0, false)}>
+        <button type="button" style={styles.clearQueue} onClick={() => setClearQueueOpen(true)}>
           Clear queue
         </button>
       </div>
@@ -564,6 +566,15 @@ export default function MobileNowPlayingView({
           onClose={() => setPlaybackTool(null)}
         />
       ) : null}
+      <MobileConfirmationSheet
+        open={clearQueueOpen}
+        title="Clear the queue?"
+        description="This removes every track from the current session and stops playback."
+        itemLabel={`${playerState.queue.length} ${playerState.queue.length === 1 ? 'track' : 'tracks'} queued`}
+        confirmLabel="Clear queue"
+        onClose={() => setClearQueueOpen(false)}
+        onConfirm={() => applyQueue([], 0, false)}
+      />
     </main>
   );
 }

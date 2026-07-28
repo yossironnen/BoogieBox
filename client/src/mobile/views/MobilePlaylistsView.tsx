@@ -16,6 +16,7 @@ import {
 } from '../components/MobileActionSheets';
 import MobileBottomSheet from '../components/MobileBottomSheet';
 import MobileBoogieMixPanel from '../components/MobileBoogieMixPanel';
+import MobileConfirmationSheet from '../components/MobileConfirmationSheet';
 
 const SWIPE_ACTION_WIDTH = 112;
 const SWIPE_DELETE_THRESHOLD = 92;
@@ -246,6 +247,7 @@ export default function MobilePlaylistsView({
   const [sortMode, setSortMode] = useState<PlaylistSortMode>('manual');
   const [sortOpen, setSortOpen] = useState(false);
   const [addTracksOpen, setAddTracksOpen] = useState(false);
+  const [pendingRemoveTrack, setPendingRemoveTrack] = useState<PlaylistTrack | null>(null);
   const pullStartYRef = useRef<number | null>(null);
   const suppressRowClickRef = useRef(false);
   const selectedPlaylistId = selection.playlist?.id ?? initialPlaylistId ?? null;
@@ -438,7 +440,7 @@ export default function MobilePlaylistsView({
       if ((swipeOffsets[String(current.trackId)] ?? 0) <= -SWIPE_DELETE_THRESHOLD) {
         suppressRowClickRef.current = true;
         clearGesture(current.trackId);
-        await removeTrack(track);
+        setPendingRemoveTrack(track);
         return;
       }
       clearGesture(current.trackId);
@@ -451,7 +453,7 @@ export default function MobilePlaylistsView({
       return;
     }
     clearGesture(current.trackId);
-  }, [clearGesture, gesture, persistReorder, removeTrack, selection.tracks, swipeOffsets]);
+  }, [clearGesture, gesture, persistReorder, selection.tracks, swipeOffsets]);
 
   const handleRowClick = useCallback((track: PlaylistTrack) => {
     if (suppressRowClickRef.current) {
@@ -784,6 +786,16 @@ export default function MobilePlaylistsView({
             setEditorOpen(false);
           }}
           onSubmit={handleEditorSubmit}
+        />
+        <MobileConfirmationSheet
+          open={pendingRemoveTrack !== null}
+          title="Remove this track?"
+          description={`This removes the saved track from ${selection.playlist.name}. The audio file stays in your library.`}
+          itemLabel={pendingRemoveTrack?.title || pendingRemoveTrack?.file_name}
+          confirmLabel="Remove track"
+          busyLabel="Removing…"
+          onClose={() => setPendingRemoveTrack(null)}
+          onConfirm={() => pendingRemoveTrack ? removeTrack(pendingRemoveTrack) : undefined}
         />
       </main>
     );

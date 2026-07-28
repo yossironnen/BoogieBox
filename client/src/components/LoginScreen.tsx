@@ -128,9 +128,11 @@ export default function LoginScreen({ onLogin }: Props) {
           <img src="/boogiebox.png" alt="" style={hybridEntryStyles.logo} />
           <div>
             <div style={hybridEntryStyles.brandName}>BoogieBox</div>
-            <div style={hybridEntryStyles.brandMeta}>
-              {selected ? `Logging in as ${selected.username}` : 'Private music, your way'}
-            </div>
+            {selected ? (
+              <div style={hybridEntryStyles.brandMeta}>
+                Logging in as {selected.username}
+              </div>
+            ) : null}
           </div>
         </div>
 

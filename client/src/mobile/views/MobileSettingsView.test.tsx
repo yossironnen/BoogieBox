@@ -108,4 +108,23 @@ describe('MobileSettingsView', () => {
       expect(api.settings.update).toHaveBeenCalledWith({ crossfadeMode: 'auto' });
     });
   });
+
+  it('shows server operations only to administrators', async () => {
+    const { rerender } = render(
+      <MobileSettingsView
+        currentUser={{ id: 'user-1', username: 'listener', role: 'user' } as any}
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByText('Running on 8200');
+    expect(screen.queryByText('Server operations')).not.toBeInTheDocument();
+
+    rerender(
+      <MobileSettingsView
+        currentUser={{ id: 'admin-1', username: 'admin', role: 'admin' } as any}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Server operations')).toBeInTheDocument();
+  });
 });

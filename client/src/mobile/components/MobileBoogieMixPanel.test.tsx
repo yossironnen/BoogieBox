@@ -2,7 +2,7 @@
  * Tests the mobile playlist BoogieMix workflow.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   BoogieMixDeepAnalysisStatus,
@@ -192,6 +192,9 @@ describe('MobileBoogieMixPanel', () => {
     await screen.findByText('GPU deep analysis ready');
     fireEvent.click(screen.getByRole('button', { name: 'Build Some Electro' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    const cancelDialog = await screen.findByRole('alertdialog', { name: 'Cancel this BoogieMix?' });
+    expect(boogieMixMock.cancelJob).not.toHaveBeenCalled();
+    fireEvent.click(within(cancelDialog).getByRole('button', { name: 'Cancel mix' }));
 
     await waitFor(() => expect(boogieMixMock.cancelJob).toHaveBeenCalledWith('job-1'));
     expect(formatMobileDeepAnalysisProgress({

@@ -16,8 +16,18 @@ it('exposes one current tab, Hybrid emphasis, and touch-safe navigation', () => 
 
   expect(navigation).toBeInTheDocument();
   expect(home).toHaveAttribute('aria-current', 'page');
-  expect(home).toHaveStyle({ minHeight: '56px', color: 'var(--accent)' });
-  expect(home.firstElementChild).toHaveStyle({ background: 'var(--accent-soft)' });
+  expect(home).toHaveStyle({
+    minHeight: '56px',
+    color: 'var(--accent)',
+    fontSize: '11px',
+    fontWeight: '700',
+  });
+  expect(home.firstElementChild).toHaveStyle({
+    width: '38px',
+    height: '30px',
+    background: 'var(--accent-soft)',
+    fontSize: '22px',
+  });
   expect(search).not.toHaveAttribute('aria-current');
 
   fireEvent.click(search);

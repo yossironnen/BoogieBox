@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import MobileBottomSheet from './MobileBottomSheet';
+import MobileBottomSheet, { MOBILE_BOTTOM_SHEET_BODY_PADDING } from './MobileBottomSheet';
 
 function Harness({ onClose = vi.fn() }: { onClose?: () => void }) {
   const [open, setOpen] = useState(false);
@@ -31,8 +31,18 @@ describe('MobileBottomSheet', () => {
     opener.focus();
     fireEvent.click(opener);
 
-    expect(screen.getByRole('dialog', { name: 'Sample Sheet' })).toHaveStyle({ maxHeight: '84dvh' });
+    const dialog = screen.getByRole('dialog', { name: 'Sample Sheet' });
+    expect(dialog).toHaveStyle({ maxHeight: '84dvh', overflow: 'hidden' });
     expect(screen.getByRole('button', { name: 'Close' })).toHaveStyle({ minWidth: '44px', height: '44px' });
+    const scrollingBody = dialog.lastElementChild;
+    expect(scrollingBody).toHaveStyle({
+      minHeight: '0',
+      overflowY: 'auto',
+      overscrollBehaviorY: 'contain',
+    });
+    expect(MOBILE_BOTTOM_SHEET_BODY_PADDING).toBe(
+      '14px 0 calc(env(safe-area-inset-bottom, 0px) + 18px)',
+    );
     expect(document.body.style.overflow).toBe('hidden');
 
     fireEvent.keyDown(window, { key: 'Escape' });

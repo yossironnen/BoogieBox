@@ -25,8 +25,34 @@ function createWindowLike({
 }
 
 describe('shouldUseMobileShell', () => {
+  it.each([
+    ['compact portrait', 320, 568, 'Desktop', false],
+    ['small Android portrait', 360, 800, 'Android Mobile', true],
+    ['small iPhone portrait', 375, 667, 'iPhone', true],
+    ['modern iPhone portrait', 390, 844, 'iPhone', true],
+    ['largest narrow portrait', 430, 932, 'Desktop', false],
+    ['modern iPhone landscape', 844, 390, 'iPhone Mobile', true],
+    ['largest supported iPhone landscape', 932, 430, 'iPhone Mobile', true],
+  ])('enables the mobile shell for the %s viewport', (_label, width, height, userAgent, coarse) => {
+    expect(shouldUseMobileShell(createWindowLike({
+      width,
+      height,
+      userAgent,
+      coarse,
+    }))).toBe(true);
+  });
+
   it('enables the mobile shell on narrow iphone-sized screens', () => {
     expect(shouldUseMobileShell(createWindowLike({ width: 390, height: 844, userAgent: 'iPhone', coarse: true }))).toBe(true);
+  });
+
+  it('keeps fine-pointer desktop layouts outside the narrow breakpoint', () => {
+    expect(shouldUseMobileShell(createWindowLike({
+      width: 431,
+      height: 932,
+      userAgent: 'Desktop',
+      coarse: false,
+    }))).toBe(false);
   });
 
   it('keeps the desktop shell on wide layouts', () => {

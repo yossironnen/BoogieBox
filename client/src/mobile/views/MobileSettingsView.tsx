@@ -12,6 +12,7 @@ import {
 import type { AppSettings, AuthUser } from '../../types';
 import { APP_VERSION } from '../../version';
 import MobileBottomSheet from '../components/MobileBottomSheet';
+import MobileAdminSettingsPanel from './MobileAdminSettingsPanel';
 
 type SettingsState = Record<string, string>;
 type ThemeColorKey =
@@ -285,6 +286,8 @@ export default function MobileSettingsView({
               : 'Status unavailable'}</span>
           </div>
         </section>
+
+        {currentUser.role === 'admin' ? <MobileAdminSettingsPanel /> : null}
 
         <section aria-labelledby="mobile-settings-account" style={styles.section}>
           <div style={styles.sectionHeader}>

@@ -22,6 +22,7 @@ describe('LoginScreen', () => {
     });
     render(<LoginScreen onLogin={onLogin} />);
     expect(await screen.findByRole('heading', { name: 'Select a user' })).toBeInTheDocument();
+    expect(screen.queryByText('Private music, your way')).not.toBeInTheDocument();
     const alice = await screen.findByRole('button', { name: /alice/i });
     fireEvent.mouseEnter(alice);
     fireEvent.mouseLeave(alice);
