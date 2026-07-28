@@ -88,6 +88,7 @@ export interface ParametricEqEditorProps {
   onNewProfileNameChange: (name: string) => void;
   onSaveProfile: (name: string, bands: ParametricEqBand[]) => Promise<string | null>;
   onDeleteProfile: (name: string) => Promise<void>;
+  mobile?: boolean;
 }
 
 /** Parametric Eq Editor is part of this module's public API. */
@@ -103,6 +104,7 @@ export default function ParametricEqEditor({
   onNewProfileNameChange,
   onSaveProfile,
   onDeleteProfile,
+  mobile = false,
 }: ParametricEqEditorProps) {
   const [selectedBandIndex, setSelectedBandIndex] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
@@ -139,10 +141,10 @@ export default function ParametricEqEditor({
   return (
     <div data-ui-region="parametric-equalizer" style={STYLE.root}>
       {/* Profile selector */}
-      <div style={STYLE.profileRow}>
+      <div style={{ ...STYLE.profileRow, ...(mobile ? { alignItems: 'stretch', flexWrap: 'wrap' as const } : null) }}>
         <select
           aria-label="EQ profile"
-          style={STYLE.select}
+          style={{ ...STYLE.select, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
           value={profile}
           disabled={autoEqEnabled}
           onChange={(e) => handleProfileSelect(e.currentTarget.value)}
@@ -155,7 +157,7 @@ export default function ParametricEqEditor({
           ))}
         </select>
         <button
-          style={STYLE.btn}
+          style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
           disabled={autoEqEnabled || !isCustomProfile}
           onClick={handleDelete}
           title="Delete selected custom profile"
@@ -163,16 +165,22 @@ export default function ParametricEqEditor({
       </div>
 
       {/* Save row */}
-      <div style={STYLE.profileRow}>
+      <div style={{ ...STYLE.profileRow, ...(mobile ? { alignItems: 'stretch', flexWrap: 'wrap' as const } : null) }}>
         <input
           aria-label="New EQ profile name"
-          style={STYLE.input}
+          style={{ ...STYLE.input, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
           placeholder="Save as..."
           value={newProfileName}
           disabled={autoEqEnabled}
           onChange={(e) => { onNewProfileNameChange(e.currentTarget.value); setStatus(null); }}
         />
-        <button style={STYLE.btn} disabled={autoEqEnabled} onClick={handleSave}>Save</button>
+        <button
+          style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+          disabled={autoEqEnabled}
+          onClick={handleSave}
+        >
+          Save
+        </button>
       </div>
       {status && <div style={STYLE.status}>{status}</div>}
 
@@ -185,17 +193,28 @@ export default function ParametricEqEditor({
         onSelectBand={setSelectedBandIndex}
         width={536}
         height={140}
+        responsive={mobile}
       />
 
       {/* Band chips */}
-      <div style={STYLE.bandStrip} role="group" aria-label="EQ bands">
+      <div
+        style={{
+          ...STYLE.bandStrip,
+          ...(mobile ? { overflowX: 'auto', paddingBottom: 4 } : null),
+        }}
+        role="group"
+        aria-label="EQ bands"
+      >
         {bands.map((band, i) => {
           const freqLabel = band.frequencyHz >= 1000 ? `${(band.frequencyHz / 1000).toFixed(band.frequencyHz % 1000 === 0 ? 0 : 1)}k` : `${band.frequencyHz}`;
           const gainLabel = (band.type !== 'highpass' && band.type !== 'lowpass') ? `${band.gainDb >= 0 ? '+' : ''}${band.gainDb.toFixed(1)}` : '--';
           return (
             <button
               key={band.id}
-              style={STYLE.bandChip(i === selectedBandIndex, band.enabled)}
+              style={{
+                ...STYLE.bandChip(i === selectedBandIndex, band.enabled),
+                ...(mobile ? { flex: '0 0 54px', minHeight: 58 } : null),
+              }}
               onClick={() => setSelectedBandIndex(i)}
               aria-pressed={i === selectedBandIndex}
               aria-label={`Band ${i + 1} ${band.label}, ${freqLabel} Hz, ${gainLabel} dB`}
@@ -216,7 +235,7 @@ export default function ParametricEqEditor({
             <span style={STYLE.controlLabel}>Type</span>
             <select
               aria-label={`Band ${selectedBandIndex + 1} type`}
-              style={STYLE.smallSelect}
+              style={{ ...STYLE.smallSelect, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
               value={selectedBand.type}
               disabled={autoEqEnabled}
               onChange={(e) => updateBand(selectedBandIndex, { type: e.currentTarget.value as ParametricEqBandType })}
@@ -241,7 +260,7 @@ export default function ParametricEqEditor({
             <input
               aria-label={`Band ${selectedBandIndex + 1} frequency`}
               type="number"
-              style={STYLE.numberInput}
+              style={{ ...STYLE.numberInput, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
               min={PARAMETRIC_FREQ_MIN}
               max={PARAMETRIC_FREQ_MAX}
               step={1}
@@ -258,7 +277,7 @@ export default function ParametricEqEditor({
             <input
               aria-label={`Band ${selectedBandIndex + 1} Q`}
               type="number"
-              style={STYLE.numberInput}
+              style={{ ...STYLE.numberInput, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
               min={PARAMETRIC_Q_MIN}
               max={PARAMETRIC_Q_MAX}
               step={0.1}
@@ -276,7 +295,11 @@ export default function ParametricEqEditor({
             <input
               aria-label={`Band ${selectedBandIndex + 1} gain value`}
               type="number"
-              style={{ ...STYLE.numberInput, opacity: hasGain ? 1 : 0.4 }}
+              style={{
+                ...STYLE.numberInput,
+                opacity: hasGain ? 1 : 0.4,
+                ...(mobile ? { minHeight: 44, fontSize: 12 } : null),
+              }}
               min={PARAMETRIC_DB_MIN}
               max={PARAMETRIC_DB_MAX}
               step={0.5}

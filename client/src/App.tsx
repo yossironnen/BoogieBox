@@ -1279,6 +1279,11 @@ export default function App() {
         hybridThemeMode={hybridThemeMode}
         adaptiveAccentEnabled={adaptiveAccentEnabled}
         ffmpegAvailable={ffmpegAvailable}
+        playbackMode={playbackMode}
+        vinylHardcore={vinylHardcore}
+        vinylNeedleDrop={vinylNeedleDrop}
+        vinylAnalogFxDisabled={vinylAnalogFxDisabled}
+        vinylNeedleDropIntensity={vinylNeedleDropIntensity}
         playerState={playerState}
         playbackSnapshot={playbackSnapshot}
         openPlaylistId={openPlaylistRequest?.playlistId ?? null}
@@ -1289,6 +1294,11 @@ export default function App() {
         onSettingsChange={setSettings}
         onHybridThemeModeChange={selectHybridThemeMode}
         onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
+        onPlaybackModeChange={setPlaybackMode}
+        onVinylHardcoreChange={setVinylHardcore}
+        onVinylNeedleDropChange={setVinylNeedleDrop}
+        onVinylAnalogFxDisabledChange={setVinylAnalogFxDisabled}
+        onVinylNeedleDropIntensityChange={setVinylNeedleDropIntensity}
       />
     );
   }

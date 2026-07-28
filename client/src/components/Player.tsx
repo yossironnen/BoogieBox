@@ -2,7 +2,7 @@
  * Defines the Player React component and related UI helpers.
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ClientEntityId, Track, TrackWaveform, CrossfadeConfig, CrossfadeMode, QueueSource, SonicFingerprint } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import { api } from '../api';
@@ -53,6 +53,19 @@ export interface PlaybackSnapshot {
   loading: boolean;
   audioError: string | null;
 }
+/** Player EQ Controls exposes the active audio graph's EQ state to alternate control surfaces. */
+export interface PlayerEqControls {
+  bands: ParametricEqBand[];
+  profile: string;
+  customProfiles: ParametricEqProfile[];
+  autoEqEnabled: boolean;
+  autoEqCurrentPreset: BuiltinEqProfileName;
+  onAutoEqEnabledChange: (enabled: boolean) => void;
+  onBandsChange: (bands: ParametricEqBand[]) => void;
+  onProfileChange: (name: string, bands: ParametricEqBand[]) => void;
+  onSaveProfile: (name: string, bands: ParametricEqBand[]) => Promise<string | null>;
+  onDeleteProfile: (name: string) => Promise<void>;
+}
 interface PlayerProps {
   state: PlayerState;
   onStateChange: (s: PlayerState) => void;
@@ -66,6 +79,7 @@ interface PlayerProps {
   vinylNeedleDropIntensity?: number;
   headless?: boolean;
   onPlaybackSnapshotChange?: (snapshot: PlaybackSnapshot) => void;
+  onEqControlsChange?: (controls: PlayerEqControls | null) => void;
   hybridPreview?: boolean;
   adaptiveAccentEnabled?: boolean;
 }
@@ -1663,6 +1677,7 @@ export default function Player({
   vinylNeedleDropIntensity = 0.65,
   headless = false,
   onPlaybackSnapshotChange,
+  onEqControlsChange,
   hybridPreview = false,
   adaptiveAccentEnabled = true,
 }: PlayerProps) {
@@ -1854,6 +1869,69 @@ export default function Player({
     if (!canPersistUserEqProfiles) return;
     await userSettingsApi!.update!({ [USER_PARAMETRIC_EQ_PROFILES_SETTINGS_KEY]: JSON.stringify(profiles) });
   }, [canPersistUserEqProfiles, userSettingsApi]);
+
+  const changeParametricBands = useCallback((bands: ParametricEqBand[]) => {
+    setParametricBands(bands);
+    setParametricProfile('Manual');
+  }, []);
+
+  const changeParametricProfile = useCallback((name: string, bands: ParametricEqBand[]) => {
+    setParametricProfile(name);
+    setParametricBands(bands.map((band) => ({ ...band })));
+  }, []);
+
+  const saveParametricProfile = useCallback(async (name: string, bands: ParametricEqBand[]) => {
+    if (!name) return 'Enter a profile name.';
+    if (isBuiltinParametricPresetName(name)) return 'Built-in preset names are reserved.';
+    if (customParametricProfiles.some((profile) => profile.name.toLowerCase() === name.toLowerCase())) {
+      return 'A custom profile with this name already exists.';
+    }
+    const next = [...customParametricProfiles, { name, bands: bands.map((band) => ({ ...band })) }];
+    await persistCustomParametricProfiles(next);
+    setCustomParametricProfiles(next);
+    setParametricProfile(name);
+    setNewParametricProfileName('');
+    return null;
+  }, [customParametricProfiles, persistCustomParametricProfiles]);
+
+  const deleteParametricProfile = useCallback(async (name: string) => {
+    const next = customParametricProfiles.filter((profile) => profile.name !== name);
+    await persistCustomParametricProfiles(next);
+    setCustomParametricProfiles(next);
+    setParametricProfile('Manual');
+    setParametricBands(BUILTIN_PARAMETRIC_PRESETS.Manual.map((band) => ({ ...band })));
+  }, [customParametricProfiles, persistCustomParametricProfiles]);
+
+  const eqControls = useMemo<PlayerEqControls>(() => ({
+    bands: parametricBands,
+    profile: parametricProfile,
+    customProfiles: customParametricProfiles,
+    autoEqEnabled,
+    autoEqCurrentPreset,
+    onAutoEqEnabledChange: setAutoEqEnabled,
+    onBandsChange: changeParametricBands,
+    onProfileChange: changeParametricProfile,
+    onSaveProfile: saveParametricProfile,
+    onDeleteProfile: deleteParametricProfile,
+  }), [
+    autoEqCurrentPreset,
+    autoEqEnabled,
+    changeParametricBands,
+    changeParametricProfile,
+    customParametricProfiles,
+    deleteParametricProfile,
+    parametricBands,
+    parametricProfile,
+    saveParametricProfile,
+  ]);
+
+  useEffect(() => {
+    onEqControlsChange?.(eqControls);
+  }, [eqControls, onEqControlsChange]);
+
+  useEffect(() => () => {
+    onEqControlsChange?.(null);
+  }, [onEqControlsChange]);
 
   useEffect(() => {
     if (!canPersistUserEqProfiles) return;
@@ -3070,27 +3148,11 @@ export default function Player({
                   customProfiles={customParametricProfiles}
                   autoEqEnabled={autoEqEnabled}
                   newProfileName={newParametricProfileName}
-                  onBandsChange={(bands) => { setParametricBands(bands); setParametricProfile('Manual'); }}
-                  onProfileChange={(name, bands) => { setParametricProfile(name); setParametricBands(bands.map((b) => ({ ...b }))); }}
+                  onBandsChange={changeParametricBands}
+                  onProfileChange={changeParametricProfile}
                   onNewProfileNameChange={setNewParametricProfileName}
-                  onSaveProfile={async (name, bands) => {
-                    if (!name) return 'Enter a profile name.';
-                    if (isBuiltinParametricPresetName(name)) return 'Built-in preset names are reserved.';
-                    if (customParametricProfiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) return 'A custom profile with this name already exists.';
-                    const next = [...customParametricProfiles, { name, bands: bands.map((b) => ({ ...b })) }];
-                    await persistCustomParametricProfiles(next);
-                    setCustomParametricProfiles(next);
-                    setParametricProfile(name);
-                    setNewParametricProfileName('');
-                    return null;
-                  }}
-                  onDeleteProfile={async (name) => {
-                    const next = customParametricProfiles.filter((p) => p.name !== name);
-                    await persistCustomParametricProfiles(next);
-                    setCustomParametricProfiles(next);
-                    setParametricProfile('Manual');
-                    setParametricBands(BUILTIN_PARAMETRIC_PRESETS.Manual.map((b) => ({ ...b })));
-                  }}
+                  onSaveProfile={saveParametricProfile}
+                  onDeleteProfile={deleteParametricProfile}
                   accentColor={PLAYER_THEME_TOKENS.accent}
                 />
               </div>

@@ -174,6 +174,7 @@ describe('MobilePlaylistsView', () => {
     render(<TestHarness initialSelection={{ playlist, tracks }} />);
 
     expect(await screen.findByText('Some Electro')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Build a BoogieMix/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Play Neon One' })).toBeInTheDocument();
     expect(
       screen

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, setStreamDirect } from '../api';
 import type { Track } from '../types';
@@ -493,5 +493,44 @@ describe('Player comprehensive behavior', () => {
     fireEvent.click(queueRow);
     expect(onStateChange).not.toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 1 }));
     expect(within(queueRow).getByRole('button')).toBeDisabled();
+  });
+
+  it('exposes the live EQ controller to a headless mobile control surface', async () => {
+    const onEqControlsChange = vi.fn();
+    const state: PlayerState = {
+      queue: [track('1')],
+      currentIndex: 0,
+      isPlaying: false,
+      playToken: 1,
+    };
+    const { unmount } = render(
+      <Player
+        state={state}
+        onStateChange={vi.fn()}
+        ffmpegAvailable
+        headless
+        onEqControlsChange={onEqControlsChange}
+      />,
+    );
+
+    await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: 'Manual',
+        bands: expect.any(Array),
+        onAutoEqEnabledChange: expect.any(Function),
+        onProfileChange: expect.any(Function),
+      }),
+    ));
+    const controlSnapshots = onEqControlsChange.mock.calls
+      .map(([value]) => value)
+      .filter(Boolean);
+    const controls = controlSnapshots[controlSnapshots.length - 1]!;
+    act(() => controls.onAutoEqEnabledChange(true));
+    await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ autoEqEnabled: true }),
+    ));
+
+    unmount();
+    expect(onEqControlsChange).toHaveBeenLastCalledWith(null);
   });
 });

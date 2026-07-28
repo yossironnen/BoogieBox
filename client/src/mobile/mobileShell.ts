@@ -25,6 +25,11 @@ export interface MobileSharedProps {
   hybridThemeMode: HybridThemeMode;
   adaptiveAccentEnabled: boolean;
   ffmpegAvailable: boolean | null;
+  playbackMode: 'standard' | 'vinyl';
+  vinylHardcore: boolean;
+  vinylNeedleDrop: boolean;
+  vinylAnalogFxDisabled: boolean;
+  vinylNeedleDropIntensity: number;
   playerState: PlayerState;
   playbackSnapshot: PlaybackSnapshot | null;
   openPlaylistId: EntityId | null;
@@ -35,6 +40,11 @@ export interface MobileSharedProps {
   onSettingsChange: (settings: AppSettings) => void;
   onHybridThemeModeChange: (mode: HybridThemeMode) => void;
   onAdaptiveAccentEnabledChange: (enabled: boolean) => void;
+  onPlaybackModeChange: (mode: 'standard' | 'vinyl') => void;
+  onVinylHardcoreChange: (enabled: boolean) => void;
+  onVinylNeedleDropChange: (enabled: boolean) => void;
+  onVinylAnalogFxDisabledChange: (enabled: boolean) => void;
+  onVinylNeedleDropIntensityChange: (intensity: number) => void;
 }
 
 /** Mobile Browse Selection is part of this module's public API. */

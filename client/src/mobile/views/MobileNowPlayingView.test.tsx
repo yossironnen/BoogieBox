@@ -5,6 +5,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_PARAMETRIC_BANDS } from '../../audio/eq';
 import MobileNowPlayingView, { buildMobileStemBins } from './MobileNowPlayingView';
 
 const { apiMock } = vi.hoisted(() => ({
@@ -207,6 +208,51 @@ describe('MobileNowPlayingView', () => {
     expect(Math.min(...bins)).toBe(0);
     expect(Math.max(...bins)).toBe(1);
     expect(bins.some((value) => value === 0.5)).toBe(true);
+  });
+
+  it('opens the live Equalizer and persisted Vinyl tools from the Now Playing header', () => {
+    const track = {
+      id: '1', file_path: 'x', file_name: 'song.mp3', file_size: 1, format: 'MP3',
+      duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Song',
+      artist: 'Artist', album: 'Album', album_id: '9', library_name: 'Main', track_number: 1,
+      disc_number: 1, year: 2025, genre: 'Rock', composer: null, comment: null,
+      bpm: null, scanned_at: '2026-01-01',
+    } as any;
+    const onPlaybackModeChange = vi.fn();
+    render(
+      <MobileNowPlayingView
+        snapshot={{
+          currentTrack: track, currentTime: 30, duration: 120, isPlaying: true,
+          volume: 0.5, muted: false, loading: false, audioError: null,
+        }}
+        playerState={{ queue: [track], currentIndex: 0, isPlaying: true, playToken: 1 }}
+        onStateChange={vi.fn()}
+        eqControls={{
+          bands: DEFAULT_PARAMETRIC_BANDS,
+          profile: 'Manual',
+          customProfiles: [],
+          autoEqEnabled: false,
+          autoEqCurrentPreset: 'Rock',
+          onAutoEqEnabledChange: vi.fn(),
+          onBandsChange: vi.fn(),
+          onProfileChange: vi.fn(),
+          onSaveProfile: vi.fn().mockResolvedValue(null),
+          onDeleteProfile: vi.fn().mockResolvedValue(undefined),
+        }}
+        playbackMode="standard"
+        onPlaybackModeChange={onPlaybackModeChange}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Open equalizer' })).toHaveStyle({ minHeight: '44px' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open equalizer' }));
+    expect(screen.getByRole('dialog', { name: 'Equalizer' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close equalizer' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Vinyl controls' }));
+    expect(screen.getByRole('dialog', { name: 'Vinyl' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Vinyl' }));
+    expect(onPlaybackModeChange).toHaveBeenCalledWith('vinyl');
   });
 });
 

@@ -15,6 +15,7 @@ import {
   useMobileTrackActions,
 } from '../components/MobileActionSheets';
 import MobileBottomSheet from '../components/MobileBottomSheet';
+import MobileBoogieMixPanel from '../components/MobileBoogieMixPanel';
 
 const SWIPE_ACTION_WIDTH = 112;
 const SWIPE_DELETE_THRESHOLD = 92;
@@ -629,6 +630,13 @@ export default function MobilePlaylistsView({
             </button>
           </div>
         </section>
+
+        <MobileBoogieMixPanel
+          key={String(selection.playlist.id)}
+          playlistId={selection.playlist.id}
+          playlistName={selection.playlist.name}
+          trackCount={selection.tracks.length}
+        />
 
         {error ? <div role="alert" style={styles.error}>{error}</div> : null}
 

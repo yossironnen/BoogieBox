@@ -4,7 +4,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
-import type { PlaybackSnapshot, PlayerState } from '../../components/Player';
+import type { PlaybackSnapshot, PlayerEqControls, PlayerState } from '../../components/Player';
 import type { AppSettings, AuthUser, ClientEntityId, SonicFingerprint, StemWindow } from '../../types';
 import ArtImage from '../../components/ArtImage';
 import {
@@ -14,6 +14,10 @@ import {
 } from '../../hybridPreview';
 import { phase2 } from '../../uiPhase2';
 import MobileSettingsView from './MobileSettingsView';
+import {
+  MobileEqualizerSheet,
+  MobileVinylSheet,
+} from '../components/MobilePlaybackTools';
 
 function fmt(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
@@ -54,6 +58,17 @@ export default function MobileNowPlayingView({
   onHybridThemeModeChange,
   adaptiveAccentEnabled,
   onAdaptiveAccentEnabledChange,
+  eqControls,
+  playbackMode = 'standard',
+  vinylHardcore = false,
+  vinylNeedleDrop = false,
+  vinylAnalogFxDisabled = false,
+  vinylNeedleDropIntensity = 0.65,
+  onPlaybackModeChange = () => {},
+  onVinylHardcoreChange = () => {},
+  onVinylNeedleDropChange = () => {},
+  onVinylAnalogFxDisabledChange = () => {},
+  onVinylNeedleDropIntensityChange = () => {},
 }: {
   currentUser?: AuthUser;
   snapshot: PlaybackSnapshot | null;
@@ -65,6 +80,17 @@ export default function MobileNowPlayingView({
   onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
   adaptiveAccentEnabled?: boolean;
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
+  eqControls?: PlayerEqControls | null;
+  playbackMode?: 'standard' | 'vinyl';
+  vinylHardcore?: boolean;
+  vinylNeedleDrop?: boolean;
+  vinylAnalogFxDisabled?: boolean;
+  vinylNeedleDropIntensity?: number;
+  onPlaybackModeChange?: (mode: 'standard' | 'vinyl') => void;
+  onVinylHardcoreChange?: (enabled: boolean) => void;
+  onVinylNeedleDropChange?: (enabled: boolean) => void;
+  onVinylAnalogFxDisabledChange?: (enabled: boolean) => void;
+  onVinylNeedleDropIntensityChange?: (intensity: number) => void;
 }) {
   const track = snapshot?.currentTrack ?? playerState.queue[playerState.currentIndex] ?? null;
   const [panelMode, setPanelMode] = useState<LyricsPanelMode>('cover');
@@ -76,6 +102,7 @@ export default function MobileNowPlayingView({
   const [sonicFingerprintLoading, setSonicFingerprintLoading] = useState(false);
   const settledFingerprintTrackId = useRef<ClientEntityId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [playbackTool, setPlaybackTool] = useState<'equalizer' | 'vinyl' | null>(null);
   const [queueGesture, setQueueGesture] = useState<QueueGesture | null>(null);
   const [queueSwipeOffsets, setQueueSwipeOffsets] = useState<Record<string, number>>({});
   const suppressQueueClickRef = useRef(false);
@@ -287,7 +314,28 @@ export default function MobileNowPlayingView({
           <div style={styles.eyebrow}>Listening now</div>
           <h1 style={styles.pageTitle}>Now Playing</h1>
         </div>
-        <button type="button" style={styles.settingsButton} onClick={() => setSettingsOpen(true)} aria-label="Open settings">⚙</button>
+        <div style={styles.topActions}>
+          <button
+            type="button"
+            style={styles.toolButton}
+            onClick={() => setPlaybackTool('equalizer')}
+            aria-label="Open equalizer"
+          >
+            EQ
+          </button>
+          <button
+            type="button"
+            style={{
+              ...styles.toolButton,
+              ...(playbackMode === 'vinyl' ? styles.toolButtonActive : null),
+            }}
+            onClick={() => setPlaybackTool('vinyl')}
+            aria-label="Open Vinyl controls"
+          >
+            Vinyl
+          </button>
+          <button type="button" style={styles.settingsButton} onClick={() => setSettingsOpen(true)} aria-label="Open settings">⚙</button>
+        </div>
       </header>
       <button
         type="button"
@@ -494,6 +542,28 @@ export default function MobileNowPlayingView({
           onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
         />
       ) : null}
+      {playbackTool === 'equalizer' ? (
+        <MobileEqualizerSheet
+          controls={eqControls ?? null}
+          onClose={() => setPlaybackTool(null)}
+        />
+      ) : null}
+      {playbackTool === 'vinyl' ? (
+        <MobileVinylSheet
+          snapshot={snapshot}
+          playbackMode={playbackMode}
+          vinylHardcore={vinylHardcore}
+          vinylNeedleDrop={vinylNeedleDrop}
+          vinylAnalogFxDisabled={vinylAnalogFxDisabled}
+          vinylNeedleDropIntensity={vinylNeedleDropIntensity}
+          onPlaybackModeChange={onPlaybackModeChange}
+          onVinylHardcoreChange={onVinylHardcoreChange}
+          onVinylNeedleDropChange={onVinylNeedleDropChange}
+          onVinylAnalogFxDisabledChange={onVinylAnalogFxDisabledChange}
+          onVinylNeedleDropIntensityChange={onVinylNeedleDropIntensityChange}
+          onClose={() => setPlaybackTool(null)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -529,6 +599,28 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
     fontSize: 17,
+  },
+  topActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  toolButton: {
+    minWidth: 44,
+    minHeight: 44,
+    padding: '0 9px',
+    borderRadius: 12,
+    border: '1px solid var(--divider-subtle)',
+    background: 'var(--surface-subtle)',
+    color: 'var(--text-muted)',
+    fontFamily: 'inherit',
+    fontSize: 10,
+    fontWeight: 800,
+  },
+  toolButtonActive: {
+    borderColor: 'var(--accent)',
+    background: 'var(--accent-soft)',
+    color: 'var(--accent)',
   },
   empty: {
     ...hybridMobileContentStyles.empty,

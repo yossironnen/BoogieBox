@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import Player, { type PlaybackSnapshot } from '../components/Player';
+import Player, { type PlaybackSnapshot, type PlayerEqControls } from '../components/Player';
 import { api } from '../api';
 import type { MobileBrowseSelection, MobilePlaylistSelection, MobileSharedProps, MobileTabId } from './mobileShell';
 import MobileMiniPlayer from './components/MobileMiniPlayer';
@@ -21,6 +21,7 @@ export default function MobileApp(props: MobileSharedProps) {
   const [browseSelection, setBrowseSelection] = useState<MobileBrowseSelection>({ artist: null, album: null, tracks: [] });
   const [playlistSelection, setPlaylistSelection] = useState<MobilePlaylistSelection>({ playlist: null, tracks: [] });
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(props.playbackSnapshot);
+  const [eqControls, setEqControls] = useState<PlayerEqControls | null>(null);
   const [requestedPlaylistId, setRequestedPlaylistId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -110,6 +111,17 @@ export default function MobileApp(props: MobileSharedProps) {
           onHybridThemeModeChange={props.onHybridThemeModeChange}
           adaptiveAccentEnabled={props.adaptiveAccentEnabled}
           onAdaptiveAccentEnabledChange={props.onAdaptiveAccentEnabledChange}
+          eqControls={eqControls}
+          playbackMode={props.playbackMode}
+          vinylHardcore={props.vinylHardcore}
+          vinylNeedleDrop={props.vinylNeedleDrop}
+          vinylAnalogFxDisabled={props.vinylAnalogFxDisabled}
+          vinylNeedleDropIntensity={props.vinylNeedleDropIntensity}
+          onPlaybackModeChange={props.onPlaybackModeChange}
+          onVinylHardcoreChange={props.onVinylHardcoreChange}
+          onVinylNeedleDropChange={props.onVinylNeedleDropChange}
+          onVinylAnalogFxDisabledChange={props.onVinylAnalogFxDisabledChange}
+          onVinylNeedleDropIntensityChange={props.onVinylNeedleDropIntensityChange}
         />
       )}
 
@@ -117,8 +129,14 @@ export default function MobileApp(props: MobileSharedProps) {
         state={props.playerState}
         onStateChange={props.onPlaybackStateChange}
         ffmpegAvailable={props.ffmpegAvailable}
+        playbackMode={props.playbackMode}
+        vinylHardcore={props.vinylHardcore}
+        vinylNeedleDrop={props.vinylNeedleDrop}
+        vinylAnalogFxDisabled={props.vinylAnalogFxDisabled}
+        vinylNeedleDropIntensity={props.vinylNeedleDropIntensity}
         headless
         onPlaybackSnapshotChange={setPlaybackSnapshot}
+        onEqControlsChange={setEqControls}
       />
       {tab !== 'now-playing' ? (
         <MobileMiniPlayer

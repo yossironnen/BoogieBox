@@ -73,6 +73,7 @@ export interface EqCurveCanvasProps {
   onSelectBand: (index: number) => void;
   width?: number;
   height?: number;
+  responsive?: boolean;
 }
 
 /** Eq Curve Canvas is part of this module's public API. */
@@ -84,6 +85,7 @@ export default function EqCurveCanvas({
   onSelectBand,
   width = 536,
   height = 160,
+  responsive = false,
 }: EqCurveCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<{ bandIndex: number; startX: number; startY: number; startFreq: number; startGain: number } | null>(null);
@@ -210,10 +212,10 @@ export default function EqCurveCanvas({
     const dpr = window.devicePixelRatio || 1;
     canvas.width = width * dpr;
     canvas.height = height * dpr;
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
+    canvas.style.width = responsive ? '100%' : `${width}px`;
+    canvas.style.height = responsive ? 'auto' : `${height}px`;
     draw();
-  }, [width, height, draw]);
+  }, [width, height, responsive, draw]);
 
   useEffect(() => { draw(); }, [draw]);
 

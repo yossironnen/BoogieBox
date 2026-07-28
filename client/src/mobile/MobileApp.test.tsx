@@ -103,6 +103,11 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
     hybridThemeMode: 'dark',
     adaptiveAccentEnabled: true,
     ffmpegAvailable: true,
+    playbackMode: 'standard',
+    vinylHardcore: false,
+    vinylNeedleDrop: false,
+    vinylAnalogFxDisabled: false,
+    vinylNeedleDropIntensity: 0.65,
     playerState: {
       queue: [{ id: '1', file_path: 'x', file_name: 'song.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Song', artist: 'Artist', album: 'Album', library_name: 'Main', track_number: 1, disc_number: 1, year: 2025, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01', album_id: '9' }],
       currentIndex: 0,
@@ -127,6 +132,11 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
     onSettingsChange: vi.fn(),
     onHybridThemeModeChange: vi.fn(),
     onAdaptiveAccentEnabledChange: vi.fn(),
+    onPlaybackModeChange: vi.fn(),
+    onVinylHardcoreChange: vi.fn(),
+    onVinylNeedleDropChange: vi.fn(),
+    onVinylAnalogFxDisabledChange: vi.fn(),
+    onVinylNeedleDropIntensityChange: vi.fn(),
     ...overrides,
   };
 }
