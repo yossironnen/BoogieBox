@@ -11,6 +11,7 @@ import { MobilePlaylistEditorSheet, useMobileTrackActions } from './MobileAction
 
 vi.mock('../../api', () => ({
   api: {
+    albumArtUrl: vi.fn((albumId: string, size: number) => `/api/albums/${albumId}/art?size=${size}`),
     playlists: {
       create: vi.fn(),
       addTrack: vi.fn(),
@@ -27,6 +28,7 @@ const playlists: Playlist[] = [
     updated_at: '2026-01-01',
     track_count: 2,
     total_duration: 500,
+    art_album_ids: ['3'],
   },
 ];
 
@@ -114,6 +116,7 @@ describe('MobileActionSheets', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
     fireEvent.click(screen.getByRole('button', { name: 'Add To Playlist' }));
+    expect(document.querySelector('img[src*="/api/albums/3/art?size=300"]')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'New Playlist' }));
     fireEvent.change(screen.getByPlaceholderText('Late-night mix'), { target: { value: 'Fresh Picks' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create playlist' }));
