@@ -5,6 +5,7 @@
 import type { AppSettings, Artist, Album, AuthUser, ClientEntityId, Library, Playlist, PlaylistTrack, QueueSource, Track } from '../types';
 import type { PlaybackSnapshot, PlayerState } from '../components/Player';
 import type { EntityId } from '../entityId';
+import type { HybridThemeMode } from '../hybridPreview';
 
 /** Mobile Tab Id is part of this module's public API. */
 export type MobileTabId = 'home' | 'browse' | 'search' | 'playlists' | 'now-playing';
@@ -21,6 +22,8 @@ export interface MobileSharedProps {
   currentUser: AuthUser;
   libraries: Library[];
   settings: AppSettings;
+  hybridThemeMode: HybridThemeMode;
+  adaptiveAccentEnabled: boolean;
   ffmpegAvailable: boolean | null;
   playerState: PlayerState;
   playbackSnapshot: PlaybackSnapshot | null;
@@ -29,6 +32,9 @@ export interface MobileSharedProps {
   onPlayTrack: (track: Track, allTracks?: Track[], source?: QueueSource) => void;
   onAddToQueue: (track: Track) => void;
   onConsumeOpenPlaylist: () => void;
+  onSettingsChange: (settings: AppSettings) => void;
+  onHybridThemeModeChange: (mode: HybridThemeMode) => void;
+  onAdaptiveAccentEnabledChange: (enabled: boolean) => void;
 }
 
 /** Mobile Browse Selection is part of this module's public API. */

@@ -100,6 +100,8 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
       boogiemixDeepAnalysisMaxDurationMins: '15',
       boogiemixDeepAnalysisModel: 'mdx_extra_q',
     },
+    hybridThemeMode: 'dark',
+    adaptiveAccentEnabled: true,
     ffmpegAvailable: true,
     playerState: {
       queue: [{ id: '1', file_path: 'x', file_name: 'song.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Song', artist: 'Artist', album: 'Album', library_name: 'Main', track_number: 1, disc_number: 1, year: 2025, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01', album_id: '9' }],
@@ -122,6 +124,9 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
     onPlayTrack: vi.fn(),
     onAddToQueue: vi.fn(),
     onConsumeOpenPlaylist: vi.fn(),
+    onSettingsChange: vi.fn(),
+    onHybridThemeModeChange: vi.fn(),
+    onAdaptiveAccentEnabledChange: vi.fn(),
     ...overrides,
   };
 }

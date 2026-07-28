@@ -8,6 +8,7 @@ import type { ClientEntityId, Playlist, PlaylistTrack, Track } from '../../types
 import type { EntityId } from '../../entityId';
 import type { MobilePlaylistSelection } from '../mobileShell';
 import ArtImage from '../../components/ArtImage';
+import { hybridMobileContentStyles } from '../../hybridPreview';
 import { phase2 } from '../../uiPhase2';
 import {
   MobilePlaylistEditorSheet,
@@ -187,8 +188,8 @@ function MobileAddTracksSheet({
           autoCorrect="off"
           spellCheck={false}
         />
-        {error ? <div style={styles.error}>{error}</div> : null}
-        {!query.trim() ? <div style={styles.emptyState}>Search your library to add tracks.</div> : null}
+        {error ? <div role="alert" style={styles.error}>{error}</div> : null}
+        {!query.trim() ? <div role="status" style={styles.emptyState}>Search your library to add tracks.</div> : null}
         {results.map((track) => {
           const isAdded = addedIds.has(track.id);
           const isAdding = addingIds.has(track.id);
@@ -551,11 +552,12 @@ export default function MobilePlaylistsView({
 
   if (selection.playlist) {
     return (
-      <div style={styles.page}>
+      <main style={styles.page}>
         <div style={styles.headerBar}>
           <button
             type="button"
             style={styles.backBtn}
+            aria-label="Back"
             onClick={() => {
               setError('');
               onSelectionChange({ playlist: null, tracks: [] });
@@ -566,7 +568,7 @@ export default function MobilePlaylistsView({
           <div style={styles.headerMeta}>Playlist</div>
         </div>
 
-        <section style={styles.heroCard}>
+        <section aria-labelledby="mobile-playlist-title" style={styles.heroCard}>
           <div style={styles.heroTopRow}>
             <div style={styles.collage}>
               {playlistAlbumIds.map((albumId) => (
@@ -578,54 +580,60 @@ export default function MobilePlaylistsView({
                 <div key={`fallback-${tile}`} style={{ ...styles.collageTile, ...styles.collageFallback }} />
               ))}
             </div>
-            <div style={styles.heroActions}>
-              <button
-                type="button"
-                style={styles.heroGhostAction}
-                onClick={() => setAddTracksOpen(true)}
-              >
-                Add
-              </button>
-              <button
-                type="button"
-                style={styles.heroGhostAction}
-                onClick={exportPlaylist}
-                disabled={!selection.tracks.length}
-              >
-                Export
-              </button>
-              <button
-                type="button"
-                style={styles.heroGhostAction}
-                onClick={openEditEditor}
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                style={styles.heroPlay}
-                onClick={() => selection.tracks[0] && onPlayTrack(selection.tracks[0], selection.tracks)}
-                disabled={!selection.tracks.length}
-              >
-                Play
-              </button>
+            <div style={styles.heroTextBlock}>
+              <h1 id="mobile-playlist-title" style={styles.heroTitle}>{selection.playlist.name}</h1>
+              <div style={styles.heroSummary}>
+                {selection.playlist.track_count} tracks - {fmtDuration(playlistDuration)}
+              </div>
+              {selection.playlist.description ? (
+                <p style={styles.heroDescription}>{selection.playlist.description}</p>
+              ) : null}
             </div>
           </div>
-          <div style={styles.heroTextBlock}>
-            <h2 style={styles.heroTitle}>{selection.playlist.name}</h2>
-            <div style={styles.heroSummary}>
-              {selection.playlist.track_count} tracks - {fmtDuration(playlistDuration)}
-            </div>
-            {selection.playlist.description ? (
-              <p style={styles.heroDescription}>{selection.playlist.description}</p>
-            ) : null}
+          <div style={styles.heroActions}>
+            <button
+              type="button"
+              style={styles.heroGhostAction}
+              onClick={() => setAddTracksOpen(true)}
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              style={{
+                ...styles.heroGhostAction,
+                ...(!selection.tracks.length ? hybridMobileContentStyles.disabled : null),
+              }}
+              onClick={exportPlaylist}
+              disabled={!selection.tracks.length}
+            >
+              Export
+            </button>
+            <button
+              type="button"
+              style={styles.heroGhostAction}
+              onClick={openEditEditor}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              style={{
+                ...styles.heroPlay,
+                ...(!selection.tracks.length ? hybridMobileContentStyles.disabled : null),
+              }}
+              onClick={() => selection.tracks[0] && onPlayTrack(selection.tracks[0], selection.tracks)}
+              disabled={!selection.tracks.length}
+            >
+              Play
+            </button>
           </div>
         </section>
 
-        {error ? <div style={styles.error}>{error}</div> : null}
+        {error ? <div role="alert" style={styles.error}>{error}</div> : null}
 
         <div style={styles.trackListHeader}>
-          <div style={styles.trackListHeading}>Tracks</div>
+          <h2 style={styles.trackListHeading}>Tracks</h2>
           <button type="button" style={styles.sortButton} onClick={() => setSortOpen(true)}>
             {PLAYLIST_SORT_LABELS[sortMode]}
           </button>
@@ -658,8 +666,8 @@ export default function MobilePlaylistsView({
                   style={{
                     ...styles.trackRow,
                     transform: `translateX(${swipeOffset}px)`,
-                    boxShadow: isReordering ? '0 18px 32px rgba(0,0,0,0.28)' : '0 10px 20px rgba(0,0,0,0.12)',
-                    borderColor: isDropTarget ? 'color-mix(in srgb, var(--accent) 70%, #ffffff 0%)' : 'rgba(255,255,255,0.08)',
+                    boxShadow: isReordering ? 'var(--shadow-raised)' : 'none',
+                    borderColor: isDropTarget ? 'var(--accent)' : 'var(--divider-subtle)',
                     opacity: busyTrackId === track.playlist_track_id ? 0.55 : 1,
                   }}
                 >
@@ -700,7 +708,10 @@ export default function MobilePlaylistsView({
                   </button>
                   <button
                     type="button"
-                    style={styles.dragHandle}
+                    style={{
+                      ...styles.dragHandle,
+                      ...(!canReorder ? hybridMobileContentStyles.disabled : null),
+                    }}
                     aria-label={`Reorder ${track.title || track.file_name}`}
                     disabled={!canReorder}
                     onPointerDown={(event) => canReorder && handlePointerDown(event, index, trackGestureId, 'handle')}
@@ -718,7 +729,7 @@ export default function MobilePlaylistsView({
             );
           })}
           {!filteredTracks.length ? (
-            <div style={styles.emptyState}>{selection.tracks.length ? 'No tracks match that search.' : 'This playlist is empty.'}</div>
+            <div role="status" style={styles.emptyState}>{selection.tracks.length ? 'No tracks match that search.' : 'This playlist is empty.'}</div>
           ) : null}
         </div>
         {sortOpen ? (
@@ -729,6 +740,7 @@ export default function MobilePlaylistsView({
                   key={mode}
                   type="button"
                   style={{ ...styles.sheetAction, ...(sortMode === mode ? styles.sheetActionActive : null) }}
+                  aria-pressed={sortMode === mode}
                   onClick={() => {
                     setSortMode(mode);
                     setSortOpen(false);
@@ -765,48 +777,69 @@ export default function MobilePlaylistsView({
           }}
           onSubmit={handleEditorSubmit}
         />
-      </div>
+      </main>
     );
   }
 
   return (
-    <div
+    <main
       style={{ ...styles.page, overscrollBehaviorY: 'contain' }}
+      aria-busy={loading || refreshing}
       onTouchStart={handleRootTouchStart}
       onTouchMove={handleRootTouchMove}
       onTouchEnd={clearRootPull}
       onTouchCancel={clearRootPull}
     >
-      <div style={styles.listKicker}>Library</div>
-      <div style={styles.listHeader}>Playlists</div>
-      <div style={styles.listSubhead}>Build, edit, and jump into playlists from your phone-sized shell.</div>
-      <button type="button" style={styles.newPlaylistButton} onClick={openCreateEditor}>New Playlist</button>
-      {refreshing ? <div style={styles.refreshState}>Refreshing playlists...</div> : null}
+      <header style={hybridMobileContentStyles.pageHeader}>
+        <div style={styles.listKicker}>Library</div>
+        <h1 style={styles.listHeader}>Playlists</h1>
+        <p style={styles.listSubhead}>Build, edit, and jump into playlists from your phone.</p>
+        <button type="button" style={styles.newPlaylistButton} onClick={openCreateEditor}>New Playlist</button>
+      </header>
+      {refreshing ? <div role="status" style={styles.refreshState}>Refreshing playlists...</div> : null}
       {error ? (
-        <div style={styles.error}>
+        <div role="alert" style={styles.error}>
           {error}
           <button type="button" style={styles.retryButton} onClick={() => void loadPlaylists()}>Retry</button>
         </div>
       ) : null}
-      {loading ? <div style={styles.listSubhead}>Loading...</div> : null}
+      {loading ? <div role="status" style={styles.loadingState}>Loading playlists...</div> : null}
       {!error && !loading && !playlists.length ? (
-        <div style={styles.emptyCreateState}>
+        <div role="status" style={styles.emptyCreateState}>
           <div style={styles.emptyCreateTitle}>No playlists yet.</div>
           <div style={styles.emptyCreateCopy}>Start one here, then use track kebabs across Browse, Search, and playlists to fill it up fast.</div>
           <button type="button" style={styles.emptyCreateButton} onClick={openCreateEditor}>Create Playlist</button>
         </div>
       ) : null}
-      {!loading && playlists.map((playlist) => (
-        <button
-          key={playlist.id}
-          type="button"
-          style={styles.card}
-          onClick={() => onSelectionChange({ playlist, tracks: [] })}
-        >
-          <span style={styles.cardTitle}>{playlist.name}</span>
-          <span style={styles.cardSub}>{playlist.track_count} tracks - {fmtDuration(playlist.total_duration)}</span>
-        </button>
-      ))}
+      {!loading ? (
+        <div style={styles.playlistList}>
+          {playlists.map((playlist) => (
+            <button
+              key={playlist.id}
+              type="button"
+              style={styles.card}
+              onClick={() => onSelectionChange({ playlist, tracks: [] })}
+            >
+              <span style={styles.cardArtwork}>
+                {playlist.art_album_ids?.[0] ? (
+                  <ArtImage
+                    src={api.albumArtUrl(playlist.art_album_ids[0], 300)}
+                    alt=""
+                    imgStyle={hybridMobileContentStyles.listArtworkImage}
+                  />
+                ) : (
+                  <span style={hybridMobileContentStyles.listArtworkFallback}>≡</span>
+                )}
+              </span>
+              <span style={styles.cardMeta}>
+                <span style={styles.cardTitle}>{playlist.name}</span>
+                <span style={styles.cardSub}>{playlist.track_count} tracks - {fmtDuration(playlist.total_duration)}</span>
+              </span>
+              <span style={hybridMobileContentStyles.listBadge}>Open</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <MobilePlaylistEditorSheet
         open={editorOpen}
         mode="create"
@@ -819,136 +852,129 @@ export default function MobilePlaylistsView({
         }}
         onSubmit={handleEditorSubmit}
       />
-    </div>
+    </main>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
   page: phase2.mobilePage,
-  headerBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  headerBar: {
+    minHeight: 44,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
   backBtn: {
-    minHeight: 40,
+    ...hybridMobileContentStyles.secondaryAction,
+    minHeight: 44,
     padding: '0 14px',
-    borderRadius: 999,
-    border: '1px solid rgba(255,255,255,0.1)',
-    background: 'rgba(255,255,255,0.04)',
-    color: 'var(--text)',
-    fontFamily: 'inherit',
-    fontSize: 13,
-    fontWeight: 700,
   },
-  headerMeta: phase2.mobileKicker,
+  headerMeta: hybridMobileContentStyles.eyebrow,
   heroCard: {
-    ...phase2.mobileHeroCard,
-    padding: 18,
+    display: 'grid',
+    gap: 14,
+    padding: 12,
     marginBottom: 18,
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 18,
+    background: 'var(--surface)',
   },
-  heroTopRow: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 },
+  heroTopRow: {
+    display: 'grid',
+    gridTemplateColumns: '104px minmax(0, 1fr)',
+    alignItems: 'center',
+    gap: 14,
+  },
   collage: {
-    width: 132,
+    width: 104,
     aspectRatio: '1 / 1',
     display: 'grid',
     gridTemplateColumns: 'repeat(2, 1fr)',
-    gap: 3,
-    borderRadius: 22,
+    gap: 2,
+    borderRadius: 16,
     overflow: 'hidden',
     flexShrink: 0,
-    boxShadow: '0 14px 34px rgba(0,0,0,0.3)',
-    background: 'rgba(255,255,255,0.08)',
+    boxShadow: 'var(--shadow-subtle)',
+    background: 'var(--surface-subtle)',
   },
-  collageTile: { minWidth: 0, minHeight: 0, background: 'rgba(255,255,255,0.08)' },
+  collageTile: { minWidth: 0, minHeight: 0, background: 'var(--surface-subtle)' },
   collageArt: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
-  collageFallback: { background: 'linear-gradient(135deg, rgba(255,255,255,0.2), rgba(255,255,255,0.06))' },
-  heroActions: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 },
+  collageFallback: { background: 'linear-gradient(135deg, var(--accent-soft), var(--surface-subtle))' },
+  heroActions: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 8,
+  },
   heroGhostAction: {
-    minWidth: 60,
+    minWidth: 0,
     minHeight: 44,
     padding: '0 12px',
-    borderRadius: 999,
-    border: '1px solid rgba(255,255,255,0.16)',
-    background: 'rgba(255,255,255,0.08)',
-    color: '#fff',
+    borderRadius: 11,
+    border: '1px solid var(--divider-subtle)',
+    background: 'var(--surface-subtle)',
+    color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 13,
-    fontWeight: 800,
+    fontSize: 11,
+    fontWeight: 750,
   },
   heroPlay: {
-    minWidth: 96,
-    minHeight: 52,
-    padding: '0 22px',
-    borderRadius: 999,
+    minWidth: 0,
+    minHeight: 44,
+    padding: '0 14px',
+    borderRadius: 11,
     border: 'none',
-    background: 'rgba(0,0,0,0.28)',
-    color: '#fff',
+    background: 'var(--accent)',
+    color: 'var(--on-accent)',
     fontFamily: 'inherit',
-    fontSize: 15,
-    fontWeight: 800,
-    boxShadow: '0 10px 24px rgba(0,0,0,0.18)',
+    fontSize: 11,
+    fontWeight: 750,
   },
-  heroTextBlock: { marginTop: 18 },
-  heroTitle: { margin: 0, color: '#fff', fontSize: 30, lineHeight: 1.05, fontWeight: 900 },
-  heroSummary: { marginTop: 10, color: 'rgba(255,255,255,0.78)', fontSize: 14, fontWeight: 700 },
-  heroDescription: { margin: '10px 0 0', color: 'rgba(255,255,255,0.72)', fontSize: 13, lineHeight: 1.5 },
+  heroTextBlock: { minWidth: 0 },
+  heroTitle: hybridMobileContentStyles.detailTitle,
+  heroSummary: hybridMobileContentStyles.detailMeta,
+  heroDescription: {
+    margin: '7px 0 0',
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    lineHeight: 1.45,
+  },
   error: {
+    ...hybridMobileContentStyles.feedback,
+    ...hybridMobileContentStyles.feedbackError,
     marginBottom: 12,
-    padding: '10px 12px',
-    borderRadius: 16,
-    color: '#fff',
-    background: 'rgba(196,48,43,0.9)',
-    fontSize: 13,
-    fontWeight: 700,
     display: 'grid',
     gap: 8,
   },
   retryButton: {
-    minHeight: 38,
-    borderRadius: 12,
-    border: '1px solid rgba(255,255,255,0.36)',
-    background: 'rgba(255,255,255,0.12)',
-    color: '#fff',
+    minHeight: 44,
+    borderRadius: 11,
+    border: '1px solid color-mix(in srgb, var(--danger) 34%, var(--divider-subtle))',
+    background: 'var(--surface)',
+    color: 'var(--danger)',
     fontFamily: 'inherit',
-    fontSize: 13,
-    fontWeight: 800,
+    fontSize: 11,
+    fontWeight: 750,
   },
-  trackListHeader: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 10 },
-  trackListHeading: { color: 'var(--text)', fontSize: 28, fontWeight: 900, letterSpacing: -0.7 },
-  trackListHint: { color: 'var(--text-muted)', fontSize: 12, textAlign: 'right', marginBottom: 10 },
+  trackListHeader: hybridMobileContentStyles.sectionHeader,
+  trackListHeading: hybridMobileContentStyles.sectionTitle,
+  trackListHint: {
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    lineHeight: 1.45,
+    marginBottom: 10,
+  },
   sortButton: {
-    minHeight: 40,
-    padding: '0 12px',
-    borderRadius: 999,
-    border: '1px solid var(--border)',
-    background: 'rgba(255,255,255,0.04)',
-    color: 'var(--text)',
-    fontFamily: 'inherit',
-    fontSize: 12,
-    fontWeight: 800,
+    ...hybridMobileContentStyles.chip,
+    minHeight: 44,
   },
   playlistSearchInput: {
-    width: '100%',
-    minHeight: 46,
+    ...hybridMobileContentStyles.field,
     marginBottom: 8,
-    borderRadius: 16,
-    border: '1px solid var(--border)',
-    background: 'rgba(255,255,255,0.03)',
-    color: 'var(--text)',
-    padding: '0 14px',
-    fontFamily: 'inherit',
-    fontSize: 14,
   },
-  searchInput: {
-    width: '100%',
-    minHeight: 48,
-    borderRadius: 16,
-    border: '1px solid var(--border)',
-    background: 'rgba(255,255,255,0.03)',
-    color: 'var(--text)',
-    padding: '0 14px',
-    fontFamily: 'inherit',
-    fontSize: 14,
-  },
-  trackList: { display: 'grid', gap: 10 },
-  trackShell: { position: 'relative', overflow: 'hidden', borderRadius: 24 },
+  searchInput: hybridMobileContentStyles.field,
+  trackList: hybridMobileContentStyles.list,
+  trackShell: { position: 'relative', overflow: 'hidden', borderRadius: 14 },
   deleteAction: {
     position: 'absolute',
     inset: 0,
@@ -956,17 +982,21 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'flex-end',
     alignItems: 'center',
     paddingRight: 18,
-    background: 'linear-gradient(90deg, rgba(190,44,37,0.16), rgba(190,44,37,0.94))',
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: 900,
+    background: 'linear-gradient(90deg, color-mix(in srgb, var(--danger) 8%, var(--surface)), var(--danger))',
+    color: 'var(--on-accent)',
+    fontSize: 11,
+    fontWeight: 800,
     letterSpacing: 0.4,
   },
   trackRow: {
-    ...phase2.mobileMediaRow,
     position: 'relative',
+    minHeight: 68,
     display: 'flex',
     alignItems: 'stretch',
+    overflow: 'hidden',
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 14,
+    background: 'var(--surface)',
     transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, opacity 160ms ease',
     touchAction: 'pan-y',
   },
@@ -975,8 +1005,8 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
-    padding: '10px 12px',
+    gap: 10,
+    padding: '8px 10px',
     border: 'none',
     background: 'transparent',
     color: 'var(--text)',
@@ -985,35 +1015,36 @@ const styles: Record<string, React.CSSProperties> = {
     touchAction: 'pan-y',
   },
   trackThumbWrap: {
-    width: 54,
-    height: 54,
-    borderRadius: 14,
+    width: 48,
+    height: 48,
+    borderRadius: 11,
     overflow: 'hidden',
     flexShrink: 0,
-    background: 'rgba(255,255,255,0.06)',
+    background: 'var(--surface-subtle)',
   },
   trackThumb: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
-  trackThumbFallback: { width: '100%', height: '100%', background: 'linear-gradient(135deg, rgba(255,255,255,0.14), rgba(255,255,255,0.03))' },
-  trackMeta: { minWidth: 0, display: 'grid', gap: 5, flex: 1 },
+  trackThumbFallback: { width: '100%', height: '100%', background: 'linear-gradient(135deg, var(--accent-soft), var(--surface-subtle))' },
+  trackMeta: { minWidth: 0, display: 'grid', gap: 3, flex: 1 },
   trackTitle: {
     color: 'var(--text)',
-    fontSize: 16,
-    fontWeight: 800,
+    fontSize: 13,
+    fontWeight: 750,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
   trackSub: {
     color: 'var(--text-muted)',
-    fontSize: 13,
+    fontSize: 10,
+    fontWeight: 600,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
   trackDuration: {
-    color: 'rgba(255,255,255,0.72)',
-    fontSize: 12,
-    fontWeight: 700,
+    color: 'var(--text-muted)',
+    fontSize: 10,
+    fontWeight: 650,
     alignSelf: 'center',
     flexShrink: 0,
     marginLeft: 8,
@@ -1024,7 +1055,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'grid',
     placeItems: 'center',
     border: 'none',
-    borderLeft: '1px solid rgba(255,255,255,0.08)',
+    borderLeft: '1px solid var(--divider-subtle)',
     background: 'transparent',
     color: 'var(--text-muted)',
     padding: 0,
@@ -1038,7 +1069,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'grid',
     placeItems: 'center',
     border: 'none',
-    borderLeft: '1px solid rgba(255,255,255,0.08)',
+    borderLeft: '1px solid var(--divider-subtle)',
     borderRadius: 0,
     background: 'transparent',
     color: 'var(--text-muted)',
@@ -1048,17 +1079,21 @@ const styles: Record<string, React.CSSProperties> = {
   sheetStack: { display: 'grid', gap: 10 },
   sheetAction: {
     minHeight: 52,
-    borderRadius: 16,
-    border: '1px solid var(--border)',
-    background: 'rgba(255,255,255,0.03)',
+    borderRadius: 12,
+    border: '1px solid var(--divider-subtle)',
+    background: 'var(--surface)',
     color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 14,
-    fontWeight: 800,
+    fontSize: 12,
+    fontWeight: 750,
     textAlign: 'left',
     padding: '0 14px',
   },
-  sheetActionActive: { background: 'var(--accent)', color: 'var(--bg)', borderColor: 'var(--accent)' },
+  sheetActionActive: {
+    borderColor: 'color-mix(in srgb, var(--accent) 34%, var(--divider-subtle))',
+    background: 'var(--accent-soft)',
+    color: 'var(--accent)',
+  },
   addTrackRow: {
     display: 'grid',
     gridTemplateColumns: 'minmax(0, 1fr) auto auto',
@@ -1070,14 +1105,14 @@ const styles: Record<string, React.CSSProperties> = {
   duplicateBadge: {
     padding: '5px 8px',
     borderRadius: 999,
-    background: 'rgba(255,255,255,0.06)',
+    background: 'var(--surface-subtle)',
     color: 'var(--text-muted)',
     fontSize: 11,
     fontWeight: 800,
     whiteSpace: 'nowrap',
   },
   addTrackButton: {
-    minHeight: 40,
+    minHeight: 44,
     minWidth: 64,
     borderRadius: 14,
     border: '1px solid var(--border)',
@@ -1095,66 +1130,55 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 8px 0 currentColor, 0 -8px 0 currentColor',
   },
   emptyState: {
-    padding: '26px 18px',
-    borderRadius: 22,
-    color: 'var(--text-muted)',
-    textAlign: 'center',
-    border: '1px solid rgba(255,255,255,0.08)',
-    background: 'rgba(255,255,255,0.03)',
+    ...hybridMobileContentStyles.feedback,
+    textAlign: 'left',
   },
-  listKicker: phase2.mobileKicker,
-  listHeader: { ...phase2.mobileTitle, marginTop: 8, marginBottom: 8 },
-  listSubhead: { color: 'var(--text-muted)', marginBottom: 14, fontSize: 14 },
-  refreshState: { color: 'var(--accent)', fontSize: 13, fontWeight: 800, textAlign: 'center', marginBottom: 12 },
+  listKicker: hybridMobileContentStyles.eyebrow,
+  listHeader: hybridMobileContentStyles.pageTitle,
+  listSubhead: { ...hybridMobileContentStyles.pageBody, marginBottom: 4 },
+  refreshState: {
+    ...hybridMobileContentStyles.feedback,
+    marginTop: 14,
+    color: 'var(--accent)',
+  },
+  loadingState: {
+    ...hybridMobileContentStyles.feedback,
+    marginTop: 14,
+  },
   newPlaylistButton: {
-    minHeight: 52,
+    minHeight: 48,
     width: '100%',
-    marginBottom: 16,
-    borderRadius: 18,
+    marginTop: 4,
+    borderRadius: 12,
     border: 'none',
     background: 'var(--accent)',
-    color: '#fff',
+    color: 'var(--on-accent)',
     fontFamily: 'inherit',
-    fontSize: 15,
-    fontWeight: 800,
+    fontSize: 13,
+    fontWeight: 750,
   },
   emptyCreateState: {
-    ...phase2.mobileHeroCard,
+    ...hybridMobileContentStyles.empty,
     display: 'grid',
     gap: 10,
-    padding: 18,
-    marginBottom: 14,
+    marginTop: 14,
   },
-  emptyCreateTitle: {
-    color: 'var(--text)',
-    fontSize: 20,
-    fontWeight: 900,
-  },
-  emptyCreateCopy: {
-    color: 'var(--text-muted)',
-    fontSize: 13,
-    lineHeight: 1.5,
-  },
+  emptyCreateTitle: hybridMobileContentStyles.emptyTitle,
+  emptyCreateCopy: hybridMobileContentStyles.emptyBody,
   emptyCreateButton: {
-    minHeight: 48,
-    borderRadius: 16,
-    border: '1px solid color-mix(in srgb, var(--border) 72%, transparent)',
-    background: 'rgba(255,255,255,0.04)',
+    minHeight: 44,
+    borderRadius: 11,
+    border: '1px solid var(--divider-subtle)',
+    background: 'var(--surface)',
     color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 14,
-    fontWeight: 700,
+    fontSize: 11,
+    fontWeight: 750,
   },
-  card: {
-    ...phase2.mobileCard,
-    width: '100%',
-    display: 'grid',
-    gap: 6,
-    textAlign: 'left',
-    padding: '18px 16px',
-    marginBottom: 12,
-    color: 'var(--text)',
-  },
-  cardTitle: { fontSize: 18, fontWeight: 800 },
-  cardSub: { fontSize: 13, color: 'var(--text-muted)' },
+  playlistList: { ...hybridMobileContentStyles.list, marginTop: 14 },
+  card: hybridMobileContentStyles.listRow,
+  cardArtwork: hybridMobileContentStyles.listArtwork,
+  cardMeta: hybridMobileContentStyles.listMeta,
+  cardTitle: hybridMobileContentStyles.listTitle,
+  cardSub: hybridMobileContentStyles.listSubtitle,
 };

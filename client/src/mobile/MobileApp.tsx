@@ -102,6 +102,12 @@ export default function MobileApp(props: MobileSharedProps) {
           snapshot={playbackSnapshot}
           playerState={props.playerState}
           onStateChange={props.onPlaybackStateChange}
+          appSettings={props.settings}
+          onAppSettingsChange={props.onSettingsChange}
+          hybridThemeMode={props.hybridThemeMode}
+          onHybridThemeModeChange={props.onHybridThemeModeChange}
+          adaptiveAccentEnabled={props.adaptiveAccentEnabled}
+          onAdaptiveAccentEnabledChange={props.onAdaptiveAccentEnabledChange}
         />
       )}
 

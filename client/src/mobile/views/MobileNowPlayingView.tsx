@@ -5,8 +5,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
 import type { PlaybackSnapshot, PlayerState } from '../../components/Player';
-import type { AuthUser, ClientEntityId, SonicFingerprint, StemWindow } from '../../types';
+import type { AppSettings, AuthUser, ClientEntityId, SonicFingerprint, StemWindow } from '../../types';
 import ArtImage from '../../components/ArtImage';
+import type { HybridThemeMode } from '../../hybridPreview';
 import { phase2 } from '../../uiPhase2';
 import MobileSettingsView from './MobileSettingsView';
 
@@ -43,11 +44,23 @@ export default function MobileNowPlayingView({
   snapshot,
   playerState,
   onStateChange,
+  appSettings,
+  onAppSettingsChange,
+  hybridThemeMode,
+  onHybridThemeModeChange,
+  adaptiveAccentEnabled,
+  onAdaptiveAccentEnabledChange,
 }: {
   currentUser?: AuthUser;
   snapshot: PlaybackSnapshot | null;
   playerState: PlayerState;
   onStateChange: (state: PlayerState) => void;
+  appSettings?: AppSettings;
+  onAppSettingsChange?: (settings: AppSettings) => void;
+  hybridThemeMode?: HybridThemeMode;
+  onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
+  adaptiveAccentEnabled?: boolean;
+  onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
 }) {
   const track = snapshot?.currentTrack ?? playerState.queue[playerState.currentIndex] ?? null;
   const [panelMode, setPanelMode] = useState<LyricsPanelMode>('cover');
@@ -388,7 +401,18 @@ export default function MobileNowPlayingView({
           </div>
         );})}
       </div>
-      {settingsOpen && currentUser ? <MobileSettingsView currentUser={currentUser} onClose={() => setSettingsOpen(false)} /> : null}
+      {settingsOpen && currentUser ? (
+        <MobileSettingsView
+          currentUser={currentUser}
+          onClose={() => setSettingsOpen(false)}
+          appSettings={appSettings}
+          onAppSettingsChange={onAppSettingsChange}
+          hybridThemeMode={hybridThemeMode}
+          onHybridThemeModeChange={onHybridThemeModeChange}
+          adaptiveAccentEnabled={adaptiveAccentEnabled}
+          onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
+        />
+      ) : null}
     </div>
   );
 }

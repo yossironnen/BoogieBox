@@ -45,6 +45,7 @@ const playlist: Playlist = {
   updated_at: '2026-03-17T00:00:00.000Z',
   track_count: 3,
   total_duration: 10800,
+  art_album_ids: ['31'],
   remember_progress: 0,
 };
 
@@ -229,6 +230,19 @@ describe('MobilePlaylistsView', () => {
 
     await waitFor(() => expect(apiMock.playlists.create).toHaveBeenCalledWith('Fresh Queue', ''));
     await waitFor(() => expect(apiMock.playlists.get).toHaveBeenCalledWith('99'));
+  });
+
+  it('renders artwork-backed Hybrid playlist rows with mobile-sized actions', async () => {
+    render(<TestHarness initialSelection={{ playlist: null, tracks: [] }} />);
+
+    const playlistRow = await screen.findByRole('button', { name: /Some Electro/i });
+    expect(playlistRow).toHaveStyle({ minHeight: '66px' });
+    expect(screen.getByRole('button', { name: 'New Playlist' })).toHaveStyle({ minHeight: '48px' });
+    expect(
+      screen
+        .getAllByRole('presentation')
+        .some((image) => image.getAttribute('src')?.includes('/api/albums/31/art?size=300')),
+    ).toBe(true);
   });
 
   it('edits a playlist from the mobile detail hero', async () => {

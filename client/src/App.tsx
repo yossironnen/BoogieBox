@@ -1276,6 +1276,8 @@ export default function App() {
         currentUser={currentUser as AuthUser}
         libraries={libraries}
         settings={settings}
+        hybridThemeMode={hybridThemeMode}
+        adaptiveAccentEnabled={adaptiveAccentEnabled}
         ffmpegAvailable={ffmpegAvailable}
         playerState={playerState}
         playbackSnapshot={playbackSnapshot}
@@ -1284,6 +1286,9 @@ export default function App() {
         onPlayTrack={playTrack}
         onAddToQueue={addToQueue}
         onConsumeOpenPlaylist={() => setOpenPlaylistRequest(null)}
+        onSettingsChange={setSettings}
+        onHybridThemeModeChange={selectHybridThemeMode}
+        onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
       />
     );
   }
