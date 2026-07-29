@@ -659,6 +659,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-05-26-deep-analysis-feature-schema",
             apply: ensure_deep_analysis_feature_schema,
         },
+        Migration {
+            id: "2026-07-29-album-label-column",
+            apply: ensure_album_label_column,
+        },
     ];
 
     for migration in migrations {
@@ -976,6 +980,13 @@ fn ensure_music_metadata_edit_schema(connection: &Connection) -> Result<(), rusq
             WHERE release_type IS NULL OR TRIM(release_type) = '';
             ",
         )?;
+    }
+    Ok(())
+}
+
+fn ensure_album_label_column(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "albums") && !column_exists(connection, "albums", "label")? {
+        connection.execute_batch("ALTER TABLE albums ADD COLUMN label TEXT")?;
     }
     Ok(())
 }

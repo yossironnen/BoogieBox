@@ -657,6 +657,8 @@ pub struct AlbumMetadataUpdate {
     pub genre: Option<String>,
     /// Documents the Description public API surface.
     pub description: Option<String>,
+    /// Documents the Label public API surface.
+    pub label: Option<String>,
     /// Documents the Release Type public API surface.
     pub release_type: Option<String>,
     /// Documents the Discogs Release Type public API surface.
@@ -855,6 +857,13 @@ pub fn update_album_metadata(
         if let Some(description) = update.description {
             sets.push("description=?");
             values.push(match blank_to_none(Some(&description)) {
+                Some(value) => Value::Text(value.to_owned()),
+                None => Value::Null,
+            });
+        }
+        if let Some(label) = update.label {
+            sets.push("label=?");
+            values.push(match blank_to_none(Some(&label)) {
                 Some(value) => Value::Text(value.to_owned()),
                 None => Value::Null,
             });

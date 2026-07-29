@@ -65,6 +65,7 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
   const [year, setYear]               = useState(String(album?.year ?? ''));
   const [genre, setGenre]             = useState(album?.genre ?? '');
   const [releaseType, setReleaseType] = useState<'album' | 'single' | 'compilation'>(album?.releaseType ?? 'album');
+  const [label, setLabel]             = useState(album?.label ?? '');
   const [name, setName]               = useState(artist?.name ?? '');
   const [description, setDescription] = useState(initialData.description ?? '');
 
@@ -116,6 +117,7 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
           year:         yearNum,
           genre:        genre.trim()       || undefined,
           description:  description.trim() || undefined,
+          label:        label.trim()       || undefined,
           releaseType,
         });
       } else {
@@ -247,17 +249,23 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
                 </datalist>
               </div>
             </div>
-            <div>
-              <label style={labelStyle}>Release Type</label>
-              <select
-                style={inputStyle}
-                value={releaseType}
-                onChange={e => setReleaseType((e.target.value as 'album' | 'single' | 'compilation') ?? 'album')}
-              >
-                <option value="album">Album</option>
-                <option value="single">Single / EP</option>
-                <option value="compilation">Compilation</option>
-              </select>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              <div>
+                <label style={labelStyle}>Release Type</label>
+                <select
+                  style={inputStyle}
+                  value={releaseType}
+                  onChange={e => setReleaseType((e.target.value as 'album' | 'single' | 'compilation') ?? 'album')}
+                >
+                  <option value="album">Album</option>
+                  <option value="single">Single / EP</option>
+                  <option value="compilation">Compilation</option>
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>Record Label</label>
+                <input style={inputStyle} value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Columbia" />
+              </div>
             </div>
           </>)}
 

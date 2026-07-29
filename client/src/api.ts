@@ -459,6 +459,7 @@ export const api = {
       year?: number;
       genre?: string;
       description?: string;
+      label?: string;
       releaseType?: 'album' | 'single' | 'compilation';
       discogsReleaseType?: 'album' | 'single' | 'compilation';
       spotifyReleaseType?: 'album' | 'single' | 'compilation';

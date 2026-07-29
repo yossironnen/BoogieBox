@@ -75,6 +75,7 @@ export interface Artist {
   play_count?: number | null;
   metadata_locked?: number;
   description?: string | null;
+  styles?: string[];
 }
 
 /** Artist Browse Page is part of this module's public API. */
@@ -99,6 +100,7 @@ export interface Album {
   total_duration?: number | null;
   metadata_locked?: number;
   description?: string | null;
+  label?: string | null;
   rating?: number | null;
 }
 

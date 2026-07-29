@@ -10,15 +10,15 @@ use crate::{
     providers::{
         download_image, fetch_lastfm_album_info, fetch_lastfm_artist_info,
         fetch_lastfm_artist_top_tags, fetch_lrclib_lyrics, fetch_lyricsovh,
-        search_deezer_artist_image, search_discogs_album_cover, search_discogs_artist_image,
-        search_spotify_artist_image,
+        search_deezer_artist_image, search_discogs_album_cover, search_discogs_album_label,
+        search_discogs_artist_image, search_spotify_artist_image,
     },
     DbPool,
 };
 use boogiebox_db::{
     artwork::{
-        get_album_for_art, get_artist_for_art, get_lastfm_cached, get_setting,
-        get_track_for_lyrics, save_lastfm_cache, upsert_cached_lyrics,
+        get_album_for_art, get_album_label, get_artist_for_art, get_lastfm_cached, get_setting,
+        get_track_for_lyrics, save_lastfm_cache, set_album_label, upsert_cached_lyrics,
     },
     jobs::{ClaimedPostScanJob, JobError, PostScanLane},
     music::EntityId,
@@ -168,6 +168,9 @@ async fn process_post_scan_job(
         }
         "warm_lastfm_album_info" => {
             run_warm_lastfm_album_info(state, &job.library_id, job.payload.as_deref()).await
+        }
+        "warm_album_label" => {
+            run_warm_album_label(state, &job.library_id, job.payload.as_deref()).await
         }
         "warm_track_lyrics" => {
             run_warm_track_lyrics(state, &job.library_id, job.payload.as_deref()).await
@@ -662,6 +665,79 @@ async fn run_warm_lastfm_album_info(
             })
             .await;
         }
+    }
+    Ok(())
+}
+
+// -- warm_album_label ----------------------------------------------------------
+
+async fn run_warm_album_label(
+    state: &PostScanState,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let token = match get_setting_value(&state.db, "discogsToken").await {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+
+    let album_ids = parse_entity_ids_from_payload(payload, "albumIds");
+    let album_ids = if album_ids.is_empty() {
+        get_library_entity_ids(
+            &state.db,
+            "SELECT DISTINCT album_id FROM tracks WHERE library_id=?1 AND album_id IS NOT NULL",
+            library_id.clone(),
+        )
+        .await
+    } else {
+        album_ids
+    };
+
+    for album_id in &album_ids {
+        let album = {
+            let db = state.db.clone();
+            let id = album_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_album_for_art(&conn, &id)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some(album) = album else { continue };
+        if album.title.is_empty() || album.artist.is_empty() || album.metadata_locked {
+            continue;
+        }
+
+        let already_set = {
+            let db = state.db.clone();
+            let id = album_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_album_label(&conn, &id).is_some()
+            })
+            .await
+            .unwrap_or(false)
+        };
+        if already_set {
+            continue;
+        }
+
+        let Some(label) =
+            search_discogs_album_label(&state.http_client, &token, &album.artist, &album.title)
+                .await
+        else {
+            continue;
+        };
+
+        let db = state.db.clone();
+        let id = album_id.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            set_album_label(&conn, &id, &label);
+        })
+        .await;
     }
     Ok(())
 }

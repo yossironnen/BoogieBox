@@ -232,6 +232,7 @@ const MUSIC_POST_SCAN_JOB_TYPES: &[&str] = &[
     "cache_artist_images",
     "warm_lastfm_artist_info",
     "warm_lastfm_album_info",
+    "warm_album_label",
     "warm_track_lyrics",
     "sync_artist_styles",
 ];
@@ -770,6 +771,7 @@ pub fn enqueue_default_music_post_scan_jobs(
         "cache_artist_images",
         "warm_lastfm_artist_info",
         "warm_lastfm_album_info",
+        "warm_album_label",
         "warm_track_lyrics",
         "sync_artist_styles",
     ] {

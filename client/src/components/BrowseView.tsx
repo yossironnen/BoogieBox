@@ -1393,6 +1393,13 @@ function ArtistHeader({
           <div style={L.albumMeta}>
             {artist.album_count} {artist.album_count === 1 ? 'album' : 'albums'} · {artist.track_count} tracks
           </div>
+          {!!artist.styles?.length && (
+            <div style={{ ...L.bioTags, marginTop: 8 }}>
+              {artist.styles.map(style => (
+                <span key={style} style={L.bioTag}>{style}</span>
+              ))}
+            </div>
+          )}
           <div style={{ marginTop: 10 }}>
             <StarRating
               value={artist.rating ?? null}
@@ -1497,7 +1504,7 @@ function TrackList({
               {(() => {
                 const displayArtist = album.album_artist && album.album_artist !== album.artist
                   ? `${album.album_artist} (Album Artist)` : album.artist;
-                const rest = [album.year, `${tracks.length} tracks`, fmtDur(totalDur)].filter(Boolean).join(' · ');
+                const rest = [album.year, album.label, `${tracks.length} tracks`, fmtDur(totalDur)].filter(Boolean).join(' · ');
                 return (<>
                   {displayArtist && onArtistClick
                     ? <button onClick={onArtistClick} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 'inherit', fontFamily: 'inherit', textDecoration: 'none' }} onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')} onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}>{displayArtist}</button>

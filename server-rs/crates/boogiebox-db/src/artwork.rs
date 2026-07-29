@@ -197,6 +197,26 @@ pub fn set_album_metadata_locked(conn: &Connection, album_id: &str) {
     );
 }
 
+/// Returns the album's stored record label, if any non-empty value is set.
+pub fn get_album_label(conn: &Connection, album_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT label FROM albums WHERE id = ?",
+        params![album_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .filter(|s| !s.trim().is_empty())
+}
+
+/// Stores the record label for an album.
+pub fn set_album_label(conn: &Connection, album_id: &str, label: &str) {
+    let _ = conn.execute(
+        "UPDATE albums SET label = ? WHERE id = ?",
+        params![label, album_id],
+    );
+}
+
 // ── Artist art ────────────────────────────────────────────────────────────────
 
 /// Documents the Artist Art Row public API surface.

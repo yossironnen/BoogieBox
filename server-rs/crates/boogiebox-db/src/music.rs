@@ -484,6 +484,8 @@ pub struct ArtistRow {
     pub metadata_locked: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub styles: Vec<String>,
 }
 
 /// Public Artist Browse Page data shape used by BoogieBox.
@@ -625,6 +627,7 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
                 track_count: row.get(5)?,
                 album_count: row.get(6)?,
                 play_count: None,
+                styles: Vec::new(),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -650,27 +653,35 @@ pub fn get_artist(
     user_id: &str,
     artist_id: &EntityId,
 ) -> rusqlite::Result<Option<ArtistRow>> {
-    conn.query_row(
-        "SELECT ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.description,
+    let artist = conn
+        .query_row(
+            "SELECT ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.description,
                 COUNT(DISTINCT t.id) AS track_count, COUNT(DISTINCT t.album_id) AS album_count
          FROM artists ar LEFT JOIN tracks t ON t.artist_id = ar.id
          LEFT JOIN artist_ratings arr ON arr.artist_id = ar.id AND arr.user_id = ?
          WHERE ar.id = ? GROUP BY ar.id",
-        rusqlite::params![user_id, artist_id],
-        |row| {
-            Ok(ArtistRow {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                rating: row.get(2)?,
-                metadata_locked: row.get(3)?,
-                description: row.get(4)?,
-                track_count: row.get(5)?,
-                album_count: row.get(6)?,
-                play_count: None,
-            })
-        },
-    )
-    .optional()
+            rusqlite::params![user_id, artist_id],
+            |row| {
+                Ok(ArtistRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    rating: row.get(2)?,
+                    metadata_locked: row.get(3)?,
+                    description: row.get(4)?,
+                    track_count: row.get(5)?,
+                    album_count: row.get(6)?,
+                    play_count: None,
+                    styles: Vec::new(),
+                })
+            },
+        )
+        .optional()?;
+
+    let Some(mut artist) = artist else {
+        return Ok(None);
+    };
+    artist.styles = list_artist_radio_tags(conn, artist_id)?;
+    Ok(Some(artist))
 }
 
 /// Documents the List Artists Most Played public API surface.
@@ -700,6 +711,7 @@ pub fn list_artists_most_played(
             track_count: row.get(5)?,
             album_count: row.get(6)?,
             play_count: Some(row.get(7)?),
+            styles: Vec::new(),
         })
     })?
     .collect()
@@ -734,6 +746,8 @@ pub struct AlbumRow {
     pub metadata_locked: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub added_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -793,7 +807,8 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
         format!(
             "SELECT MIN(al.id), al.title, al.album_artist, al.album_artist AS artist,
                     MIN(al.year), al.genre, MAX(alr.rating), MIN(al.release_type),
-                    COUNT(t.id), ROUND(SUM(t.duration),0), MAX(al.metadata_locked), MIN(al.description)
+                    COUNT(t.id), ROUND(SUM(t.duration),0), MAX(al.metadata_locked), MIN(al.description),
+                    MIN(al.label)
              FROM albums al JOIN tracks t ON t.album_id = al.id
              LEFT JOIN album_ratings alr ON alr.album_id = al.id AND alr.user_id = ?
              {where_clause}
@@ -804,7 +819,8 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
         format!(
             "SELECT al.id, al.title, al.album_artist, ar.name AS artist,
                     al.year, al.genre, alr.rating, al.release_type,
-                    COUNT(t.id), ROUND(SUM(t.duration),0), al.metadata_locked, al.description
+                    COUNT(t.id), ROUND(SUM(t.duration),0), al.metadata_locked, al.description,
+                    al.label
              FROM albums al LEFT JOIN artists ar ON ar.id = al.artist_id
              JOIN tracks t ON t.album_id = al.id
              LEFT JOIN album_ratings alr ON alr.album_id = al.id AND alr.user_id = ?
@@ -829,6 +845,7 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
                 total_duration: row.get(9)?,
                 metadata_locked: row.get(10)?,
                 description: row.get(11)?,
+                label: row.get(12)?,
                 added_at: None,
                 latest_scanned_at: None,
             })
@@ -857,7 +874,8 @@ pub fn list_albums_latest(
     let sql = format!(
         "SELECT MIN(al.id), al.title, al.album_artist, al.album_artist AS artist,
                 MIN(al.year), al.genre, MAX(alr.rating), MIN(al.release_type),
-                COUNT(t.id), ROUND(SUM(t.duration),0), {added_at_select} AS added_at, MAX(t.scanned_at) AS latest_scanned_at
+                COUNT(t.id), ROUND(SUM(t.duration),0), {added_at_select} AS added_at, MAX(t.scanned_at) AS latest_scanned_at,
+                MIN(al.label)
          FROM albums al JOIN tracks t ON t.album_id = al.id
          LEFT JOIN album_ratings alr ON alr.album_id = al.id AND alr.user_id = ?
          GROUP BY al.title, COALESCE(al.album_artist,'')
@@ -882,6 +900,7 @@ pub fn list_albums_latest(
                 description: None,
                 added_at: row.get(10)?,
                 latest_scanned_at: row.get(11)?,
+                label: row.get(12)?,
             })
         })?
         .collect()
@@ -896,7 +915,8 @@ pub fn get_album(
     conn.query_row(
         "SELECT al.id, al.title, al.album_artist, ar.name AS artist,
                 al.year, al.genre, alr.rating, al.release_type,
-                COUNT(t.id) AS track_count, NULL, al.metadata_locked, al.description
+                COUNT(t.id) AS track_count, NULL, al.metadata_locked, al.description,
+                al.label
          FROM albums al
          LEFT JOIN artists ar ON ar.id = al.artist_id
          LEFT JOIN tracks t ON t.album_id = al.id
@@ -917,6 +937,7 @@ pub fn get_album(
                 total_duration: row.get(9)?,
                 metadata_locked: row.get(10)?,
                 description: row.get(11)?,
+                label: row.get(12)?,
                 added_at: None,
                 latest_scanned_at: None,
             })
@@ -946,7 +967,8 @@ pub fn list_artist_albums(
     let sql = format!(
         "SELECT al.id, al.title, al.album_artist, ar.name AS artist,
                 al.year, al.genre, alr.rating, al.release_type,
-                COUNT(t.id), ROUND(SUM(t.duration),0), al.metadata_locked, al.description
+                COUNT(t.id), ROUND(SUM(t.duration),0), al.metadata_locked, al.description,
+                al.label
          FROM albums al LEFT JOIN artists ar ON ar.id = al.artist_id
          JOIN tracks t ON t.album_id = al.id
          LEFT JOIN album_ratings alr ON alr.album_id = al.id AND alr.user_id = ?
@@ -975,6 +997,7 @@ pub fn list_artist_albums(
                 total_duration: row.get(9)?,
                 metadata_locked: row.get(10)?,
                 description: row.get(11)?,
+                label: row.get(12)?,
                 added_at: None,
                 latest_scanned_at: None,
             })
@@ -1004,7 +1027,7 @@ pub fn list_artist_appears_on(
     let sql = format!(
         "SELECT al.id, al.title, al.album_artist, al.album_artist AS artist,
                 al.year, al.genre, alr.rating, al.release_type,
-                COUNT(DISTINCT t.id), ROUND(SUM(t.duration),0), NULL, NULL
+                COUNT(DISTINCT t.id), ROUND(SUM(t.duration),0), NULL, NULL, al.label
          FROM albums al JOIN tracks t ON t.album_id = al.id
          LEFT JOIN album_ratings alr ON alr.album_id = al.id AND alr.user_id = ?
          WHERE t.artist_id = ?
@@ -1039,6 +1062,7 @@ pub fn list_artist_appears_on(
                 total_duration: row.get(9)?,
                 metadata_locked: row.get(10)?,
                 description: row.get(11)?,
+                label: row.get(12)?,
                 added_at: None,
                 latest_scanned_at: None,
             })
@@ -1311,6 +1335,7 @@ pub fn get_home_top_rated(
                 track_count: row.get(5)?,
                 album_count: row.get(6)?,
                 play_count: Some(row.get(7)?),
+                styles: Vec::new(),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1343,6 +1368,7 @@ pub fn get_home_top_rated(
                 total_duration: row.get(9)?,
                 metadata_locked: row.get(10)?,
                 description: row.get(11)?,
+                label: None,
                 added_at: None,
                 latest_scanned_at: None,
             })
