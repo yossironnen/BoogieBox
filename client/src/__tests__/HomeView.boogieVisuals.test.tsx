@@ -111,6 +111,19 @@ function mockMatchMedia(reduced: boolean): void {
   });
 }
 
+function mockIntersectionObserver(): void {
+  class FakeIntersectionObserver {
+    observe(): void {}
+    disconnect(): void {}
+    unobserve(): void {}
+  }
+  Object.defineProperty(window, 'IntersectionObserver', {
+    writable: true,
+    configurable: true,
+    value: FakeIntersectionObserver,
+  });
+}
+
 function renderHome(hybridDesign = false) {
   return render(
     <HomeView
@@ -131,6 +144,7 @@ describe('HomeView boogie visuals', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockMatchMedia(false);
+    mockIntersectionObserver();
     apiMock.latestAlbums.mockResolvedValue([]);
     apiMock.homeTopRated.mockResolvedValue({ artists: [], albums: [], tracks: [] });
     apiMock.homeGenres.mockResolvedValue([]);
@@ -184,6 +198,36 @@ describe('HomeView boogie visuals', () => {
       boxShadow: 'none',
       borderRadius: '16px',
     });
+  });
+
+  it('limits the Hybrid Recent Albums hover treatment to the artwork', async () => {
+    apiMock.latestAlbums.mockResolvedValue([{
+      id: 'album-1',
+      title: 'Night Drive',
+      artist: 'Chromatics',
+      album_artist: 'Chromatics',
+      year: 2007,
+      genre: 'Electronic',
+      track_count: 10,
+      added_at: '2026-07-29',
+      latest_scanned_at: '2026-07-29',
+    }]);
+    const { container } = renderHome(true);
+
+    const albumCard = await screen.findByTitle('Night Drive — Chromatics');
+    fireEvent.mouseEnter(albumCard);
+
+    expect(albumCard.style.borderColor).toBe('transparent');
+    expect(albumCard.style.backgroundColor).toBe('transparent');
+    const artwork = container.querySelector('[data-hybrid-recent-album-art="album-1"]') as HTMLElement;
+    expect(artwork.style.outline).toContain('var(--accent)');
+    expect(artwork.style.filter).toBe('brightness(1.04) saturate(1.05)');
+    const overlay = artwork.querySelector('[data-hybrid-art-hover-overlay="recent-album"]') as HTMLElement;
+    expect(overlay).toHaveStyle({
+      opacity: '1',
+      background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+    });
+    expect(screen.getByText('Night Drive')).toHaveStyle({ color: 'var(--text)' });
   });
 });
 

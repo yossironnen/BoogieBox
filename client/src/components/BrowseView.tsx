@@ -15,7 +15,7 @@ import { findTopTrackMatch, matchesTrackArtist, resolveTopTrackFromLibrarySearch
 import ArtImage from './ArtImage';
 import StarRating from './StarRating';
 import { phase2 } from '../uiPhase2';
-import { hybridBrowseStyles } from '../hybridPreview';
+import { HYBRID_ARTWORK_HOVER, hybridBrowseStyles } from '../hybridPreview';
 
 const ALPHA_RAIL_LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
 const ROOT_SCROLL_BY_VIEW: Record<string, number> = {};
@@ -2465,8 +2465,8 @@ export default function BrowseView({
           '--browse-art-border-color': 'transparent',
           '--browse-art-radius': '14px',
           '--browse-art-shadow': 'var(--shadow-subtle)',
-          '--browse-art-hover-outline': '2px solid color-mix(in srgb, var(--accent) 56%, transparent)',
-          '--browse-art-hover-filter': 'brightness(1.04) saturate(1.05)',
+          '--browse-art-hover-outline': HYBRID_ARTWORK_HOVER.outline,
+          '--browse-art-hover-filter': HYBRID_ARTWORK_HOVER.filter,
           '--browse-row-border': 'none',
           '--browse-row-radius': '10px',
           '--browse-row-margin': '2px 12px',
@@ -3097,7 +3097,7 @@ const L: Record<string, React.CSSProperties> = {
     inset: 0,
     zIndex: 1,
     borderRadius: 'inherit',
-    background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+    background: HYBRID_ARTWORK_HOVER.wash,
     pointerEvents: 'none',
     transition: 'opacity 120ms ease',
   },

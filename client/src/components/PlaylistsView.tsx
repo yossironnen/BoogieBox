@@ -564,7 +564,7 @@ function PlaylistDetail({
   useEffect(() => {
     if (!deepRunning || !api.boogiemix) return;
     let stopped = false;
-    const timer = setInterval(async () => {
+    const poll = async () => {
       try {
         const prog = await api.boogiemix!.playlistDeepAnalysisProgress(playlist.id);
         if (stopped) return;
@@ -574,8 +574,17 @@ function PlaylistDetail({
           setDeepRunning(false);
         }
       } catch {}
-    }, 2000);
-    return () => { stopped = true; clearInterval(timer); };
+    };
+    const timer = setInterval(poll, 2000);
+    // Backgrounded tabs throttle setInterval, so refresh immediately on refocus
+    // instead of waiting for the throttled tick to catch up.
+    const onVisibilityChange = () => { if (document.visibilityState === 'visible') poll(); };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [deepRunning, playlist.id]);
 
   return (

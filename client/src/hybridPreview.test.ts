@@ -19,6 +19,7 @@ import {
   hybridPlayerStyles,
   hybridPlaylistStyles,
   hybridSettingsStyles,
+  HYBRID_ARTWORK_HOVER,
   HYBRID_FONT_FAMILY,
   HYBRID_FONT_STYLESHEET_HREF,
   HYBRID_FONT_STYLESHEET_ID,
@@ -143,6 +144,11 @@ describe('Hybrid preview', () => {
   );
 
   it('defines flat reusable control and media roles for rollout screens', () => {
+    expect(HYBRID_ARTWORK_HOVER).toEqual({
+      outline: '2px solid color-mix(in srgb, var(--accent) 56%, transparent)',
+      filter: 'brightness(1.04) saturate(1.05)',
+      wash: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+    });
     expect(hybridControlStyles.primaryButton).toMatchObject({
       background: 'var(--accent)',
       color: 'var(--on-accent)',

@@ -123,7 +123,7 @@ export default function MobileBoogieMixPanel({
   useEffect(() => {
     if (!deepRunning || !boogieMix) return;
     let stopped = false;
-    const timer = window.setInterval(async () => {
+    const poll = async () => {
       try {
         const progress = await boogieMix.playlistDeepAnalysisProgress(playlistId);
         if (stopped) return;
@@ -135,10 +135,16 @@ export default function MobileBoogieMixPanel({
       } catch {
         // Retain the latest known progress while the next poll retries.
       }
-    }, 2000);
+    };
+    const timer = window.setInterval(poll, 2000);
+    // Backgrounded tabs throttle setInterval, so refresh immediately on refocus
+    // instead of waiting for the throttled tick to catch up.
+    const onVisibilityChange = () => { if (document.visibilityState === 'visible') poll(); };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       stopped = true;
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [boogieMix, deepRunning, playlistId]);
 

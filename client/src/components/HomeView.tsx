@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import type { Album, LatestAlbum, Artist, ClientEntityId, Genre, HomeGenreSummary, Library, Stats, Track, Playlist, CrossfadeMode, HomeTopRated } from '../types';
 import type { EntityId } from '../entityId';
-import { hybridHomeStyles } from '../hybridPreview';
+import { HYBRID_ARTWORK_HOVER, hybridHomeStyles } from '../hybridPreview';
 import ArtImage from './ArtImage';
 
 function safeLocalStorageGet(key: string): string | null {
@@ -182,10 +182,12 @@ function RecentAlbumsWidget({
   refreshKey,
   onOpenAlbum,
   onPlayTrack,
+  hybridDesign,
 }: {
   refreshKey: number;
   onOpenAlbum: (album: Album) => void;
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
+  hybridDesign: boolean;
 }) {
   const [albums, setAlbums] = useState<LatestAlbum[]>([]);
   const [loading, setLoading] = useState(true);
@@ -215,11 +217,15 @@ function RecentAlbumsWidget({
           title={`${album.title} — ${album.album_artist || album.artist || 'Unknown Artist'}`}
           style={{
             flexShrink: 0, width: 150, border: '1px solid',
-            borderColor: hoveredAlbumId === album.id
+            borderColor: hybridDesign
+              ? 'transparent'
+              : hoveredAlbumId === album.id
               ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
               : 'var(--border)',
             borderRadius: 8,
-            backgroundColor: hoveredAlbumId === album.id
+            backgroundColor: hybridDesign
+              ? 'transparent'
+              : hoveredAlbumId === album.id
               ? 'color-mix(in srgb, var(--accent) 12%, var(--bg))'
               : 'var(--bg)',
             overflow: 'hidden',
@@ -227,8 +233,27 @@ function RecentAlbumsWidget({
             fontFamily: 'inherit', color: 'inherit',
           }}
         >
-          <div style={H.recentAlbumArtWrap}>
+          <div
+            data-hybrid-recent-album-art={hybridDesign ? album.id : undefined}
+            style={{
+              ...H.recentAlbumArtWrap,
+              ...(hybridDesign ? H.recentAlbumArtWrapHybrid : {}),
+              ...(hybridDesign && hoveredAlbumId === album.id
+                ? H.recentAlbumArtWrapHybridHovered
+                : {}),
+            }}
+          >
             <HomeAlbumCover albumId={album.id} title={album.title} size={150} />
+            {hybridDesign ? (
+              <div
+                data-hybrid-art-hover-overlay="recent-album"
+                aria-hidden="true"
+                style={{
+                  ...H.recentAlbumArtHoverOverlay,
+                  opacity: hoveredAlbumId === album.id ? 1 : 0,
+                }}
+              />
+            ) : null}
             <span
               role="button"
               aria-label={`Play album ${album.title}`}
@@ -1605,7 +1630,12 @@ export default function HomeView({
         </WidgetCard>
 
         <WidgetCard title="Recent Albums" span hybridDesign={hybridDesign}>
-          <RecentAlbumsWidget refreshKey={refreshKey} onOpenAlbum={onOpenAlbum} onPlayTrack={onPlayTrack} />
+          <RecentAlbumsWidget
+            refreshKey={refreshKey}
+            onOpenAlbum={onOpenAlbum}
+            onPlayTrack={onPlayTrack}
+            hybridDesign={hybridDesign}
+          />
         </WidgetCard>
 
         <WidgetCard title="Let's Boogie!" className="boogie-section" titleClassName="boogie-title" span hybridDesign={hybridDesign}>
@@ -2243,6 +2273,27 @@ const H: Record<string, React.CSSProperties> = {
     width: 150,
     height: 150,
   },
+  recentAlbumArtWrapHybrid: {
+    overflow: 'hidden',
+    borderRadius: 14,
+    border: '1px solid transparent',
+    boxShadow: 'var(--shadow-subtle)',
+    transition: 'outline-color 120ms ease, filter 120ms ease',
+  },
+  recentAlbumArtWrapHybridHovered: {
+    outline: HYBRID_ARTWORK_HOVER.outline,
+    outlineOffset: -2,
+    filter: HYBRID_ARTWORK_HOVER.filter,
+  },
+  recentAlbumArtHoverOverlay: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 1,
+    borderRadius: 'inherit',
+    background: HYBRID_ARTWORK_HOVER.wash,
+    pointerEvents: 'none',
+    transition: 'opacity 120ms ease',
+  },
   recentAlbumPlayBtn: {
     position: 'absolute',
     top: '50%',
@@ -2260,6 +2311,6 @@ const H: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     cursor: 'pointer',
     transition: 'opacity 120ms ease',
-    zIndex: 1,
+    zIndex: 2,
   },
 };

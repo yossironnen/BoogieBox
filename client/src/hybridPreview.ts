@@ -267,6 +267,12 @@ export const hybridShellStyles: Record<string, React.CSSProperties> = {
   },
 };
 
+export const HYBRID_ARTWORK_HOVER = {
+  outline: '2px solid color-mix(in srgb, var(--accent) 56%, transparent)',
+  filter: 'brightness(1.04) saturate(1.05)',
+  wash: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+} as const;
+
 export const hybridBrowseStyles: Record<string, React.CSSProperties> = {
   root: {
     background: 'var(--bg)',
