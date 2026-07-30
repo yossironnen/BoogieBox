@@ -1,4 +1,4 @@
-﻿//! Defines Rust server support logic for Post Scan.
+//! Defines Rust server support logic for Post Scan.
 
 use crate::{
     artwork_cache::{
@@ -11,17 +11,19 @@ use crate::{
         download_image, fetch_lastfm_album_info, fetch_lastfm_artist_info,
         fetch_lastfm_artist_top_tags, fetch_lrclib_lyrics, fetch_lyricsovh,
         search_deezer_artist_image, search_discogs_album_cover, search_discogs_album_label,
-        search_discogs_artist_image, search_spotify_artist_image,
+        search_discogs_artist_image, search_metadata, search_spotify_artist_image,
     },
     DbPool,
 };
 use boogiebox_db::{
     artwork::{
-        get_album_for_art, get_album_label, get_artist_for_art, get_lastfm_cached, get_setting,
-        get_track_for_lyrics, save_lastfm_cache, set_album_label, upsert_cached_lyrics,
+        get_album_for_art, get_album_label, get_album_release_type, get_artist_for_art,
+        get_lastfm_cached, get_setting, get_track_for_lyrics, save_lastfm_cache, set_album_label,
+        set_album_release_type, upsert_cached_lyrics,
     },
     jobs::{ClaimedPostScanJob, JobError, PostScanLane},
     music::EntityId,
+    playlists::normalize_release_type,
 };
 use reqwest::Client;
 use rusqlite::OptionalExtension;
@@ -176,6 +178,9 @@ async fn process_post_scan_job(
             run_warm_track_lyrics(state, &job.library_id, job.payload.as_deref()).await
         }
         "sync_artist_styles" => run_sync_artist_styles(state, &job.library_id).await,
+        "sync_release_types" => {
+            run_sync_release_types(state, &job.library_id, job.payload.as_deref()).await
+        }
         other => Err(JobError::UnsupportedPostScanJob(other.to_owned())),
     }
 }
@@ -915,6 +920,145 @@ async fn run_sync_artist_styles(
             }
         })
         .await;
+    }
+    Ok(())
+}
+
+// -- sync_release_types ---------------------------------------------------------
+
+/// Between-album delay for this lane. Deliberately slower than other post-scan
+/// lanes since it can call both Discogs and Spotify per album and needs to stay
+/// conservative against provider rate limits during a full-library backfill.
+const RELEASE_TYPE_SYNC_DELAY: Duration = Duration::from_millis(1500);
+
+fn normalize_match_text(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    let stripped = regex_strip_parens(&lower);
+    let alphanum: String = stripped
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+        .collect();
+    alphanum.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn regex_strip_parens(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0u32;
+    for c in s.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+async fn run_sync_release_types(
+    state: &PostScanState,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let discogs_token = get_setting_value(&state.db, "discogsToken").await;
+    let spotify_client_id = get_setting_value(&state.db, "spotifyClientId").await;
+    let spotify_client_secret = get_setting_value(&state.db, "spotifyClientSecret").await;
+    if discogs_token.is_none() && (spotify_client_id.is_none() || spotify_client_secret.is_none()) {
+        return Ok(());
+    }
+
+    let album_ids = parse_entity_ids_from_payload(payload, "albumIds");
+    let album_ids = if album_ids.is_empty() {
+        get_library_entity_ids(
+            &state.db,
+            "SELECT DISTINCT album_id FROM tracks WHERE library_id=?1 AND album_id IS NOT NULL",
+            library_id.clone(),
+        )
+        .await
+    } else {
+        album_ids
+    };
+
+    for album_id in &album_ids {
+        let album = {
+            let db = state.db.clone();
+            let id = album_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_album_for_art(&conn, &id)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some(album) = album else { continue };
+        if album.title.is_empty() || album.artist.is_empty() || album.metadata_locked {
+            continue;
+        }
+
+        let already_classified = {
+            let db = state.db.clone();
+            let id = album_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                get_album_release_type(&conn, &id).is_some()
+            })
+            .await
+            .unwrap_or(false)
+        };
+        if already_classified {
+            continue;
+        }
+
+        let results = search_metadata(
+            &state.http_client,
+            discogs_token.as_deref(),
+            spotify_client_id.as_deref(),
+            spotify_client_secret.as_deref(),
+            &album.artist,
+            Some(&album.title),
+        )
+        .await;
+
+        let target_artist = normalize_match_text(&album.artist);
+        let target_title = normalize_match_text(&album.title);
+        let matches: Vec<&str> = results
+            .iter()
+            .filter(|r| {
+                let artist_ok = r
+                    .artist
+                    .as_deref()
+                    .map(|a| normalize_match_text(a) == target_artist)
+                    .unwrap_or(false);
+                let title_ok = r
+                    .title
+                    .as_deref()
+                    .map(|t| normalize_match_text(t) == target_title)
+                    .unwrap_or(false);
+                artist_ok && title_ok
+            })
+            .filter_map(|r| r.release_type.as_deref())
+            .filter_map(|rt| normalize_release_type(Some(rt)))
+            .collect();
+
+        // Only act when every confidently-matched result agrees; otherwise
+        // leave the album for manual resolution rather than guess.
+        let resolved = match matches.split_first() {
+            Some((first, rest)) if rest.iter().all(|v| v == first) => Some(*first),
+            _ => None,
+        };
+
+        if let Some(release_type) = resolved {
+            let db = state.db.clone();
+            let id = album_id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                set_album_release_type(&conn, &id, release_type);
+            })
+            .await;
+        }
+
+        tokio::time::sleep(RELEASE_TYPE_SYNC_DELAY).await;
     }
     Ok(())
 }

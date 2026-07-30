@@ -2613,16 +2613,20 @@ export default function BrowseView({
               {albumSortControl}
               {albumRatingFilterControl}
             </div>
-            <div style={L.sectionHeading}>Albums</div>
-            <AlbumList
-              albums={artistAlbumSections.album} loading={loading}
-              showThumbnail={true}
-              groupBy="artist"
-              fill={false}
-              onSelect={a => goAlbum(a, drill.artist, 'artist')}
-              onPlay={playAlbum}
-              onQueue={queueAlbum}
-            />
+            {(artistAlbumSections.album.length > 0 || loading) && (
+              <>
+                <div style={L.sectionHeading}>Albums</div>
+                <AlbumList
+                  albums={artistAlbumSections.album} loading={loading}
+                  showThumbnail={true}
+                  groupBy="artist"
+                  fill={false}
+                  onSelect={a => goAlbum(a, drill.artist, 'artist')}
+                  onPlay={playAlbum}
+                  onQueue={queueAlbum}
+                />
+              </>
+            )}
             {artistAlbumSections.single.length > 0 && (
               <>
                 <div style={L.sectionHeading}>Singles & EPs</div>

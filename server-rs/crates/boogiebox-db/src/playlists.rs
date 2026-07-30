@@ -690,11 +690,13 @@ fn valid_rating_value(rating: Option<f64>) -> bool {
     }
 }
 
-fn normalize_release_type(value: Option<&str>) -> Option<&'static str> {
+/// Normalizes a raw release-type string to one of the recognized values.
+pub fn normalize_release_type(value: Option<&str>) -> Option<&'static str> {
     match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
         Some("album") => Some("album"),
         Some("single") => Some("single"),
         Some("compilation") => Some("compilation"),
+        Some("ep") => Some("ep"),
         _ => None,
     }
 }

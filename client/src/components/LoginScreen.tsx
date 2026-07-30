@@ -298,7 +298,6 @@ export default function LoginScreen({ onLogin }: Props) {
           )}
         </div>
 
-        <footer style={hybridEntryStyles.footer}>Self-hosted • Private by design</footer>
       </section>
     </main>
   );

@@ -217,6 +217,26 @@ pub fn set_album_label(conn: &Connection, album_id: &str, label: &str) {
     );
 }
 
+/// Returns the album's stored release_type, if set to a non-default value.
+pub fn get_album_release_type(conn: &Connection, album_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT release_type FROM albums WHERE id = ?",
+        params![album_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .filter(|s| !s.trim().is_empty() && s != "album")
+}
+
+/// Stores the auto-classified release_type for an album.
+pub fn set_album_release_type(conn: &Connection, album_id: &str, release_type: &str) {
+    let _ = conn.execute(
+        "UPDATE albums SET release_type = ? WHERE id = ?",
+        params![release_type, album_id],
+    );
+}
+
 // ── Artist art ────────────────────────────────────────────────────────────────
 
 /// Documents the Artist Art Row public API surface.

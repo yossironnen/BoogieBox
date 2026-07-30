@@ -5,6 +5,26 @@ use serde_json::Value;
 
 const USER_AGENT: &str = "BoogieBox/1.0";
 
+/// Discogs `format` search-result entries mix physical media (Vinyl, CD) with
+/// release-type descriptors (Album, EP, Single, Compilation). Scans for a
+/// known descriptor rather than assuming the first entry is the type.
+fn discogs_release_type_from_formats(formats: &[Value]) -> Option<String> {
+    const KNOWN_TYPES: &[(&str, &str)] = &[
+        ("compilation", "Compilation"),
+        ("maxi-single", "Single"),
+        ("ep", "EP"),
+        ("single", "Single"),
+        ("album", "Album"),
+    ];
+    formats.iter().filter_map(|v| v.as_str()).find_map(|entry| {
+        let lower = entry.to_ascii_lowercase();
+        KNOWN_TYPES
+            .iter()
+            .find(|(needle, _)| lower == *needle)
+            .map(|(_, label)| (*label).to_owned())
+    })
+}
+
 // ── Discogs ───────────────────────────────────────────────────────────────────
 
 fn normalize_discogs_token(value: &str) -> String {
@@ -491,9 +511,7 @@ async fn search_discogs_metadata(
                 year: item["year"].as_str().map(str::to_owned),
                 release_type: item["format"]
                     .as_array()
-                    .and_then(|f| f.first())
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned),
+                    .and_then(|f| discogs_release_type_from_formats(f)),
                 genre: item["genre"]
                     .as_array()
                     .and_then(|g| g.first())

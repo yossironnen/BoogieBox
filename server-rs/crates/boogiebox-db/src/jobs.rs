@@ -235,6 +235,7 @@ const MUSIC_POST_SCAN_JOB_TYPES: &[&str] = &[
     "warm_album_label",
     "warm_track_lyrics",
     "sync_artist_styles",
+    "sync_release_types",
 ];
 
 /// Public Claimed Post Scan Job data shape used by BoogieBox.
@@ -774,6 +775,7 @@ pub fn enqueue_default_music_post_scan_jobs(
         "warm_album_label",
         "warm_track_lyrics",
         "sync_artist_styles",
+        "sync_release_types",
     ] {
         ids.push(enqueue_post_scan_job_for_id(
             conn, library_id, job_type, None,
@@ -1546,6 +1548,7 @@ fn post_scan_stale_timeout_minutes(job_type: &str) -> i64 {
     match job_type {
         "warm_track_lyrics" => 120,
         "sync_artist_styles" => 120,
+        "sync_release_types" => 180,
         "refresh_library_mappings" => 15,
         _ => 30,
     }
