@@ -28,6 +28,16 @@ from pathlib import Path
 
 faulthandler.enable()
 
+# CUDA PyTorch builds bundle their own OpenMP runtime (libiomp5md.dll); when
+# madmom's numpy/BLAS-based NN activations (tanh, in detect_beat_grid) load a
+# second OpenMP/MKL runtime afterward, Windows can hard-crash the process
+# (0xc0000005) instead of raising the usual "OMP: Error #15". Force a single
+# runtime and single-threaded BLAS before numpy/torch/madmom are imported.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 ANALYSIS_VERSION = 1
 ANALYSIS_SCHEMA_VERSION = 3
 DEFAULT_MODEL = "htdemucs"

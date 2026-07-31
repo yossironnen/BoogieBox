@@ -8,7 +8,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "UNLICENSED"
-version = "0.8.169"
+version = "0.8.171"
 
 [workspace.dependencies]
 axum = "0.8"

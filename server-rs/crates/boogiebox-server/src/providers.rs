@@ -158,66 +158,6 @@ pub async fn search_discogs_album_cover(
     pick_discogs_cover_image(results, artist_name, album_title)
 }
 
-/// Looks up the record label for an album via Discogs release search + release detail.
-pub async fn search_discogs_album_label(
-    client: &Client,
-    token: &str,
-    artist_name: &str,
-    album_title: &str,
-) -> Option<String> {
-    let q = format!("{} {}", artist_name, album_title);
-    let url = format!(
-        "https://api.discogs.com/database/search?type=release&q={}&per_page=5&page=1",
-        urlencoding::encode(q.trim())
-    );
-
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Discogs token={token}"))
-        .header("User-Agent", USER_AGENT)
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let data: Value = resp.json().await.ok()?;
-    let results = data["results"].as_array()?;
-
-    let mut scored: Vec<(&Value, i32)> = results
-        .iter()
-        .map(|r| (r, score_release_title_match(r, artist_name, album_title)))
-        .filter(|(_, s)| *s >= 3)
-        .collect();
-    scored.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
-    let release_id = scored.first().and_then(|(r, _)| r["id"].as_u64())?;
-
-    let release_url = format!("https://api.discogs.com/releases/{release_id}");
-    let release_resp = client
-        .get(&release_url)
-        .header("Authorization", format!("Discogs token={token}"))
-        .header("User-Agent", USER_AGENT)
-        .send()
-        .await
-        .ok()?;
-
-    if !release_resp.status().is_success() {
-        return None;
-    }
-
-    let release: Value = release_resp.json().await.ok()?;
-    release["labels"].as_array()?.iter().find_map(|l| {
-        let name = l["name"].as_str()?.trim();
-        if name.is_empty() || name.eq_ignore_ascii_case("not on label") {
-            None
-        } else {
-            Some(name.to_owned())
-        }
-    })
-}
-
 /// Documents the Search Discogs Artist Image public API surface.
 pub async fn search_discogs_artist_image(
     client: &Client,
