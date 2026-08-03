@@ -270,7 +270,7 @@ export const api = {
       library_id: params.library_id,
       limit: params.limit,
     }),
-  artists: (params?: ApiEntityId | { library_id?: ApiEntityId; library_ids?: ApiEntityId[]; genres?: string[]; sonic_fingerprint_only?: boolean }) => {
+  artists: (params?: ApiEntityId | { library_id?: ApiEntityId; library_ids?: ApiEntityId[]; genres?: string[]; sonic_fingerprint_only?: boolean; hide_compilation_only?: boolean }) => {
     const query: Record<string, string | number | boolean | undefined> = {};
     if (typeof params === 'string' || typeof params === 'number') {
       query.library_id = params;
@@ -279,6 +279,7 @@ export const api = {
       query.library_ids = encodeLibraryIdsParam(params.library_ids);
       query.genres = encodeGenresParam(params.genres);
       if (params.sonic_fingerprint_only) query.sonic_fingerprint_only = true;
+      if (params.hide_compilation_only) query.hide_compilation_only = true;
     }
     return get<Artist[]>('/artists', Object.keys(query).length ? query : undefined);
   },
@@ -293,6 +294,7 @@ export const api = {
     order?: 'asc' | 'desc';
     view?: 'summary' | 'full';
     sonic_fingerprint_only?: boolean;
+    hide_compilation_only?: boolean;
   }) =>
     get<ArtistBrowsePage>('/artists', {
       library_id: params?.library_id,
@@ -306,6 +308,7 @@ export const api = {
       view: params?.view,
       paged: 1,
       sonic_fingerprint_only: params?.sonic_fingerprint_only || undefined,
+      hide_compilation_only: params?.hide_compilation_only || undefined,
     } as any),
   albums: (params?: { artist_id?: ApiEntityId; library_id?: ApiEntityId; library_ids?: ApiEntityId[]; group_by?: 'artist' | 'album_artist'; genres?: string[]; sonic_fingerprint_only?: boolean }) =>
     get<Album[]>('/albums', {

@@ -23,6 +23,7 @@ export default function MobileBrowseView({
   selection,
   onSelectionChange,
   playbackSnapshot,
+  hideCompilationOnlyArtists = true,
 }: {
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
   onAddToQueue: (track: Track) => void;
@@ -30,6 +31,7 @@ export default function MobileBrowseView({
   onSelectionChange: (selection: MobileBrowseSelection) => void;
   playbackSnapshot?: PlaybackSnapshot | null;
   libraries?: Library[];
+  hideCompilationOnlyArtists?: boolean;
 }) {
   const [artists, setArtists] = useState<Artist[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
@@ -47,7 +49,7 @@ export default function MobileBrowseView({
     let cancelled = false;
     setLoading(true);
     setError('');
-    api.artists()
+    api.artists({ hide_compilation_only: hideCompilationOnlyArtists })
       .then(nextArtists => {
         if (!cancelled) setArtists(nextArtists);
       })
@@ -63,7 +65,7 @@ export default function MobileBrowseView({
     return () => {
       cancelled = true;
     };
-  }, [selection.artist, selection.album]);
+  }, [selection.artist, selection.album, hideCompilationOnlyArtists]);
 
   useEffect(() => {
     if (!selection.artist) {

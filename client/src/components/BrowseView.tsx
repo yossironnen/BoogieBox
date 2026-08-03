@@ -1675,6 +1675,7 @@ interface Props {
   adaptiveAccentEnabled?: boolean;
   forcedLibraryIds?: ClientEntityId[] | null;
   hybridPreview?: boolean;
+  hideCompilationOnlyArtists?: boolean;
 }
 
 /** Browse View is part of this module's public API. */
@@ -1690,6 +1691,7 @@ export default function BrowseView({
   adaptiveAccentEnabled = true,
   forcedLibraryIds = null,
   hybridPreview = false,
+  hideCompilationOnlyArtists = true,
 }: Props) {
   const [tab, setTab]         = useState<BrowseTab>('artists');
   const [rootViewMode, setRootViewMode] = useState<RootViewMode>(() =>
@@ -1829,7 +1831,7 @@ export default function BrowseView({
     const fetchToken = ++rootFetchTokenRef.current;
     setLoading(true);
     if (tab === 'artists') {
-      api.artists({ genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined })
+      api.artists({ genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined, hide_compilation_only: hideCompilationOnlyArtists })
         .then((rows) => {
           if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
           setArtists(rows);
@@ -1851,7 +1853,7 @@ export default function BrowseView({
           setLoading(false);
         });
     }
-  }, [activeLibraryIds, drill.level, tab, groupBy, selectedGenres, selectedLibraryIds, sonicFingerprintOnly]);
+  }, [activeLibraryIds, drill.level, tab, groupBy, selectedGenres, selectedLibraryIds, sonicFingerprintOnly, hideCompilationOnlyArtists]);
 
   // Load artist's albums and "appears on" compilations when drilling into artist
   useEffect(() => {

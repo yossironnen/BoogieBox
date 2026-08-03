@@ -24,6 +24,7 @@ export interface MobileSharedProps {
   settings: AppSettings;
   hybridThemeMode: HybridThemeMode;
   adaptiveAccentEnabled: boolean;
+  hideCompilationOnlyArtists: boolean;
   ffmpegAvailable: boolean | null;
   playbackMode: 'standard' | 'vinyl';
   vinylHardcore: boolean;
@@ -40,6 +41,7 @@ export interface MobileSharedProps {
   onSettingsChange: (settings: AppSettings) => void;
   onHybridThemeModeChange: (mode: HybridThemeMode) => void;
   onAdaptiveAccentEnabledChange: (enabled: boolean) => void;
+  onHideCompilationOnlyArtistsChange: (enabled: boolean) => void;
   onPlaybackModeChange: (mode: 'standard' | 'vinyl') => void;
   onVinylHardcoreChange: (enabled: boolean) => void;
   onVinylNeedleDropChange: (enabled: boolean) => void;

@@ -75,6 +75,8 @@ export default function MobileSettingsView({
   onHybridThemeModeChange,
   adaptiveAccentEnabled = true,
   onAdaptiveAccentEnabledChange,
+  hideCompilationOnlyArtists = true,
+  onHideCompilationOnlyArtistsChange,
 }: {
   currentUser: AuthUser;
   onClose: () => void;
@@ -84,6 +86,8 @@ export default function MobileSettingsView({
   onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
   adaptiveAccentEnabled?: boolean;
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
+  hideCompilationOnlyArtists?: boolean;
+  onHideCompilationOnlyArtistsChange?: (enabled: boolean) => void;
 }) {
   const [settings, setSettings] = useState<SettingsState>({});
   const [streamDirect, setStreamDirectState] = useState(getStreamDirect());
@@ -236,6 +240,23 @@ export default function MobileSettingsView({
             description="Blend track transitions automatically."
             checked={settings.crossfadeMode === 'auto'}
             onChange={(enabled) => void updateSetting('crossfadeMode', enabled ? 'auto' : 'off')}
+          />
+        </section>
+
+        <section aria-labelledby="mobile-settings-library" style={styles.section}>
+          <div style={styles.sectionHeader}>
+            <div>
+              <div style={styles.eyebrow}>Personal</div>
+              <h3 id="mobile-settings-library" style={styles.heading}>Library</h3>
+            </div>
+          </div>
+          <MobileSwitch
+            label="Hide compilation-only artists"
+            description={hideCompilationOnlyArtists
+              ? 'Browse only shows artists with their own releases.'
+              : 'Browse shows every artist, including compilation appearances.'}
+            checked={hideCompilationOnlyArtists}
+            onChange={(enabled) => onHideCompilationOnlyArtistsChange?.(enabled)}
           />
         </section>
 

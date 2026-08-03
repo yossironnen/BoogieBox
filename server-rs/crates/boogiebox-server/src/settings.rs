@@ -75,6 +75,7 @@ pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
     "parametricEqBands",
     "volume",
     "muted",
+    "hideCompilationOnlyArtists",
 ];
 
 /// Documents the USER SETTING MAX VALUE LEN public API surface.
@@ -84,6 +85,9 @@ pub const USER_SETTING_MAX_VALUE_LEN: usize = 4096;
 pub fn validate_user_setting_value(key: &str, value: &str) -> Result<(), String> {
     if key == "uiThemeMode" && !["light", "dark", "custom"].contains(&value) {
         return Err("Setting 'uiThemeMode' must be 'light', 'dark', or 'custom'".to_string());
+    }
+    if key == "hideCompilationOnlyArtists" && value != "true" && value != "false" {
+        return Err("Setting 'hideCompilationOnlyArtists' must be 'true' or 'false'".to_string());
     }
     Ok(())
 }

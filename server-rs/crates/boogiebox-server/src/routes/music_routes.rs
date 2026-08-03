@@ -105,6 +105,7 @@ struct ArtistBrowseQuery {
     view: Option<String>,
     paged: Option<String>,
     sonic_fingerprint_only: Option<String>,
+    hide_compilation_only: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -448,6 +449,11 @@ async fn list_artists_handler(
         .as_deref()
         .map(|s| s == "true" || s == "1")
         .unwrap_or(false);
+    let hide_compilation_only = q
+        .hide_compilation_only
+        .as_deref()
+        .map(|s| s == "true" || s == "1")
+        .unwrap_or(false);
 
     let user_id = user.id.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -469,6 +475,7 @@ async fn list_artists_handler(
                 },
                 page_offset,
                 sonic_fingerprint_only,
+                hide_compilation_only,
             },
         )
     })

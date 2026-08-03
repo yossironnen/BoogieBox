@@ -663,6 +663,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-07-29-album-label-column",
             apply: ensure_album_label_column,
         },
+        Migration {
+            id: "2026-08-02-fix-compilation-album-ownership",
+            apply: fix_compilation_album_ownership,
+        },
     ];
 
     for migration in migrations {
@@ -988,6 +992,71 @@ fn ensure_album_label_column(connection: &Connection) -> Result<(), rusqlite::Er
     if table_exists(connection, "albums") && !column_exists(connection, "albums", "label")? {
         connection.execute_batch("ALTER TABLE albums ADD COLUMN label TEXT")?;
     }
+    Ok(())
+}
+
+/// Older scans stamped `albums.artist_id` from whichever track happened to be
+/// scanned first, so a compilation could end up "owned" by one of its many
+/// contributing artists instead of the artist named in its `album_artist` tag.
+/// That falsely made the compilation look like a real release by that artist
+/// (and made it appear twice: once as an "owned" album, once under "appears
+/// on"). Realign every album's `artist_id` to the artist matching its
+/// `album_artist` field, creating that artist if it doesn't exist yet.
+fn fix_compilation_album_ownership(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "albums") || !table_exists(connection, "artists") {
+        return Ok(());
+    }
+    if !column_exists(connection, "albums", "artist_id")?
+        || !column_exists(connection, "albums", "album_artist")?
+    {
+        return Ok(());
+    }
+    let mismatched: Vec<(String, String)> = {
+        let mut stmt = connection.prepare(
+            "SELECT al.id, al.album_artist
+             FROM albums al
+             LEFT JOIN artists ar ON ar.id = al.artist_id
+             WHERE TRIM(COALESCE(al.album_artist, '')) != ''
+               AND (ar.id IS NULL OR LOWER(TRIM(ar.name)) != LOWER(TRIM(al.album_artist)))",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<(String, String)>, rusqlite::Error>>()?;
+        rows
+    };
+
+    for (album_id, album_artist) in mismatched {
+        let trimmed = album_artist.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let owning_name =
+            crate::jobs::canonical_compilation_artist_name(&trimmed).unwrap_or(trimmed);
+        let artist_id: String = match connection
+            .query_row(
+                "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(TRIM(?1)) LIMIT 1",
+                [&owning_name],
+                |row| row.get(0),
+            )
+            .optional()?
+        {
+            Some(id) => id,
+            None => {
+                let id = Uuid::now_v7().to_string();
+                connection.execute(
+                    "INSERT INTO artists(id, name) VALUES(?1, ?2)",
+                    params![id, owning_name],
+                )?;
+                id
+            }
+        };
+        connection.execute(
+            "UPDATE albums SET artist_id = ?1 WHERE id = ?2",
+            params![artist_id, album_id],
+        )?;
+    }
+
+    refresh_denormalized_counts(connection)?;
     Ok(())
 }
 
@@ -1615,7 +1684,18 @@ pub fn refresh_stats_cache(connection: &Connection) -> Result<(), rusqlite::Erro
     }
 
     let total_tracks = count_rows(connection, "tracks")?;
-    let total_artists = count_where(connection, "artists", "track_count > 0")?;
+    // Artists that only appear via tracks on someone else's album (e.g. a track or
+    // two on a Various Artists compilation) don't own any release of their own, so
+    // they're excluded here to match what Browse shows by default.
+    let total_artists = if column_exists(connection, "albums", "artist_id")? {
+        count_where(
+            connection,
+            "artists",
+            "EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = artists.id)",
+        )?
+    } else {
+        count_where(connection, "artists", "track_count > 0")?
+    };
     let total_albums = count_where(connection, "albums", "track_count > 0")?;
     let total_libraries = count_rows(connection, "libraries")?;
     let total_hours = sum_real(connection, "tracks", "duration")? / 3600.0;

@@ -82,6 +82,7 @@ export default function MobileApp(props: MobileSharedProps) {
           onSelectionChange={setBrowseSelection}
           playbackSnapshot={playbackSnapshot}
           libraries={props.libraries}
+          hideCompilationOnlyArtists={props.hideCompilationOnlyArtists}
         />
       )}
       {tab === 'search' && (
@@ -111,6 +112,8 @@ export default function MobileApp(props: MobileSharedProps) {
           onHybridThemeModeChange={props.onHybridThemeModeChange}
           adaptiveAccentEnabled={props.adaptiveAccentEnabled}
           onAdaptiveAccentEnabledChange={props.onAdaptiveAccentEnabledChange}
+          hideCompilationOnlyArtists={props.hideCompilationOnlyArtists}
+          onHideCompilationOnlyArtistsChange={props.onHideCompilationOnlyArtistsChange}
           eqControls={eqControls}
           playbackMode={props.playbackMode}
           vinylHardcore={props.vinylHardcore}

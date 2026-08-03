@@ -669,7 +669,7 @@ pub fn upsert_scanned_track(
     input: &ScannedTrackInput,
 ) -> Result<EntityId, JobError> {
     let artist_id = upsert_artist(conn, &input.artist)?;
-    let album_id = upsert_album(conn, &input.album, &input.album_artist, &artist_id)?;
+    let album_id = upsert_album(conn, &input.album, &input.album_artist)?;
     let track_id = conn
         .query_row(
             "SELECT id FROM tracks WHERE file_path=?1",
@@ -1223,6 +1223,20 @@ fn library_folder_paths(
     Ok(folders)
 }
 
+/// Recognizes common "various artists" tag spellings so compilations don't get
+/// fragmented across near-duplicate artist entries ("VA", "Various", "V/A", ...).
+pub(crate) fn canonical_compilation_artist_name(name: &str) -> Option<String> {
+    let compact: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    match compact.as_str() {
+        "variousartists" | "various" | "va" => Some("Various Artists".to_string()),
+        _ => None,
+    }
+}
+
 fn upsert_artist(conn: &Connection, name: &str) -> Result<EntityId, JobError> {
     let normalized = defaulted(Some(name), "Unknown Artist");
     if let Some(existing) = conn
@@ -1243,12 +1257,7 @@ fn upsert_artist(conn: &Connection, name: &str) -> Result<EntityId, JobError> {
     Ok(artist_id)
 }
 
-fn upsert_album(
-    conn: &Connection,
-    title: &str,
-    album_artist: &str,
-    artist_id: &EntityId,
-) -> Result<EntityId, JobError> {
+fn upsert_album(conn: &Connection, title: &str, album_artist: &str) -> Result<EntityId, JobError> {
     let title = defaulted(Some(title), "Unknown Album");
     let album_artist = defaulted(Some(album_artist), "Unknown Artist");
     if let Some(existing) = conn
@@ -1264,10 +1273,19 @@ fn upsert_album(
     {
         return Ok(existing);
     }
+    // The album is owned by the artist named in its own album_artist tag, not
+    // necessarily by whichever track's artist happens to create the row first
+    // (that track's artist may just be one of many contributors on a compilation).
+    // Various-artists taggers use inconsistent spellings ("VA", "Various", "V/A"),
+    // so collapse them to one canonical artist rather than fragmenting compilations
+    // across several near-duplicate artist entries.
+    let owning_artist_name =
+        canonical_compilation_artist_name(&album_artist).unwrap_or_else(|| album_artist.clone());
+    let owning_artist_id = upsert_artist(conn, &owning_artist_name)?;
     let album_id = EntityId::Str(new_id());
     conn.execute(
         "INSERT INTO albums(id, title, album_artist, artist_id) VALUES(?1, ?2, ?3, ?4)",
-        params![album_id, title, album_artist, artist_id],
+        params![album_id, title, album_artist, owning_artist_id],
     )?;
     Ok(album_id)
 }

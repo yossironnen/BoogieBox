@@ -959,6 +959,7 @@ export default function App() {
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [streamDirect, setStreamDirect] = useState(() => getStreamDirect());
   const [adaptiveAccentEnabled, setAdaptiveAccentEnabled] = useState<boolean>(true);
+  const [hideCompilationOnlyArtists, setHideCompilationOnlyArtists] = useState<boolean>(true);
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>(() => getStoredVinylSettings().playbackMode);
   const [vinylHardcore, setVinylHardcore] = useState<boolean>(() => getStoredVinylSettings().hardcore);
   const [vinylNeedleDrop, setVinylNeedleDrop] = useState<boolean>(() => getStoredVinylSettings().needleDrop);
@@ -1031,6 +1032,11 @@ export default function App() {
   }, [adaptiveAccentEnabled, currentUser]);
 
   useEffect(() => {
+    if (!currentUser || currentUser === 'loading') return;
+    api.userSettings.update({ hideCompilationOnlyArtists: String(hideCompilationOnlyArtists) }).catch(() => {});
+  }, [hideCompilationOnlyArtists, currentUser]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
       window.localStorage.setItem(
@@ -1089,6 +1095,9 @@ export default function App() {
         const val = userSettings.adaptiveAccent !== 'false';
         setAdaptiveAccentEnabled(val);
         saveAdaptiveAccentToStorage(val, userId);
+      }
+      if (userSettings.hideCompilationOnlyArtists !== undefined) {
+        setHideCompilationOnlyArtists(userSettings.hideCompilationOnlyArtists !== 'false');
       }
       const serverHybridThemeMode = parseHybridThemeMode(userSettings.uiThemeMode);
       if (serverHybridThemeMode) {
@@ -1278,6 +1287,7 @@ export default function App() {
         settings={settings}
         hybridThemeMode={hybridThemeMode}
         adaptiveAccentEnabled={adaptiveAccentEnabled}
+        hideCompilationOnlyArtists={hideCompilationOnlyArtists}
         ffmpegAvailable={ffmpegAvailable}
         playbackMode={playbackMode}
         vinylHardcore={vinylHardcore}
@@ -1294,6 +1304,7 @@ export default function App() {
         onSettingsChange={setSettings}
         onHybridThemeModeChange={selectHybridThemeMode}
         onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
+        onHideCompilationOnlyArtistsChange={setHideCompilationOnlyArtists}
         onPlaybackModeChange={setPlaybackMode}
         onVinylHardcoreChange={setVinylHardcore}
         onVinylNeedleDropChange={setVinylNeedleDrop}
@@ -1569,6 +1580,7 @@ export default function App() {
                 openGenreRequest={browseOpenGenreRequest}
                 adaptiveAccentEnabled={adaptiveAccentEnabled}
                 hybridPreview={hybridDesignActive}
+                hideCompilationOnlyArtists={hideCompilationOnlyArtists}
               />
           )}
           {view === 'playlists' && (
@@ -1589,6 +1601,8 @@ export default function App() {
               onStreamDirectChange={setStreamDirect}
               adaptiveAccentEnabled={adaptiveAccentEnabled}
               onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
+              hideCompilationOnlyArtists={hideCompilationOnlyArtists}
+              onHideCompilationOnlyArtistsChange={setHideCompilationOnlyArtists}
               hybridThemeMode={hybridThemeMode}
               onHybridThemeModeChange={selectHybridThemeMode}
               playbackMode={playbackMode}

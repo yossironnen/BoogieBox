@@ -314,7 +314,7 @@ pub fn get_stats(conn: &Connection) -> rusqlite::Result<StatsRow> {
     conn.query_row(
         "SELECT
           (SELECT COUNT(*) FROM tracks),
-          (SELECT COUNT(DISTINCT artist_id) FROM tracks WHERE artist_id IS NOT NULL),
+          (SELECT COUNT(*) FROM artists ar WHERE EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)),
           (SELECT COUNT(DISTINCT album_id) FROM tracks WHERE album_id IS NOT NULL),
           (SELECT COUNT(*) FROM libraries),
           (SELECT ROUND(COALESCE(SUM(duration),0)/3600.0,1) FROM tracks),
@@ -531,6 +531,10 @@ pub struct ListArtistsParams<'a> {
     pub page_offset: i64,
     /// Filter to artists with at least one Sonic Fingerprint (deep analysis) track.
     pub sonic_fingerprint_only: bool,
+    /// Hide artists that own no album directly (they only appear via tracks on
+    /// other artists' albums, e.g. Various Artists compilations). Ignored when
+    /// `name_query` is set, so a direct name search always finds these artists.
+    pub hide_compilation_only: bool,
 }
 
 /// Documents the List Artists public API surface.
@@ -569,6 +573,9 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
         conditions
             .push("EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".into());
     }
+    if p.hide_compilation_only && p.name_query.is_none() {
+        conditions.push("EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)".into());
+    }
 
     let where_clause = if conditions.is_empty() {
         String::new()
@@ -591,10 +598,17 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
         None
     };
 
+    // track_count/album_count reflect the artist's owned albums (albums.artist_id),
+    // not just tracks tagged with this artist's own id — for a container artist like
+    // "Various Artists" those diverge sharply: it owns many compilations whose tracks
+    // are individually credited to other performers, so counting via t.artist_id alone
+    // would wildly undercount.
+    let owned_counts_sql = "(SELECT COUNT(*) FROM tracks ot JOIN albums oal ON oal.id = ot.album_id WHERE oal.artist_id = ar.id) AS track_count, \
+         (SELECT COUNT(*) FROM albums oal2 WHERE oal2.artist_id = ar.id) AS album_count";
     let meta_fields = if p.full_view {
-        "ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.description, COUNT(DISTINCT t.id) AS track_count, COUNT(DISTINCT t.album_id) AS album_count"
+        format!("ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.description, {owned_counts_sql}")
     } else {
-        "ar.id, ar.name, MAX(arr.rating) AS rating, NULL AS metadata_locked, NULL AS description, COUNT(DISTINCT t.id) AS track_count, COUNT(DISTINCT t.album_id) AS album_count"
+        format!("ar.id, ar.name, MAX(arr.rating) AS rating, NULL AS metadata_locked, NULL AS description, {owned_counts_sql}")
     };
     let order = p.order_dir;
     let limit_clause = if wants_paged { "LIMIT ? OFFSET ?" } else { "" };
@@ -656,8 +670,9 @@ pub fn get_artist(
     let artist = conn
         .query_row(
             "SELECT ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.description,
-                COUNT(DISTINCT t.id) AS track_count, COUNT(DISTINCT t.album_id) AS album_count
-         FROM artists ar LEFT JOIN tracks t ON t.artist_id = ar.id
+                (SELECT COUNT(*) FROM tracks t JOIN albums al ON al.id = t.album_id WHERE al.artist_id = ar.id) AS track_count,
+                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = ar.id) AS album_count
+         FROM artists ar
          LEFT JOIN artist_ratings arr ON arr.artist_id = ar.id AND arr.user_id = ?
          WHERE ar.id = ? GROUP BY ar.id",
             rusqlite::params![user_id, artist_id],
@@ -692,9 +707,10 @@ pub fn list_artists_most_played(
 ) -> rusqlite::Result<Vec<ArtistRow>> {
     conn.prepare(
         "SELECT ar.id, ar.name, MAX(arr.rating) AS rating, NULL AS metadata_locked, NULL AS description,
-                COUNT(DISTINCT t.id) AS track_count, COUNT(DISTINCT t.album_id) AS album_count,
+                (SELECT COUNT(*) FROM tracks t JOIN albums al ON al.id = t.album_id WHERE al.artist_id = ar.id) AS track_count,
+                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = ar.id) AS album_count,
                 COALESCE(ar.play_count, 0) AS play_count
-         FROM artists ar LEFT JOIN tracks t ON t.artist_id = ar.id
+         FROM artists ar
          LEFT JOIN artist_ratings arr ON arr.artist_id = ar.id AND arr.user_id = ?
          WHERE COALESCE(ar.play_count, 0) > 0
          GROUP BY ar.id
@@ -1705,10 +1721,9 @@ pub fn search_music(conn: &Connection, p: SearchMusicParams<'_>) -> rusqlite::Re
         let sql = format!(
             "SELECT ar.id, ar.name,
                     MAX(arr.rating) AS rating,
-                    COUNT(DISTINCT t.id) AS track_count,
-                    COUNT(DISTINCT t.album_id) AS album_count
+                    (SELECT COUNT(*) FROM tracks t JOIN albums al ON al.id = t.album_id WHERE al.artist_id = ar.id) AS track_count,
+                    (SELECT COUNT(*) FROM albums al WHERE al.artist_id = ar.id) AS album_count
              FROM artists ar
-             JOIN tracks t ON t.artist_id = ar.id
              LEFT JOIN artist_ratings arr ON arr.artist_id = ar.id AND arr.user_id = ?1
              WHERE ar.name LIKE ?2 ESCAPE '\\'
              GROUP BY ar.id

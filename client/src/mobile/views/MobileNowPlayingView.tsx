@@ -59,6 +59,8 @@ export default function MobileNowPlayingView({
   onHybridThemeModeChange,
   adaptiveAccentEnabled,
   onAdaptiveAccentEnabledChange,
+  hideCompilationOnlyArtists,
+  onHideCompilationOnlyArtistsChange,
   eqControls,
   playbackMode = 'standard',
   vinylHardcore = false,
@@ -81,6 +83,8 @@ export default function MobileNowPlayingView({
   onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
   adaptiveAccentEnabled?: boolean;
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
+  hideCompilationOnlyArtists?: boolean;
+  onHideCompilationOnlyArtistsChange?: (enabled: boolean) => void;
   eqControls?: PlayerEqControls | null;
   playbackMode?: 'standard' | 'vinyl';
   vinylHardcore?: boolean;
@@ -542,6 +546,8 @@ export default function MobileNowPlayingView({
           onHybridThemeModeChange={onHybridThemeModeChange}
           adaptiveAccentEnabled={adaptiveAccentEnabled}
           onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
+          hideCompilationOnlyArtists={hideCompilationOnlyArtists}
+          onHideCompilationOnlyArtistsChange={onHideCompilationOnlyArtistsChange}
         />
       ) : null}
       {playbackTool === 'equalizer' ? (
