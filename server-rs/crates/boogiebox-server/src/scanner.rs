@@ -49,9 +49,27 @@ struct AudioTags {
 }
 
 /// Documents the Run One Pending Scan public API surface.
+///
+/// Claims and runs whichever scan job is globally oldest-pending. Used by the
+/// background scheduler tick, where "some due library" is the point.
 pub async fn run_one_pending_scan(state: crate::post_scan::PostScanState) {
+    run_pending_scan(state, None).await;
+}
+
+/// Runs the specific scan job just enqueued for one library (e.g. a user
+/// clicking "Scan" on it), rather than whatever is oldest in the global
+/// queue. See [`boogiebox_db::jobs::claim_scan_job`] for why this matters:
+/// without it, a manual scan click can end up running a different library's
+/// older queued/due job while the clicked library's own job sits pending.
+pub async fn run_scan_job(state: crate::post_scan::PostScanState, job_id: EntityId) {
+    run_pending_scan(state, Some(job_id)).await;
+}
+
+async fn run_pending_scan(state: crate::post_scan::PostScanState, target_job_id: Option<EntityId>) {
     let db = state.db.clone();
-    let result = tokio::task::spawn_blocking(move || run_one_pending_scan_blocking(&db)).await;
+    let result =
+        tokio::task::spawn_blocking(move || run_one_pending_scan_blocking(&db, target_job_id))
+            .await;
     if let Err(err) = result {
         tracing::error!("Rust scan worker task failed: {err}");
     }
@@ -91,11 +109,17 @@ async fn run_scheduler_tick(state: &crate::post_scan::PostScanState) {
     }
 }
 
-fn run_one_pending_scan_blocking(db: &DbPool) -> Result<(), JobError> {
+fn run_one_pending_scan_blocking(
+    db: &DbPool,
+    target_job_id: Option<EntityId>,
+) -> Result<(), JobError> {
     let claimed = {
         let conn = db.lock().unwrap_or_else(|p| p.into_inner());
         boogiebox_db::jobs::recover_stale_scan_jobs(&conn, 60)?;
-        boogiebox_db::jobs::claim_next_scan_job(&conn)?
+        match &target_job_id {
+            Some(job_id) => boogiebox_db::jobs::claim_scan_job(&conn, job_id)?,
+            None => boogiebox_db::jobs::claim_next_scan_job(&conn)?,
+        }
     };
     let Some(claimed) = claimed else {
         return Ok(());
@@ -179,6 +203,7 @@ fn scan_music_library(db: &DbPool, claimed: &ClaimedScanJob) -> Result<(), JobEr
 
     let conn = db.lock().unwrap_or_else(|p| p.into_inner());
     boogiebox_db::jobs::prune_missing_tracks(&conn, &claimed.library_id, &seen_paths)?;
+    boogiebox_db::jobs::prune_orphaned_music_entities(&conn)?;
     boogiebox_db::jobs::enqueue_default_music_post_scan_jobs(&conn, &claimed.library_id)?;
     let error_log = (!counters.messages.is_empty()).then(|| counters.messages.join("\n"));
     boogiebox_db::jobs::mark_scan_done(
@@ -810,6 +835,14 @@ fn read_flac_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
     let mut file = fs::File::open(path)?;
     let mut magic = [0_u8; 4];
     file.read_exact(&mut magic)?;
+    if &magic[0..3] == b"ID3" {
+        // Some taggers prepend a non-standard ID3v2 tag before the fLaC marker.
+        let mut rest = [0_u8; 6];
+        file.read_exact(&mut rest)?;
+        let tag_size = syncsafe_u32(&rest[2..6]) as u64;
+        file.seek(SeekFrom::Start(10 + tag_size))?;
+        file.read_exact(&mut magic)?;
+    }
     if &magic != b"fLaC" {
         return Ok(AudioTags::default());
     }
@@ -1290,6 +1323,47 @@ mod tests {
         assert_eq!(tags.title.as_deref(), Some("Song"));
         assert_eq!(tags.album_artist.as_deref(), Some("Band"));
         assert_eq!(tags.track_number, Some(7));
+    }
+
+    #[test]
+    fn reads_flac_tags_past_a_leading_id3v2_tag() {
+        let mut vorbis_block = Vec::new();
+        vorbis_block.extend_from_slice(&0_u32.to_le_bytes());
+        vorbis_block.extend_from_slice(&1_u32.to_le_bytes());
+        let comment = "ARTIST=Solarstone";
+        vorbis_block.extend_from_slice(&(comment.len() as u32).to_le_bytes());
+        vorbis_block.extend_from_slice(comment.as_bytes());
+
+        let mut file_bytes = Vec::new();
+        file_bytes.extend_from_slice(b"ID3\x03\x00\x00");
+        file_bytes.extend_from_slice(&syncsafe_encode(23)); // arbitrary padded ID3 body size
+        file_bytes.extend_from_slice(&[0_u8; 23]);
+        file_bytes.extend_from_slice(b"fLaC");
+        let mut header = [0x84_u8, 0, 0, 0]; // last block, type 4 (VORBIS_COMMENT)
+        let len = vorbis_block.len();
+        header[1] = (len >> 16) as u8;
+        header[2] = (len >> 8) as u8;
+        header[3] = len as u8;
+        file_bytes.extend_from_slice(&header);
+        file_bytes.extend_from_slice(&vorbis_block);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("boogiebox_test_{}.flac", std::process::id()));
+        fs::write(&path, &file_bytes).unwrap();
+
+        let tags = read_flac_tags(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(tags.artist.as_deref(), Some("Solarstone"));
+    }
+
+    fn syncsafe_encode(mut size: u32) -> [u8; 4] {
+        let mut bytes = [0_u8; 4];
+        for i in (0..4).rev() {
+            bytes[i] = (size & 0x7f) as u8;
+            size >>= 7;
+        }
+        bytes
     }
 
     #[test]

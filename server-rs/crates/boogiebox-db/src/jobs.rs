@@ -501,6 +501,9 @@ pub fn enqueue_due_scheduled_scans(conn: &Connection) -> Result<Vec<EntityId>, J
 }
 
 /// Documents the Claim Next Scan Job public API surface.
+///
+/// Claims whichever pending job is oldest, regardless of library. Used by the
+/// background scheduler tick, where "some due library" is the point.
 pub fn claim_next_scan_job(conn: &Connection) -> Result<Option<ClaimedScanJob>, JobError> {
     let Some(job_id) = conn
         .query_row(
@@ -512,12 +515,28 @@ pub fn claim_next_scan_job(conn: &Connection) -> Result<Option<ClaimedScanJob>, 
     else {
         return Ok(None);
     };
+    claim_scan_job(conn, &job_id)
+}
 
+/// Claims a specific pending scan job by id, ignoring queue order.
+///
+/// Used when the caller already knows which job it wants to run — e.g. a
+/// user clicking "Scan" on one library. Without this, that request would go
+/// through `claim_next_scan_job` instead, which claims whatever job is
+/// globally oldest; if another library had an older job still pending (a due
+/// schedule, a recovered stale job, etc.), the click would silently start
+/// that other library's scan while the clicked library's own job sat queued
+/// behind it — the requested library's scan never actually starting despite
+/// the UI showing "Scanning...".
+pub fn claim_scan_job(
+    conn: &Connection,
+    job_id: &EntityId,
+) -> Result<Option<ClaimedScanJob>, JobError> {
     let changed = conn.execute(
         "UPDATE scan_jobs
          SET status='running', started_at=datetime('now'), updated_at=datetime('now')
          WHERE id=?1 AND status='pending'",
-        [&job_id],
+        [job_id],
     )?;
     if changed == 0 {
         return Ok(None);
@@ -527,12 +546,12 @@ pub fn claim_next_scan_job(conn: &Connection) -> Result<Option<ClaimedScanJob>, 
         "SELECT l.id, COALESCE(l.library_type, 'music')
          FROM scan_jobs sj JOIN libraries l ON l.id = sj.library_id
          WHERE sj.id=?1",
-        [&job_id],
+        [job_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let folders = library_folder_paths(conn, &library_id)?;
     Ok(Some(ClaimedScanJob {
-        job_id,
+        job_id: job_id.clone(),
         library_id,
         library_type,
         folders,
@@ -757,6 +776,30 @@ pub fn prune_missing_tracks(
         }
     }
     Ok(pruned)
+}
+
+/// Deletes albums and artists left with no tracks after a scan — e.g. the
+/// stale "Singles and EPs"/"Compilations" folder-name entries a mistagging
+/// bug used to create, once a rescan re-derives the real tags and moves the
+/// tracks to the correct album/artist. Skips anything the user has locked
+/// via metadata_locked, and skips artists that still own an album or are
+/// directly credited on a track (the compilation-contributor case), even if
+/// that album currently has zero tracks of its own.
+pub fn prune_orphaned_music_entities(conn: &Connection) -> Result<(usize, usize), JobError> {
+    let albums_pruned = conn.execute(
+        "DELETE FROM albums
+         WHERE metadata_locked = 0
+           AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = albums.id)",
+        [],
+    )?;
+    let artists_pruned = conn.execute(
+        "DELETE FROM artists
+         WHERE metadata_locked = 0
+           AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = artists.id)
+           AND NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = artists.id)",
+        [],
+    )?;
+    Ok((albums_pruned, artists_pruned))
 }
 
 /// Documents the Enqueue Default Music Post Scan Jobs public API surface.

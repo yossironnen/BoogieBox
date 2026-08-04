@@ -273,7 +273,7 @@ async fn enqueue_scan_handler(
     .await
     .map(|job_id| {
         if let Some(state) = ps_state {
-            tokio::spawn(crate::scanner::run_one_pending_scan(state));
+            tokio::spawn(crate::scanner::run_scan_job(state, job_id.clone()));
         }
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]

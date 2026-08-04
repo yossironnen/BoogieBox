@@ -3527,6 +3527,144 @@ mod tests {
         );
     }
 
+    #[test]
+    fn claim_scan_job_runs_the_requested_library_even_behind_an_older_pending_job() {
+        let root = temp_dir("claim-scan-job");
+        let InitializedDatabase { connection, .. } = init_db(&root).expect("db init");
+        connection
+            .execute(
+                "INSERT INTO libraries(id, path, name) VALUES('lib-a', 'D:\\A', 'A')",
+                [],
+            )
+            .expect("library a");
+        connection
+            .execute(
+                "INSERT INTO libraries(id, path, name) VALUES('lib-b', 'D:\\B', 'B')",
+                [],
+            )
+            .expect("library b");
+        // Library B's job was queued first (e.g. a due schedule), so a naive
+        // FIFO claim would pick it over whatever the user just clicked.
+        connection
+            .execute(
+                "INSERT INTO scan_jobs(id, library_id, status, created_at) VALUES('sj-b', 'lib-b', 'pending', '2026-01-01 00:00:00')",
+                [],
+            )
+            .expect("library b job");
+        connection
+            .execute(
+                "INSERT INTO scan_jobs(id, library_id, status, created_at) VALUES('sj-a', 'lib-a', 'pending', '2026-01-02 00:00:00')",
+                [],
+            )
+            .expect("library a job");
+
+        let claimed = jobs::claim_scan_job(&connection, &music::coerce_entity_id("sj-a"))
+            .expect("claim")
+            .expect("job claimed");
+        assert_eq!(claimed.job_id, music::coerce_entity_id("sj-a"));
+        assert_eq!(claimed.library_id, music::coerce_entity_id("lib-a"));
+        assert_eq!(
+            query_single_text(&connection, "SELECT status FROM scan_jobs WHERE id='sj-a'"),
+            "running"
+        );
+        assert_eq!(
+            query_single_text(&connection, "SELECT status FROM scan_jobs WHERE id='sj-b'"),
+            "pending"
+        );
+    }
+
+    #[test]
+    fn prune_orphaned_music_entities_removes_trackless_albums_and_artists() {
+        let root = temp_dir("orphan-music");
+        let InitializedDatabase { connection, .. } = init_db(&root).expect("db init");
+        connection
+            .execute(
+                "INSERT INTO libraries(id, path, name) VALUES('lib-orphan-music', 'D:\\Music', 'Music')",
+                [],
+            )
+            .expect("library");
+        // Real artist with a real album and a track: must survive.
+        connection
+            .execute(
+                "INSERT INTO artists(id, name) VALUES('artist-real', 'Solarstone')",
+                [],
+            )
+            .expect("real artist");
+        connection
+            .execute(
+                "INSERT INTO albums(id, title, artist_id, album_artist) VALUES('album-real', 'The Impressions Ep', 'artist-real', 'Solarstone')",
+                [],
+            )
+            .expect("real album");
+        connection
+            .execute(
+                "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_name, album_artist, genre, composer, duration, file_path, file_size)
+                 VALUES('track-real', 'lib-orphan-music', 'artist-real', 'album-real', 'Track', 'track.flac', 'Solarstone', '', '', 0, 'D:\\Music\\track.flac', 1)",
+                [],
+            )
+            .expect("real track");
+        // Stale folder-name artist/album left behind after a rescan reassigned the track: must be pruned.
+        connection
+            .execute(
+                "INSERT INTO artists(id, name) VALUES('artist-stale', 'Singles and EPs')",
+                [],
+            )
+            .expect("stale artist");
+        connection
+            .execute(
+                "INSERT INTO albums(id, title, artist_id, album_artist) VALUES('album-stale', '(1998) Solarstone - The Impressions Ep', 'artist-stale', 'Singles and EPs')",
+                [],
+            )
+            .expect("stale album");
+        // Locked artist with no tracks/albums: must survive despite being orphaned.
+        connection
+            .execute(
+                "INSERT INTO artists(id, name, metadata_locked) VALUES('artist-locked', 'Kept On Purpose', 1)",
+                [],
+            )
+            .expect("locked artist");
+
+        let (albums_pruned, artists_pruned) =
+            jobs::prune_orphaned_music_entities(&connection).expect("prune");
+        assert_eq!(albums_pruned, 1);
+        assert_eq!(artists_pruned, 1);
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM albums WHERE id='album-real'"
+            ),
+            1
+        );
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM artists WHERE id='artist-real'"
+            ),
+            1
+        );
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM artists WHERE id='artist-locked'"
+            ),
+            1
+        );
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM albums WHERE id='album-stale'"
+            ),
+            0
+        );
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM artists WHERE id='artist-stale'"
+            ),
+            0
+        );
+    }
+
     fn query_single_text(connection: &Connection, sql: &str) -> String {
         connection
             .query_row(sql, [], |row| row.get::<_, String>(0))
