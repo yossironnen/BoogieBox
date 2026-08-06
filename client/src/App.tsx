@@ -891,38 +891,61 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
 
 type View = 'home' | 'search' | 'browse' | 'settings' | 'playlists';
 type PlaybackMode = 'standard' | 'vinyl';
-const VINYL_SETTINGS_STORAGE_KEY = 'boogiebox.playback.vinyl.v1';
+const VINYL_PLAYBACK_MODE_STORAGE_KEY = 'boogiebox.playback.vinyl.v1';
+const VINYL_PREFS_STORAGE_KEY = 'boogiebox.playback.vinylPrefs.v1';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'boogiebox.sidebar.collapsed.v1';
 
-function getStoredVinylSettings(): {
-  playbackMode: PlaybackMode;
+function vinylPrefsKey(userId: EntityId) { return `${VINYL_PREFS_STORAGE_KEY}.u${userId}`; }
+
+/** Vinyl on/off is a live playback toggle (from the album/player view), not a per-user preference. */
+function getStoredPlaybackMode(): PlaybackMode {
+  if (typeof window === 'undefined') return 'standard';
+  try {
+    const raw = window.localStorage.getItem(VINYL_PLAYBACK_MODE_STORAGE_KEY);
+    if (!raw) return 'standard';
+    const parsed = JSON.parse(raw) as Partial<{ playbackMode: PlaybackMode }>;
+    return parsed.playbackMode === 'vinyl' ? 'vinyl' : 'standard';
+  } catch {
+    return 'standard';
+  }
+}
+
+type VinylPrefs = {
   hardcore: boolean;
   needleDrop: boolean;
   analogFxDisabled: boolean;
   needleDropIntensity: number;
-} {
-  if (typeof window === 'undefined') {
-    return { playbackMode: 'standard', hardcore: false, needleDrop: false, analogFxDisabled: false, needleDropIntensity: 0.65 };
-  }
+};
+
+const DEFAULT_VINYL_PREFS: VinylPrefs = {
+  hardcore: false,
+  needleDrop: false,
+  analogFxDisabled: false,
+  needleDropIntensity: 0.65,
+};
+
+function getStoredVinylPrefs(userId: EntityId): VinylPrefs {
+  const raw = safeLocalStorageGet(vinylPrefsKey(userId));
+  if (!raw) return DEFAULT_VINYL_PREFS;
   try {
-    const raw = window.localStorage.getItem(VINYL_SETTINGS_STORAGE_KEY);
-    if (!raw) return { playbackMode: 'standard', hardcore: false, needleDrop: false, analogFxDisabled: false, needleDropIntensity: 0.65 };
-    const parsed = JSON.parse(raw) as Partial<{
-      playbackMode: PlaybackMode;
-      hardcore: boolean;
-      needleDrop: boolean;
-      analogFxDisabled: boolean;
-      needleDropIntensity: number;
-    }>;
+    const parsed = JSON.parse(raw) as Partial<VinylPrefs>;
     return {
-      playbackMode: parsed.playbackMode === 'vinyl' ? 'vinyl' : 'standard',
       hardcore: parsed.hardcore === true,
       needleDrop: parsed.needleDrop === true,
       analogFxDisabled: parsed.analogFxDisabled === true,
       needleDropIntensity: Math.max(0, Math.min(1, Number.isFinite(parsed.needleDropIntensity) ? Number(parsed.needleDropIntensity) : 0.65)),
     };
   } catch {
-    return { playbackMode: 'standard', hardcore: false, needleDrop: false, analogFxDisabled: false, needleDropIntensity: 0.65 };
+    return DEFAULT_VINYL_PREFS;
+  }
+}
+
+function saveVinylPrefsToStorage(prefs: VinylPrefs, userId: EntityId): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(vinylPrefsKey(userId), JSON.stringify(prefs));
+  } catch {
+    // Best effort only.
   }
 }
 
@@ -960,11 +983,11 @@ export default function App() {
   const [streamDirect, setStreamDirect] = useState(() => getStreamDirect());
   const [adaptiveAccentEnabled, setAdaptiveAccentEnabled] = useState<boolean>(true);
   const [hideCompilationOnlyArtists, setHideCompilationOnlyArtists] = useState<boolean>(true);
-  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>(() => getStoredVinylSettings().playbackMode);
-  const [vinylHardcore, setVinylHardcore] = useState<boolean>(() => getStoredVinylSettings().hardcore);
-  const [vinylNeedleDrop, setVinylNeedleDrop] = useState<boolean>(() => getStoredVinylSettings().needleDrop);
-  const [vinylAnalogFxDisabled, setVinylAnalogFxDisabled] = useState<boolean>(() => getStoredVinylSettings().analogFxDisabled);
-  const [vinylNeedleDropIntensity, setVinylNeedleDropIntensity] = useState<number>(() => getStoredVinylSettings().needleDropIntensity);
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>(() => getStoredPlaybackMode());
+  const [vinylHardcore, setVinylHardcore] = useState<boolean>(() => DEFAULT_VINYL_PREFS.hardcore);
+  const [vinylNeedleDrop, setVinylNeedleDrop] = useState<boolean>(() => DEFAULT_VINYL_PREFS.needleDrop);
+  const [vinylAnalogFxDisabled, setVinylAnalogFxDisabled] = useState<boolean>(() => DEFAULT_VINYL_PREFS.analogFxDisabled);
+  const [vinylNeedleDropIntensity, setVinylNeedleDropIntensity] = useState<number>(() => DEFAULT_VINYL_PREFS.needleDropIntensity);
   const [playerState, setPlayerState] = useState<PlayerState>({ queue: [], currentIndex: 0, isPlaying: false, playToken: 0 });
   const [settings, setSettings] = useState<AppSettings>(() => ({ ...DEFAULT_SETTINGS }));
   const [browseOpenAlbumRequest, setBrowseOpenAlbumRequest] =
@@ -1036,23 +1059,35 @@ export default function App() {
     api.userSettings.update({ hideCompilationOnlyArtists: String(hideCompilationOnlyArtists) }).catch(() => {});
   }, [hideCompilationOnlyArtists, currentUser]);
 
+  // Vinyl on/off is a live playback toggle, shared across users on this device.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
-      window.localStorage.setItem(
-        VINYL_SETTINGS_STORAGE_KEY,
-        JSON.stringify({
-          playbackMode,
-          hardcore: vinylHardcore,
-          needleDrop: vinylNeedleDrop,
-          analogFxDisabled: vinylAnalogFxDisabled,
-          needleDropIntensity: vinylNeedleDropIntensity,
-        }),
-      );
+      window.localStorage.setItem(VINYL_PLAYBACK_MODE_STORAGE_KEY, JSON.stringify({ playbackMode }));
     } catch {
       // Best effort only.
     }
-  }, [playbackMode, vinylHardcore, vinylNeedleDrop, vinylAnalogFxDisabled, vinylNeedleDropIntensity]);
+  }, [playbackMode]);
+
+  // Vinyl mode preferences (hardcore/needle-drop/analog FX) are per-user: localStorage for instant
+  // load, server for cross-browser sync.
+  useEffect(() => {
+    if (!currentUser || currentUser === 'loading') return;
+    const userId = (currentUser as AuthUser).id;
+    const prefs: VinylPrefs = {
+      hardcore: vinylHardcore,
+      needleDrop: vinylNeedleDrop,
+      analogFxDisabled: vinylAnalogFxDisabled,
+      needleDropIntensity: vinylNeedleDropIntensity,
+    };
+    saveVinylPrefsToStorage(prefs, userId);
+    api.userSettings.update({
+      vinylHardcore: String(vinylHardcore),
+      vinylNeedleDrop: String(vinylNeedleDrop),
+      vinylAnalogFxDisabled: String(vinylAnalogFxDisabled),
+      vinylNeedleDropIntensity: String(vinylNeedleDropIntensity),
+    }).catch(() => {});
+  }, [currentUser, vinylHardcore, vinylNeedleDrop, vinylAnalogFxDisabled, vinylNeedleDropIntensity]);
 
   useEffect(() => {
     if (typeof document === 'undefined' || typeof window === 'undefined') return;
@@ -1083,6 +1118,11 @@ export default function App() {
     setSettings(prev => ({ ...DEFAULT_SETTINGS, ...prev, ...(getStoredTheme(userId) ?? {}) }));
     setAdaptiveAccentEnabled(getStoredAdaptiveAccentEnabled(userId));
     setHybridThemeMode(getStoredHybridThemeMode(userId) ?? 'dark');
+    const storedVinylPrefs = getStoredVinylPrefs(userId);
+    setVinylHardcore(storedVinylPrefs.hardcore);
+    setVinylNeedleDrop(storedVinylPrefs.needleDrop);
+    setVinylAnalogFxDisabled(storedVinylPrefs.analogFxDisabled);
+    setVinylNeedleDropIntensity(storedVinylPrefs.needleDropIntensity);
     api.userSettings.get().then(userSettings => {
       if (userSettings.theme) {
         const serverTheme = parseThemeSettings(userSettings.theme);
@@ -1104,18 +1144,32 @@ export default function App() {
         setHybridThemeMode(serverHybridThemeMode);
         saveHybridThemeModeToStorage(serverHybridThemeMode, userId);
       }
+      if (
+        userSettings.vinylHardcore !== undefined
+        || userSettings.vinylNeedleDrop !== undefined
+        || userSettings.vinylAnalogFxDisabled !== undefined
+        || userSettings.vinylNeedleDropIntensity !== undefined
+      ) {
+        const serverVinylPrefs: VinylPrefs = {
+          hardcore: userSettings.vinylHardcore === 'true',
+          needleDrop: userSettings.vinylNeedleDrop === 'true',
+          analogFxDisabled: userSettings.vinylAnalogFxDisabled === 'true',
+          needleDropIntensity: Math.max(0, Math.min(1, Number(userSettings.vinylNeedleDropIntensity) || 0.65)),
+        };
+        setVinylHardcore(serverVinylPrefs.hardcore);
+        setVinylNeedleDrop(serverVinylPrefs.needleDrop);
+        setVinylAnalogFxDisabled(serverVinylPrefs.analogFxDisabled);
+        setVinylNeedleDropIntensity(serverVinylPrefs.needleDropIntensity);
+        saveVinylPrefsToStorage(serverVinylPrefs, userId);
+      }
     }).catch(() => {});
     api.playbackSettings().then(shared => {
       setSettings(prev => ({
         ...prev,
         ...(shared.transcodeQuality != null ? { transcodeQuality: shared.transcodeQuality } : {}),
         ...(shared.replayGainEnabled != null ? { replayGainEnabled: shared.replayGainEnabled } : {}),
-        ...(shared.vinylMode != null ? { vinylMode: shared.vinylMode } : {}),
         ...(shared.lastfmConfigured != null ? { lastfmConfigured: shared.lastfmConfigured } : {}),
       }));
-      if (shared.vinylMode === 'vinyl' || shared.vinylMode === 'standard') {
-        setPlaybackMode(shared.vinylMode);
-      }
     }).catch(() => {});
   }, [currentUser]);
 
@@ -1605,8 +1659,6 @@ export default function App() {
               onHideCompilationOnlyArtistsChange={setHideCompilationOnlyArtists}
               hybridThemeMode={hybridThemeMode}
               onHybridThemeModeChange={selectHybridThemeMode}
-              playbackMode={playbackMode}
-              onPlaybackModeChange={setPlaybackMode}
               vinylHardcore={vinylHardcore}
               onVinylHardcoreChange={setVinylHardcore}
               vinylNeedleDrop={vinylNeedleDrop}

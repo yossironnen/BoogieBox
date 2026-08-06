@@ -41,6 +41,8 @@ struct LoginUserFull {
     id: String,
     username: String,
     role: String,
+    can_manage_libraries: bool,
+    can_edit_metadata: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,7 +51,7 @@ struct MeResponse {
     id: String,
     username: String,
     role: String,
-    can_scan: bool,
+    can_manage_libraries: bool,
     can_edit_metadata: bool,
 }
 
@@ -252,6 +254,8 @@ async fn login_handler(
             id: user.id,
             username: user.username,
             role: user.role,
+            can_manage_libraries: user.can_manage_libraries,
+            can_edit_metadata: user.can_edit_metadata,
         },
     };
     let body = (StatusCode::OK, Json(response_body)).into_response();
@@ -284,7 +288,7 @@ async fn me_handler(user: AuthenticatedUser) -> impl IntoResponse {
         id: user.id,
         username: user.username,
         role: user.role,
-        can_scan: user.can_scan,
+        can_manage_libraries: user.can_manage_libraries,
         can_edit_metadata: user.can_edit_metadata,
     })
 }

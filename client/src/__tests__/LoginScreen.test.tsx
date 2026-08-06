@@ -32,7 +32,7 @@ describe('LoginScreen', () => {
   it('logs in immediately when the selected user has no PIN', async () => {
     const onLogin = vi.fn();
     apiMock.auth.login.mockResolvedValueOnce({
-      user: { id: '1', username: 'Admin', role: 'admin', canScan: true, canEditMetadata: true },
+      user: { id: '1', username: 'Admin', role: 'admin', canManageLibraries: true, canEditMetadata: true },
     });
 
     render(<LoginScreen onLogin={onLogin} />);
@@ -44,7 +44,7 @@ describe('LoginScreen', () => {
       id: '1',
       username: 'Admin',
       role: 'admin',
-      canScan: true,
+      canManageLibraries: true,
       canEditMetadata: true,
     });
     expect(screen.queryByText(/Enter PIN if this user has one/i)).not.toBeInTheDocument();

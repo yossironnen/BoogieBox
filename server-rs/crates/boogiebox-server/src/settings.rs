@@ -76,6 +76,10 @@ pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
     "volume",
     "muted",
     "hideCompilationOnlyArtists",
+    "vinylHardcore",
+    "vinylNeedleDrop",
+    "vinylAnalogFxDisabled",
+    "vinylNeedleDropIntensity",
 ];
 
 /// Documents the USER SETTING MAX VALUE LEN public API surface.
@@ -88,6 +92,21 @@ pub fn validate_user_setting_value(key: &str, value: &str) -> Result<(), String>
     }
     if key == "hideCompilationOnlyArtists" && value != "true" && value != "false" {
         return Err("Setting 'hideCompilationOnlyArtists' must be 'true' or 'false'".to_string());
+    }
+    if ["vinylHardcore", "vinylNeedleDrop", "vinylAnalogFxDisabled"].contains(&key)
+        && value != "true"
+        && value != "false"
+    {
+        return Err(format!("Setting '{key}' must be 'true' or 'false'"));
+    }
+    if key == "vinylNeedleDropIntensity" {
+        let n: f64 = value
+            .trim()
+            .parse()
+            .map_err(|_| "Setting 'vinylNeedleDropIntensity' must be a number".to_string())?;
+        if !(0.0..=1.0).contains(&n) {
+            return Err("Setting 'vinylNeedleDropIntensity' must be between 0 and 1".to_string());
+        }
     }
     Ok(())
 }

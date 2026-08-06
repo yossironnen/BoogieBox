@@ -115,7 +115,7 @@ export default function UserManagement({ currentUser }: Props) {
   const [newUsername, setNewUsername] = useState('');
   const [newRole, setNewRole] = useState<'user' | 'admin'>('user');
   const [newPin, setNewPin] = useState('');
-  const [newCanScan, setNewCanScan] = useState(false);
+  const [newCanManageLibraries, setNewCanManageLibraries] = useState(false);
   const [newCanEditMetadata, setNewCanEditMetadata] = useState(false);
   const [addError, setAddError] = useState('');
   const [pinModalUser, setPinModalUser] = useState<AdminUser | null>(null);
@@ -142,10 +142,10 @@ export default function UserManagement({ currentUser }: Props) {
     try {
       await api.admin.users.create({
         username: newUsername.trim(), role: newRole, pin: newPin || undefined,
-        canScan: newRole === 'user' ? newCanScan : undefined,
+        canManageLibraries: newRole === 'user' ? newCanManageLibraries : undefined,
         canEditMetadata: newRole === 'user' ? newCanEditMetadata : undefined,
       });
-      setNewUsername(''); setNewPin(''); setNewRole('user'); setNewCanScan(false); setNewCanEditMetadata(false);
+      setNewUsername(''); setNewPin(''); setNewRole('user'); setNewCanManageLibraries(false); setNewCanEditMetadata(false);
       load();
     } catch (e: any) {
       setAddError(e.message || 'Failed to create user');
@@ -162,8 +162,8 @@ export default function UserManagement({ currentUser }: Props) {
     }
   };
 
-  const handleTogglePermission = async (user: AdminUser, perm: 'canScan' | 'canEditMetadata') => {
-    const next = { canScan: user.canScan, canEditMetadata: user.canEditMetadata, [perm]: !user[perm] };
+  const handleTogglePermission = async (user: AdminUser, perm: 'canManageLibraries' | 'canEditMetadata') => {
+    const next = { canManageLibraries: user.canManageLibraries, canEditMetadata: user.canEditMetadata, [perm]: !user[perm] };
     try {
       await api.admin.users.setPermissions(user.id, next);
       load();
@@ -199,8 +199,8 @@ export default function UserManagement({ currentUser }: Props) {
                 </span>
                 {user.role === 'user' && (
                   <>
-                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 10 }} title="Toggle scan permission" onClick={() => handleTogglePermission(user, 'canScan')}>
-                      {permTag(user.canScan, 'Scan')}
+                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 10 }} title="Toggle libraries management permission" onClick={() => handleTogglePermission(user, 'canManageLibraries')}>
+                      {permTag(user.canManageLibraries, 'Libraries')}
                     </button>
                     <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 10 }} title="Toggle metadata edit permission" onClick={() => handleTogglePermission(user, 'canEditMetadata')}>
                       {permTag(user.canEditMetadata, 'Metadata')}
@@ -233,7 +233,7 @@ export default function UserManagement({ currentUser }: Props) {
             <select
               style={{ ...inputStyle, flex: 1 }}
               value={newRole}
-              onChange={e => { setNewRole(e.target.value as 'user' | 'admin'); setNewCanScan(false); setNewCanEditMetadata(false); }}
+              onChange={e => { setNewRole(e.target.value as 'user' | 'admin'); setNewCanManageLibraries(false); setNewCanEditMetadata(false); }}
             >
               <option value="user">User</option>
               <option value="admin">Admin</option>
@@ -251,8 +251,8 @@ export default function UserManagement({ currentUser }: Props) {
           {newRole === 'user' && (
             <div style={{ display: 'flex', gap: 16 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <input type="checkbox" style={checkboxStyle} checked={newCanScan} onChange={e => setNewCanScan(e.target.checked)} />
-                Allow library scan
+                <input type="checkbox" style={checkboxStyle} checked={newCanManageLibraries} onChange={e => setNewCanManageLibraries(e.target.checked)} />
+                Allow libraries management
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
                 <input type="checkbox" style={checkboxStyle} checked={newCanEditMetadata} onChange={e => setNewCanEditMetadata(e.target.checked)} />

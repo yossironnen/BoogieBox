@@ -13,7 +13,7 @@ vi.mock('./api', () => ({
   getStreamDirect: () => false,
   api: {
     auth: {
-      me: vi.fn().mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }),
+      me: vi.fn().mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }),
       logout: vi.fn().mockResolvedValue(undefined),
     },
     systemStatus: vi.fn().mockResolvedValue({ setupRequired: false, ffmpegAvailable: true }),

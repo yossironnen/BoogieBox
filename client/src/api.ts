@@ -577,10 +577,10 @@ export const api = {
     enqueuePostScanJob: (libraryId: ApiEntityId, jobType: AdminPostScanJobType)                              => post<{ ok: boolean; id: ApiEntityId; status: string; job_type: AdminPostScanJobType; library_id: ApiEntityId }>(`/admin/libraries/${libraryId}/post-scan`, { jobType }),
     users: {
       list:               ()                                                                                   => get<AdminUser[]>('/admin/users'),
-      create:             (data: { username: string; role: string; pin?: string; canScan?: boolean; canEditMetadata?: boolean }) => post<AdminUser>('/admin/users', data),
+      create:             (data: { username: string; role: string; pin?: string; canManageLibraries?: boolean; canEditMetadata?: boolean }) => post<AdminUser>('/admin/users', data),
       remove:             (id: EntityId)                                                                      => del<{ ok: boolean }>(`/admin/users/${id}`),
       setPin:             (id: EntityId, pin: string | null)                                                  => put<{ ok: boolean }>(`/admin/users/${id}/pin`, { pin }),
-      setPermissions:     (id: EntityId, perms: { canScan: boolean; canEditMetadata: boolean })              => put<{ ok: boolean }>(`/admin/users/${id}/permissions`, perms),
+      setPermissions:     (id: EntityId, perms: { canManageLibraries: boolean; canEditMetadata: boolean })   => put<{ ok: boolean }>(`/admin/users/${id}/permissions`, perms),
     },
   },
 };

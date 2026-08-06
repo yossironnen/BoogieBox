@@ -667,6 +667,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-08-02-fix-compilation-album-ownership",
             apply: fix_compilation_album_ownership,
         },
+        Migration {
+            id: "2026-08-05-rename-can-scan-to-can-manage-libraries",
+            apply: ensure_can_manage_libraries_column,
+        },
     ];
 
     for migration in migrations {
@@ -778,6 +782,27 @@ fn ensure_user_permissions_columns(connection: &Connection) -> Result<(), rusqli
     if !column_exists(connection, "users", "can_edit_metadata")? {
         connection.execute_batch(
             "ALTER TABLE users ADD COLUMN can_edit_metadata INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    Ok(())
+}
+
+/// Renames the `can_scan` permission column to `can_manage_libraries`: the permission now
+/// gates full library management (create/rename/delete libraries and folders, schedules),
+/// not just enqueuing scans.
+fn ensure_can_manage_libraries_column(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "users") {
+        return Ok(());
+    }
+    if column_exists(connection, "users", "can_manage_libraries")? {
+        return Ok(());
+    }
+    if column_exists(connection, "users", "can_scan")? {
+        connection
+            .execute_batch("ALTER TABLE users RENAME COLUMN can_scan TO can_manage_libraries")?;
+    } else {
+        connection.execute_batch(
+            "ALTER TABLE users ADD COLUMN can_manage_libraries INTEGER NOT NULL DEFAULT 0",
         )?;
     }
     Ok(())
@@ -1914,8 +1939,8 @@ pub struct AuthUserRow {
     pub role: String,
     /// Documents the Pin Hash public API surface.
     pub pin_hash: Option<String>,
-    /// Documents the Can Scan public API surface.
-    pub can_scan: bool,
+    /// Documents the Can Manage Libraries public API surface.
+    pub can_manage_libraries: bool,
     /// Documents the Can Edit Metadata public API surface.
     pub can_edit_metadata: bool,
 }
@@ -1929,8 +1954,8 @@ pub struct SessionUser {
     pub username: String,
     /// Documents the Role public API surface.
     pub role: String,
-    /// Documents the Can Scan public API surface.
-    pub can_scan: bool,
+    /// Documents the Can Manage Libraries public API surface.
+    pub can_manage_libraries: bool,
     /// Documents the Can Edit Metadata public API surface.
     pub can_edit_metadata: bool,
 }
@@ -1946,8 +1971,8 @@ pub struct AdminUserRow {
     pub role: String,
     /// Documents the Has Pin public API surface.
     pub has_pin: bool,
-    /// Documents the Can Scan public API surface.
-    pub can_scan: bool,
+    /// Documents the Can Manage Libraries public API surface.
+    pub can_manage_libraries: bool,
     /// Documents the Can Edit Metadata public API surface.
     pub can_edit_metadata: bool,
     /// Documents the Created At public API surface.
@@ -1975,7 +2000,7 @@ pub fn get_user_for_auth(
 ) -> Result<Option<AuthUserRow>, rusqlite::Error> {
     conn.query_row(
         r#"SELECT id, username, role, pin_hash,
-                  COALESCE(can_scan, 0), COALESCE(can_edit_metadata, 0)
+                  COALESCE(can_manage_libraries, 0), COALESCE(can_edit_metadata, 0)
            FROM users WHERE id = ?1"#,
         [user_id],
         |row| {
@@ -1984,7 +2009,7 @@ pub fn get_user_for_auth(
                 username: row.get(1)?,
                 role: row.get(2)?,
                 pin_hash: row.get(3)?,
-                can_scan: row.get::<_, i64>(4)? != 0,
+                can_manage_libraries: row.get::<_, i64>(4)? != 0,
                 can_edit_metadata: row.get::<_, i64>(5)? != 0,
             })
         },
@@ -2013,7 +2038,7 @@ pub fn get_session_user(
 ) -> Result<Option<SessionUser>, rusqlite::Error> {
     conn.query_row(
         r#"SELECT s.user_id, u.username, u.role,
-                  COALESCE(u.can_scan, 0), COALESCE(u.can_edit_metadata, 0)
+                  COALESCE(u.can_manage_libraries, 0), COALESCE(u.can_edit_metadata, 0)
            FROM sessions s
            JOIN users u ON u.id = s.user_id
            WHERE s.token = ?1 AND s.expires_at > datetime('now')"#,
@@ -2023,7 +2048,7 @@ pub fn get_session_user(
                 user_id: row.get(0)?,
                 username: row.get(1)?,
                 role: row.get(2)?,
-                can_scan: row.get::<_, i64>(3)? != 0,
+                can_manage_libraries: row.get::<_, i64>(3)? != 0,
                 can_edit_metadata: row.get::<_, i64>(4)? != 0,
             })
         },
@@ -2054,7 +2079,7 @@ pub fn list_admin_users(conn: &Connection) -> Result<Vec<AdminUserRow>, rusqlite
     let mut stmt = conn.prepare(
         r#"SELECT id, username, role,
                   CASE WHEN pin_hash IS NOT NULL THEN 1 ELSE 0 END AS has_pin,
-                  COALESCE(can_scan, 0), COALESCE(can_edit_metadata, 0), created_at
+                  COALESCE(can_manage_libraries, 0), COALESCE(can_edit_metadata, 0), created_at
            FROM users
            ORDER BY role DESC, username ASC"#,
     )?;
@@ -2064,7 +2089,7 @@ pub fn list_admin_users(conn: &Connection) -> Result<Vec<AdminUserRow>, rusqlite
             username: row.get(1)?,
             role: row.get(2)?,
             has_pin: row.get::<_, i64>(3)? != 0,
-            can_scan: row.get::<_, i64>(4)? != 0,
+            can_manage_libraries: row.get::<_, i64>(4)? != 0,
             can_edit_metadata: row.get::<_, i64>(5)? != 0,
             created_at: row.get(6)?,
         })
@@ -2079,12 +2104,12 @@ pub fn create_user(
     username: &str,
     role: &str,
     pin_hash: Option<&str>,
-    can_scan: bool,
+    can_manage_libraries: bool,
     can_edit_metadata: bool,
 ) -> Result<(), rusqlite::Error> {
     conn.execute(
-        "INSERT INTO users(id, username, role, pin_hash, can_scan, can_edit_metadata) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, username, role, pin_hash, can_scan as i64, can_edit_metadata as i64],
+        "INSERT INTO users(id, username, role, pin_hash, can_manage_libraries, can_edit_metadata) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, username, role, pin_hash, can_manage_libraries as i64, can_edit_metadata as i64],
     )?;
     Ok(())
 }
@@ -2093,12 +2118,16 @@ pub fn create_user(
 pub fn update_user_permissions(
     conn: &Connection,
     user_id: &str,
-    can_scan: bool,
+    can_manage_libraries: bool,
     can_edit_metadata: bool,
 ) -> Result<bool, rusqlite::Error> {
     let changed = conn.execute(
-        "UPDATE users SET can_scan = ?1, can_edit_metadata = ?2 WHERE id = ?3",
-        params![can_scan as i64, can_edit_metadata as i64, user_id],
+        "UPDATE users SET can_manage_libraries = ?1, can_edit_metadata = ?2 WHERE id = ?3",
+        params![
+            can_manage_libraries as i64,
+            can_edit_metadata as i64,
+            user_id
+        ],
     )?;
     Ok(changed > 0)
 }

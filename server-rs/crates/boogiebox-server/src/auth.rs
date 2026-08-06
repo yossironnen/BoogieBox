@@ -157,8 +157,8 @@ pub struct AuthenticatedUser {
     pub username: String,
     /// Documents the Role public API surface.
     pub role: String,
-    /// Documents the Can Scan public API surface.
-    pub can_scan: bool,
+    /// Documents the Can Manage Libraries public API surface.
+    pub can_manage_libraries: bool,
     /// Documents the Can Edit Metadata public API surface.
     pub can_edit_metadata: bool,
 }
@@ -167,6 +167,11 @@ impl AuthenticatedUser {
     /// Documents the Is Admin public API surface.
     pub fn is_admin(&self) -> bool {
         self.role == "admin"
+    }
+
+    /// True for admins, or non-admin users granted the "Allow libraries management" permission.
+    pub fn can_manage_libraries(&self) -> bool {
+        self.is_admin() || self.can_manage_libraries
     }
 }
 
@@ -245,7 +250,7 @@ where
                 id: u.user_id,
                 username: u.username,
                 role: u.role,
-                can_scan: u.can_scan,
+                can_manage_libraries: u.can_manage_libraries,
                 can_edit_metadata: u.can_edit_metadata,
             })
             .ok_or_else(|| {
@@ -287,6 +292,36 @@ where
             ));
         }
         Ok(AdminUser(user))
+    }
+}
+
+/// Axum extractor: same as `AuthenticatedUser` but also requires admin role or the
+/// "Allow libraries management" permission. Rejects with 403 otherwise.
+/// Documents the Library Manager public API surface.
+pub struct LibraryManager(pub AuthenticatedUser);
+
+impl<S> FromRequestParts<S> for LibraryManager
+where
+    S: Send + Sync,
+    SharedState: axum::extract::FromRef<S>,
+{
+    type Rejection = (StatusCode, axum::Json<ErrorResponse>);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let user = AuthenticatedUser::from_request_parts(parts, state).await?;
+        if !user.can_manage_libraries() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                axum::Json(ErrorResponse {
+                    error: "Forbidden".into(),
+                    setup_required: None,
+                }),
+            ));
+        }
+        Ok(LibraryManager(user))
     }
 }
 

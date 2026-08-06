@@ -23,7 +23,7 @@ struct AdminUserEntry {
     username: String,
     role: String,
     has_pin: bool,
-    can_scan: bool,
+    can_manage_libraries: bool,
     can_edit_metadata: bool,
     created_at: String,
 }
@@ -34,14 +34,14 @@ struct CreateUserRequest {
     username: Option<String>,
     role: Option<String>,
     pin: Option<String>,
-    can_scan: Option<bool>,
+    can_manage_libraries: Option<bool>,
     can_edit_metadata: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdatePermissionsRequest {
-    can_scan: Option<bool>,
+    can_manage_libraries: Option<bool>,
     can_edit_metadata: Option<bool>,
 }
 
@@ -100,7 +100,7 @@ async fn list_users_handler(
                     username: u.username,
                     role: u.role,
                     has_pin: u.has_pin,
-                    can_scan: u.can_scan,
+                    can_manage_libraries: u.can_manage_libraries,
                     can_edit_metadata: u.can_edit_metadata,
                     created_at: u.created_at,
                 })
@@ -157,7 +157,7 @@ async fn create_user_handler(
         .as_deref()
         .filter(|p| !p.is_empty())
         .map(hash_pin);
-    let can_scan = payload.can_scan.unwrap_or(false);
+    let can_manage_libraries = payload.can_manage_libraries.unwrap_or(false);
     let can_edit_metadata = payload.can_edit_metadata.unwrap_or(false);
     let new_id = new_uuid();
     let new_id_clone = new_id.clone();
@@ -170,7 +170,7 @@ async fn create_user_handler(
             &username,
             &role,
             pin_hash.as_deref(),
-            can_scan,
+            can_manage_libraries,
             can_edit_metadata,
         )
         .and_then(|_| boogiebox_db::list_admin_users(&conn))
@@ -187,7 +187,7 @@ async fn create_user_handler(
                         username: created.username,
                         role: created.role,
                         has_pin: created.has_pin,
-                        can_scan: created.can_scan,
+                        can_manage_libraries: created.can_manage_libraries,
                         can_edit_metadata: created.can_edit_metadata,
                         created_at: created.created_at,
                     }),
@@ -231,9 +231,11 @@ async fn update_permissions_handler(
         let Some(user) = current else {
             return Ok::<bool, rusqlite::Error>(false);
         };
-        let can_scan = payload.can_scan.unwrap_or(user.can_scan);
+        let can_manage_libraries = payload
+            .can_manage_libraries
+            .unwrap_or(user.can_manage_libraries);
         let can_edit = payload.can_edit_metadata.unwrap_or(user.can_edit_metadata);
-        boogiebox_db::update_user_permissions(&conn, &user_id, can_scan, can_edit)
+        boogiebox_db::update_user_permissions(&conn, &user_id, can_manage_libraries, can_edit)
     })
     .await;
 

@@ -451,8 +451,6 @@ interface Props {
   onHideCompilationOnlyArtistsChange?: (enabled: boolean) => void;
   hybridThemeMode?: HybridThemeMode;
   onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
-  playbackMode?: 'standard' | 'vinyl';
-  onPlaybackModeChange?: (mode: 'standard' | 'vinyl') => void;
   vinylHardcore?: boolean;
   onVinylHardcoreChange?: (enabled: boolean) => void;
   vinylNeedleDrop?: boolean;
@@ -489,8 +487,6 @@ export default function SettingsPage({
   onHideCompilationOnlyArtistsChange,
   hybridThemeMode = 'dark',
   onHybridThemeModeChange,
-  playbackMode = 'standard',
-  onPlaybackModeChange,
   vinylHardcore = false,
   onVinylHardcoreChange,
   vinylNeedleDrop = false,
@@ -501,6 +497,7 @@ export default function SettingsPage({
   onVinylNeedleDropIntensityChange,
 }: Props) {
   const isAdmin = currentUser.role === 'admin';
+  const canManageLibraries = isAdmin || currentUser.canManageLibraries;
   const [local, setLocal] = useState<AppSettings>(settings);
   const [activeTab, setActiveTab] = useState<'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users'>('theme');
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -534,7 +531,6 @@ export default function SettingsPage({
   const [transcodeQualitySaving, setTranscodeQualitySaving] = useState(false);
   const [transcodeQualityResult, setTranscodeQualityResult] = useState<string | null>(null);
   const [replayGainEnabled, setReplayGainEnabled] = useState(settings.replayGainEnabled === 'true');
-  const [defaultVinylMode, setDefaultVinylMode] = useState(settings.vinylMode === 'vinyl');
 
   // DLNA
   const [dlnaEnabled, setDlnaEnabled] = useState(settings.dlnaEnabled === 'true');
@@ -596,7 +592,6 @@ export default function SettingsPage({
     setCfDuration(Number(settings.crossfadeDuration) || 2);
     setTranscodeQuality(settings.transcodeQuality === 'high' ? 'high' : 'low');
     setReplayGainEnabled(settings.replayGainEnabled === 'true');
-    setDefaultVinylMode(settings.vinylMode === 'vinyl');
     setWaveformGenerateOnMissing(settings.waveformGenerateOnMissing !== 'false');
     setWaveformBackgroundEnabled(settings.waveformBackgroundEnabled === 'true');
     setWaveformFrequencyHours(Number(settings.waveformBackgroundFrequencyHours) || 24);
@@ -727,8 +722,8 @@ export default function SettingsPage({
   }, [appLibraries]);
 
   useEffect(() => {
-    if (activeTab === 'libraries') refreshLibraries().catch(() => {});
-    if (activeTab === 'schedules') loadSchedules();
+    if (activeTab === 'libraries' && canManageLibraries) refreshLibraries().catch(() => {});
+    if (activeTab === 'schedules' && canManageLibraries) loadSchedules();
     if (activeTab === 'schedules' && isAdmin) loadQueueSnapshot();
     if (activeTab === 'integrations') {
       api.settings.get().then(s => {
@@ -748,7 +743,6 @@ export default function SettingsPage({
         setDlnaPort(s.dlnaPort || '8200');
         setTranscodeQuality((s.transcodeQuality ?? 'low') === 'high' ? 'high' : 'low');
         setReplayGainEnabled((s.replayGainEnabled ?? 'false') === 'true');
-        setDefaultVinylMode((s.vinylMode ?? 'standard') === 'vinyl');
         setWaveformGenerateOnMissing((s.waveformGenerateOnMissing ?? 'true') === 'true');
         setWaveformBackgroundEnabled((s.waveformBackgroundEnabled ?? 'false') === 'true');
         setWaveformFrequencyHours(Number(s.waveformBackgroundFrequencyHours ?? '24') || 24);
@@ -770,7 +764,7 @@ export default function SettingsPage({
       loadBoogieMixDeepStatus(true);
       api.systemStatus().then(s => { if (s.dbFolder) setCurrentDbFolder(s.dbFolder); }).catch(() => {});
     }
-  }, [activeTab, isAdmin, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
+  }, [activeTab, isAdmin, canManageLibraries, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
 
   useEffect(() => {
     if (activeTab !== 'advanced') return;
@@ -1060,10 +1054,12 @@ export default function SettingsPage({
       {/* Tab bar */}
       <div role="tablist" aria-label="Settings sections" style={P.tabBar}>
         {([
-          ['theme',        'Appearance'],
-          ['libraries',    'Libraries'],
-          ...(isAdmin ? [
+          ['theme',        'User Settings'],
+          ...(canManageLibraries ? [
+            ['libraries',    'Libraries'],
             ['schedules',    'Auto-Scan'],
+          ] : []),
+          ...(isAdmin ? [
             ['integrations', 'Integrations'],
             ['advanced',     'Advanced'],
             ['users',        'Users'],
@@ -1084,7 +1080,7 @@ export default function SettingsPage({
       </div>
 
       {/* ── Theme Tab ─────────────────────────────────────────────────────── */}
-      {activeTab === 'libraries' && (
+      {activeTab === 'libraries' && canManageLibraries && (
         <div style={P.section}>
           <LibrarySettingsTab libraries={libraries as Library[]} onRefresh={refreshLibraries} />
         </div>
@@ -1241,6 +1237,56 @@ export default function SettingsPage({
             </div>
           </SettingsPanel>
 
+          <SettingsPanel
+            title="Vinyl Mode"
+            description="Turn vinyl mode on/off from the player. These preferences apply whenever it's active."
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={vinylHardcore}
+                  onChange={(e) => onVinylHardcoreChange?.(e.target.checked)}
+                />
+                Hardcore Vinyl (no seeking / no jumping)
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={vinylNeedleDrop}
+                  onChange={(e) => onVinylNeedleDropChange?.(e.target.checked)}
+                />
+                Needle-drop sound
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={vinylAnalogFxDisabled}
+                  onChange={(e) => onVinylAnalogFxDisabledChange?.(e.target.checked)}
+                />
+                Disable analog noise effects
+              </label>
+              <div style={{ opacity: vinylAnalogFxDisabled ? 0.5 : 1 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                  Needle-drop intensity: {Math.round(vinylNeedleDropIntensity * 100)}%
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={Math.round(vinylNeedleDropIntensity * 100)}
+                  disabled={vinylAnalogFxDisabled}
+                  onChange={(e) => onVinylNeedleDropIntensityChange?.(Math.max(0, Math.min(1, Number(e.target.value) / 100)))}
+                  style={{ width: 260 }}
+                />
+              </div>
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
+              Saved for your user profile.
+            </div>
+          </SettingsPanel>
+
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
               Theme, Custom palette, and accent settings auto-save for your user profile.
@@ -1253,7 +1299,7 @@ export default function SettingsPage({
       )}
 
       {/* ── Schedules Tab ─────────────────────────────────────────────────── */}
-      {activeTab === 'schedules' && (
+      {activeTab === 'schedules' && canManageLibraries && (
         <div style={P.section}>
           <div style={P.sectionTitle}>Auto-Scan Schedule</div>
           <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>
@@ -1510,66 +1556,6 @@ export default function SettingsPage({
           <div id="advanced-playback" style={P.advancedSectionTitle}>Playback</div>
 
           <div style={{
-            ...hybridSettingsStyles.panel,
-          }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>
-              Vinyl Mode
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={playbackMode === 'vinyl'}
-                  onChange={(e) => onPlaybackModeChange?.(e.target.checked ? 'vinyl' : 'standard')}
-                />
-                Enable Vinyl Mode
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer', opacity: playbackMode === 'vinyl' ? 1 : 0.6 }}>
-                <input
-                  type="checkbox"
-                  checked={vinylHardcore}
-                  disabled={playbackMode !== 'vinyl'}
-                  onChange={(e) => onVinylHardcoreChange?.(e.target.checked)}
-                />
-                Hardcore Vinyl (no seeking / no jumping)
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer', opacity: playbackMode === 'vinyl' ? 1 : 0.6 }}>
-                <input
-                  type="checkbox"
-                  checked={vinylNeedleDrop}
-                  disabled={playbackMode !== 'vinyl'}
-                  onChange={(e) => onVinylNeedleDropChange?.(e.target.checked)}
-                />
-                Needle-drop sound
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer', opacity: playbackMode === 'vinyl' ? 1 : 0.6 }}>
-                <input
-                  type="checkbox"
-                  checked={vinylAnalogFxDisabled}
-                  disabled={playbackMode !== 'vinyl'}
-                  onChange={(e) => onVinylAnalogFxDisabledChange?.(e.target.checked)}
-                />
-                Disable analog noise effects
-              </label>
-              <div style={{ opacity: playbackMode === 'vinyl' && !vinylAnalogFxDisabled ? 1 : 0.5 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
-                  Needle-drop intensity: {Math.round(vinylNeedleDropIntensity * 100)}%
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={Math.round(vinylNeedleDropIntensity * 100)}
-                  disabled={playbackMode !== 'vinyl' || vinylAnalogFxDisabled}
-                  onChange={(e) => onVinylNeedleDropIntensityChange?.(Math.max(0, Math.min(1, Number(e.target.value) / 100)))}
-                  style={{ width: 260 }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{
             display: 'flex', alignItems: 'flex-start', gap: 20,
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
@@ -1692,36 +1678,6 @@ export default function SettingsPage({
                 <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text)' }}>ReplayGain normalization</div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
                   Normalize loudness across all tracks using EBU R128. Applies during server-side transcoding only.
-                </div>
-              </div>
-            </div>
-            {/* Default Vinyl Mode */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
-              <div
-                onClick={async () => {
-                  const next = !defaultVinylMode;
-                  setDefaultVinylMode(next);
-                  await api.settings.update({ vinylMode: next ? 'vinyl' : 'standard' });
-                }}
-                title={defaultVinylMode ? 'Default vinyl mode on — click to disable' : 'Default vinyl mode off — click to enable'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                  position: 'relative', flexShrink: 0,
-                  backgroundColor: defaultVinylMode ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: defaultVinylMode ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text)' }}>Default vinyl mode</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
-                  When enabled, all users start in vinyl mode on login.
                 </div>
               </div>
             </div>

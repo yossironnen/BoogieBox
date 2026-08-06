@@ -627,7 +627,7 @@ export interface AuthUser {
   id: EntityId;
   username: string;
   role: 'admin' | 'user';
-  canScan: boolean;
+  canManageLibraries: boolean;
   canEditMetadata: boolean;
 }
 
@@ -643,7 +643,7 @@ export interface AdminUser {
   username: string;
   role: 'admin' | 'user';
   hasPin: boolean;
-  canScan: boolean;
+  canManageLibraries: boolean;
   canEditMetadata: boolean;
   created_at: string;
 }

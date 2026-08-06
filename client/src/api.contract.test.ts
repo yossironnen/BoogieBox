@@ -142,7 +142,7 @@ describe('API public endpoint contract', () => {
       () => api.admin.users.create({ username: 'new', role: 'user' }),
       () => api.admin.users.remove('user-1'),
       () => api.admin.users.setPin('user-1', '1234'),
-      () => api.admin.users.setPermissions('user-1', { canScan: true, canEditMetadata: false }),
+      () => api.admin.users.setPermissions('user-1', { canManageLibraries: true, canEditMetadata: false }),
     ];
 
     for (const invoke of calls) await invoke();

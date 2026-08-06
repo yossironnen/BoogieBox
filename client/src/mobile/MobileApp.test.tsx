@@ -65,7 +65,7 @@ vi.mock('../api', () => ({ api: { setTrackRating, albumArtUrl: (id: string) => `
 
 function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedProps {
   return {
-    currentUser: { id: '1', username: 'mobile-user', role: 'admin', canScan: true, canEditMetadata: true },
+    currentUser: { id: '1', username: 'mobile-user', role: 'admin', canManageLibraries: true, canEditMetadata: true },
     libraries: [],
     settings: {
       colorBg: '#000000',

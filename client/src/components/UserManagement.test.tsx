@@ -27,7 +27,7 @@ const admin = {
   username: 'owner',
   role: 'admin',
   hasPin: true,
-  canScan: true,
+  canManageLibraries: true,
   canEditMetadata: true,
 };
 
@@ -36,7 +36,7 @@ const listener = {
   username: 'listener',
   role: 'user',
   hasPin: false,
-  canScan: false,
+  canManageLibraries: false,
   canEditMetadata: true,
 };
 
@@ -70,7 +70,7 @@ describe('UserManagement', () => {
     expect(screen.getByText('PIN must be exactly 4 digits')).toBeInTheDocument();
 
     fireEvent.change(pinInput, { target: { value: '1234' } });
-    fireEvent.click(screen.getByLabelText('Allow library scan'));
+    fireEvent.click(screen.getByLabelText('Allow libraries management'));
     fireEvent.click(screen.getByLabelText('Allow metadata editing'));
     fireEvent.click(screen.getByRole('button', { name: 'Add User' }));
 
@@ -78,7 +78,7 @@ describe('UserManagement', () => {
       username: 'guest',
       role: 'user',
       pin: '1234',
-      canScan: true,
+      canManageLibraries: true,
       canEditMetadata: true,
     }));
     expect(usersApi.list).toHaveBeenCalledTimes(2);
@@ -91,7 +91,7 @@ describe('UserManagement', () => {
 
     fireEvent.change(screen.getByPlaceholderText('Username'), { target: { value: 'another' } });
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'admin' } });
-    expect(screen.queryByLabelText('Allow library scan')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Allow libraries management')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add User' }));
 
     expect(await screen.findByText('duplicate user')).toBeInTheDocument();
@@ -99,7 +99,7 @@ describe('UserManagement', () => {
       username: 'another',
       role: 'admin',
       pin: undefined,
-      canScan: undefined,
+      canManageLibraries: undefined,
       canEditMetadata: undefined,
     });
   });
@@ -109,9 +109,9 @@ describe('UserManagement', () => {
     const listenerName = await screen.findByText('listener');
     const row = listenerName.closest('div[style*="align-items: center"]') as HTMLElement;
 
-    fireEvent.click(within(row).getByTitle('Toggle scan permission'));
+    fireEvent.click(within(row).getByTitle('Toggle libraries management permission'));
     await waitFor(() => expect(usersApi.setPermissions).toHaveBeenCalledWith('user-2', {
-      canScan: true,
+      canManageLibraries: true,
       canEditMetadata: true,
     }));
 

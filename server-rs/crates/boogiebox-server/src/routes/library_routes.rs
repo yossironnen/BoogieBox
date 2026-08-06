@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::{fs, net::SocketAddr};
 
 use crate::{
-    auth::{AdminUser, AuthenticatedUser},
+    auth::{AdminUser, AuthenticatedUser, LibraryManager},
     pick_folder, DbPool, ErrorResponse, FolderPicker, OkResponse, SharedState,
 };
 
@@ -154,7 +154,7 @@ async fn stats_handler(
 
 async fn create_library_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Json(payload): Json<CreateLibraryRequest>,
 ) -> impl IntoResponse {
     let folders = payload
@@ -182,7 +182,7 @@ async fn create_library_handler(
 
 async fn rename_library_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Path(id): Path<String>,
     Json(payload): Json<RenameLibraryRequest>,
 ) -> impl IntoResponse {
@@ -196,7 +196,7 @@ async fn rename_library_handler(
 
 async fn delete_library_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     with_db(state, move |conn| {
@@ -209,7 +209,7 @@ async fn delete_library_handler(
 
 async fn add_folder_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Path(id): Path<String>,
     Json(payload): Json<AddFolderRequest>,
 ) -> impl IntoResponse {
@@ -228,7 +228,7 @@ async fn add_folder_handler(
 
 async fn remove_folder_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Path((id, folder_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     with_db(state, move |conn| {
@@ -244,7 +244,7 @@ async fn enqueue_scan_handler(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if !user.is_admin() && !user.can_scan {
+    if !user.can_manage_libraries() {
         return forbidden();
     }
     let ps_state = {
@@ -325,7 +325,7 @@ async fn library_scan_jobs_handler(
 
 async fn list_schedules_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
 ) -> impl IntoResponse {
     with_db(state, |conn| {
         boogiebox_db::jobs::list_schedules(conn).map_err(JobError::Db)
@@ -337,7 +337,7 @@ async fn list_schedules_handler(
 
 async fn get_schedule_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Path(library_id): Path<String>,
 ) -> impl IntoResponse {
     with_db(state, move |conn| {
@@ -350,7 +350,7 @@ async fn get_schedule_handler(
 
 async fn upsert_schedule_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Path(library_id): Path<String>,
     Json(payload): Json<ScheduleRequest>,
 ) -> impl IntoResponse {
@@ -376,7 +376,7 @@ async fn upsert_schedule_handler(
 
 async fn delete_schedule_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Path(library_id): Path<String>,
 ) -> impl IntoResponse {
     with_db(state, move |conn| {
@@ -659,7 +659,7 @@ struct FsBrowseResponse {
 async fn fs_browse_handler(
     State(state): State<SharedState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    auth: Result<AdminUser, (StatusCode, Json<ErrorResponse>)>,
+    auth: Result<LibraryManager, (StatusCode, Json<ErrorResponse>)>,
     Query(params): Query<FsBrowseParams>,
 ) -> impl IntoResponse {
     let setup_mode = state.read().expect("state lock").setup_required;
@@ -797,7 +797,7 @@ struct FsMkdirResponse {
 async fn fs_mkdir_handler(
     State(state): State<SharedState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    auth: Result<AdminUser, (StatusCode, Json<ErrorResponse>)>,
+    auth: Result<LibraryManager, (StatusCode, Json<ErrorResponse>)>,
     Json(payload): Json<FsMkdirRequest>,
 ) -> impl IntoResponse {
     let setup_mode = state.read().expect("state lock").setup_required;
@@ -1059,7 +1059,7 @@ struct BrowseFolderResponse {
 
 async fn browse_folder_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    _user: LibraryManager,
     Json(payload): Json<BrowseFolderRequest>,
 ) -> impl IntoResponse {
     let picker = state

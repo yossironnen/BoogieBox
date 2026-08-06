@@ -262,7 +262,7 @@ describe('SettingsPage component flows', () => {
   it('shows the About tab with the Ko-fi support link', () => {
     const { rerender } = render(
       <SettingsPage
-        currentUser={{ id: '2', username: 'listener', role: 'user', canScan: false, canEditMetadata: false }}
+        currentUser={{ id: '2', username: 'listener', role: 'user', canManageLibraries: false, canEditMetadata: false }}
         onLogout={() => {}}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={() => {}}
@@ -271,14 +271,13 @@ describe('SettingsPage component flows', () => {
 
     const userTabs = screen.getByRole('tab', { name: 'About' }).parentElement;
     expect(within(userTabs!).getAllByRole('tab').map((button) => button.textContent)).toEqual([
-      'Appearance',
-      'Libraries',
+      'User Settings',
       'About',
     ]);
 
     rerender(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={() => {}}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={() => {}}
@@ -287,7 +286,7 @@ describe('SettingsPage component flows', () => {
 
     const adminTabs = screen.getByRole('tab', { name: 'About' }).parentElement;
     expect(within(adminTabs!).getAllByRole('tab').map((button) => button.textContent)).toEqual([
-      'Appearance',
+      'User Settings',
       'Libraries',
       'Auto-Scan',
       'Integrations',
@@ -295,7 +294,7 @@ describe('SettingsPage component flows', () => {
       'Users',
       'About',
     ]);
-    expect(screen.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'User Settings' })).toHaveAttribute('aria-selected', 'true');
 
     fireEvent.click(screen.getByRole('tab', { name: 'About' }));
 
@@ -305,10 +304,29 @@ describe('SettingsPage component flows', () => {
     expect(link).toHaveAttribute('target', '_blank');
   });
 
+  it('grants a standard user Libraries and Auto-Scan tabs when given the libraries-management permission, but not admin-only tabs', () => {
+    render(
+      <SettingsPage
+        currentUser={{ id: '2', username: 'listener', role: 'user', canManageLibraries: true, canEditMetadata: false }}
+        onLogout={() => {}}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={() => {}}
+      />
+    );
+
+    const userTabs = screen.getByRole('tab', { name: 'About' }).parentElement;
+    expect(within(userTabs!).getAllByRole('tab').map((button) => button.textContent)).toEqual([
+      'User Settings',
+      'Libraries',
+      'Auto-Scan',
+      'About',
+    ]);
+  });
+
   it('manages libraries from the dedicated settings tab', async () => {
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={() => {}}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={() => {}}
@@ -355,7 +373,7 @@ describe('SettingsPage component flows', () => {
     apiMock.libraries.rename.mockRejectedValueOnce(new Error('Library name already exists. Please choose a unique name.'));
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={() => {}}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={() => {}}
@@ -375,7 +393,7 @@ describe('SettingsPage component flows', () => {
   it('loads schedules and saves updated frequency', async () => {
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={() => {}}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={() => {}}
@@ -414,7 +432,7 @@ describe('SettingsPage component flows', () => {
     const onStreamDirectChange = vi.fn();
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={() => {}}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={() => {}}
@@ -564,7 +582,7 @@ describe('SettingsPage component flows', () => {
 
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={vi.fn()}
@@ -592,7 +610,7 @@ describe('SettingsPage component flows', () => {
 
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={() => {}}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={() => {}}
@@ -672,7 +690,7 @@ describe('SettingsPage component flows', () => {
 
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={vi.fn()}
@@ -701,7 +719,7 @@ describe('SettingsPage component flows', () => {
     const onLogout = vi.fn();
     render(
       <SettingsPage
-        currentUser={{ id: '2', username: 'listener', role: 'user', canScan: false, canEditMetadata: false }}
+        currentUser={{ id: '2', username: 'listener', role: 'user', canManageLibraries: false, canEditMetadata: false }}
         onLogout={onLogout}
         settings={{ ...DEFAULT_SETTINGS, fontFamily: 'Inter' }}
         onSettingsChange={onSettingsChange}
@@ -742,9 +760,8 @@ describe('SettingsPage component flows', () => {
     expect(onLogout).toHaveBeenCalled();
   });
 
-  it('forwards every vinyl playback control and clamps needle intensity', async () => {
+  it('forwards every vinyl preference control and clamps needle intensity for a standard (non-admin) user', async () => {
     const callbacks = {
-      onPlaybackModeChange: vi.fn(),
       onVinylHardcoreChange: vi.fn(),
       onVinylNeedleDropChange: vi.fn(),
       onVinylAnalogFxDisabledChange: vi.fn(),
@@ -752,25 +769,22 @@ describe('SettingsPage component flows', () => {
     };
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '2', username: 'listener', role: 'user', canManageLibraries: false, canEditMetadata: false }}
         onLogout={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={vi.fn()}
-        playbackMode="vinyl"
         vinylNeedleDropIntensity={0.65}
         {...callbacks}
       />,
     );
-    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
-    expect(screen.getByRole('navigation', { name: 'Advanced settings groups' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Diagnostics' })).toHaveAttribute('href', '#advanced-debug');
+    // Vinyl Mode lives in User Settings (the default tab), not the admin-only Advanced tab.
+    expect(screen.queryByRole('tab', { name: /Advanced/i })).not.toBeInTheDocument();
     await screen.findByText('Vinyl Mode');
-    fireEvent.click(screen.getByLabelText('Enable Vinyl Mode'));
+    expect(screen.queryByLabelText('Enable Vinyl Mode')).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText(/Hardcore Vinyl/i));
     fireEvent.click(screen.getByLabelText(/Needle-drop sound/i));
     fireEvent.click(screen.getByLabelText(/Disable analog noise/i));
     fireEvent.change(screen.getAllByRole('slider')[0], { target: { value: '100' } });
-    expect(callbacks.onPlaybackModeChange).toHaveBeenCalledWith('standard');
     expect(callbacks.onVinylHardcoreChange).toHaveBeenCalledWith(true);
     expect(callbacks.onVinylNeedleDropChange).toHaveBeenCalledWith(true);
     expect(callbacks.onVinylAnalogFxDisabledChange).toHaveBeenCalledWith(true);
@@ -784,7 +798,7 @@ describe('SettingsPage component flows', () => {
     apiMock.admin.queues.mockClear();
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={vi.fn()}
@@ -808,7 +822,7 @@ describe('SettingsPage component flows', () => {
 
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={vi.fn()}
@@ -853,7 +867,7 @@ describe('SettingsPage component flows', () => {
 
     render(
       <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true }}
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
         onLogout={vi.fn()}
         settings={DEFAULT_SETTINGS}
         onSettingsChange={vi.fn()}

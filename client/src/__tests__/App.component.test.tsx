@@ -85,7 +85,6 @@ vi.mock('../components/SettingsPage', () => ({
       <button onClick={() => props.onSettingsChange({ ...DEFAULT_SETTINGS, lastfmKey: 'changed' })}>change-settings</button>
       <button onClick={() => props.onStreamDirectChange?.(true)}>set-stream-direct</button>
       <button onClick={() => props.onAdaptiveAccentEnabledChange(false)}>set-adaptive</button>
-      <button onClick={() => props.onPlaybackModeChange('vinyl')}>set-vinyl-mode</button>
       <button onClick={() => props.onVinylHardcoreChange(true)}>set-hardcore</button>
       <button onClick={() => props.onVinylNeedleDropChange(true)}>set-needle</button>
       <button onClick={() => props.onVinylAnalogFxDisabledChange(true)}>set-analog-off</button>
@@ -140,7 +139,7 @@ describe('App component flows', () => {
     });
     apiMock.systemStatus.mockResolvedValue({ ffmpegAvailable: true });
     apiMock.playbackSettings.mockResolvedValue({ transcodeQuality: 'high', replayGainEnabled: '0', vinylMode: '0', lastfmConfigured: false });
-    apiMock.auth.me.mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canScan: true, canEditMetadata: true });
+    apiMock.auth.me.mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true });
     apiMock.settings.get.mockResolvedValue({ lastfmKey: 'lastfm', transcodeQuality: 'high' });
     apiMock.userSettings.get.mockResolvedValue({});
     apiMock.userSettings.update.mockResolvedValue({ ok: true });
@@ -377,7 +376,6 @@ describe('App component flows', () => {
       'change-settings',
       'set-stream-direct',
       'set-adaptive',
-      'set-vinyl-mode',
       'set-hardcore',
       'set-needle',
       'set-analog-off',
