@@ -249,6 +249,7 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           added_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_albums_added_at ON albums(added_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id);
 
         CREATE TABLE IF NOT EXISTS tracks (
           id TEXT PRIMARY KEY,
@@ -670,6 +671,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
         Migration {
             id: "2026-08-05-rename-can-scan-to-can-manage-libraries",
             apply: ensure_can_manage_libraries_column,
+        },
+        Migration {
+            id: "2026-08-07-browse-performance-indexes",
+            apply: ensure_browse_performance_indexes,
         },
     ];
 
@@ -1418,6 +1423,68 @@ fn ensure_playback_count_schema(connection: &Connection) -> Result<(), rusqlite:
         )?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_artists_play_count ON artists(play_count)",
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Adds the browse/lookup indexes that back the correlated-subquery hot paths.
+///
+/// `albums.artist_id` is the important one: `list_artists` (and the
+/// artists-with-albums counts used by home genre stats and the compilation
+/// filter) correlate on it, so without an index every artist row triggers a
+/// full scan of `albums`. The remaining four cover FK lookups that are cheap
+/// today only because their tables are still small.
+fn ensure_browse_performance_indexes(connection: &Connection) -> Result<(), rusqlite::Error> {
+    // Guarded by column_exists: some legacy migration-chain fixtures predate
+    // albums.artist_id. DBs created via initialize_schema always have it.
+    if table_exists(connection, "albums") && column_exists(connection, "albums", "artist_id")? {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_albums_artist_id ON albums(artist_id)",
+        )?;
+    }
+
+    if table_exists(connection, "playlist_tracks")
+        && column_exists(connection, "playlist_tracks", "track_id")?
+    {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_playlist_tracks_track ON playlist_tracks(track_id)",
+        )?;
+    }
+
+    if table_exists(connection, "track_ratings")
+        && column_exists(connection, "track_ratings", "track_id")?
+    {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_track_ratings_track ON track_ratings(track_id)",
+        )?;
+    }
+
+    if table_exists(connection, "play_history")
+        && column_exists(connection, "play_history", "track_id")?
+    {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_play_history_track ON play_history(track_id)",
+        )?;
+    }
+
+    if table_exists(connection, "crossfade_overrides")
+        && column_exists(connection, "crossfade_overrides", "entity_type")?
+        && column_exists(connection, "crossfade_overrides", "entity_id")?
+    {
+        // upsert_crossfade_override deletes before inserting, so one row per
+        // (entity_type, entity_id) is the intended invariant. Legacy DBs could
+        // still carry duplicates, so collapse them before enforcing it.
+        connection.execute_batch(
+            r#"
+            DELETE FROM crossfade_overrides
+            WHERE rowid NOT IN (
+              SELECT MIN(rowid) FROM crossfade_overrides GROUP BY entity_type, entity_id
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_crossfade_overrides_entity
+              ON crossfade_overrides(entity_type, entity_id);
+            "#,
         )?;
     }
 
@@ -3689,6 +3756,115 @@ mod tests {
             query_single_i64(
                 &connection,
                 "SELECT COUNT(*) FROM artists WHERE id='artist-stale'"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn browse_performance_indexes_exist_and_are_used_by_list_artists() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        initialize_schema(&connection).expect("schema");
+
+        for index in [
+            "idx_albums_artist_id",
+            "idx_playlist_tracks_track",
+            "idx_track_ratings_track",
+            "idx_play_history_track",
+            "idx_crossfade_overrides_entity",
+        ] {
+            assert_eq!(
+                query_single_i64(
+                    &connection,
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = '{index}'"
+                    ),
+                ),
+                1,
+                "missing index {index}"
+            );
+        }
+
+        // The albums.artist_id correlated subquery that list_artists runs must
+        // plan as an indexed SEARCH, not a full SCAN of albums per artist row.
+        let mut stmt = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN \
+                 SELECT ar.id, \
+                   (SELECT COUNT(*) FROM albums oal2 WHERE oal2.artist_id = ar.id) AS album_count \
+                 FROM artists ar",
+            )
+            .expect("prepare plan");
+        let details: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("plan rows")
+            .collect::<Result<_, _>>()
+            .expect("plan detail");
+
+        let albums_step = details
+            .iter()
+            .find(|detail| detail.contains("albums"))
+            .expect("plan mentions albums");
+        assert!(
+            albums_step.contains("SEARCH") && albums_step.contains("idx_albums_artist_id"),
+            "expected indexed SEARCH on albums, got: {albums_step}"
+        );
+    }
+
+    #[test]
+    fn browse_performance_migration_dedupes_crossfade_overrides() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_migrations (
+                  id TEXT PRIMARY KEY,
+                  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE crossfade_overrides (
+                  id TEXT PRIMARY KEY,
+                  entity_type TEXT NOT NULL,
+                  entity_id TEXT NOT NULL,
+                  mode TEXT NOT NULL,
+                  duration INTEGER NOT NULL DEFAULT 2
+                );
+                INSERT INTO crossfade_overrides(id, entity_type, entity_id, mode, duration)
+                VALUES ('a', 'album', 'x', 'crossfade', 2),
+                       ('b', 'album', 'x', 'off', 3),
+                       ('c', 'album', 'y', 'off', 4);
+                "#,
+            )
+            .expect("legacy fixture");
+
+        ensure_browse_performance_indexes(&connection).expect("migrate");
+
+        assert_eq!(
+            query_single_i64(&connection, "SELECT COUNT(*) FROM crossfade_overrides"),
+            2
+        );
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_crossfade_overrides_entity'"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn browse_performance_migration_skips_missing_tables_and_columns() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch("CREATE TABLE albums (id TEXT PRIMARY KEY, title TEXT NOT NULL);")
+            .expect("legacy fixture");
+
+        // albums predates artist_id here, and none of the other tables exist.
+        ensure_browse_performance_indexes(&connection).expect("migrate");
+
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_albums_artist_id'"
             ),
             0
         );
