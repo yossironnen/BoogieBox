@@ -236,6 +236,25 @@ describe('App component flows', () => {
     expect(screen.queryByRole('button', { name: 'Libraries' })).not.toBeInTheDocument();
   });
 
+  it('updates the library counters while a background scan is running', async () => {
+    apiMock.scanJobs.active.mockResolvedValue([{ id: '55', library_id: '1', status: 'running' }]);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<App />);
+      await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
+
+      apiMock.stats.mockResolvedValue({
+        total_tracks: 41, total_artists: 9, total_albums: 7, total_libraries: 1, total_hours: 4, total_gb: 1.2,
+      });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      await waitFor(() => expect(screen.getByText('41')).toBeInTheDocument());
+      expect(screen.getByText('9')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('opens Browse scoped to the clicked sidebar library and clears back to all libraries from Browse nav', async () => {
     render(<App />);
 

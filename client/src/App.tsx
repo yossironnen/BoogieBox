@@ -24,6 +24,7 @@ import { parseServerDate } from './utils';
 import MobileApp from './mobile/MobileApp';
 import { phase2 } from './uiPhase2';
 import { useMobileShell } from './mobile/useMobileShell';
+import { useScanActivityRefresh } from './hooks/useScanActivityRefresh';
 import {
   getClassicPreviewHref,
   getHybridSemanticTokens,
@@ -1288,6 +1289,13 @@ export default function App() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Keep the library counters live during background scans. Stats are refreshed on
+  // their own (not via `refresh`) so scan progress does not reset the Home widgets.
+  useScanActivityRefresh(useCallback(async () => {
+    const st = await api.stats();
+    setStats(st);
+  }, []));
 
   const navItems: { id: View; label: string; icon: React.ReactNode }[] = [
     { id: 'home',         label: 'Home',         icon: <Icon.Home /> },

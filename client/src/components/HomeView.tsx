@@ -2,8 +2,9 @@
  * Defines the Home View React component and related UI helpers.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
+import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
 import type { Album, LatestAlbum, Artist, ClientEntityId, Genre, HomeGenreSummary, Library, Stats, Track, Playlist, CrossfadeMode, HomeTopRated } from '../types';
 import type { EntityId } from '../entityId';
 import { HYBRID_ARTWORK_HOVER, hybridHomeStyles } from '../hybridPreview';
@@ -178,6 +179,8 @@ function PlayIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+const RECENT_ALBUMS_LIMIT = 24;
+
 function RecentAlbumsWidget({
   refreshKey,
   onOpenAlbum,
@@ -194,12 +197,20 @@ function RecentAlbumsWidget({
   const [hoveredAlbumId, setHoveredAlbumId] = useState<ClientEntityId | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    api.latestAlbums(24)
-      .then(setAlbums)
-      .catch(() => setAlbums([]))
-      .finally(() => setLoading(false));
+    api.latestAlbums(RECENT_ALBUMS_LIMIT)
+      .then((rows) => { if (!cancelled) setAlbums(rows); })
+      .catch(() => { if (!cancelled) setAlbums([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [refreshKey]);
+
+  // Swap newly scanned albums in place (no loading state) so the carousel does not reset.
+  useScanActivityRefresh(useCallback(async () => {
+    const rows = await api.latestAlbums(RECENT_ALBUMS_LIMIT);
+    setAlbums(rows);
+  }, []));
 
   if (loading) return <div style={H.widgetEmpty}>Loading...</div>;
   if (albums.length === 0) return <div style={H.widgetEmpty}>No albums yet</div>;
