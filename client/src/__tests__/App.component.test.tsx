@@ -3,12 +3,12 @@
  */
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App, { THEME_STORAGE_KEY, sortSearchTracks } from '../App';
 import { DEFAULT_SETTINGS } from '../types';
 
-const { apiMock, getStreamDirectMock, openContextMenuMock } = vi.hoisted(() => ({
+const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi.hoisted(() => ({
   apiMock: {
     libraries: {
       list: vi.fn(),
@@ -17,6 +17,8 @@ const { apiMock, getStreamDirectMock, openContextMenuMock } = vi.hoisted(() => (
       scan: vi.fn(),
     },
     scanJobs: { get: vi.fn(), active: vi.fn() },
+    boogiemix: { deepAnalysisStatus: vi.fn(), queueLibraryDeepAnalysis: vi.fn() },
+    admin: { cancelScanJob: vi.fn() },
     stats: vi.fn(),
     playbackSettings: vi.fn(),
     systemStatus: vi.fn(),
@@ -41,6 +43,7 @@ const { apiMock, getStreamDirectMock, openContextMenuMock } = vi.hoisted(() => (
   },
   getStreamDirectMock: vi.fn(),
   openContextMenuMock: vi.fn(),
+  kebabPropsMock: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
@@ -112,6 +115,10 @@ vi.mock('../components/ContextMenu', async () => {
   return {
     ...actual,
     ContextMenuRoot: () => <div data-testid="context-menu-root">context</div>,
+    KebabButton: (props: any) => {
+      kebabPropsMock(props);
+      return <button type="button" aria-label="More actions" />;
+    },
     openContextMenu: openContextMenuMock,
   };
 });
@@ -186,7 +193,15 @@ describe('App component flows', () => {
     apiMock.libraries.add.mockResolvedValue({ id: '2', path: 'D:\\More', name: 'More', added_at: '2026-01-01', last_scan: null, track_count: 0 });
     apiMock.libraries.remove.mockResolvedValue({ ok: true });
     apiMock.libraries.scan.mockResolvedValue({ jobId: '55' });
+    apiMock.admin.cancelScanJob.mockResolvedValue({ ok: true, id: '55', status: 'cancelled' });
     apiMock.scanJobs.active.mockResolvedValue([]);
+    apiMock.boogiemix.queueLibraryDeepAnalysis.mockResolvedValue({ queued: 3 });
+    apiMock.boogiemix.deepAnalysisStatus.mockResolvedValue({
+      enabled: true,
+      runtime: null,
+      queue: { pending: 0, running: 0, failed: 0, skipped: 0, done: 0 },
+      cache: { analyzedTracks: 0, estimatedBytes: 0, oldestCreatedAt: null, newestCreatedAt: null },
+    });
     apiMock.scanJobs.get.mockResolvedValue({
       id: '55',
       library_id: '1',
@@ -205,7 +220,7 @@ describe('App component flows', () => {
     await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
     expect(screen.getByText('BoogieBox')).toBeInTheDocument();
     expect(screen.getByTestId('home-view')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/Transcoding on \(320 kbps\)/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText(/Transcoding on \(320 kbps\)/i)).toBeInTheDocument());
 
     fireEvent.click(screen.getByText('home-open-playlist'));
     expect(await screen.findByTestId('playlists-view')).toHaveTextContent('playlist:42');
@@ -227,7 +242,7 @@ describe('App component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByTestId('settings-view')).toBeInTheDocument();
     fireEvent.click(screen.getByText('set-stream-direct'));
-    expect(screen.getByText(/Transcoding off/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Transcoding off/i)).toBeInTheDocument();
   }, 10000);
 
   it('does not render a standalone Libraries sidebar item', async () => {
@@ -236,20 +251,26 @@ describe('App component flows', () => {
     expect(screen.queryByRole('button', { name: 'Libraries' })).not.toBeInTheDocument();
   });
 
-  it('updates the library counters while a background scan is running', async () => {
-    apiMock.scanJobs.active.mockResolvedValue([{ id: '55', library_id: '1', status: 'running' }]);
+  it('shows active scan progress and refreshes stats while a background scan is running', async () => {
+    apiMock.scanJobs.active.mockResolvedValue([{
+      id: '55', library_id: '1', status: 'running', started_at: '2026-01-01', finished_at: null,
+      files_found: 40, files_scanned: 3, errors: 0,
+    }]);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       render(<App />);
-      await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByTestId('sidebar-status-scan')).toHaveAttribute('aria-label', 'Library scan: Main Library • 3 / 40 files');
 
       apiMock.stats.mockResolvedValue({
         total_tracks: 41, total_artists: 9, total_albums: 7, total_libraries: 1, total_hours: 4, total_gb: 1.2,
       });
+      const callsBeforePoll = apiMock.stats.mock.calls.length;
       await vi.advanceTimersByTimeAsync(5000);
 
-      await waitFor(() => expect(screen.getByText('41')).toBeInTheDocument());
-      expect(screen.getByText('9')).toBeInTheDocument();
+      expect(apiMock.stats.mock.calls.length).toBeGreaterThan(callsBeforePoll);
+      expect(screen.queryByText('Tracks')).not.toBeInTheDocument();
+      expect(screen.queryByText('Artists')).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -264,6 +285,53 @@ describe('App component flows', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Browse Music' }));
     expect(await screen.findByTestId('browse-view')).toHaveTextContent('browse:none:libs:all');
+  });
+
+  it('runs library radio, scan, and deep analysis from the library action model', async () => {
+    render(<App />);
+    await waitFor(() => expect(kebabPropsMock).toHaveBeenCalled());
+
+    const props = kebabPropsMock.mock.calls
+      .map(([value]) => value)
+      .find((value) => value.target.kind === 'library');
+    expect(props.callbacks.actions.map((action: any) => action.label)).toEqual([
+      'Play library radio', 'Scan library', 'Run deep analysis',
+    ]);
+
+    await act(async () => props.callbacks.actions[0].onSelect());
+    expect(apiMock.autoDjTracks).toHaveBeenCalledWith({ genres: [], library_id: '1', limit: 200 });
+    await waitFor(() => expect(apiMock.markTrackPlayed).toHaveBeenCalledWith('11'));
+
+    await act(async () => props.callbacks.actions[1].onSelect());
+    expect(apiMock.libraries.scan).toHaveBeenCalledWith('1');
+    expect(apiMock.scanJobs.active).toHaveBeenCalledTimes(2);
+
+    await act(async () => props.callbacks.actions[2].onSelect());
+    expect(apiMock.boogiemix.queueLibraryDeepAnalysis).toHaveBeenCalledWith('1');
+    expect(apiMock.boogiemix.deepAnalysisStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows disabled administrative library actions when the user lacks permission', async () => {
+    apiMock.auth.me.mockResolvedValue({
+      id: '2', username: 'listener', role: 'user', canManageLibraries: false, canEditMetadata: false,
+    });
+    apiMock.scanJobs.active.mockResolvedValue([{
+      id: '55', library_id: '1', status: 'running', started_at: '2026-01-01', finished_at: null,
+      files_found: 40, files_scanned: 3, errors: 0,
+    }]);
+    render(<App />);
+
+    await waitFor(() => {
+      const props = kebabPropsMock.mock.calls
+        .map(([value]) => value)
+        .find((value) => value.target.kind === 'library'
+          && value.callbacks.actions.some((action: any) => action.label === 'Cancel scan'));
+      expect(props).toBeDefined();
+      const actions = props.callbacks.actions;
+      expect(actions.find((action: any) => action.label === 'Play library radio').disabled).toBe(false);
+      expect(actions.find((action: any) => action.label === 'Cancel scan').disabled).toBe(true);
+      expect(actions.find((action: any) => action.label === 'Run deep analysis').disabled).toBe(true);
+    });
   });
 
   it('removes Search view options and keeps the results grid sortable, including rating', async () => {

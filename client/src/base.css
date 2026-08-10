@@ -227,6 +227,15 @@ select option { background-color: var(--surface); color: var(--text); }
   50% { opacity: 0.4; transform: scale(0.7); }
 }
 
+@keyframes sidebarScanSpin {
+  to { transform: rotate(360deg); }
+}
+
+.sidebar-scan-spin {
+  animation: sidebarScanSpin 1.15s linear infinite;
+  transform-origin: center;
+}
+
 @media (max-width: 1060px) {
   .boogie-metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -244,6 +253,9 @@ select option { background-color: var(--surface); color: var(--text); }
   .boogie-fade-swap,
   .boogie-trend-line-animate,
   .boogie-trend-point-animate {
+    animation: none !important;
+  }
+  .sidebar-scan-spin {
     animation: none !important;
   }
   .boogie-range-btn,

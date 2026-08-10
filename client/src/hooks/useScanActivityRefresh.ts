@@ -7,18 +7,30 @@
  * current without the user reloading the page.
  */
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import type { ScanJob } from '../types';
 
 export const SCAN_ACTIVITY_POLL_MS = 5000;
+
+/** Scan Activity State is part of this module's public API. */
+export interface ScanActivityState {
+  activeJobs: ScanJob[];
+  refresh: () => Promise<void>;
+}
 
 /** Use Scan Activity Refresh is part of this module's public API. */
 export function useScanActivityRefresh(
   onRefresh: () => void | Promise<void>,
   intervalMs: number = SCAN_ACTIVITY_POLL_MS,
-): void {
+): ScanActivityState {
   const onRefreshRef = useRef(onRefresh);
+  const pollRef = useRef<(() => Promise<void>) | null>(null);
   onRefreshRef.current = onRefresh;
+  const [activeJobs, setActiveJobs] = useState<ScanJob[]>([]);
+  const refresh = useCallback(async () => {
+    await pollRef.current?.();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -29,8 +41,10 @@ export function useScanActivityRefresh(
       if (pollBusy) return;
       pollBusy = true;
       try {
-        const scanActive = (await api.scanJobs.active()).length > 0;
+        const jobs = await api.scanJobs.active();
+        const scanActive = jobs.length > 0;
         if (cancelled) return;
+        setActiveJobs(jobs);
         if (scanActive || scanWasActive) await onRefreshRef.current();
         scanWasActive = scanActive;
       } catch {
@@ -40,7 +54,15 @@ export function useScanActivityRefresh(
       }
     };
 
+    pollRef.current = pollScanActivity;
+    void pollScanActivity();
     const pollId = setInterval(pollScanActivity, intervalMs);
-    return () => { cancelled = true; clearInterval(pollId); };
+    return () => {
+      cancelled = true;
+      if (pollRef.current === pollScanActivity) pollRef.current = null;
+      clearInterval(pollId);
+    };
   }, [intervalMs]);
+
+  return { activeJobs, refresh };
 }

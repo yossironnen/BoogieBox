@@ -1432,15 +1432,21 @@ pub fn list_auto_dj_candidates(
         params.push(id_to_value(lid));
     }
 
-    let ph = genres.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-    conditions.push(format!("LOWER(TRIM(COALESCE(t.genre,''))) IN ({ph})"));
-    for g in genres {
-        params.push(Value::Text(g.to_lowercase()));
+    if !genres.is_empty() {
+        let ph = genres.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        conditions.push(format!("LOWER(TRIM(COALESCE(t.genre,''))) IN ({ph})"));
+        for g in genres {
+            params.push(Value::Text(g.to_lowercase()));
+        }
     }
 
     params.push(Value::Integer(candidate_limit));
 
-    let where_clause = format!("WHERE {}", conditions.join(" AND "));
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
     let sql = format!(
         "SELECT {TRACK_COLS}, NULL AS rating
          FROM tracks t
@@ -2171,5 +2177,33 @@ mod tests {
 
         assert_eq!(result["total"], 1);
         assert_eq!(result["tracks"][0]["title"], "Whole New Way");
+    }
+
+    #[test]
+    fn auto_dj_candidates_allow_library_scope_without_genres() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch(
+            "
+            INSERT INTO libraries (id, name) VALUES
+                ('library-1', 'First'),
+                ('library-2', 'Second');
+            INSERT INTO artists (id, name) VALUES ('artist-1', 'Artist');
+            INSERT INTO albums (id, title, album_artist) VALUES ('album-1', 'Album', 'Artist');
+            INSERT INTO tracks (
+                id, library_id, artist_id, album_id, title, file_name, genre, format,
+                duration, file_size, scanned_at
+            ) VALUES
+                ('track-1', 'library-1', 'artist-1', 'album-1', 'First Track', 'first.flac', '', 'flac', 180, 1, '2026-08-10'),
+                ('track-2', 'library-2', 'artist-1', 'album-1', 'Second Track', 'second.flac', 'Rock', 'flac', 180, 1, '2026-08-10');
+            ",
+        )
+        .unwrap();
+
+        let library_id = coerce_entity_id("library-1");
+        let tracks = list_auto_dj_candidates(&conn, &[], Some(&library_id), 10).unwrap();
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].id, coerce_entity_id("track-1"));
     }
 }

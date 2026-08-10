@@ -17,7 +17,8 @@ import PlaylistsView from './components/PlaylistsView';
 import HomeView from './components/HomeView';
 import SetupView from './components/SetupView';
 import LoginScreen from './components/LoginScreen';
-import { ContextMenuRoot, KebabButton } from './components/ContextMenu';
+import SidebarStatusPanel from './components/SidebarStatusPanel';
+import { ContextMenuRoot, KebabButton, type ContextMenuAction } from './components/ContextMenu';
 import StarRating from './components/StarRating';
 import { APP_VERSION } from './version';
 import { parseServerDate } from './utils';
@@ -25,6 +26,7 @@ import MobileApp from './mobile/MobileApp';
 import { phase2 } from './uiPhase2';
 import { useMobileShell } from './mobile/useMobileShell';
 import { useScanActivityRefresh } from './hooks/useScanActivityRefresh';
+import { useDeepAnalysisStatus } from './hooks/useDeepAnalysisStatus';
 import {
   getClassicPreviewHref,
   getHybridSemanticTokens,
@@ -975,6 +977,7 @@ export default function App() {
   const [view, setView]         = useState<View>(() => hybridPreviewActive ? 'browse' : 'home');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [activeSidebarLibraryId, setActiveSidebarLibraryId] = useState<ClientEntityId | null>(null);
+  const [hoveredSidebarLibraryId, setHoveredSidebarLibraryId] = useState<ClientEntityId | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [stats, setStats]       = useState<Stats | null>(null);
   const [homeRefreshKey, setHomeRefreshKey] = useState(0);
@@ -1227,6 +1230,20 @@ export default function App() {
     return queue.length;
   }, [playbackMode]);
 
+  const startLibraryRadio = useCallback(async (libraryId: ClientEntityId): Promise<void> => {
+    const response = await api.autoDjTracks({ genres: [], library_id: libraryId, limit: 200 });
+    const queue = response.tracks ?? [];
+    if (!queue.length) return;
+    if (playbackMode === 'vinyl') setPlaybackMode('standard');
+    setPlayerState((prev) => ({
+      queue,
+      currentIndex: 0,
+      isPlaying: true,
+      playToken: prev.playToken + 1,
+      queueSource: { type: 'autodj', id: libraryId },
+    }));
+  }, [playbackMode]);
+
   useEffect(() => {
     const current = playerState.queue[playerState.currentIndex];
     if (!shouldRecordTrackPlay(current)) return;
@@ -1292,10 +1309,13 @@ export default function App() {
 
   // Keep the library counters live during background scans. Stats are refreshed on
   // their own (not via `refresh`) so scan progress does not reset the Home widgets.
-  useScanActivityRefresh(useCallback(async () => {
+  const { activeJobs: activeScanJobs, refresh: refreshScanActivity } = useScanActivityRefresh(useCallback(async () => {
     const st = await api.stats();
     setStats(st);
   }, []));
+  const { status: deepAnalysisStatus, refresh: refreshDeepAnalysisStatus } = useDeepAnalysisStatus(
+    Boolean(currentUser && currentUser !== 'loading' && !isMobileShell),
+  );
 
   const navItems: { id: View; label: string; icon: React.ReactNode }[] = [
     { id: 'home',         label: 'Home',         icon: <Icon.Home /> },
@@ -1488,79 +1508,85 @@ export default function App() {
                 ) : (
                   libraries.map((library) => {
                     const isActive = view === 'browse' && activeSidebarLibraryId === library.id;
+                    const activeScan = activeScanJobs.find((job) => job.library_id === library.id);
+                    const isAdmin = currentUser.role === 'admin';
+                    const canManageLibraries = isAdmin || currentUser.canManageLibraries;
+                    const actions: ContextMenuAction[] = [
+                      {
+                        id: 'library-radio',
+                        label: 'Play library radio',
+                        icon: 'play',
+                        disabled: library.track_count === 0,
+                        onSelect: () => startLibraryRadio(library.id),
+                      },
+                      {
+                        id: activeScan ? 'cancel-scan' : 'scan-library',
+                        label: activeScan ? 'Cancel scan' : 'Scan library',
+                        icon: activeScan ? 'cancel' : 'scan',
+                        dividerBefore: true,
+                        disabled: activeScan ? !isAdmin : !canManageLibraries,
+                        onSelect: async () => {
+                          if (activeScan) await api.admin.cancelScanJob(activeScan.id);
+                          else await api.libraries.scan(library.id);
+                          await refreshScanActivity();
+                        },
+                      },
+                      {
+                        id: 'deep-analysis',
+                        label: 'Run deep analysis',
+                        icon: 'deep-analysis',
+                        disabled: !isAdmin,
+                        onSelect: async () => {
+                          await api.boogiemix.queueLibraryDeepAnalysis(library.id);
+                          await refreshDeepAnalysisStatus();
+                        },
+                      },
+                    ];
                     return (
-                      <button
+                      <div
                         key={library.id}
-                        type="button"
-                        aria-pressed={isActive}
-                        aria-label={library.name}
-                        style={{ ...S.libraryNavItem, ...(sidebarCollapsed ? S.libraryNavItemCollapsed : {}), ...(isActive ? S.libraryNavItemActive : {}) }}
-                        onClick={() => openLibraryBrowse(library.id)}
-                        title={library.name}
+                        style={{ ...S.libraryNavRow, ...(sidebarCollapsed ? S.libraryNavRowCollapsed : {}) }}
+                        onMouseEnter={() => setHoveredSidebarLibraryId(library.id)}
+                        onMouseLeave={() => setHoveredSidebarLibraryId(null)}
                       >
-                        <span style={S.libraryNavIcon}><Icon.Browse /></span>
-                        {!sidebarCollapsed && <span style={S.libraryNavText}>{library.name}</span>}
-                      </button>
+                        <button
+                          type="button"
+                          aria-pressed={isActive}
+                          aria-label={library.name}
+                          style={{ ...S.libraryNavItem, ...(sidebarCollapsed ? S.libraryNavItemCollapsed : {}), ...(isActive ? S.libraryNavItemActive : {}) }}
+                          onClick={() => openLibraryBrowse(library.id)}
+                          title={library.name}
+                        >
+                          <span style={S.libraryNavIcon}><Icon.Browse /></span>
+                          {!sidebarCollapsed && <span style={S.libraryNavText}>{library.name}</span>}
+                        </button>
+                        <KebabButton
+                          target={{ kind: 'library', libraryId: library.id, name: library.name }}
+                          callbacks={{ actions }}
+                          style={{
+                            ...S.libraryKebabButton,
+                            ...(sidebarCollapsed ? S.libraryKebabButtonCollapsed : {}),
+                            opacity: hoveredSidebarLibraryId === library.id ? 1 : 0.58,
+                          }}
+                        />
+                      </div>
                     );
                   })
                 )}
               </div>
             </div>
           </nav>
-          {!sidebarCollapsed && <div style={S.sidebarBottom}>
-            <div style={S.sidebarStats}>
-              <div style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 20 }}>{stats?.total_tracks?.toLocaleString() ?? '–'}</div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Tracks</div>
-            </div>
-            <div style={S.sidebarStats}>
-              <div style={{ color: 'var(--accent)', fontWeight: 700, fontSize: 20 }}>{stats?.total_artists?.toLocaleString() ?? '–'}</div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Artists</div>
-            </div>
-          </div>}
-          {(streamDirect || ffmpegAvailable !== null) && (
-            <div style={{ padding: sidebarCollapsed ? '8px 0' : '8px 16px', borderTop: '1px solid var(--border)' }}>
-              {streamDirect ? (
-                <div
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start', gap: 6, fontSize: 10, color: '#71717a' }}
-                  title="Transcoding off"
-                >
-                  <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#71717a', flexShrink: 0 }} />
-                  {!sidebarCollapsed && 'Transcoding off'}
-                </div>
-              ) : (
-                <div
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start', gap: 6, fontSize: 10, color: ffmpegAvailable ? '#22c55e' : '#f59e0b' }}
-                  title={ffmpegAvailable
-                    ? `Transcoding on (${settings.transcodeQuality === 'high' ? '320 kbps' : '192 kbps'})`
-                    : 'No ffmpeg'}
-                >
-                  <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: ffmpegAvailable ? '#22c55e' : '#f59e0b', flexShrink: 0 }} />
-                  {!sidebarCollapsed && (ffmpegAvailable
-                    ? `Transcoding on (${settings.transcodeQuality === 'high' ? '320 kbps' : '192 kbps'})`
-                    : 'No ffmpeg')}
-                </div>
-              )}
-            </div>
-          )}
-          {/* User info + logout */}
-          <div style={{ ...S.userFooter, ...(sidebarCollapsed ? S.userFooterCollapsed : {}) }}>
-            {!sidebarCollapsed && (
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {(currentUser as AuthUser).username}
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{(currentUser as AuthUser).role}</div>
-              </div>
-            )}
-            <button
-              onClick={handleLogout}
-              title={`Log out ${(currentUser as AuthUser).username}`}
-              aria-label={`Log out ${(currentUser as AuthUser).username}`}
-              style={{ ...S.logoutButton, ...(sidebarCollapsed ? S.logoutButtonCollapsed : {}) }}
-            >
-              ⏻
-            </button>
-          </div>
+          <SidebarStatusPanel
+            currentUser={currentUser as AuthUser}
+            collapsed={sidebarCollapsed}
+            streamDirect={streamDirect}
+            ffmpegAvailable={ffmpegAvailable}
+            transcodeQuality={settings.transcodeQuality}
+            activeScanJobs={activeScanJobs}
+            libraries={libraries}
+            deepAnalysisStatus={deepAnalysisStatus}
+            onLogout={handleLogout}
+          />
         </aside>
 
         {/* Main */}
@@ -1817,6 +1843,15 @@ const S: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 4,
   },
+  libraryNavRow: {
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    width: '100%',
+  },
+  libraryNavRowCollapsed: {
+    width: 48,
+  },
   navItem: {
     display: 'flex', alignItems: 'center', gap: 12,
     width: '100%', padding: '11px 14px', marginBottom: 6,
@@ -1844,6 +1879,7 @@ const S: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 10,
     width: '100%',
+    minWidth: 0,
     padding: '9px 14px',
     backgroundColor: 'transparent',
     border: 'none',
@@ -1863,6 +1899,21 @@ const S: Record<string, React.CSSProperties> = {
     height: 42,
     padding: 0,
     borderRadius: 10,
+  },
+  libraryKebabButton: {
+    width: 28,
+    height: 28,
+    marginRight: 6,
+  },
+  libraryKebabButtonCollapsed: {
+    position: 'absolute',
+    right: -7,
+    bottom: -4,
+    width: 22,
+    height: 22,
+    marginRight: 0,
+    backgroundColor: 'var(--surface)',
+    boxShadow: '0 0 0 1px var(--border)',
   },
   libraryNavItemActive: {
     backgroundColor: 'color-mix(in srgb, var(--accent) 12%, transparent)',
@@ -1888,39 +1939,6 @@ const S: Record<string, React.CSSProperties> = {
     padding: '4px 14px 0',
     color: 'var(--text-muted)',
     fontSize: 12,
-  },
-  sidebarBottom: {
-    padding: '18px',
-    borderTop: '1px solid color-mix(in srgb, var(--border) 68%, transparent)',
-    display: 'flex',
-    gap: 18,
-  },
-  sidebarStats: { textAlign: 'center' },
-  userFooter: {
-    padding: '10px 16px',
-    borderTop: '1px solid var(--border)',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  userFooterCollapsed: {
-    justifyContent: 'center',
-    padding: '10px 0',
-  },
-  logoutButton: {
-    background: 'transparent',
-    border: 'none',
-    color: 'var(--text-muted)',
-    cursor: 'pointer',
-    padding: 4,
-    fontSize: 16,
-    lineHeight: 1,
-  },
-  logoutButtonCollapsed: {
-    width: 44,
-    height: 44,
-    padding: 0,
-    borderRadius: 10,
   },
   main: {
     flex: 1,

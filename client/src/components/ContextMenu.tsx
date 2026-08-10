@@ -18,7 +18,21 @@ export type ContextTarget =
   | { kind: 'track'; trackId: ClientEntityId; title: string }
   | { kind: 'album'; albumId: ClientEntityId; title: string }
   | { kind: 'artist'; artistId: ClientEntityId; name: string }
+  | { kind: 'library'; libraryId: ClientEntityId; name: string }
   | { kind: 'playlist'; playlistId: EntityId; name: string };
+
+/** Context Action Icon is part of this module's public API. */
+export type ContextActionIcon = 'play' | 'scan' | 'cancel' | 'deep-analysis';
+
+/** Context Menu Action is part of this module's public API. */
+export interface ContextMenuAction {
+  id: string;
+  label: string;
+  icon: ContextActionIcon;
+  disabled?: boolean;
+  dividerBefore?: boolean;
+  onSelect: () => void | Promise<void>;
+}
 
 /** Context Callbacks is part of this module's public API. */
 export interface ContextCallbacks {
@@ -28,6 +42,7 @@ export interface ContextCallbacks {
   onRename?: () => void;
   onDelete?: () => void;
   onRemove?: () => void;
+  actions?: ContextMenuAction[];
 }
 
 // ─── Global context menu state (singleton) ───────────────────────────────────
@@ -42,6 +57,7 @@ function normalizePlaylistName(name: string): string {
 
 function targetDisplayName(target: ContextTarget): string {
   if (target.kind === 'artist') return target.name;
+  if (target.kind === 'library') return target.name;
   if (target.kind === 'playlist') return target.name;
   return target.title;
 }
@@ -50,6 +66,7 @@ function targetKindLabel(target: ContextTarget): string {
   if (target.kind === 'track') return 'Track';
   if (target.kind === 'album') return 'Album';
   if (target.kind === 'artist') return 'Artist';
+  if (target.kind === 'library') return 'Library';
   return 'Playlist';
 }
 
@@ -71,12 +88,13 @@ export function openKebabMenu(
   rect: DOMRect,
   target: ContextTarget,
   callbacks: ContextCallbacks,
+  trigger?: HTMLElement,
 ) {
   const menuW = 220;
   const x = Math.max(8, rect.right - menuW);
   const y = rect.bottom + 4;
   window.dispatchEvent(new CustomEvent(CTX_EVENT, {
-    detail: { x, y, target, callbacks },
+    detail: { x, y, target, callbacks, trigger },
   }));
 }
 
@@ -122,7 +140,7 @@ export function KebabButton({ target, callbacks, visible = true, style }: {
         e.stopPropagation();
         e.preventDefault();
         const rect = ref.current!.getBoundingClientRect();
-        openKebabMenu(rect, target, callbacks);
+        openKebabMenu(rect, target, callbacks, ref.current!);
       }}
       onMouseDown={e => e.stopPropagation()}
     >
@@ -395,8 +413,12 @@ export function ContextMenuRoot() {
   const [showPlaylists, setShowPlaylists] = useState(false);
   const [showCrossfade, setShowCrossfade] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const visibleRef = useRef(false);
+  const activeTriggerRef = useRef<HTMLElement | null>(null);
 
   const close = useCallback(() => {
+    visibleRef.current = false;
+    activeTriggerRef.current = null;
     setVisible(false);
     setShowPlaylists(false);
     setShowCrossfade(false);
@@ -405,7 +427,11 @@ export function ContextMenuRoot() {
   // Listen for open events
   useEffect(() => {
     const handler = (e: Event) => {
-      const { x, y, target, callbacks } = (e as CustomEvent).detail;
+      const { x, y, target, callbacks, trigger } = (e as CustomEvent).detail;
+      if (trigger && visibleRef.current && activeTriggerRef.current === trigger) {
+        close();
+        return;
+      }
       // Keep menu inside viewport
       const menuW = 220, menuH = 200;
       const safeX = Math.min(x, window.innerWidth  - menuW - 8);
@@ -415,11 +441,13 @@ export function ContextMenuRoot() {
       setCallbacks(callbacks);
       setShowPlaylists(false);
       setShowCrossfade(false);
+      visibleRef.current = true;
+      activeTriggerRef.current = trigger ?? null;
       setVisible(true);
     };
     window.addEventListener(CTX_EVENT, handler);
     return () => window.removeEventListener(CTX_EVENT, handler);
-  }, []);
+  }, [close]);
 
   // Dismiss on outside click or Escape
   useEffect(() => {
@@ -450,6 +478,11 @@ export function ContextMenuRoot() {
     setShowCrossfade(true);
     setShowPlaylists(false);
   };
+  const runCustomAction = (action: ContextMenuAction) => {
+    if (action.disabled) return;
+    close();
+    Promise.resolve(action.onSelect()).catch(() => {});
+  };
 
   return createPortal(
     <div
@@ -464,6 +497,21 @@ export function ContextMenuRoot() {
       </div>
 
       <div style={CM.divider} />
+
+      {/* ── Extensible target actions ── */}
+      {callbacks.actions?.map((action) => (
+        <React.Fragment key={action.id}>
+          {action.dividerBefore && <div style={CM.divider} />}
+          <button
+            type="button"
+            disabled={action.disabled}
+            style={{ ...CM.item, ...(action.disabled ? CM.itemDisabled : {}) }}
+            onClick={() => runCustomAction(action)}
+          >
+            <ContextActionSVG icon={action.icon} /> {action.label}
+          </button>
+        </React.Fragment>
+      ))}
 
       {/* ── Track / Album actions ── */}
       {hasPlayQueue && (
@@ -585,6 +633,16 @@ const CrossfadeSVG = () => <svg width="12" height="12" viewBox="0 0 24 24" fill=
 const ArtistSVG = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
 const EditSVG = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>;
 const TrashSVG = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>;
+const ScanSVG = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}><path d="M20 7v5h-5"/><path d="M18.2 17.2A8 8 0 1 1 20 12"/></svg>;
+const CancelSVG = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" fill="currentColor" stroke="none"/></svg>;
+const DeepAnalysisSVG = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}><path d="M2 12h3l2-6 3 12 3-14 3 14 2-6h4"/></svg>;
+
+function ContextActionSVG({ icon }: { icon: ContextActionIcon }) {
+  if (icon === 'play') return <PlaySVG />;
+  if (icon === 'scan') return <ScanSVG />;
+  if (icon === 'cancel') return <CancelSVG />;
+  return <DeepAnalysisSVG />;
+}
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -648,6 +706,10 @@ const CM: Record<string, React.CSSProperties> = {
   itemActive: {
     backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)',
     color: 'var(--accent)',
+  },
+  itemDisabled: {
+    color: 'var(--text-muted)',
+    cursor: 'not-allowed',
   },
   submenu: {
     borderTop: '1px solid var(--border)',

@@ -143,6 +143,44 @@ describe('ContextMenuRoot', () => {
     expect(screen.queryByText('Mix')).not.toBeInTheDocument();
   });
 
+  it('renders extensible library actions and prevents disabled actions', async () => {
+    const onRadio = vi.fn();
+    const onScan = vi.fn();
+    const onDeepAnalysis = vi.fn();
+    render(<ContextMenuRoot />);
+
+    await open(
+      { kind: 'library', libraryId: 'library-1', name: 'Main Music' },
+      {
+        actions: [
+          { id: 'radio', label: 'Play library radio', icon: 'play', onSelect: onRadio },
+          { id: 'scan', label: 'Scan library', icon: 'scan', disabled: true, dividerBefore: true, onSelect: onScan },
+          { id: 'deep', label: 'Run deep analysis', icon: 'deep-analysis', disabled: true, onSelect: onDeepAnalysis },
+        ],
+      },
+    );
+
+    expect(screen.getByText('Library')).toBeInTheDocument();
+    expect(screen.getByText('Main Music')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Play library radio' }));
+    expect(onRadio).toHaveBeenCalledTimes(1);
+
+    await open(
+      { kind: 'library', libraryId: 'library-1', name: 'Main Music' },
+      {
+        actions: [
+          { id: 'scan', label: 'Scan library', icon: 'scan', disabled: true, onSelect: onScan },
+          { id: 'deep', label: 'Run deep analysis', icon: 'deep-analysis', disabled: true, onSelect: onDeepAnalysis },
+        ],
+      },
+    );
+    expect(screen.getByRole('button', { name: 'Scan library' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run deep analysis' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Scan library' }));
+    expect(onScan).not.toHaveBeenCalled();
+    expect(onDeepAnalysis).not.toHaveBeenCalled();
+  });
+
   it('adds tracks and albums to existing and newly created playlists', async () => {
     render(<ContextMenuRoot />);
 
@@ -217,7 +255,7 @@ describe('ContextMenuRoot', () => {
     expect(screen.getByText('Using global default')).toBeInTheDocument();
   });
 
-  it('opens via public helpers and kebab button, then dismisses outside or with Escape', async () => {
+  it('opens via public helpers and toggles the same kebab closed', async () => {
     const onPlay = vi.fn();
     render(
       <>
@@ -231,6 +269,14 @@ describe('ContextMenuRoot', () => {
       </>,
     );
     const kebab = screen.getByRole('button', { name: 'More actions' });
+    fireEvent.mouseDown(kebab);
+    fireEvent.click(kebab);
+    expect(await screen.findByText('Kebab Track')).toBeInTheDocument();
+
+    fireEvent.mouseDown(kebab);
+    fireEvent.click(kebab);
+    expect(screen.queryByText('Kebab Track')).not.toBeInTheDocument();
+
     fireEvent.mouseDown(kebab);
     fireEvent.click(kebab);
     expect(await screen.findByText('Kebab Track')).toBeInTheDocument();

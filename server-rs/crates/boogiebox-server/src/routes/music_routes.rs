@@ -902,12 +902,17 @@ async fn auto_dj_handler(
     };
 
     let genres = parse_genres(q.genres.as_deref());
-    if genres.is_empty() {
+    let library_id = q
+        .library_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(coerce_entity_id);
+    if genres.is_empty() && library_id.is_none() {
         return bad_request("At least one genre is required");
     }
 
     let limit = parse_limit(q.limit.as_deref(), 200, 500);
-    let library_id = q.library_id.as_deref().map(coerce_entity_id);
     let candidate_limit = (limit * 4).max(80);
 
     match tokio::task::spawn_blocking(move || {

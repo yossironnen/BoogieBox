@@ -2,7 +2,7 @@
  * Tests Use Scan Activity Refresh behavior for BoogieBox regressions.
  */
 
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useScanActivityRefresh } from './useScanActivityRefresh';
 
@@ -30,7 +30,7 @@ describe('useScanActivityRefresh', () => {
 
     await vi.advanceTimersByTimeAsync(15000);
 
-    expect(onRefresh).toHaveBeenCalledTimes(3);
+    expect(onRefresh).toHaveBeenCalledTimes(4);
   });
 
   it('refreshes once after the last scan finishes, then goes quiet', async () => {
@@ -74,7 +74,18 @@ describe('useScanActivityRefresh', () => {
     rerender({ cb: second });
     await vi.advanceTimersByTimeAsync(5000);
 
-    expect(first).toHaveBeenCalledTimes(1);
+    expect(first).toHaveBeenCalledTimes(2);
     expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the latest active job snapshot', async () => {
+    const jobs = [{ id: '1', status: 'running' }];
+    apiMock.scanJobs.active.mockResolvedValue(jobs);
+    const { result } = renderHook(() => useScanActivityRefresh(vi.fn()));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.activeJobs).toEqual(jobs);
+    await act(async () => { await result.current.refresh(); });
+    expect(apiMock.scanJobs.active).toHaveBeenCalledTimes(2);
   });
 });
