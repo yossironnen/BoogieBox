@@ -217,7 +217,7 @@ describe('App component flows', () => {
   it('navigates home/search/browse/playlists/settings and keeps library management inside settings', async () => {
     render(<App />);
 
-    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    await screen.findByTestId('home-view', {}, { timeout: 5000 });
     expect(screen.getByText('BoogieBox')).toBeInTheDocument();
     expect(screen.getByTestId('home-view')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText(/Transcoding on \(320 kbps\)/i)).toBeInTheDocument());
@@ -247,7 +247,7 @@ describe('App component flows', () => {
 
   it('does not render a standalone Libraries sidebar item', async () => {
     render(<App />);
-    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    await screen.findByTestId('home-view', {}, { timeout: 5000 });
     expect(screen.queryByRole('button', { name: 'Libraries' })).not.toBeInTheDocument();
   });
 
@@ -279,11 +279,15 @@ describe('App component flows', () => {
   it('opens Browse scoped to the clicked sidebar library and clears back to all libraries from Browse nav', async () => {
     render(<App />);
 
-    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    const browseMusicButton = await screen.findByRole(
+      'button',
+      { name: 'Browse Music' },
+      { timeout: 5000 },
+    );
 
     expect(screen.queryByRole('button', { name: 'Movies' })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse Music' }));
+    fireEvent.click(browseMusicButton);
     expect(await screen.findByTestId('browse-view')).toHaveTextContent('browse:none:libs:all');
   });
 
@@ -334,6 +338,29 @@ describe('App component flows', () => {
     });
   });
 
+  it('offers immediate library scanning instead of cancellation for a pending scheduled job', async () => {
+    apiMock.scanJobs.active.mockResolvedValue([{
+      id: 'scheduled-55', library_id: '1', status: 'pending', started_at: null, finished_at: null,
+      files_found: 0, files_scanned: 0, errors: 0,
+    }]);
+    render(<App />);
+
+    let scanAction: any;
+    await waitFor(() => {
+      const props = kebabPropsMock.mock.calls
+        .map(([value]) => value)
+        .find((value) => value.target.kind === 'library'
+          && value.callbacks.actions.some((action: any) => action.label === 'Scan library'));
+      expect(props).toBeDefined();
+      scanAction = props.callbacks.actions.find((action: any) => action.label === 'Scan library');
+      expect(scanAction.disabled).toBe(false);
+    });
+
+    await act(async () => scanAction.onSelect());
+    expect(apiMock.libraries.scan).toHaveBeenCalledWith('1');
+    expect(apiMock.admin.cancelScanJob).not.toHaveBeenCalled();
+  });
+
   it('removes Search view options and keeps the results grid sortable, including rating', async () => {
     const tracks = [
       {
@@ -366,9 +393,9 @@ describe('App component flows', () => {
     }));
 
     render(<App />);
-    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    const searchButton = await screen.findByRole('button', { name: 'Search' }, { timeout: 5000 });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.click(searchButton);
     fireEvent.change(screen.getByPlaceholderText(/Search titles, artists, albums/i), { target: { value: 'Track' } });
     await waitFor(() => expect(apiMock.search).toHaveBeenCalled(), { timeout: 2000 });
     expect(screen.queryByRole('button', { name: 'View options' })).not.toBeInTheDocument();
@@ -407,7 +434,7 @@ describe('App component flows', () => {
   it('keeps exactly one sidebar menu item active when switching views', async () => {
     render(<App />);
 
-    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
+    await screen.findByRole('button', { name: 'Home' }, { timeout: 5000 });
 
     const navLabels = ['Home', 'Search', 'Browse Music', 'Playlists', 'Settings'] as const;
     const homeButton = screen.getByRole('button', { name: 'Home' });
@@ -435,8 +462,7 @@ describe('App component flows', () => {
   it('starts Auto DJ from the Home Genres pane action', async () => {
     render(<App />);
 
-    await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
-    fireEvent.click(screen.getByText('home-start-auto-dj'));
+    fireEvent.click(await screen.findByText('home-start-auto-dj', {}, { timeout: 5000 }));
 
     await waitFor(() => expect(apiMock.autoDjTracks).toHaveBeenCalledWith({
       genres: ['Rock'],

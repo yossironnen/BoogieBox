@@ -31,7 +31,7 @@ export function describeTranscoding(
 }
 
 export function describeScan(activeScanJobs: ScanJob[], libraries: Library[]): string {
-  const job = activeScanJobs.find((entry) => entry.status === 'running') ?? activeScanJobs[0];
+  const job = activeScanJobs.find((entry) => entry.status === 'running');
   if (!job) return 'Library scan: Idle';
   const libraryName = libraries.find((library) => library.id === job.library_id)?.name ?? String(job.library_id);
   return `Library scan: ${libraryName} • ${job.files_scanned.toLocaleString()} / ${job.files_found.toLocaleString()} files`;
@@ -140,7 +140,7 @@ export default function SidebarStatusPanel({
   deepAnalysisStatus,
   onLogout,
 }: Props) {
-  const scanActive = activeScanJobs.length > 0;
+  const scanActive = activeScanJobs.some((job) => job.status === 'running');
   const deepQueueCount = deepAnalysisStatus
     ? deepAnalysisStatus.queue.pending + deepAnalysisStatus.queue.running
     : 0;

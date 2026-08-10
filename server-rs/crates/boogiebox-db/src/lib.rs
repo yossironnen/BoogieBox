@@ -3670,6 +3670,39 @@ mod tests {
     }
 
     #[test]
+    fn manual_scan_reuses_and_claims_the_library_scheduled_pending_job() {
+        let root = temp_dir("manual-scheduled-scan");
+        let InitializedDatabase { connection, .. } = init_db(&root).expect("db init");
+        connection
+            .execute(
+                "INSERT INTO libraries(id, path, name) VALUES('lib-scheduled', 'D:\\Music', 'Scheduled')",
+                [],
+            )
+            .expect("library");
+        connection
+            .execute(
+                "INSERT INTO scan_jobs(id, library_id, status) VALUES('scheduled-job', 'lib-scheduled', 'pending')",
+                [],
+            )
+            .expect("scheduled job");
+
+        let job_id = jobs::enqueue_scan_job(&connection, "lib-scheduled").expect("manual enqueue");
+        assert_eq!(job_id, music::coerce_entity_id("scheduled-job"));
+
+        let claimed = jobs::claim_scan_job(&connection, &job_id)
+            .expect("claim")
+            .expect("job claimed");
+        assert_eq!(claimed.library_id, music::coerce_entity_id("lib-scheduled"));
+        assert_eq!(
+            query_single_text(
+                &connection,
+                "SELECT status FROM scan_jobs WHERE id='scheduled-job'"
+            ),
+            "running"
+        );
+    }
+
+    #[test]
     fn prune_orphaned_music_entities_removes_trackless_albums_and_artists() {
         let root = temp_dir("orphan-music");
         let InitializedDatabase { connection, .. } = init_db(&root).expect("db init");

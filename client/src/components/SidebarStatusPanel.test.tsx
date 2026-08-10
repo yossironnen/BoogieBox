@@ -60,7 +60,12 @@ const deepStatus: BoogieMixDeepAnalysisStatus = {
   cache: { analyzedTracks: 12, estimatedBytes: 1024, oldestCreatedAt: null, newestCreatedAt: null },
 };
 
-function renderPanel(collapsed = false, onLogout = vi.fn(), streamDirect = false) {
+function renderPanel(
+  collapsed = false,
+  onLogout = vi.fn(),
+  streamDirect = false,
+  scanJobs = activeScanJobs,
+) {
   return render(
     <SidebarStatusPanel
       currentUser={user}
@@ -68,7 +73,7 @@ function renderPanel(collapsed = false, onLogout = vi.fn(), streamDirect = false
       streamDirect={streamDirect}
       ffmpegAvailable
       transcodeQuality="high"
-      activeScanJobs={activeScanJobs}
+      activeScanJobs={scanJobs}
       libraries={libraries}
       deepAnalysisStatus={deepStatus}
       onLogout={onLogout}
@@ -113,6 +118,20 @@ describe('SidebarStatusPanel', () => {
     renderPanel(false, vi.fn(), true);
     expect(screen.getByTestId('sidebar-status-transcoding')).toHaveAttribute('data-active', 'false');
     expect(screen.queryByTestId('transcode-conversion-mark')).not.toBeInTheDocument();
+  });
+
+  it('spins only for running scans, not pending scheduled jobs', () => {
+    const running = renderPanel();
+    const runningIndicator = screen.getByTestId('sidebar-status-scan');
+    expect(runningIndicator).toHaveAttribute('data-active', 'true');
+    expect(runningIndicator.querySelector('svg')).toHaveClass('sidebar-scan-spin');
+
+    running.unmount();
+    renderPanel(false, vi.fn(), false, [{ ...activeScanJobs[0], status: 'pending' }]);
+    const pendingIndicator = screen.getByTestId('sidebar-status-scan');
+    expect(pendingIndicator).toHaveAttribute('data-active', 'false');
+    expect(pendingIndicator.querySelector('svg')).not.toHaveClass('sidebar-scan-spin');
+    expect(pendingIndicator).toHaveAttribute('aria-label', 'Library scan: Idle');
   });
 
   it('keeps logout usable and hides identity text in the collapsed layout', () => {

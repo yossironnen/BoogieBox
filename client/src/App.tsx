@@ -1508,7 +1508,9 @@ export default function App() {
                 ) : (
                   libraries.map((library) => {
                     const isActive = view === 'browse' && activeSidebarLibraryId === library.id;
-                    const activeScan = activeScanJobs.find((job) => job.library_id === library.id);
+                    const runningScan = activeScanJobs.find(
+                      (job) => job.library_id === library.id && job.status === 'running',
+                    );
                     const isAdmin = currentUser.role === 'admin';
                     const canManageLibraries = isAdmin || currentUser.canManageLibraries;
                     const actions: ContextMenuAction[] = [
@@ -1520,13 +1522,13 @@ export default function App() {
                         onSelect: () => startLibraryRadio(library.id),
                       },
                       {
-                        id: activeScan ? 'cancel-scan' : 'scan-library',
-                        label: activeScan ? 'Cancel scan' : 'Scan library',
-                        icon: activeScan ? 'cancel' : 'scan',
+                        id: runningScan ? 'cancel-scan' : 'scan-library',
+                        label: runningScan ? 'Cancel scan' : 'Scan library',
+                        icon: runningScan ? 'cancel' : 'scan',
                         dividerBefore: true,
-                        disabled: activeScan ? !isAdmin : !canManageLibraries,
+                        disabled: runningScan ? !isAdmin : !canManageLibraries,
                         onSelect: async () => {
-                          if (activeScan) await api.admin.cancelScanJob(activeScan.id);
+                          if (runningScan) await api.admin.cancelScanJob(runningScan.id);
                           else await api.libraries.scan(library.id);
                           await refreshScanActivity();
                         },
