@@ -10,6 +10,7 @@ import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
 import MetadataEditModal from './MetadataEditModal';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
+import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
 import { groupArtistDiscographyByReleaseType } from '../releaseTypes';
 import { findTopTrackMatch, matchesTrackArtist, resolveTopTrackFromLibrarySearch } from '../artistTrackMatching';
 import ArtImage from './ArtImage';
@@ -1713,6 +1714,9 @@ export default function BrowseView({
   const libraryFilterRef = useRef<HTMLDivElement | null>(null);
   const refinePanelRef = useRef<HTMLDivElement | null>(null);
   const rootFetchTokenRef = useRef(0);
+  // Guards drill-down (artist/album) fetches the same way rootFetchTokenRef guards the
+  // root lists: a slow background refresh must not overwrite a newer navigation's data.
+  const drillFetchTokenRef = useRef(0);
   const releaseTypeResolvedArtistRef = useRef<Set<ClientEntityId>>(new Set());
   // Artist sort — persisted across sessions
   const [artistSortDir, _setArtistSortDir] = useState<'asc' | 'desc'>(() =>
@@ -1825,11 +1829,13 @@ export default function BrowseView({
     setLibraryFilterOpen(false);
   }, [forcedLibraryIds, forcedLibraryScopeKey]);
 
-  // Load root-level data
-  useEffect(() => {
+  // Load root-level data. `showLoading` is false for background refreshes (e.g. while a
+  // library scan keeps adding artists/albums) so the list updates in place instead of
+  // flashing skeletons and losing the user's scroll position.
+  const loadRootData = useCallback((showLoading: boolean) => {
     if (drill.level !== 'root') return;
     const fetchToken = ++rootFetchTokenRef.current;
-    setLoading(true);
+    if (showLoading) setLoading(true);
     if (tab === 'artists') {
       api.artists({ genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined, hide_compilation_only: hideCompilationOnlyArtists })
         .then((rows) => {
@@ -1853,13 +1859,20 @@ export default function BrowseView({
           setLoading(false);
         });
     }
-  }, [activeLibraryIds, drill.level, tab, groupBy, selectedGenres, selectedLibraryIds, sonicFingerprintOnly, hideCompilationOnlyArtists]);
+  }, [activeLibraryIds, drill.level, tab, groupBy, selectedGenres, sonicFingerprintOnly, hideCompilationOnlyArtists]);
+
+  useEffect(() => {
+    loadRootData(true);
+  }, [loadRootData]);
 
   // Load artist's albums and "appears on" compilations when drilling into artist
-  useEffect(() => {
+  const loadArtistData = useCallback((showLoading: boolean) => {
     if (drill.level !== 'artist') return;
-    setLoading(true);
-    setAppearsOnAlbums([]);
+    const fetchToken = ++drillFetchTokenRef.current;
+    if (showLoading) {
+      setLoading(true);
+      setAppearsOnAlbums([]);
+    }
     const artistAlbumsPromise = activeLibraryIds
       ? api.artistAlbums(drill.artist.id, activeLibraryIds)
       : api.artistAlbums(drill.artist.id);
@@ -1870,10 +1883,18 @@ export default function BrowseView({
       artistAlbumsPromise,
       artistAppearsOnPromise,
     ]).then(([albums, appearsOn]) => {
+      if (fetchToken !== drillFetchTokenRef.current) return;
       setArtistAlbums(albums);
       setAppearsOnAlbums(appearsOn);
-    }).finally(() => setLoading(false));
+    }).catch(() => {}).finally(() => {
+      if (fetchToken !== drillFetchTokenRef.current) return;
+      setLoading(false);
+    });
   }, [drill, activeLibraryIds]);
+
+  useEffect(() => {
+    loadArtistData(true);
+  }, [loadArtistData]);
 
   useEffect(() => {
     if (drill.level !== 'artist') return;
@@ -1905,13 +1926,34 @@ export default function BrowseView({
   }, [activeLibraryIds]);
 
   // Load album tracks when drilling into album
-  useEffect(() => {
+  const loadAlbumTracks = useCallback((showLoading: boolean) => {
     if (drill.level !== 'album') return;
-    setLoading(true);
+    const fetchToken = ++drillFetchTokenRef.current;
+    if (showLoading) setLoading(true);
     // Use groupBy at the time of drilling — preserved in the closure via drill state
     const mode = drill.level === 'album' ? (drill as any)._groupBy ?? groupBy : groupBy;
-    fetchAlbumTracks(drill.album, mode).then(setAlbumTracks).finally(() => setLoading(false));
+    fetchAlbumTracks(drill.album, mode)
+      .then((tracks) => {
+        if (fetchToken !== drillFetchTokenRef.current) return;
+        setAlbumTracks(tracks);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (fetchToken !== drillFetchTokenRef.current) return;
+        setLoading(false);
+      });
   }, [drill, fetchAlbumTracks, groupBy]);
+
+  useEffect(() => {
+    loadAlbumTracks(true);
+  }, [loadAlbumTracks]);
+
+  // Keep whichever level the user is looking at current while a library scan is running.
+  useScanActivityRefresh(useCallback(() => {
+    if (drill.level === 'root') loadRootData(false);
+    else if (drill.level === 'artist') loadArtistData(false);
+    else loadAlbumTracks(false);
+  }, [drill.level, loadRootData, loadArtistData, loadAlbumTracks]));
 
   const goRoot   = useCallback(() => { setCurrentArtist(null); setCurrentAlbum(null); setDrill({ level: 'root' }); }, []);
   const goArtist = useCallback((artist: Artist) => { setCurrentArtist(artist); setCurrentAlbum(null); setDrill({ level: 'artist', artist }); }, []);
