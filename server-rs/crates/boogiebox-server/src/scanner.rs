@@ -177,27 +177,43 @@ fn scan_music_library(db: &DbPool, claimed: &ClaimedScanJob) -> Result<(), JobEr
                 "db lock poisoned".into(),
             ))
         })?;
+        // A batch that failed mid-transaction in an earlier run (or another worker sharing this
+        // connection) can leave an open transaction behind; BEGIN would then fail forever with
+        // "cannot start a transaction within a transaction" until the server restarts.
+        if !conn.is_autocommit() {
+            tracing::warn!("Scan found a leftover open transaction; rolling it back");
+            let _ = conn.execute_batch("ROLLBACK");
+        }
         conn.execute_batch("BEGIN")?;
-        for (path_lower, result) in &parsed {
-            match result {
-                Ok(input) => {
-                    boogiebox_db::jobs::upsert_scanned_track(&conn, input)?;
-                    counters.files_scanned += 1;
-                }
-                Err(err) => {
-                    counters.errors += 1;
-                    counters.messages.push(format!("{path_lower}: {err}"));
+        let batch = (|| -> Result<(), JobError> {
+            for (path_lower, result) in &parsed {
+                match result {
+                    Ok(input) => {
+                        boogiebox_db::jobs::upsert_scanned_track(&conn, input)?;
+                        counters.files_scanned += 1;
+                    }
+                    Err(err) => {
+                        counters.errors += 1;
+                        counters.messages.push(format!("{path_lower}: {err}"));
+                    }
                 }
             }
+            boogiebox_db::jobs::update_scan_progress(
+                &conn,
+                &claimed.job_id,
+                counters.files_found,
+                counters.files_scanned,
+                counters.errors,
+            )?;
+            Ok(())
+        })();
+        match batch {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(err) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
         }
-        boogiebox_db::jobs::update_scan_progress(
-            &conn,
-            &claimed.job_id,
-            counters.files_found,
-            counters.files_scanned,
-            counters.errors,
-        )?;
-        conn.execute_batch("COMMIT")?;
         // Lock is released here between batches, allowing other handlers to proceed.
     }
 
