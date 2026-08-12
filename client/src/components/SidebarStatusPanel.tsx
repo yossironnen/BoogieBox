@@ -257,7 +257,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    border: '1px solid transparent',
+    // Longhand (not the `border` shorthand) so `indicatorActive` can toggle
+    // borderColor on/off without React warning about conflicting properties.
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'transparent',
     borderRadius: 8,
     outline: 'none',
   },

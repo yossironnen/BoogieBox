@@ -2,7 +2,7 @@
  * Defines the Context Menu React component and related UI helpers.
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
 import type { ClientEntityId, CrossfadeMode } from '../types';
@@ -51,6 +51,11 @@ export interface ContextCallbacks {
 
 const CTX_EVENT = 'boogiebox:contextmenu';
 
+/** Gap kept between the menu and every viewport edge. */
+const MENU_MARGIN = 8;
+/** Floor for the height cap so the menu stays usable on very short viewports. */
+const MENU_MIN_HEIGHT = 120;
+
 function normalizePlaylistName(name: string): string {
   return name.trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -79,7 +84,8 @@ export function openContextMenu(
   e.preventDefault();
   e.stopPropagation();
   window.dispatchEvent(new CustomEvent(CTX_EVENT, {
-    detail: { x: e.clientX, y: e.clientY, target, callbacks },
+    // flipY: bottom edge to align against when the menu has to open upwards.
+    detail: { x: e.clientX, y: e.clientY, flipY: e.clientY, target, callbacks },
   }));
 }
 
@@ -94,7 +100,8 @@ export function openKebabMenu(
   const x = Math.max(8, rect.right - menuW);
   const y = rect.bottom + 4;
   window.dispatchEvent(new CustomEvent(CTX_EVENT, {
-    detail: { x, y, target, callbacks, trigger },
+    // flipY sits above the button so an upward menu does not cover its trigger.
+    detail: { x, y, flipY: rect.top - 4, target, callbacks, trigger },
   }));
 }
 
@@ -415,10 +422,14 @@ export function ContextMenuRoot() {
   const menuRef = useRef<HTMLDivElement>(null);
   const visibleRef = useRef(false);
   const activeTriggerRef = useRef<HTMLElement | null>(null);
+  const flipYRef = useRef(0);
+  /** False until the current menu has been placed, so it is placed exactly once. */
+  const placedRef = useRef(false);
 
   const close = useCallback(() => {
     visibleRef.current = false;
     activeTriggerRef.current = null;
+    placedRef.current = false;
     setVisible(false);
     setShowPlaylists(false);
     setShowCrossfade(false);
@@ -427,16 +438,17 @@ export function ContextMenuRoot() {
   // Listen for open events
   useEffect(() => {
     const handler = (e: Event) => {
-      const { x, y, target, callbacks, trigger } = (e as CustomEvent).detail;
+      const { x, y, flipY, target, callbacks, trigger } = (e as CustomEvent).detail;
       if (trigger && visibleRef.current && activeTriggerRef.current === trigger) {
         close();
         return;
       }
-      // Keep menu inside viewport
-      const menuW = 220, menuH = 200;
-      const safeX = Math.min(x, window.innerWidth  - menuW - 8);
-      const safeY = Math.min(y, window.innerHeight - menuH - 8);
-      setPos({ x: safeX, y: safeY });
+      // Store the requested position as-is; clamping needs the rendered menu
+      // height, so it happens in the layout effect below.
+      flipYRef.current = typeof flipY === 'number' ? flipY : y;
+      // Re-open (possibly from a different anchor) needs a fresh placement.
+      placedRef.current = false;
+      setPos({ x, y });
       setTarget(target);
       setCallbacks(callbacks);
       setShowPlaylists(false);
@@ -448,6 +460,55 @@ export function ContextMenuRoot() {
     window.addEventListener(CTX_EVENT, handler);
     return () => window.removeEventListener(CTX_EVENT, handler);
   }, [close]);
+
+  // Place the menu once per open, then leave it alone. Submenus expanding must
+  // never slide the menu out from under the pointer, so later growth is
+  // absorbed by the height cap (the menu scrolls) instead of by repositioning.
+  const positionMenu = useCallback((replace = false) => {
+    const el = menuRef.current;
+    if (!el) return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    if (replace || !placedRef.current) {
+      // Measure the natural size, unconstrained by any cap from a previous open.
+      el.style.maxHeight = '';
+      const { width, height } = el.getBoundingClientRect();
+
+      let left = pos.x;
+      if (left + width > vw - MENU_MARGIN) left = vw - MENU_MARGIN - width;
+      if (left < MENU_MARGIN) left = MENU_MARGIN;
+
+      let top = pos.y;
+      if (top + height > vh - MENU_MARGIN) {
+        // Prefer opening upwards from the anchor, but only when the flipped menu
+        // fits entirely on screen — the anchor itself can be out of view after a
+        // viewport resize. Otherwise pin to the bottom edge.
+        const flipped = flipYRef.current - height;
+        const flippedFits = flipped >= MENU_MARGIN && flipYRef.current <= vh - MENU_MARGIN;
+        top = flippedFits ? flipped : Math.max(MENU_MARGIN, vh - MENU_MARGIN - height);
+      }
+
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+      placedRef.current = true;
+    }
+
+    // Cap to the room left below the settled top edge; taller content scrolls.
+    const top = parseFloat(el.style.top) || 0;
+    el.style.maxHeight = `${Math.max(MENU_MIN_HEIGHT, vh - MENU_MARGIN - top)}px`;
+  }, [pos.x, pos.y]);
+
+  // Runs after every render, but only refreshes the height cap once placed.
+  useLayoutEffect(positionMenu);
+
+  useLayoutEffect(() => {
+    if (!visible) return;
+    // A viewport change invalidates the placement, so re-place on resize.
+    const onResize = () => positionMenu(true);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [visible, positionMenu]);
 
   // Dismiss on outside click or Escape
   useEffect(() => {
@@ -655,7 +716,10 @@ const CM: Record<string, React.CSSProperties> = {
     borderRadius: 9,
     minWidth: 220,
     boxShadow: '0 12px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.3)',
-    overflow: 'hidden',
+    // Scroll rather than clip when the menu is taller than the viewport;
+    // maxHeight is applied at position time (see positionMenu).
+    overflowX: 'hidden',
+    overflowY: 'auto',
     fontSize: 13,
     fontFamily: 'var(--font), monospace',
     userSelect: 'none',

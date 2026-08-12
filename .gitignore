@@ -45,6 +45,7 @@ d?ProjectsBoogieBoxchanges.log
 .mcp.json
 .codex/config.toml
 .vscode/settings.json
+.playwright-mcp/
 
 # Internal project memory; replace with curated public docs before publishing
 Docs/memory/

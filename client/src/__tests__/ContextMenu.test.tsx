@@ -4,7 +4,7 @@
 
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ContextMenuRoot,
   KebabButton,
@@ -298,6 +298,84 @@ describe('ContextMenuRoot', () => {
     expect(event.preventDefault).toHaveBeenCalled();
     expect(event.stopPropagation).toHaveBeenCalled();
     expect(await screen.findByText('Legacy')).toBeInTheDocument();
+  });
+
+  describe('viewport clamping', () => {
+    const MENU_HEIGHT = 300;
+    const VIEWPORT_HEIGHT = 600;
+    const MARGIN = 8;
+    let originalHeight: number;
+
+    beforeEach(() => {
+      originalHeight = window.innerHeight;
+      Object.defineProperty(window, 'innerHeight', { value: VIEWPORT_HEIGHT, configurable: true });
+      // jsdom has no layout, so the menu reports zero size without this.
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+        width: 220, height: MENU_HEIGHT, top: 0, left: 0,
+        right: 220, bottom: MENU_HEIGHT, x: 0, y: 0, toJSON: () => ({}),
+      } as DOMRect);
+    });
+
+    afterEach(() => {
+      Object.defineProperty(window, 'innerHeight', { value: originalHeight, configurable: true });
+    });
+
+    /** The rendered menu element (the portal root holding the target label). */
+    const menuEl = () => screen.getByText('Track').parentElement!.parentElement!;
+
+    it('flips a bottom-edge menu above its anchor instead of letting it overflow', async () => {
+      render(<ContextMenuRoot />);
+      // Anchor near the bottom: a downward menu would end at 880, well past 600.
+      await open({ kind: 'track', trackId: 't1', title: 'Bottom Track' }, {});
+
+      const menu = menuEl();
+      const top = parseFloat(menu.style.top);
+      expect(top + MENU_HEIGHT).toBeLessThanOrEqual(VIEWPORT_HEIGHT - MARGIN);
+      expect(top).toBeGreaterThanOrEqual(MARGIN);
+    });
+
+    it('pins to the bottom edge when the menu cannot fit above the anchor either', async () => {
+      render(<ContextMenuRoot />);
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('boogiebox:contextmenu', {
+          // flipY too small to fit a 300px menu above it, so flipping is invalid.
+          detail: { x: 10, y: 580, flipY: 120, target: { kind: 'track', trackId: 't2', title: 'Tight' }, callbacks: {} },
+        }));
+      });
+
+      const top = parseFloat(menuEl().style.top);
+      expect(top).toBe(VIEWPORT_HEIGHT - MARGIN - MENU_HEIGHT);
+      expect(top + MENU_HEIGHT).toBeLessThanOrEqual(VIEWPORT_HEIGHT - MARGIN);
+    });
+
+    it('stays put when a submenu makes the menu taller', async () => {
+      // Growth must be absorbed by the height cap, never by moving the menu:
+      // sliding it out from under the pointer mid-click is worse than scrolling.
+      let currentHeight = MENU_HEIGHT;
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(() => ({
+        width: 220, height: currentHeight, top: 0, left: 0,
+        right: 220, bottom: currentHeight, x: 0, y: 0, toJSON: () => ({}),
+      }) as DOMRect);
+
+      render(<ContextMenuRoot />);
+      await open({ kind: 'track', trackId: 't4', title: 'Grower' }, {});
+      const topWhenOpened = menuEl().style.top;
+
+      currentHeight = MENU_HEIGHT + 200;   // submenu expands the menu
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Add to playlist/i }));
+      });
+
+      expect(menuEl().style.top).toBe(topWhenOpened);
+    });
+
+    it('caps menu height to the viewport so an oversized menu scrolls', async () => {
+      Object.defineProperty(window, 'innerHeight', { value: 200, configurable: true });
+      render(<ContextMenuRoot />);
+      await open({ kind: 'track', trackId: 't3', title: 'Short viewport' }, {});
+
+      expect(menuEl().style.maxHeight).toBe(`${200 - MARGIN * 2}px`);
+    });
   });
 });
 
