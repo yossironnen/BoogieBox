@@ -33,16 +33,23 @@ use crate::{
     DbPool, ErrorResponse, OkResponse, SharedState,
 };
 
+/// Body of a BoogieMix job request.
+///
+/// Fields carry an explicit snake_case alias alongside the struct-wide
+/// camelCase rename: the client posts `default_crossfade_sec`, so without the
+/// alias the field never deserialized and every mix silently fell back to the
+/// 8 s default — the playlist UI's blend-length selector (up to "45s blend")
+/// had no effect on the rendered mix at all.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EnqueueRequest {
-    #[serde(default)]
+    #[serde(default, alias = "playlist_id")]
     playlist_id: Option<serde_json::Value>,
     #[serde(default)]
     style: Option<String>,
     #[serde(default)]
     quality: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "default_crossfade_sec")]
     default_crossfade_sec: Option<i64>,
 }
 
@@ -1118,6 +1125,23 @@ where
 mod tests {
     use super::*;
     use boogiebox_db::music::EntityId;
+
+    #[test]
+    fn enqueue_request_accepts_the_snake_case_body_the_client_sends() {
+        // Regression: the struct-wide camelCase rename meant the client's
+        // `default_crossfade_sec` never bound, so every mix rendered at the 8s
+        // default and the playlist UI's blend-length selector did nothing.
+        let snake: EnqueueRequest =
+            serde_json::from_str(r#"{"style":"long_build","default_crossfade_sec":45}"#).unwrap();
+        assert_eq!(snake.default_crossfade_sec, Some(45));
+        assert_eq!(snake.style.as_deref(), Some("long_build"));
+
+        let camel: EnqueueRequest = serde_json::from_str(r#"{"defaultCrossfadeSec":32}"#).unwrap();
+        assert_eq!(camel.default_crossfade_sec, Some(32));
+
+        let omitted: EnqueueRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.default_crossfade_sec, None);
+    }
 
     #[test]
     fn boogiemix_job_response_is_flat_client_contract() {
