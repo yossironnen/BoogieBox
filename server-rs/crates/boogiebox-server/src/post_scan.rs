@@ -17,9 +17,10 @@ use crate::{
 };
 use boogiebox_db::{
     artwork::{
-        get_album_for_art, get_album_label, get_album_release_type, get_artist_for_art,
-        get_lastfm_cached, get_setting, get_track_for_lyrics, save_lastfm_cache, set_album_label,
-        set_album_release_type, upsert_cached_lyrics,
+        get_album_for_art, get_album_label, get_album_release_type, get_album_year,
+        get_artist_for_art, get_lastfm_cached, get_setting, get_track_for_lyrics,
+        save_lastfm_cache, set_album_label, set_album_release_type, set_album_year,
+        upsert_cached_lyrics,
     },
     jobs::{ClaimedPostScanJob, JobError, PostScanLane},
     music::EntityId,
@@ -869,6 +870,22 @@ fn extract_discogs_label(extra: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// Providers report the release year in two shapes: Discogs sends a bare year
+/// ("1995") while Spotify sends a full release date ("1995-06-12"), so take the
+/// leading four digits of either. Values outside the era of recorded music are
+/// provider junk rather than real metadata.
+fn parse_provider_year(value: &str) -> Option<i64> {
+    let digits: String = value
+        .trim()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if digits.len() != 4 {
+        return None;
+    }
+    digits.parse::<i64>().ok().filter(|y| *y >= 1860)
+}
+
 fn normalize_match_text(value: &str) -> String {
     let lower = value.to_ascii_lowercase();
     let stripped = regex_strip_parens(&lower);
@@ -934,7 +951,7 @@ async fn run_sync_discogs_album_metadata(
             continue;
         }
 
-        let (needs_release_type, needs_label) = {
+        let (needs_release_type, needs_label, needs_year) = {
             let db = state.db.clone();
             let id = album_id.clone();
             tokio::task::spawn_blocking(move || {
@@ -942,12 +959,13 @@ async fn run_sync_discogs_album_metadata(
                 (
                     get_album_release_type(&conn, &id).is_none(),
                     get_album_label(&conn, &id).is_none(),
+                    get_album_year(&conn, &id).is_none(),
                 )
             })
             .await
-            .unwrap_or((false, false))
+            .unwrap_or((false, false, false))
         };
-        if !needs_release_type && !needs_label {
+        if !needs_release_type && !needs_label && !needs_year {
             continue;
         }
 
@@ -1024,7 +1042,52 @@ async fn run_sync_discogs_album_metadata(
             }
         }
 
+        // Only reached for albums whose own tracks carry no usable year tag, since
+        // the tag-derived value always wins. Reissues and remasters give the same
+        // album several provider years, so take the earliest to match the original
+        // release year that tag-derived years resolve to.
+        if needs_year {
+            let resolved = matched
+                .iter()
+                .filter_map(|r| r.year.as_deref())
+                .filter_map(parse_provider_year)
+                .min();
+            if let Some(year) = resolved {
+                let db = state.db.clone();
+                let id = album_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                    set_album_year(&conn, &id, year);
+                })
+                .await;
+            }
+        }
+
         tokio::time::sleep(DISCOGS_ALBUM_METADATA_SYNC_DELAY).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_provider_year;
+
+    #[test]
+    fn parses_bare_and_dated_provider_years() {
+        // Discogs sends a bare year, Spotify a full release date.
+        assert_eq!(parse_provider_year("1995"), Some(1995));
+        assert_eq!(parse_provider_year("1995-06-12"), Some(1995));
+        assert_eq!(parse_provider_year("  2001  "), Some(2001));
+    }
+
+    #[test]
+    fn rejects_provider_junk_years() {
+        assert_eq!(parse_provider_year(""), None);
+        assert_eq!(parse_provider_year("0"), None);
+        assert_eq!(parse_provider_year("0000"), None);
+        assert_eq!(parse_provider_year("95"), None);
+        assert_eq!(parse_provider_year("unknown"), None);
+        // A leading run shorter or longer than four digits is not a year.
+        assert_eq!(parse_provider_year("19952"), None);
+    }
 }

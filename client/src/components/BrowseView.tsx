@@ -90,11 +90,18 @@ export function sortAlbums(
       const cmp = (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
       return dir === 'asc' ? cmp : -cmp;
     } else if (field === 'year') {
-      const nullVal = dir === 'asc' ? Infinity : -Infinity;
-      const ay = a.year ?? nullVal;
-      const by = b.year ?? nullVal;
-      const cmp = (ay as number) - (by as number);
-      return dir === 'asc' ? cmp : -cmp;
+      // Undated albums always sink to the bottom regardless of direction, so
+      // they are compared by title rather than against each other numerically.
+      const ay = a.year ?? null;
+      const by = b.year ?? null;
+      if (ay == null && by == null) {
+        return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+      }
+      if (ay == null) return 1;
+      if (by == null) return -1;
+      const cmp = ay - by;
+      if (cmp !== 0) return dir === 'asc' ? cmp : -cmp;
+      return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
     }
     const ar = a.rating;
     const br = b.rating;

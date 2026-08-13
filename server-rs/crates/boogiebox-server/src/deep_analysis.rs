@@ -3,22 +3,20 @@
 use crate::{ffmpeg::resolve_ffmpeg, post_scan::PostScanState};
 use boogiebox_db::{
     boogiemix::{
-        claim_next_deep_analysis_job_with_background, complete_deep_analysis_job,
-        fail_deep_analysis_job, get_deep_analysis_queue_status, get_setting,
-        queue_background_deep_analysis_batch, reset_stale_deep_analysis_jobs,
-        should_skip_deep_analysis, skip_deep_analysis_job, upsert_deep_analysis,
-        ClaimedDeepAnalysisJob, MixTrackInput,
+        claim_next_deep_analysis_job_filtered, complete_deep_analysis_job, fail_deep_analysis_job,
+        get_deep_analysis_queue_status, get_setting, max_pending_deep_analysis_priority,
+        queue_background_deep_analysis_batch, requeue_deep_analysis_job,
+        reset_stale_deep_analysis_jobs, should_skip_deep_analysis, skip_deep_analysis_job,
+        upsert_deep_analysis, ClaimedDeepAnalysisJob, MixTrackInput,
     },
     music::set_track_bpm_detected,
 };
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -26,6 +24,7 @@ use tokio::{
     process::Command,
     time::timeout,
 };
+use tokio_util::sync::CancellationToken;
 
 macro_rules! dlog {
     ($enabled:expr, $($arg:tt)*) => {
@@ -83,6 +82,47 @@ struct PythonInvocation {
 }
 
 const RUNTIME_CACHE_SECS: u64 = 60;
+/// Marker error returned when a job was stopped to free the machine for
+/// higher-priority work; such a job is requeued rather than failed.
+const PREEMPTED: &str = "preempted_by_higher_priority";
+
+/// One in-flight deep-analysis job, tracked so higher-priority work
+/// (a user-requested playlist analysis) can pause it.
+#[derive(Clone)]
+struct RunningJob {
+    priority: i64,
+    cancel: CancellationToken,
+}
+
+type RunningJobs = Arc<Mutex<HashMap<String, RunningJob>>>;
+
+/// Snapshot of the running set: (count, highest running priority).
+fn running_snapshot(running: &RunningJobs) -> (usize, i64) {
+    match running.lock() {
+        Ok(map) => (
+            map.len(),
+            map.values().map(|j| j.priority).max().unwrap_or(i64::MIN),
+        ),
+        Err(_) => (usize::MAX, i64::MIN),
+    }
+}
+
+/// Cancels every running job ranked below `min_priority` so the higher-priority
+/// request gets the machine. Cancelled jobs return to the pending queue.
+fn preempt_below(running: &RunningJobs, min_priority: i64) {
+    let Ok(map) = running.lock() else {
+        return;
+    };
+    for (job_id, job) in map.iter() {
+        if job.priority < min_priority && !job.cancel.is_cancelled() {
+            tracing::info!(
+                "[boogiemix:deep] pausing job {job_id} (priority {}) for pending priority {min_priority}",
+                job.priority
+            );
+            job.cancel.cancel();
+        }
+    }
+}
 
 /// Documents the Start Deep Analysis Worker public API surface.
 pub fn start_deep_analysis_worker(state: PostScanState) {
@@ -97,13 +137,13 @@ pub fn start_deep_analysis_worker(state: PostScanState) {
                 Err(e) => tracing::warn!("[boogiemix:deep] stale job reset failed: {e}"),
             }
         }
-        let active = Arc::new(AtomicUsize::new(0));
+        let running: RunningJobs = Arc::new(Mutex::new(HashMap::new()));
         let mut last_runtime: Option<(Instant, RuntimeStatus)> = None;
         let mut interval = tokio::time::interval(Duration::from_millis(1200));
         loop {
             tokio::select! {
                 _ = state.cancel.cancelled() => break,
-                _ = interval.tick() => run_tick(&state, active.clone(), &mut last_runtime).await,
+                _ = interval.tick() => run_tick(&state, running.clone(), &mut last_runtime).await,
             }
         }
     });
@@ -111,7 +151,7 @@ pub fn start_deep_analysis_worker(state: PostScanState) {
 
 async fn run_tick(
     state: &PostScanState,
-    active: Arc<AtomicUsize>,
+    running: RunningJobs,
     last_runtime: &mut Option<(Instant, RuntimeStatus)>,
 ) {
     let settings = match load_settings(state) {
@@ -122,7 +162,7 @@ async fn run_tick(
         }
     };
     let dbg = settings.debug_logging;
-    let current_active = active.load(Ordering::SeqCst);
+    let (current_active, highest_running) = running_snapshot(&running);
     if !settings.enabled {
         dlog!(
             dbg,
@@ -130,6 +170,20 @@ async fn run_tick(
         );
         return;
     }
+
+    // A user-requested playlist deep analysis outranks background/library work:
+    // pause anything lower that is already running so it gets the machine, and
+    // hold the claim floor at the highest running tier so nothing lower starts
+    // alongside it.
+    let max_pending = match state.db.lock() {
+        Ok(conn) => max_pending_deep_analysis_priority(&conn).unwrap_or(None),
+        Err(_) => None,
+    };
+    if let Some(pending_priority) = max_pending {
+        preempt_below(&running, pending_priority);
+    }
+    let claim_floor = highest_running;
+
     if current_active >= settings.max_concurrent {
         dlog!(
             dbg,
@@ -204,8 +258,8 @@ async fn run_tick(
         runtime.gpu_available,
     );
 
-    while active.load(Ordering::SeqCst) < settings.max_concurrent {
-        let job = match claim_job(state, !settings.pause_background) {
+    while running_snapshot(&running).0 < settings.max_concurrent {
+        let job = match claim_job(state, !settings.pause_background, claim_floor) {
             Ok(Some(job)) => job,
             Ok(None) => {
                 dlog!(dbg, "[boogiemix:deep] no more claimable jobs this tick");
@@ -224,24 +278,50 @@ async fn run_tick(
             job.duration,
             &job.file_fingerprint[..job.file_fingerprint.len().min(20)]
         );
-        active.fetch_add(1, Ordering::SeqCst);
+        let cancel = CancellationToken::new();
+        let job_key = job.id.to_string();
+        if let Ok(mut map) = running.lock() {
+            map.insert(
+                job_key.clone(),
+                RunningJob {
+                    priority: job.priority,
+                    cancel: cancel.clone(),
+                },
+            );
+        }
         let state = state.clone();
         let settings = settings.clone();
         let runtime = runtime.clone();
-        let active = active.clone();
+        let running = running.clone();
         tokio::spawn(async move {
-            if let Err(err) = process_job(&state, &settings, &runtime, job.clone()).await {
-                tracing::error!("[boogiemix:deep] job {} failed: {err}", job.id);
+            if let Err(err) =
+                process_job(&state, &settings, &runtime, job.clone(), cancel.clone()).await
+            {
+                let preempted = err == PREEMPTED;
+                if preempted {
+                    tracing::info!(
+                        "[boogiemix:deep] job {} paused and requeued for higher-priority work",
+                        job.id
+                    );
+                } else {
+                    tracing::error!("[boogiemix:deep] job {} failed: {err}", job.id);
+                }
                 let job_id = job.id.clone();
                 let db = state.db.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     if let Ok(conn) = db.lock() {
-                        let _ = fail_deep_analysis_job(&conn, &job_id, &err);
+                        if preempted {
+                            let _ = requeue_deep_analysis_job(&conn, &job_id);
+                        } else {
+                            let _ = fail_deep_analysis_job(&conn, &job_id, &err);
+                        }
                     }
                 })
                 .await;
             }
-            active.fetch_sub(1, Ordering::SeqCst);
+            if let Ok(mut map) = running.lock() {
+                map.remove(&job_key);
+            }
         });
     }
 }
@@ -273,9 +353,10 @@ fn maybe_queue_background_batch(state: &PostScanState, mode: &str) -> Result<(),
 fn claim_job(
     state: &PostScanState,
     include_background: bool,
+    min_priority: i64,
 ) -> Result<Option<ClaimedDeepAnalysisJob>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    claim_next_deep_analysis_job_with_background(&conn, include_background)
+    claim_next_deep_analysis_job_filtered(&conn, include_background, min_priority)
         .map_err(|e| e.to_string())
 }
 
@@ -284,6 +365,7 @@ async fn process_job(
     settings: &DeepSettings,
     runtime: &RuntimeStatus,
     job: ClaimedDeepAnalysisJob,
+    cancel: CancellationToken,
 ) -> Result<(), String> {
     let dbg = settings.debug_logging;
     dlog!(
@@ -410,6 +492,7 @@ async fn process_job(
         effective_timeout_ms,
         dbg,
         &job.id.to_string(),
+        &cancel,
     )
     .await?;
     let processing_ms = start.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -569,6 +652,7 @@ async fn run_python_worker_with_debug(
     timeout_ms: u64,
     dbg: bool,
     job_id: &str,
+    cancel: &CancellationToken,
 ) -> Result<Value, String> {
     use tokio::io::AsyncWriteExt;
     let script = worker_script_path().ok_or_else(|| "worker_script_missing".to_string())?;
@@ -661,15 +745,32 @@ async fn run_python_worker_with_debug(
         buf
     });
 
-    // Collect stdout and wait for exit under the timeout.
+    // Collect stdout and wait for exit under the timeout, unless higher-priority
+    // work preempts this job first.
     let mut stdout_buf = Vec::new();
-    let wait_result = timeout(Duration::from_millis(timeout_ms), async {
-        if let Some(mut stdout) = child.stdout.take() {
-            let _ = stdout.read_to_end(&mut stdout_buf).await;
-        }
-        child.wait().await
-    })
-    .await;
+    let wait_result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => None,
+        result = timeout(Duration::from_millis(timeout_ms), async {
+            if let Some(mut stdout) = child.stdout.take() {
+                let _ = stdout.read_to_end(&mut stdout_buf).await;
+            }
+            child.wait().await
+        }) => Some(result),
+    };
+
+    let Some(wait_result) = wait_result else {
+        // Kill the worker so its slot (and CPU/GPU) frees up immediately; the job
+        // itself is returned to the pending queue by the caller.
+        tracing::info!(
+            "[boogiemix:deep] job {} — preempted, killing python (pid={:?})",
+            job_id,
+            pid
+        );
+        let _ = child.kill().await;
+        let _ = stderr_task.await;
+        return Err(PREEMPTED.to_string());
+    };
 
     let stderr_raw = stderr_task.await.unwrap_or_default();
 

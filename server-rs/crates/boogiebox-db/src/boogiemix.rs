@@ -283,6 +283,8 @@ pub struct ClaimedDeepAnalysisJob {
     pub title: Option<String>,
     /// Track artist for logging.
     pub artist: Option<String>,
+    /// Queue priority the job was claimed at; used for preemption decisions.
+    pub priority: i64,
 }
 
 /// Public Stem Window data shape used by BoogieBox.
@@ -1195,14 +1197,31 @@ pub fn claim_next_deep_analysis_job_with_background(
     conn: &Connection,
     include_background: bool,
 ) -> Result<Option<ClaimedDeepAnalysisJob>, JobError> {
+    claim_next_deep_analysis_job_filtered(conn, include_background, i64::MIN)
+}
+
+/// Claims the next pending job, ignoring anything below `min_priority`.
+/// The floor lets the worker keep the machine dedicated to the highest
+/// priority tier currently running (for example a user-requested playlist
+/// deep analysis) instead of starting lower-priority work alongside it.
+pub fn claim_next_deep_analysis_job_filtered(
+    conn: &Connection,
+    include_background: bool,
+    min_priority: i64,
+) -> Result<Option<ClaimedDeepAnalysisJob>, JobError> {
     let row: Option<String> = conn
         .query_row(
             "SELECT id FROM deep_analysis_jobs
              WHERE status='pending'
                AND (?1 OR priority > ?2)
+               AND priority >= ?3
              ORDER BY priority DESC, id ASC
              LIMIT 1",
-            params![include_background, DEEP_ANALYSIS_PRIORITY_BACKGROUND],
+            params![
+                include_background,
+                DEEP_ANALYSIS_PRIORITY_BACKGROUND,
+                min_priority
+            ],
             |r| r.get(0),
         )
         .optional()?;
@@ -1223,7 +1242,7 @@ pub fn claim_next_deep_analysis_job_with_background(
     let claimed = conn
         .query_row(
             "SELECT j.id, j.track_id, j.file_fingerprint, t.file_path, t.duration,
-                    t.title, ar.name
+                    t.title, ar.name, j.priority
              FROM deep_analysis_jobs j
              JOIN tracks t ON t.id=j.track_id
              LEFT JOIN artists ar ON ar.id=t.artist_id
@@ -1238,6 +1257,7 @@ pub fn claim_next_deep_analysis_job_with_background(
                     duration: r.get(4)?,
                     title: r.get(5)?,
                     artist: r.get(6)?,
+                    priority: r.get(7)?,
                 })
             },
         )
@@ -1252,6 +1272,33 @@ pub fn claim_next_deep_analysis_job_with_background(
         )?;
     }
     Ok(claimed)
+}
+
+/// Highest priority currently waiting in the deep-analysis queue, if any.
+/// Used to decide whether a running lower-priority job should be preempted.
+pub fn max_pending_deep_analysis_priority(conn: &Connection) -> Result<Option<i64>, JobError> {
+    let value: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(priority) FROM deep_analysis_jobs WHERE status='pending'",
+            [],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(value)
+}
+
+/// Returns a running job to the pending queue without marking it failed, so a
+/// preempted job is retried once the higher-priority work is finished.
+pub fn requeue_deep_analysis_job(conn: &Connection, job_id: &EntityId) -> Result<(), JobError> {
+    conn.execute(
+        "UPDATE deep_analysis_jobs
+         SET status='pending', started_at=NULL, error_message=NULL,
+             updated_at=datetime('now')
+         WHERE id=?1",
+        params![job_id],
+    )?;
+    Ok(())
 }
 
 /// Documents the Complete Deep Analysis Job public API surface.
@@ -1500,11 +1547,13 @@ pub fn queue_playlist_deep_analysis(
     force: bool,
 ) -> Result<usize, JobError> {
     let tracks = load_playlist_tracks_for_mix(conn, playlist_id)?;
+    // A user-initiated playlist deep analysis outranks library-manual and
+    // background work, and preempts anything lower already running.
     queue_missing_deep_analysis_for_tracks_with_priority(
         conn,
         &tracks,
         force,
-        DEEP_ANALYSIS_PRIORITY_MANUAL,
+        DEEP_ANALYSIS_PRIORITY_PLAYLIST_MIX,
     )
 }
 
@@ -2066,6 +2115,89 @@ mod tests {
         let claimed = claim_next_deep_analysis_job_with_background(&conn, false).unwrap();
 
         assert!(claimed.is_none());
+    }
+
+    #[test]
+    fn playlist_deep_analysis_request_outranks_library_manual_work() {
+        let conn = setup_deep_db();
+
+        queue_playlist_deep_analysis(&conn, &coerce_entity_id("playlist-1"), true).unwrap();
+
+        let priority: i64 = conn
+            .query_row(
+                "SELECT priority FROM deep_analysis_jobs WHERE track_id='t1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(priority, DEEP_ANALYSIS_PRIORITY_PLAYLIST_MIX);
+        assert!(priority > DEEP_ANALYSIS_PRIORITY_MANUAL);
+    }
+
+    #[test]
+    fn claim_floor_holds_lower_priority_jobs_until_the_tier_clears() {
+        let conn = setup_deep_db();
+        conn.execute_batch(
+            "INSERT INTO deep_analysis_jobs(id, track_id, status, priority)
+             VALUES('job-bg', 't1', 'pending', 10),('job-mix', 't2', 'pending', 90);",
+        )
+        .unwrap();
+
+        let claimed = claim_next_deep_analysis_job_filtered(&conn, true, 90)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.track_id, coerce_entity_id("t2"));
+        assert_eq!(claimed.priority, 90);
+
+        // Nothing else may start while the playlist tier is the running floor.
+        assert!(claim_next_deep_analysis_job_filtered(&conn, true, 90)
+            .unwrap()
+            .is_none());
+        // Without the floor the background job is claimable again.
+        assert!(claim_next_deep_analysis_job_filtered(&conn, true, i64::MIN)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn requeue_returns_a_preempted_job_to_pending_with_its_priority() {
+        let conn = setup_deep_db();
+        conn.execute_batch(
+            "INSERT INTO deep_analysis_jobs(id, track_id, status, priority)
+             VALUES('job-bg', 't1', 'pending', 10);",
+        )
+        .unwrap();
+        let claimed = claim_next_deep_analysis_job_filtered(&conn, true, i64::MIN)
+            .unwrap()
+            .unwrap();
+
+        requeue_deep_analysis_job(&conn, &claimed.id).unwrap();
+
+        let (status, priority, started): (String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT status, priority, started_at FROM deep_analysis_jobs WHERE id='job-bg'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "pending");
+        assert_eq!(priority, 10);
+        assert!(started.is_none());
+    }
+
+    #[test]
+    fn max_pending_priority_reports_the_highest_waiting_tier() {
+        let conn = setup_deep_db();
+        assert_eq!(max_pending_deep_analysis_priority(&conn).unwrap(), None);
+        conn.execute_batch(
+            "INSERT INTO deep_analysis_jobs(id, track_id, status, priority)
+             VALUES('job-bg', 't1', 'pending', 10),
+                   ('job-mix', 't2', 'pending', 90),
+                   ('job-run', 't3', 'running', 95);",
+        )
+        .unwrap();
+
+        assert_eq!(max_pending_deep_analysis_priority(&conn).unwrap(), Some(90));
     }
 
     #[test]

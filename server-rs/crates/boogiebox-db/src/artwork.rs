@@ -217,6 +217,26 @@ pub fn set_album_label(conn: &Connection, album_id: &str, label: &str) {
     );
 }
 
+/// Returns the album's stored release year, if a plausible one is set.
+pub fn get_album_year(conn: &Connection, album_id: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT year FROM albums WHERE id = ?",
+        params![album_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+    .filter(|y| *y > 0)
+}
+
+/// Stores the provider-resolved release year for an album.
+pub fn set_album_year(conn: &Connection, album_id: &str, year: i64) {
+    let _ = conn.execute(
+        "UPDATE albums SET year = ? WHERE id = ?",
+        params![year, album_id],
+    );
+}
+
 /// Returns the album's stored release_type, if set to a non-default value.
 pub fn get_album_release_type(conn: &Connection, album_id: &str) -> Option<String> {
     conn.query_row(

@@ -1764,6 +1764,38 @@ pub fn refresh_denormalized_counts(connection: &Connection) -> Result<(), rusqli
               )
             "#,
         )?;
+
+        // The scanner only ever wrote year/genre onto tracks, so every album row
+        // kept a NULL year and browse could not sort by it. Derive both from the
+        // album's own tracks: the earliest tagged year (remasters and reissues
+        // often carry a later year on individual tracks, and the original release
+        // year is what browse should sort by) and the most common non-empty genre.
+        // Albums whose metadata was edited by hand are locked and left alone.
+        if column_exists(connection, "albums", "metadata_locked")? {
+            connection.execute_batch(
+                r#"
+                UPDATE albums SET
+                  year = COALESCE(
+                    (
+                      SELECT MIN(t.year) FROM tracks t
+                      WHERE t.album_id = albums.id AND t.year IS NOT NULL AND t.year > 0
+                    ),
+                    year
+                  ),
+                  genre = COALESCE(
+                    (
+                      SELECT TRIM(t.genre) FROM tracks t
+                      WHERE t.album_id = albums.id AND TRIM(COALESCE(t.genre, '')) != ''
+                      GROUP BY LOWER(TRIM(t.genre))
+                      ORDER BY COUNT(*) DESC, LOWER(TRIM(t.genre)) ASC
+                      LIMIT 1
+                    ),
+                    genre
+                  )
+                WHERE COALESCE(metadata_locked, 0) = 0
+                "#,
+            )?;
+        }
     }
 
     Ok(())
@@ -3141,6 +3173,88 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn refresh_denormalized_counts_derives_album_year_and_genre_from_tracks() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE albums (
+                  id TEXT PRIMARY KEY,
+                  title TEXT NOT NULL,
+                  album_artist TEXT NOT NULL DEFAULT '',
+                  year INTEGER,
+                  genre TEXT,
+                  metadata_locked INTEGER NOT NULL DEFAULT 0,
+                  track_count INTEGER NOT NULL DEFAULT 0,
+                  total_duration_sec REAL NOT NULL DEFAULT 0
+                );
+                CREATE TABLE tracks (
+                  id TEXT PRIMARY KEY,
+                  album_id TEXT,
+                  year INTEGER,
+                  genre TEXT,
+                  duration REAL NOT NULL DEFAULT 0
+                );
+                INSERT INTO albums(id, title, year, genre, metadata_locked) VALUES
+                  ('album-1', 'Reissued', NULL, NULL, 0),
+                  ('album-2', 'Hand Edited', 1999, 'Jazz', 1),
+                  ('album-3', 'Untagged', NULL, NULL, 0),
+                  ('album-4', 'Provider Filled', 1984, 'Synthpop', 0);
+                INSERT INTO tracks(id, album_id, year, genre, duration) VALUES
+                  ('t1', 'album-1', 2011, 'Rock', 10),
+                  ('t2', 'album-1', 1976, 'Rock', 10),
+                  ('t3', 'album-1', NULL, 'Pop', 10),
+                  ('t4', 'album-2', 2020, 'Metal', 10),
+                  ('t5', 'album-3', 0, '  ', 10),
+                  ('t6', 'album-4', NULL, NULL, 10);
+                "#,
+            )
+            .expect("seed");
+
+        refresh_denormalized_counts(&connection).expect("refresh counts");
+
+        // Earliest tagged year wins, so a remaster's later year does not hide the
+        // original release year, and the dominant genre is carried up.
+        assert_eq!(
+            query_single_i64(&connection, "SELECT year FROM albums WHERE id = 'album-1'"),
+            1976
+        );
+        let genre: String = connection
+            .query_row("SELECT genre FROM albums WHERE id = 'album-1'", [], |row| {
+                row.get(0)
+            })
+            .expect("genre");
+        assert_eq!(genre, "Rock");
+
+        // A hand-edited album is locked and must keep its curated values.
+        assert_eq!(
+            query_single_i64(&connection, "SELECT year FROM albums WHERE id = 'album-2'"),
+            1999
+        );
+
+        // Placeholder years and blank genres are not treated as real metadata.
+        let untagged: Option<i64> = connection
+            .query_row("SELECT year FROM albums WHERE id = 'album-3'", [], |row| {
+                row.get(0)
+            })
+            .expect("year");
+        assert_eq!(untagged, None);
+
+        // A year the provider lane resolved for an album whose tracks carry no
+        // year tag must survive later refreshes rather than being nulled out.
+        assert_eq!(
+            query_single_i64(&connection, "SELECT year FROM albums WHERE id = 'album-4'"),
+            1984
+        );
+        let kept_genre: String = connection
+            .query_row("SELECT genre FROM albums WHERE id = 'album-4'", [], |row| {
+                row.get(0)
+            })
+            .expect("genre");
+        assert_eq!(kept_genre, "Synthpop");
     }
 
     #[test]

@@ -97,14 +97,32 @@ describe('sortAlbums', () => {
     expect(sortAlbums(one, 'year', 'desc')).toHaveLength(1);
   });
 
-  it('handles albums where all years are null — order is stable', () => {
+  it('handles albums where all years are null — falls back to title order', () => {
     const noYears = [
       makeAlbum({ id: '1', title: 'C', year: null }),
       makeAlbum({ id: '2', title: 'A', year: null }),
     ];
-    const result = sortAlbums(noYears, 'year', 'asc');
-    // All nulls map to Infinity so comparison yields 0 — original order preserved
-    expect(result.map(a => a.title)).toEqual(['C', 'A']);
+    expect(sortAlbums(noYears, 'year', 'asc').map(a => a.title)).toEqual(['A', 'C']);
+    expect(sortAlbums(noYears, 'year', 'desc').map(a => a.title)).toEqual(['A', 'C']);
+  });
+
+  it('keeps undated albums last in both directions', () => {
+    const mixed = [
+      makeAlbum({ id: '1', title: 'NoYear', year: null }),
+      makeAlbum({ id: '2', title: 'Old', year: 1980 }),
+      makeAlbum({ id: '3', title: 'New', year: 2020 }),
+    ];
+    expect(sortAlbums(mixed, 'year', 'asc').map(a => a.title)).toEqual(['Old', 'New', 'NoYear']);
+    expect(sortAlbums(mixed, 'year', 'desc').map(a => a.title)).toEqual(['New', 'Old', 'NoYear']);
+  });
+
+  it('breaks year ties by title', () => {
+    const sameYear = [
+      makeAlbum({ id: '1', title: 'Zebra', year: 1999 }),
+      makeAlbum({ id: '2', title: 'Apple', year: 1999 }),
+    ];
+    expect(sortAlbums(sameYear, 'year', 'asc').map(a => a.title)).toEqual(['Apple', 'Zebra']);
+    expect(sortAlbums(sameYear, 'year', 'desc').map(a => a.title)).toEqual(['Apple', 'Zebra']);
   });
 
   it('handles albums with empty title strings', () => {
