@@ -148,8 +148,8 @@ if exist "Services\boogiemix\python" (
   )
 
   mkdir "%DIST_DIR%\resources\Services\boogiemix" >nul 2>nul
-  xcopy /e /q "Services\boogiemix\python" "%DIST_DIR%\resources\Services\boogiemix\python\" >nul
-  IF ERRORLEVEL 1 (echo [ERROR] Failed to copy BoogieMix Python assets & exit /b 1)
+  robocopy "Services\boogiemix\python" "%DIST_DIR%\resources\Services\boogiemix\python" /e /xd ".venv" /nfl /ndl /njh /njs /np >nul
+  IF ERRORLEVEL 8 (echo [ERROR] Failed to copy BoogieMix Python assets & exit /b 1)
 )
 if exist "%DIST_DIR%\resources\Services\boogiemix\python\.venv" rmdir /s /q "%DIST_DIR%\resources\Services\boogiemix\python\.venv"
 if "%SKIP_MODEL_CACHE%"=="1" (
