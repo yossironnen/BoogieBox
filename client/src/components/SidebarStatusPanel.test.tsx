@@ -140,7 +140,7 @@ describe('SidebarStatusPanel', () => {
 
     expect(screen.queryByText('admin')).not.toBeInTheDocument();
     const logout = screen.getByRole('button', { name: 'Log out admin' });
-    expect(logout).toHaveStyle({ width: '44px', height: '44px' });
+    expect(logout).toHaveStyle({ width: '38px', height: '38px' });
     fireEvent.click(logout);
     expect(onLogout).toHaveBeenCalledTimes(1);
   });

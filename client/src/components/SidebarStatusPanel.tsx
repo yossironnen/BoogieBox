@@ -203,22 +203,26 @@ export default function SidebarStatusPanel({
       </div>
 
       <div style={{ ...styles.identityRow, ...(collapsed ? styles.identityRowCollapsed : {}) }}>
-        <div style={styles.avatar} aria-hidden="true">{currentUser.username.slice(0, 2).toUpperCase()}</div>
+        <div style={styles.avatarCell}>
+          <div style={styles.avatar} aria-hidden="true">{currentUser.username.slice(0, 2).toUpperCase()}</div>
+        </div>
         {!collapsed && (
           <div style={styles.identityText}>
             <div style={styles.username}>{currentUser.username}</div>
             <div style={styles.role}>{currentUser.role}</div>
           </div>
         )}
-        <button
-          type="button"
-          onClick={onLogout}
-          title={`Log out ${currentUser.username}`}
-          aria-label={`Log out ${currentUser.username}`}
-          style={styles.logoutButton}
-        >
-          ⏻
-        </button>
+        <div style={styles.logoutCell}>
+          <button
+            type="button"
+            onClick={onLogout}
+            title={`Log out ${currentUser.username}`}
+            aria-label={`Log out ${currentUser.username}`}
+            style={styles.logoutButton}
+          >
+            ⏻
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -322,15 +326,21 @@ const styles: Record<string, React.CSSProperties> = {
   identityRow: {
     minHeight: 58,
     padding: '8px 10px',
-    display: 'flex',
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)',
     alignItems: 'center',
     gap: 9,
   },
   identityRowCollapsed: {
     minHeight: 0,
     padding: '8px 5px',
+    display: 'flex',
     flexDirection: 'column',
     gap: 4,
+  },
+  avatarCell: {
+    display: 'flex',
+    justifyContent: 'center',
   },
   avatar: {
     width: 32,
@@ -347,8 +357,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
   },
   identityText: {
-    flex: 1,
     minWidth: 0,
+    textAlign: 'left',
+  },
+  logoutCell: {
+    display: 'flex',
+    justifyContent: 'center',
   },
   username: {
     color: 'var(--text)',
@@ -364,8 +378,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
   },
   logoutButton: {
-    width: 44,
-    height: 44,
+    width: 38,
+    height: 38,
     flexShrink: 0,
     display: 'inline-flex',
     alignItems: 'center',
