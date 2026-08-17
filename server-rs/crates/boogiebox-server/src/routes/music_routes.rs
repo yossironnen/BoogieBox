@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use boogiebox_db::boogiemix::get_track_sonic_fingerprint;
@@ -14,8 +14,9 @@ use boogiebox_db::music::{
     list_albums_latest, list_artist_albums, list_artist_appears_on, list_artist_own_random_tracks,
     list_artist_radio_candidates, list_artist_radio_tags, list_artists, list_artists_most_played,
     list_auto_dj_candidates, list_genres, list_home_genre_summaries, list_recently_played,
-    list_top_played, normalize_artist_release_types, search_music, ArtistList, EntityId,
-    ListAlbumsParams, ListArtistsParams, SearchMusicParams,
+    list_top_played, normalize_artist_release_types, search_music, update_track_metadata,
+    ArtistList, EntityId, ListAlbumsParams, ListArtistsParams, SearchMusicParams,
+    TrackMetadataUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +63,7 @@ pub fn music_router(state: SharedState) -> Router {
             get(track_sonic_fingerprint_handler),
         )
         .route("/api/tracks/{id}", get(get_track_handler))
+        .route("/api/tracks/{id}/metadata", put(track_metadata_handler))
         // Auto-DJ
         .route("/api/auto-dj/tracks", get(auto_dj_handler))
         .with_state(state)
@@ -192,6 +194,26 @@ fn bad_request(msg: impl Into<String>) -> axum::response::Response {
         }),
     )
         .into_response()
+}
+
+fn forbidden(msg: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorResponse {
+            error: msg.into(),
+            setup_required: None,
+        }),
+    )
+        .into_response()
+}
+
+/// Admins, and users granted the "Allow metadata editing" permission, may edit
+/// track/album/artist tag metadata. Mirrors the same check in
+/// `playlist_routes.rs` (album/artist metadata edit) — kept as a local copy
+/// since each route module owns its small helpers here (see `get_db`,
+/// `setup_required`, etc. above).
+fn can_edit_metadata(user: &AuthenticatedUser) -> bool {
+    user.is_admin() || user.can_edit_metadata
 }
 
 fn not_found(msg: impl Into<String>) -> axum::response::Response {
@@ -864,6 +886,74 @@ async fn get_track_handler(
     {
         Ok(Ok(Some(track))) => (StatusCode::OK, Json(track)).into_response(),
         Ok(Ok(None)) => not_found("Not found"),
+        _ => internal_error(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackMetadataPayload {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    genre: Option<String>,
+    composer: Option<String>,
+    comment: Option<String>,
+    track_number: Option<serde_json::Value>,
+    disc_number: Option<serde_json::Value>,
+    year: Option<serde_json::Value>,
+}
+
+fn parse_metadata_int(value: Option<serde_json::Value>) -> Option<i64> {
+    match value {
+        Some(serde_json::Value::Number(number)) => number.as_i64(),
+        Some(serde_json::Value::String(raw)) => raw.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+/// `PUT /api/tracks/{id}/metadata` — edits a track's tag metadata (title, artist,
+/// album, genre, composer, comment, track/disc number, year) from the Track Info
+/// popup. Database-only: never touches the source file's own tags. Renaming
+/// artist/album resolves-or-creates the target row the same way the scanner
+/// does (see `update_track_metadata`).
+async fn track_metadata_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(payload): Json<TrackMetadataPayload>,
+) -> impl IntoResponse {
+    if !can_edit_metadata(&user) {
+        return forbidden("Forbidden");
+    }
+    if let Some(title) = &payload.title {
+        if title.trim().is_empty() {
+            return bad_request("Title is required");
+        }
+    }
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let track_id = coerce_entity_id(&id);
+    let update = TrackMetadataUpdate {
+        title: payload.title,
+        artist: payload.artist,
+        album: payload.album,
+        genre: payload.genre,
+        composer: payload.composer,
+        comment: payload.comment,
+        track_number: parse_metadata_int(payload.track_number),
+        disc_number: parse_metadata_int(payload.disc_number),
+        year: parse_metadata_int(payload.year),
+    };
+    match tokio::task::spawn_blocking(move || {
+        update_track_metadata(&db.lock().expect("db"), &track_id, update)
+    })
+    .await
+    {
+        Ok(Ok(Some(result))) => (StatusCode::OK, Json(result)).into_response(),
+        Ok(Ok(None)) => not_found("Track not found"),
         _ => internal_error(),
     }
 }

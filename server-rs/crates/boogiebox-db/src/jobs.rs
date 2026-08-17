@@ -1280,7 +1280,10 @@ pub(crate) fn canonical_compilation_artist_name(name: &str) -> Option<String> {
     }
 }
 
-fn upsert_artist(conn: &Connection, name: &str) -> Result<EntityId, JobError> {
+/// Finds an existing artist by case-insensitive name match, or creates one.
+/// Shared by the scanner and by the track-metadata edit path (Track Info popup)
+/// so a manual artist rename resolves the same way an auto-scan would.
+pub(crate) fn upsert_artist(conn: &Connection, name: &str) -> Result<EntityId, JobError> {
     let normalized = defaulted(Some(name), "Unknown Artist");
     if let Some(existing) = conn
         .query_row(
@@ -1300,7 +1303,14 @@ fn upsert_artist(conn: &Connection, name: &str) -> Result<EntityId, JobError> {
     Ok(artist_id)
 }
 
-fn upsert_album(conn: &Connection, title: &str, album_artist: &str) -> Result<EntityId, JobError> {
+/// Finds an existing album by case-insensitive (title, album_artist) match, or
+/// creates one. Shared by the scanner and by the track-metadata edit path (Track
+/// Info popup) so a manual album rename resolves the same way an auto-scan would.
+pub(crate) fn upsert_album(
+    conn: &Connection,
+    title: &str,
+    album_artist: &str,
+) -> Result<EntityId, JobError> {
     let title = defaulted(Some(title), "Unknown Album");
     let album_artist = defaulted(Some(album_artist), "Unknown Artist");
     if let Some(existing) = conn

@@ -10,6 +10,7 @@ import {
   KebabButton,
   openContextMenu,
   openKebabMenu,
+  TRACK_INFO_EVENT,
   type ContextCallbacks,
   type ContextTarget,
 } from '../components/ContextMenu';
@@ -141,6 +142,21 @@ describe('ContextMenuRoot', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     expect(callbacks.onDelete).toHaveBeenCalled();
     expect(screen.queryByText('Mix')).not.toBeInTheDocument();
+  });
+
+  it('fires the Info entry as a global event and closes the menu', async () => {
+    const onTrackInfo = vi.fn();
+    window.addEventListener(TRACK_INFO_EVENT, onTrackInfo);
+    render(<ContextMenuRoot />);
+
+    await open({ kind: 'track', trackId: '9', title: 'Track' });
+    fireEvent.click(screen.getByRole('button', { name: 'Info' }));
+
+    expect(onTrackInfo).toHaveBeenCalledTimes(1);
+    expect((onTrackInfo.mock.calls[0][0] as CustomEvent).detail).toEqual({ trackId: '9' });
+    expect(screen.queryByText('Track')).not.toBeInTheDocument();
+
+    window.removeEventListener(TRACK_INFO_EVENT, onTrackInfo);
   });
 
   it('renders extensible library actions and prevents disabled actions', async () => {

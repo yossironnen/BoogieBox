@@ -1147,6 +1147,10 @@ pub struct TrackRow {
     pub rating: Option<f64>,
     /// True when real Demucs stem analysis (confidence > 0.25) exists for this track.
     pub has_deep_analysis: bool,
+    /// On-disk path of the source file. Only populated by `get_track` (single-track
+    /// detail fetch) — left `None` on every list/search query to keep those payloads
+    /// small, since nothing besides the track detail popup needs it.
+    pub file_path: Option<String>,
 }
 
 fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
@@ -1179,6 +1183,7 @@ fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
         library_name: row.get(25)?,
         has_deep_analysis: row.get(26)?,
         rating: row.get(27)?,
+        file_path: None,
     })
 }
 
@@ -1272,8 +1277,165 @@ pub fn get_track(
          LEFT JOIN libraries l ON l.id = t.library_id
          WHERE t.id = ?"
     );
-    conn.query_row(&sql, rusqlite::params![user_id, track_id], map_track)
-        .optional()
+    let mut track = conn
+        .query_row(&sql, rusqlite::params![user_id, track_id], map_track)
+        .optional()?;
+    if let Some(row) = track.as_mut() {
+        row.file_path = conn
+            .query_row(
+                "SELECT file_path FROM tracks WHERE id = ?",
+                rusqlite::params![track_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+    }
+    Ok(track)
+}
+
+fn blank_to_none(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// `upsert_artist`/`upsert_album` only ever fail via a propagated `rusqlite::Error`
+/// (they carry no other fallible step), so this always unwraps the `Db` arm in
+/// practice; the fallback exists purely so the match stays exhaustive.
+fn job_err_to_rusqlite(err: crate::jobs::JobError) -> rusqlite::Error {
+    match err {
+        crate::jobs::JobError::Db(inner) => inner,
+        other => rusqlite::Error::InvalidParameterName(other.to_string()),
+    }
+}
+
+/// Public Track Metadata Update data shape used by BoogieBox.
+#[derive(Debug, Default)]
+pub struct TrackMetadataUpdate {
+    /// Documents the Title public API surface.
+    pub title: Option<String>,
+    /// Documents the Artist public API surface.
+    pub artist: Option<String>,
+    /// Documents the Album public API surface.
+    pub album: Option<String>,
+    /// Documents the Genre public API surface.
+    pub genre: Option<String>,
+    /// Documents the Composer public API surface.
+    pub composer: Option<String>,
+    /// Documents the Comment public API surface.
+    pub comment: Option<String>,
+    /// Documents the Track Number public API surface.
+    pub track_number: Option<i64>,
+    /// Documents the Disc Number public API surface.
+    pub disc_number: Option<i64>,
+    /// Documents the Year public API surface.
+    pub year: Option<i64>,
+}
+
+/// Updates a track's tag metadata (title/artist/album/genre/composer/comment/
+/// track & disc number/year) in the database only — it never touches the audio
+/// file's own tags. Renaming `artist` or `album` resolves-or-creates the target
+/// row the same way the scanner does (see [`crate::jobs::upsert_artist`] /
+/// [`crate::jobs::upsert_album`]) and moves the track onto it, so a typo can
+/// create a new artist/album rather than editing the intended one — callers
+/// should treat these two fields with the same care as a scanner tag edit.
+/// Returns `Ok(None)` when the track does not exist.
+pub fn update_track_metadata(
+    conn: &Connection,
+    track_id: &EntityId,
+    update: TrackMetadataUpdate,
+) -> rusqlite::Result<Option<crate::playlists::MetadataUpdateResult>> {
+    let current_artist_name: Option<String> = conn
+        .query_row(
+            "SELECT COALESCE(ar.name, '') FROM tracks t
+             LEFT JOIN artists ar ON ar.id = t.artist_id
+             WHERE t.id = ?",
+            rusqlite::params![track_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(current_artist_name) = current_artist_name else {
+        return Ok(None);
+    };
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> rusqlite::Result<()> {
+        let mut sets: Vec<&str> = Vec::new();
+        let mut values: Vec<Value> = Vec::new();
+
+        if let Some(title) = update.title.as_deref().and_then(blank_to_none) {
+            sets.push("title=?");
+            values.push(Value::Text(title.to_owned()));
+        }
+
+        // Resolve the artist first: a simultaneous album rename is owned by
+        // whichever artist name applies after this update, not the old one.
+        let mut effective_artist_name = current_artist_name;
+        if let Some(artist_name) = update.artist.as_deref().and_then(blank_to_none) {
+            let artist_id =
+                crate::jobs::upsert_artist(conn, artist_name).map_err(job_err_to_rusqlite)?;
+            sets.push("artist_id=?");
+            values.push(id_to_value(&artist_id));
+            effective_artist_name = artist_name.to_owned();
+        }
+
+        if let Some(album_title) = update.album.as_deref().and_then(blank_to_none) {
+            let album_id = crate::jobs::upsert_album(conn, album_title, &effective_artist_name)
+                .map_err(job_err_to_rusqlite)?;
+            sets.push("album_id=?");
+            values.push(id_to_value(&album_id));
+        }
+
+        if let Some(genre) = &update.genre {
+            sets.push("genre=?");
+            values.push(Value::Text(blank_to_none(genre).unwrap_or("").to_owned()));
+        }
+        if let Some(composer) = &update.composer {
+            sets.push("composer=?");
+            values.push(Value::Text(
+                blank_to_none(composer).unwrap_or("").to_owned(),
+            ));
+        }
+        if let Some(comment) = &update.comment {
+            sets.push("comment=?");
+            values.push(Value::Text(blank_to_none(comment).unwrap_or("").to_owned()));
+        }
+        if let Some(track_number) = update.track_number {
+            sets.push("track_number=?");
+            values.push(Value::Integer(track_number));
+        }
+        if let Some(disc_number) = update.disc_number {
+            sets.push("disc_number=?");
+            values.push(Value::Integer(disc_number));
+        }
+        if let Some(year) = update.year {
+            sets.push("year=?");
+            values.push(Value::Integer(year));
+        }
+
+        if !sets.is_empty() {
+            values.push(id_to_value(track_id));
+            let sql = format!("UPDATE tracks SET {} WHERE id=?", sets.join(", "));
+            conn.execute(&sql, params_from_iter(values))?;
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(Some(crate::playlists::MetadataUpdateResult {
+                ok: true,
+                merged_into: None,
+            }))
+        }
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(err)
+        }
+    }
 }
 
 /// Documents the List Recently Played public API surface.
@@ -2205,5 +2367,140 @@ mod tests {
 
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].id, coerce_entity_id("track-1"));
+    }
+
+    fn seed_one_track(conn: &Connection) {
+        conn.execute_batch(
+            "
+            INSERT INTO libraries (id, name) VALUES ('library-1', 'Home Library');
+            INSERT INTO artists (id, name) VALUES ('artist-1', 'deadmau5');
+            INSERT INTO albums (id, title, album_artist, artist_id)
+                VALUES ('album-1', 'For Lack of a Better Name', 'deadmau5', 'artist-1');
+            INSERT INTO tracks (
+                id, library_id, artist_id, album_id, title, file_name, genre, format,
+                duration, file_size, file_path, scanned_at
+            ) VALUES (
+                'track-1', 'library-1', 'artist-1', 'album-1', 'Strobe', '02 - Strobe.flac',
+                'Progressive House', 'flac', 637, 82246041, 'D:\\Music\\deadmau5\\For Lack of a Better Name\\02 - Strobe.flac',
+                '2026-08-10 14:22:00'
+            );
+            ",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn get_track_includes_file_path() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        seed_one_track(&conn);
+
+        let track = get_track(&conn, "user-1", &coerce_entity_id("track-1"))
+            .unwrap()
+            .expect("track exists");
+
+        assert_eq!(
+            track.file_path.as_deref(),
+            Some("D:\\Music\\deadmau5\\For Lack of a Better Name\\02 - Strobe.flac")
+        );
+    }
+
+    #[test]
+    fn list_queries_leave_file_path_unset() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        seed_one_track(&conn);
+
+        // TRACK_COLS-based list queries (unlike get_track) never select
+        // file_path, to keep list payloads small — map_track defaults it to
+        // None, and this must stay that way.
+        let tracks = list_album_tracks(&conn, "user-1", &coerce_entity_id("album-1")).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].file_path, None);
+    }
+
+    #[test]
+    fn update_track_metadata_updates_scalar_fields() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        seed_one_track(&conn);
+
+        let track_id = coerce_entity_id("track-1");
+        let result = update_track_metadata(
+            &conn,
+            &track_id,
+            TrackMetadataUpdate {
+                genre: Some("House".into()),
+                year: Some(2009),
+                track_number: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .expect("track exists");
+        assert!(result.ok);
+
+        let track = get_track(&conn, "user-1", &track_id).unwrap().unwrap();
+        assert_eq!(track.genre.as_deref(), Some("House"));
+        assert_eq!(track.year, Some(2009));
+        assert_eq!(track.track_number, Some(2));
+        // Untouched fields survive.
+        assert_eq!(track.title.as_deref(), Some("Strobe"));
+    }
+
+    #[test]
+    fn update_track_metadata_rename_artist_resolves_or_creates() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        seed_one_track(&conn);
+
+        let track_id = coerce_entity_id("track-1");
+        update_track_metadata(
+            &conn,
+            &track_id,
+            TrackMetadataUpdate {
+                artist: Some("Joel Zimmerman".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .expect("track exists");
+
+        let track = get_track(&conn, "user-1", &track_id).unwrap().unwrap();
+        assert_eq!(track.artist.as_deref(), Some("Joel Zimmerman"));
+
+        // Renaming to a name that already exists as another artist resolves
+        // onto that existing row rather than creating a duplicate.
+        update_track_metadata(
+            &conn,
+            &track_id,
+            TrackMetadataUpdate {
+                artist: Some("Joel Zimmerman".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let artist_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artists WHERE LOWER(name)=LOWER('Joel Zimmerman')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(artist_count, 1);
+    }
+
+    #[test]
+    fn update_track_metadata_rejects_missing_track() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+
+        let result = update_track_metadata(
+            &conn,
+            &coerce_entity_id("does-not-exist"),
+            TrackMetadataUpdate::default(),
+        )
+        .unwrap();
+        assert!(result.is_none());
     }
 }

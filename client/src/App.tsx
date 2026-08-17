@@ -18,7 +18,8 @@ import HomeView from './components/HomeView';
 import SetupView from './components/SetupView';
 import LoginScreen from './components/LoginScreen';
 import SidebarStatusPanel from './components/SidebarStatusPanel';
-import { ContextMenuRoot, KebabButton, type ContextMenuAction } from './components/ContextMenu';
+import { ContextMenuRoot, KebabButton, TRACK_INFO_EVENT, type ContextMenuAction } from './components/ContextMenu';
+import TrackInfoModal from './components/TrackInfoModal';
 import StarRating from './components/StarRating';
 import { APP_VERSION } from './version';
 import { parseServerDate } from './utils';
@@ -1002,6 +1003,7 @@ export default function App() {
     useState<{ genre: string; token: number } | null>(null);
   const [openPlaylistRequest, setOpenPlaylistRequest] =
     useState<{ playlistId: EntityId; token: number } | null>(null);
+  const [infoTrackId, setInfoTrackId] = useState<ClientEntityId | null>(null);
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(null);
   const lastRecordedPlayKeyRef = useRef<string>('');
   const themeSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1072,6 +1074,18 @@ export default function App() {
       // Best effort only.
     }
   }, [playbackMode]);
+
+  // Track Info popup: the kebab menu's "Info" action fires this from wherever a
+  // track row is rendered (search, album, playlist, ...), so a single listener
+  // here owns the popup instead of threading state through every call site.
+  useEffect(() => {
+    const onTrackInfo = (e: Event) => {
+      const { trackId } = (e as CustomEvent).detail as { trackId: ClientEntityId };
+      setInfoTrackId(trackId);
+    };
+    window.addEventListener(TRACK_INFO_EVENT, onTrackInfo);
+    return () => window.removeEventListener(TRACK_INFO_EVENT, onTrackInfo);
+  }, []);
 
   // Vinyl mode preferences (hardcore/needle-drop/analog FX) are per-user: localStorage for instant
   // load, server for cross-browser sync.
@@ -1724,6 +1738,13 @@ export default function App() {
         adaptiveAccentEnabled={adaptiveAccentEnabled}
       />
       <ContextMenuRoot />
+      {infoTrackId && (
+        <TrackInfoModal
+          trackId={infoTrackId}
+          onClose={() => setInfoTrackId(null)}
+          onSaved={() => setHomeRefreshKey((prev) => prev + 1)}
+        />
+      )}
     </div>
   );
 }

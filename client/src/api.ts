@@ -472,6 +472,20 @@ export const api = {
     put<{ ok: boolean; merged_into?: ApiEntityId }>(`/albums/${id}/metadata`, resetLock ? { ...data, reset_lock: true } : data),
   updateArtistMetadata: (id: ApiEntityId, data: { name: string; description?: string }, resetLock?: boolean) =>
     put<{ ok: boolean }>(`/artists/${id}/metadata`, resetLock ? { ...data, reset_lock: true } : data),
+  updateTrackMetadata: (
+    id: ApiEntityId,
+    data: {
+      title?: string;
+      artist?: string;
+      album?: string;
+      genre?: string;
+      composer?: string;
+      comment?: string;
+      trackNumber?: number;
+      discNumber?: number;
+      year?: number;
+    },
+  ) => put<{ ok: boolean }>(`/tracks/${id}/metadata`, data),
   uploadAlbumArtwork: (id: ApiEntityId, imageBase64: string, mimeType: string) =>
     post<{ ok: boolean }>(`/albums/${id}/artwork`, { imageBase64, mimeType }),
   uploadArtistArtwork: (id: ApiEntityId, imageBase64: string, mimeType: string) =>
