@@ -242,14 +242,10 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           discogs_artist_id TEXT,
           discogs_identity_checked_at TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_artists_lastfm_mbid
-          ON artists(lastfm_mbid) WHERE lastfm_mbid IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_artists_deezer_artist_id
-          ON artists(deezer_artist_id) WHERE deezer_artist_id IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_artists_spotify_artist_id
-          ON artists(spotify_artist_id) WHERE spotify_artist_id IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_artists_discogs_artist_id
-          ON artists(discogs_artist_id) WHERE discogs_artist_id IS NOT NULL;
+        -- External-identity indexes are created by the tracked migration after
+        -- upgrade databases have received these columns. Do not create them
+        -- in this bootstrap batch: CREATE TABLE IF NOT EXISTS does not add
+        -- columns to an existing artists table.
 
         CREATE TABLE IF NOT EXISTS albums (
           id TEXT PRIMARY KEY,
@@ -3808,12 +3804,20 @@ mod tests {
                    id TEXT PRIMARY KEY,
                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
                  );
-                 CREATE TABLE artists (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+                 CREATE TABLE artists (
+                   id TEXT PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   description TEXT,
+                   metadata_locked INTEGER NOT NULL DEFAULT 0,
+                   track_count INTEGER NOT NULL DEFAULT 0,
+                   album_count INTEGER NOT NULL DEFAULT 0,
+                   play_count INTEGER NOT NULL DEFAULT 0
+                 );
                  INSERT INTO artists(id, name) VALUES('artist-1', 'Existing Artist');",
             )
             .expect("old schema");
-        ensure_artist_external_identity_schema(&upgrade).expect("first migration");
-        ensure_artist_external_identity_schema(&upgrade).expect("idempotent migration");
+        initialize_schema(&upgrade).expect("full upgrade initialization");
+        initialize_schema(&upgrade).expect("idempotent full initialization");
         assert_eq!(
             query_single_text(&upgrade, "SELECT name FROM artists WHERE id='artist-1'"),
             "Existing Artist"
@@ -3823,6 +3827,14 @@ mod tests {
             query_single_i64(
                 &upgrade,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_artists_lastfm_mbid'"
+            ),
+            1
+        );
+        assert_eq!(
+            query_single_i64(
+                &upgrade,
+                "SELECT COUNT(*) FROM schema_migrations
+                 WHERE id='2026-08-17-artist-external-identities'"
             ),
             1
         );
