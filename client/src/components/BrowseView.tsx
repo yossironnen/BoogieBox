@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../api';
-import type { Artist, Album, ClientEntityId, Track, Genre, Library, LastFmInfo } from '../types';
+import type { Artist, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist } from '../types';
 import type { EntityId } from '../entityId';
 import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
@@ -959,6 +959,61 @@ function ArtistTileImage({ artistId, artist }: { artistId: ClientEntityId; artis
       imgStyle={L.gridArtImg}
       fallback={<div style={L.gridArtPlaceholder}><ArtistIcon /></div>}
     />
+  );
+}
+
+function SimilarArtistTile({ artist, onSelect }: { artist: SimilarArtist; onSelect: (artist: Artist) => void }) {
+  const [active, setActive] = useState(false);
+  return (
+    <button
+      type="button"
+      style={{ ...L.similarArtistCard, ...(active ? L.similarArtistCardActive : {}) }}
+      onClick={() => onSelect(artist)}
+      onMouseEnter={() => setActive(true)}
+      onMouseLeave={() => setActive(false)}
+      onFocus={() => setActive(true)}
+      onBlur={() => setActive(false)}
+    >
+      <span style={L.similarArtistArt}>
+        <ArtistTileImage artistId={artist.id} artist={artist.name} />
+      </span>
+      <span style={L.similarArtistName}>{artist.name}</span>
+    </button>
+  );
+}
+
+function SimilarArtistsSection({ artistId, onSelect }: {
+  artistId: ClientEntityId;
+  onSelect: (artist: Artist) => void;
+}) {
+  const [artists, setArtists] = useState<SimilarArtist[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setArtists([]);
+    api.artistSimilar(artistId, 12)
+      .then(response => {
+        if (!cancelled) setArtists(response.artists);
+      })
+      .catch(() => {
+        if (!cancelled) setArtists([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artistId]);
+
+  if (artists.length === 0) return null;
+
+  return (
+    <section style={L.similarArtistsSection}>
+      <div style={L.sectionHeading}>similar artists</div>
+      <div style={L.similarArtistsGrid}>
+        {artists.map(artist => (
+          <SimilarArtistTile key={artist.id} artist={artist} onSelect={onSelect} />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -2723,6 +2778,7 @@ export default function BrowseView({
                 />
               </>
             )}
+            <SimilarArtistsSection artistId={drill.artist.id} onSelect={goArtist} />
           </div>
         </div>
       )}
@@ -3118,6 +3174,52 @@ const L: Record<string, React.CSSProperties> = {
   list: { flex: 1, overflowY: 'auto', paddingBottom: 0 },
   listStack: { flex: '0 0 auto' },
   artistDetailScroll: { flex: 1, minHeight: 0, overflowY: 'auto' },
+  similarArtistsSection: {
+    padding: '8px 0 24px',
+  },
+  similarArtistsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(116px, 1fr))',
+    gap: 12,
+    padding: '0 20px',
+  },
+  similarArtistCard: {
+    minWidth: 0,
+    display: 'grid',
+    gap: 8,
+    padding: 8,
+    border: '1px solid transparent',
+    borderRadius: 12,
+    background: 'transparent',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    textAlign: 'left',
+    outline: 'none',
+    transition: 'background 120ms ease, border-color 120ms ease, transform 120ms ease',
+  },
+  similarArtistCardActive: {
+    borderColor: 'color-mix(in srgb, var(--accent) 36%, var(--border))',
+    background: 'color-mix(in srgb, var(--accent) 8%, var(--surface))',
+    transform: 'translateY(-2px)',
+  },
+  similarArtistArt: {
+    width: '100%',
+    aspectRatio: '1 / 1',
+    overflow: 'hidden',
+    borderRadius: '50%',
+    background: 'var(--bg)',
+    boxShadow: 'var(--shadow-subtle)',
+  },
+  similarArtistName: {
+    overflow: 'hidden',
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: 1.25,
+    textAlign: 'center',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   gridWrap: {
     flex: 1,
     overflowY: 'auto',

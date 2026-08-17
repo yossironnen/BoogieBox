@@ -16,6 +16,7 @@ const { apiMock } = vi.hoisted(() => ({
     albums: vi.fn(),
     artistAlbums: vi.fn(),
     artistAppearsOn: vi.fn(),
+    artistSimilar: vi.fn(),
     resolveArtistReleaseTypes: vi.fn(),
     albumTracks: vi.fn(),
     albumTracksByGroup: vi.fn(),
@@ -90,6 +91,7 @@ describe('BrowseView component flows', () => {
     apiMock.albums.mockResolvedValue([album]);
     apiMock.artistAlbums.mockResolvedValue([album]);
     apiMock.artistAppearsOn.mockResolvedValue([]);
+    apiMock.artistSimilar.mockResolvedValue({ sourceArtistId: '1', artists: [] });
     apiMock.resolveArtistReleaseTypes.mockResolvedValue({ updated: false });
     apiMock.albumTracks.mockResolvedValue(tracks);
     apiMock.albumTracksByGroup.mockResolvedValue(tracks);
@@ -218,6 +220,36 @@ describe('BrowseView component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: /\+ Queue All/i }));
     expect(addToQueue).toHaveBeenCalledTimes(2);
   }, 15000);
+
+  it('renders owned similar artists and navigates to the selected artist', async () => {
+    apiMock.artistSimilar.mockImplementation(async (artistId: ClientEntityId) => ({
+      sourceArtistId: artistId,
+      artists: artistId === '1'
+        ? [{ id: '2', name: 'Related Artist', track_count: 5, album_count: 1, score: 1, providers: ['lastfm'] }]
+        : [],
+    }));
+
+    render(
+      <BrowseView
+        libraries={[]}
+        playTrack={vi.fn()}
+        playAlbumInVinylMode={vi.fn()}
+        addToQueue={vi.fn()}
+        lastfmKey="test-lastfm-key"
+      />
+    );
+
+    fireEvent.click(await screen.findByText('Artist One'));
+    expect(await screen.findByText('similar artists')).toBeInTheDocument();
+    expect(apiMock.artistSimilar).toHaveBeenCalledWith('1', 12);
+
+    const relatedArtistButton = screen.getByText('Related Artist').closest('button');
+    if (!relatedArtistButton) throw new Error('Related artist button not found');
+    fireEvent.click(relatedArtistButton);
+
+    await waitFor(() => expect(apiMock.artistAlbums).toHaveBeenCalledWith('2'));
+    expect(apiMock.artistSimilar).toHaveBeenCalledWith('2', 12);
+  });
 
   it('plays album rows with album queue source metadata', async () => {
     const playTrack = vi.fn();
@@ -1023,4 +1055,3 @@ describe('BrowseView component flows', () => {
     expect(screen.getByText('No artists found.')).toBeInTheDocument();
   });
 });
-

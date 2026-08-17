@@ -10,8 +10,10 @@ use crate::{
     providers::{
         download_image, fetch_lastfm_album_info, fetch_lastfm_artist_info,
         fetch_lastfm_artist_top_tags, fetch_lrclib_lyrics, fetch_lyricsovh,
-        search_deezer_artist_image, search_discogs_album_cover, search_discogs_artist_image,
-        search_metadata, search_spotify_artist_image, MetadataSearchResult,
+        get_spotify_access_token, search_deezer_artist_match, search_discogs_album_cover,
+        search_discogs_artist_match, search_metadata, search_spotify_artist_match,
+        search_spotify_artist_match_with_token, ArtistProviderMatch, LastFmInfoPayload,
+        MetadataSearchResult,
     },
     DbPool,
 };
@@ -23,7 +25,11 @@ use boogiebox_db::{
         upsert_cached_lyrics,
     },
     jobs::{ClaimedPostScanJob, JobError, PostScanLane},
-    music::EntityId,
+    music::{
+        coerce_entity_id, get_artist_external_identity, list_artists_needing_external_identity,
+        persist_artist_identity_if_missing, ArtistExternalIdentity, ArtistIdentityProvider,
+        EntityId,
+    },
     playlists::normalize_release_type,
 };
 use reqwest::Client;
@@ -68,6 +74,13 @@ pub struct PostScanState {
 
 /// Documents the Start Post Scan Scheduler public API surface.
 pub fn start_post_scan_scheduler(state: PostScanState) {
+    {
+        let conn = state
+            .db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = boogiebox_db::jobs::enqueue_missing_artist_identity_backfill_jobs(&conn);
+    }
     tokio::spawn(async move {
         run_one_pending_music_post_scan(&state).await;
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -169,6 +182,15 @@ async fn process_post_scan_job(
         "warm_lastfm_artist_info" => {
             run_warm_lastfm_artist_info(state, &job.library_id, job.payload.as_deref()).await
         }
+        "enrich_artist_external_ids" => {
+            run_enrich_artist_external_ids(
+                state,
+                &job.job_id,
+                &job.library_id,
+                job.payload.as_deref(),
+            )
+            .await
+        }
         "warm_lastfm_album_info" => {
             run_warm_lastfm_album_info(state, &job.library_id, job.payload.as_deref()).await
         }
@@ -195,6 +217,40 @@ async fn get_setting_value(db: &DbPool, key: &str) -> Option<String> {
     .await
     .ok()
     .flatten()
+}
+
+async fn persist_artist_provider_match(
+    db: &DbPool,
+    artist_id: &str,
+    provider: ArtistIdentityProvider,
+    matched: &ArtistProviderMatch,
+) {
+    let db = db.clone();
+    let artist_id = coerce_entity_id(artist_id);
+    let external_id = matched.external_id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        persist_artist_identity_if_missing(&conn, &artist_id, provider, Some(&external_id), None)
+    })
+    .await;
+}
+
+async fn persist_lastfm_identity(db: &DbPool, artist_id: &str, info: &LastFmInfoPayload) {
+    let db = db.clone();
+    let artist_id = coerce_entity_id(artist_id);
+    let mbid = info.mbid.clone();
+    let canonical_name = info.canonical_name.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        persist_artist_identity_if_missing(
+            &conn,
+            &artist_id,
+            ArtistIdentityProvider::LastFm,
+            mbid.as_deref(),
+            canonical_name.as_deref(),
+        )
+    })
+    .await;
 }
 
 async fn get_library_entity_ids(
@@ -341,24 +397,49 @@ async fn run_cache_artist_images(
             continue;
         }
 
-        // Try providers in priority order
-        let image_url = search_deezer_artist_image(&state.http_client, &artist.name).await;
+        // Try providers in priority order. Persist each validated identity
+        // from the same response that supplied the selected image.
+        let mut image_url = None;
+        if let Some(matched) = search_deezer_artist_match(&state.http_client, &artist.name).await {
+            persist_artist_provider_match(
+                &state.db,
+                artist_id,
+                ArtistIdentityProvider::Deezer,
+                &matched,
+            )
+            .await;
+            image_url = matched.image_url;
+        }
 
-        let image_url = if image_url.is_none() {
+        if image_url.is_none() {
             if let Some(token) = &discogs_token {
-                search_discogs_artist_image(&state.http_client, token, &artist.name).await
-            } else {
-                None
+                if let Some(matched) =
+                    search_discogs_artist_match(&state.http_client, token, &artist.name).await
+                {
+                    persist_artist_provider_match(
+                        &state.db,
+                        artist_id,
+                        ArtistIdentityProvider::Discogs,
+                        &matched,
+                    )
+                    .await;
+                    image_url = matched.image_url;
+                }
             }
-        } else {
-            image_url
-        };
+        }
 
-        let image_url = if image_url.is_none() {
-            try_spotify_artist_image(state, &artist.name).await
-        } else {
-            image_url
-        };
+        if image_url.is_none() {
+            if let Some(matched) = try_spotify_artist_match(state, &artist.name).await {
+                persist_artist_provider_match(
+                    &state.db,
+                    artist_id,
+                    ArtistIdentityProvider::Spotify,
+                    &matched,
+                )
+                .await;
+                image_url = matched.image_url;
+            }
+        }
 
         let Some(url) = image_url else { continue };
 
@@ -388,10 +469,13 @@ async fn run_cache_artist_images(
     Ok(())
 }
 
-async fn try_spotify_artist_image(state: &PostScanState, artist_name: &str) -> Option<String> {
+async fn try_spotify_artist_match(
+    state: &PostScanState,
+    artist_name: &str,
+) -> Option<ArtistProviderMatch> {
     let client_id = get_setting_value(&state.db, "spotifyClientId").await?;
     let client_secret = get_setting_value(&state.db, "spotifyClientSecret").await?;
-    search_spotify_artist_image(&state.http_client, &client_id, &client_secret, artist_name).await
+    search_spotify_artist_match(&state.http_client, &client_id, &client_secret, artist_name).await
 }
 
 // -- cache_album_images --------------------------------------------------------
@@ -558,24 +642,31 @@ async fn run_warm_lastfm_artist_info(
         let Some(artist) = artist else { continue };
 
         let cache_key = format!("artist:{}", artist.name.to_lowercase());
-        let is_cached = {
+        let cached = {
             let db = state.db.clone();
             let ck = cache_key.clone();
             tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                get_lastfm_cached(&conn, &ck).is_some()
+                get_lastfm_cached(&conn, &ck)
             })
             .await
-            .unwrap_or(false)
+            .ok()
+            .flatten()
         };
-        if is_cached {
-            continue;
+        if let Some(cached) = cached {
+            if let Ok(info) = serde_json::from_str::<LastFmInfoPayload>(&cached) {
+                if info.canonical_name.is_some() {
+                    persist_lastfm_identity(&state.db, artist_id, &info).await;
+                    continue;
+                }
+            }
         }
 
         let Some(info) = fetch_lastfm_artist_info(&state.http_client, &api_key, &artist.name).await
         else {
             continue;
         };
+        persist_lastfm_identity(&state.db, artist_id, &info).await;
 
         let data = serde_json::to_string(&info).unwrap_or_default();
         if !data.is_empty() {
@@ -587,6 +678,118 @@ async fn run_warm_lastfm_artist_info(
             })
             .await;
         }
+    }
+    Ok(())
+}
+
+// -- enrich_artist_external_ids ----------------------------------------------
+
+async fn run_enrich_artist_external_ids(
+    state: &PostScanState,
+    job_id: &EntityId,
+    library_id: &EntityId,
+    payload: Option<&str>,
+) -> Result<(), JobError> {
+    let requested_ids = parse_entity_ids_from_payload(payload, "artistIds");
+    let artists: Vec<ArtistExternalIdentity> = if requested_ids.is_empty() {
+        let db = state.db.clone();
+        let library_id = library_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let stale_before: String =
+                conn.query_row("SELECT datetime('now', '-30 days')", [], |row| row.get(0))?;
+            list_artists_needing_external_identity(&conn, &library_id, &stale_before)
+        })
+        .await
+        .expect("identity selection task")?
+    } else {
+        let db = state.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            requested_ids
+                .iter()
+                .map(|id| get_artist_external_identity(&conn, &coerce_entity_id(id)))
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map(|rows| rows.into_iter().flatten().collect())
+        })
+        .await
+        .expect("targeted identity task")?
+    };
+
+    let lastfm_key = get_setting_value(&state.db, "lastfmKey").await;
+    let discogs_token = get_setting_value(&state.db, "discogsToken").await;
+    let spotify_id = get_setting_value(&state.db, "spotifyClientId").await;
+    let spotify_secret = get_setting_value(&state.db, "spotifyClientSecret").await;
+    let spotify_token = match (spotify_id.as_deref(), spotify_secret.as_deref()) {
+        (Some(id), Some(secret)) => get_spotify_access_token(&state.http_client, id, secret).await,
+        _ => None,
+    };
+
+    for artist in artists {
+        if artist.lastfm_mbid.is_none() {
+            if let Some(api_key) = lastfm_key.as_deref() {
+                if let Some(info) =
+                    fetch_lastfm_artist_info(&state.http_client, api_key, &artist.name).await
+                {
+                    persist_lastfm_identity(&state.db, &artist.artist_id.to_string(), &info).await;
+                }
+            }
+        }
+
+        if artist.deezer_artist_id.is_none() {
+            if let Some(matched) =
+                search_deezer_artist_match(&state.http_client, &artist.name).await
+            {
+                persist_artist_provider_match(
+                    &state.db,
+                    &artist.artist_id.to_string(),
+                    ArtistIdentityProvider::Deezer,
+                    &matched,
+                )
+                .await;
+            }
+        }
+
+        if artist.discogs_artist_id.is_none() {
+            if let Some(token) = discogs_token.as_deref() {
+                if let Some(matched) =
+                    search_discogs_artist_match(&state.http_client, token, &artist.name).await
+                {
+                    persist_artist_provider_match(
+                        &state.db,
+                        &artist.artist_id.to_string(),
+                        ArtistIdentityProvider::Discogs,
+                        &matched,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        if artist.spotify_artist_id.is_none() {
+            if let Some(token) = spotify_token.as_deref() {
+                if let Some(matched) =
+                    search_spotify_artist_match_with_token(&state.http_client, token, &artist.name)
+                        .await
+                {
+                    persist_artist_provider_match(
+                        &state.db,
+                        &artist.artist_id.to_string(),
+                        ArtistIdentityProvider::Spotify,
+                        &matched,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        let db = state.db.clone();
+        let job_id = job_id.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            boogiebox_db::jobs::touch_post_scan_job(&conn, &job_id)
+        })
+        .await;
     }
     Ok(())
 }
@@ -1070,7 +1273,13 @@ async fn run_sync_discogs_album_metadata(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_provider_year;
+    use super::{parse_provider_year, persist_artist_provider_match, persist_lastfm_identity};
+    use crate::{providers::ArtistProviderMatch, DbPool};
+    use boogiebox_db::{
+        initialize_schema,
+        music::{coerce_entity_id, get_artist_external_identity, ArtistIdentityProvider},
+    };
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn parses_bare_and_dated_provider_years() {
@@ -1089,5 +1298,51 @@ mod tests {
         assert_eq!(parse_provider_year("unknown"), None);
         // A leading run shorter or longer than four digits is not a year.
         assert_eq!(parse_provider_year("19952"), None);
+    }
+
+    #[tokio::test]
+    async fn opportunistic_helpers_persist_selected_provider_and_lastfm_identity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES('artist-1', 'Massive Attack')",
+            [],
+        )
+        .unwrap();
+        let db: DbPool = Arc::new(Mutex::new(conn));
+        let artist_id = coerce_entity_id("artist-1");
+        let matched = ArtistProviderMatch {
+            external_id: "deezer-1".to_owned(),
+            canonical_name: "Massive Attack".to_owned(),
+            image_url: Some("https://img/artist.jpg".to_owned()),
+            confidence: 0.9,
+        };
+        persist_artist_provider_match(&db, "artist-1", ArtistIdentityProvider::Deezer, &matched)
+            .await;
+        let info = crate::providers::LastFmInfoPayload {
+            mbid: Some("mbid-1".to_owned()),
+            canonical_name: Some("Massive Attack".to_owned()),
+            summary: String::new(),
+            full: String::new(),
+            listeners: None,
+            playcount: None,
+            url: None,
+            image: None,
+            tags: Vec::new(),
+        };
+        persist_lastfm_identity(&db, "artist-1", &info).await;
+
+        let identity = {
+            let conn = db.lock().unwrap();
+            get_artist_external_identity(&conn, &artist_id)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(identity.deezer_artist_id.as_deref(), Some("deezer-1"));
+        assert_eq!(identity.lastfm_mbid.as_deref(), Some("mbid-1"));
+        assert_eq!(
+            identity.lastfm_canonical_name.as_deref(),
+            Some("Massive Attack")
+        );
     }
 }

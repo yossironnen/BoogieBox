@@ -43,6 +43,7 @@ pub mod routes;
 pub mod scanner;
 pub mod server_config;
 pub mod settings;
+pub mod similar_artists;
 pub mod waveform_map;
 
 const DEFAULT_PORT: u16 = 3001;

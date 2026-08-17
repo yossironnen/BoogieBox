@@ -231,6 +231,7 @@ const MUSIC_POST_SCAN_JOB_TYPES: &[&str] = &[
     "cache_album_images",
     "cache_artist_images",
     "warm_lastfm_artist_info",
+    "enrich_artist_external_ids",
     "warm_lastfm_album_info",
     "warm_track_lyrics",
     "sync_artist_styles",
@@ -813,6 +814,7 @@ pub fn enqueue_default_music_post_scan_jobs(
         "cache_album_images",
         "cache_artist_images",
         "warm_lastfm_artist_info",
+        "enrich_artist_external_ids",
         "warm_lastfm_album_info",
         "warm_track_lyrics",
         "sync_artist_styles",
@@ -823,6 +825,29 @@ pub fn enqueue_default_music_post_scan_jobs(
         )?);
     }
     Ok(ids)
+}
+
+/// Enqueues one idempotent external-identity backfill job for each music
+/// library containing an artist with at least one missing provider ID.
+pub fn enqueue_missing_artist_identity_backfill_jobs(conn: &Connection) -> Result<usize, JobError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT l.id
+         FROM libraries l
+         JOIN tracks t ON t.library_id=l.id
+         JOIN artists ar ON ar.id=t.artist_id
+         WHERE l.library_type='music' AND (
+           ar.lastfm_mbid IS NULL OR ar.deezer_artist_id IS NULL OR
+           ar.spotify_artist_id IS NULL OR ar.discogs_artist_id IS NULL
+         )
+         ORDER BY l.id",
+    )?;
+    let library_ids: Vec<EntityId> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for library_id in &library_ids {
+        enqueue_post_scan_job_for_id(conn, library_id, "enrich_artist_external_ids", None)?;
+    }
+    Ok(library_ids.len())
 }
 
 /// Documents the Claim Next Post Scan Job public API surface.
@@ -1618,6 +1643,7 @@ fn post_scan_stale_timeout_minutes(job_type: &str) -> i64 {
         "warm_track_lyrics" => 120,
         "sync_artist_styles" => 120,
         "sync_discogs_album_metadata" => 180,
+        "enrich_artist_external_ids" => 120,
         "refresh_library_mappings" => 15,
         _ => 30,
     }

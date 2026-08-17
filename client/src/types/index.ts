@@ -78,6 +78,18 @@ export interface Artist {
   styles?: string[];
 }
 
+/** A collection-owned artist resolved from provider similarity metadata. */
+export interface SimilarArtist extends Artist {
+  score: number;
+  providers: Array<'lastfm' | 'deezer'>;
+}
+
+/** Similar artists response for one local source artist. */
+export interface SimilarArtistsResponse {
+  sourceArtistId: ClientEntityId;
+  artists: SimilarArtist[];
+}
+
 /** Artist Browse Page is part of this module's public API. */
 export interface ArtistBrowsePage {
   items: Artist[];

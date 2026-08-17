@@ -45,6 +45,7 @@ describe('API public endpoint contract', () => {
       () => api.refreshAlbumCover('album-1'),
       () => api.artistAlbums('artist-1', ['lib-1']),
       () => api.artistAppearsOn('artist-1', ['lib-1']),
+      () => api.artistSimilar('artist-1'),
       () => api.resolveArtistReleaseTypes('artist-1'),
       () => api.artistRadio('artist-1'),
       () => api.genres(),

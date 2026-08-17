@@ -231,8 +231,25 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           metadata_locked INTEGER NOT NULL DEFAULT 0,
           track_count INTEGER NOT NULL DEFAULT 0,
           album_count INTEGER NOT NULL DEFAULT 0,
-          play_count INTEGER NOT NULL DEFAULT 0
+          play_count INTEGER NOT NULL DEFAULT 0,
+          lastfm_mbid TEXT,
+          lastfm_canonical_name TEXT,
+          lastfm_identity_checked_at TEXT,
+          deezer_artist_id TEXT,
+          deezer_identity_checked_at TEXT,
+          spotify_artist_id TEXT,
+          spotify_identity_checked_at TEXT,
+          discogs_artist_id TEXT,
+          discogs_identity_checked_at TEXT
         );
+        CREATE INDEX IF NOT EXISTS idx_artists_lastfm_mbid
+          ON artists(lastfm_mbid) WHERE lastfm_mbid IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_artists_deezer_artist_id
+          ON artists(deezer_artist_id) WHERE deezer_artist_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_artists_spotify_artist_id
+          ON artists(spotify_artist_id) WHERE spotify_artist_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_artists_discogs_artist_id
+          ON artists(discogs_artist_id) WHERE discogs_artist_id IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS albums (
           id TEXT PRIMARY KEY,
@@ -676,6 +693,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-08-07-browse-performance-indexes",
             apply: ensure_browse_performance_indexes,
         },
+        Migration {
+            id: "2026-08-17-artist-external-identities",
+            apply: ensure_artist_external_identity_schema,
+        },
     ];
 
     for migration in migrations {
@@ -1015,6 +1036,42 @@ fn ensure_music_metadata_edit_schema(connection: &Connection) -> Result<(), rusq
             ",
         )?;
     }
+    Ok(())
+}
+
+fn ensure_artist_external_identity_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "artists") {
+        return Ok(());
+    }
+    for (column, definition) in [
+        ("lastfm_mbid", "TEXT"),
+        ("lastfm_canonical_name", "TEXT"),
+        ("lastfm_identity_checked_at", "TEXT"),
+        ("deezer_artist_id", "TEXT"),
+        ("deezer_identity_checked_at", "TEXT"),
+        ("spotify_artist_id", "TEXT"),
+        ("spotify_identity_checked_at", "TEXT"),
+        ("discogs_artist_id", "TEXT"),
+        ("discogs_identity_checked_at", "TEXT"),
+    ] {
+        if !column_exists(connection, "artists", column)? {
+            connection.execute_batch(&format!(
+                "ALTER TABLE artists ADD COLUMN {column} {definition}"
+            ))?;
+        }
+    }
+    connection.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_artists_lastfm_mbid
+          ON artists(lastfm_mbid) WHERE lastfm_mbid IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_artists_deezer_artist_id
+          ON artists(deezer_artist_id) WHERE deezer_artist_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_artists_spotify_artist_id
+          ON artists(spotify_artist_id) WHERE spotify_artist_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_artists_discogs_artist_id
+          ON artists(discogs_artist_id) WHERE discogs_artist_id IS NOT NULL;
+        "#,
+    )?;
     Ok(())
 }
 
@@ -3561,6 +3618,63 @@ mod tests {
     }
 
     #[test]
+    fn artist_identity_jobs_are_default_and_startup_backfill_is_idempotent() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        initialize_schema(&connection).expect("schema");
+        connection
+            .execute_batch(
+                "INSERT INTO libraries(id, path, name) VALUES('library-1', 'D:/Music', 'Music');
+                 INSERT INTO artists(id, name) VALUES('artist-1', 'Artist');
+                 INSERT INTO albums(id, title, album_artist, artist_id)
+                   VALUES('album-1', 'Release', 'Artist', 'artist-1');
+                 INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path)
+                   VALUES('track-1', 'library-1', 'artist-1', 'album-1', 'Track', 'D:/Music/track.flac');",
+            )
+            .expect("fixtures");
+
+        let first = jobs::enqueue_missing_artist_identity_backfill_jobs(&connection)
+            .expect("first backfill");
+        let second = jobs::enqueue_missing_artist_identity_backfill_jobs(&connection)
+            .expect("second backfill");
+        assert_eq!(first, 1);
+        assert_eq!(second, 1);
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM post_scan_jobs WHERE job_type='enrich_artist_external_ids' AND status='pending'"
+            ),
+            1
+        );
+
+        connection
+            .execute(
+                "UPDATE artists SET lastfm_mbid='m', deezer_artist_id='d', spotify_artist_id='s', discogs_artist_id='c' WHERE id='artist-1'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            jobs::enqueue_missing_artist_identity_backfill_jobs(&connection).unwrap(),
+            0
+        );
+
+        connection
+            .execute("DELETE FROM post_scan_jobs", [])
+            .unwrap();
+        jobs::enqueue_default_music_post_scan_jobs(
+            &connection,
+            &music::coerce_entity_id("library-1"),
+        )
+        .unwrap();
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM post_scan_jobs WHERE job_type='enrich_artist_external_ids'"
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn refresh_library_entity_mappings_rebuilds_optional_mapping_tables() {
         let root = temp_dir("post-scan-mappings");
         let InitializedDatabase { connection, .. } = init_db(&root).expect("db init");
@@ -3651,6 +3765,67 @@ mod tests {
         assert!(column_exists(&connection, "albums", "description").expect("album description"));
         assert!(column_exists(&connection, "albums", "release_type").expect("album release type"));
         assert!(column_exists(&connection, "albums", "metadata_locked").expect("album locked"));
+    }
+
+    #[test]
+    fn artist_external_identity_schema_is_fresh_upgrade_safe_and_idempotent() {
+        let fresh = Connection::open_in_memory().expect("fresh db");
+        initialize_schema(&fresh).expect("fresh schema");
+        for column in [
+            "lastfm_mbid",
+            "lastfm_canonical_name",
+            "lastfm_identity_checked_at",
+            "deezer_artist_id",
+            "deezer_identity_checked_at",
+            "spotify_artist_id",
+            "spotify_identity_checked_at",
+            "discogs_artist_id",
+            "discogs_identity_checked_at",
+        ] {
+            assert!(column_exists(&fresh, "artists", column).expect("identity column"));
+        }
+        for index in [
+            "idx_artists_lastfm_mbid",
+            "idx_artists_deezer_artist_id",
+            "idx_artists_spotify_artist_id",
+            "idx_artists_discogs_artist_id",
+        ] {
+            assert_eq!(
+                query_single_i64(
+                    &fresh,
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{index}'"
+                    ),
+                ),
+                1
+            );
+        }
+
+        let upgrade = Connection::open_in_memory().expect("upgrade db");
+        upgrade
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                   id TEXT PRIMARY KEY,
+                   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 CREATE TABLE artists (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+                 INSERT INTO artists(id, name) VALUES('artist-1', 'Existing Artist');",
+            )
+            .expect("old schema");
+        ensure_artist_external_identity_schema(&upgrade).expect("first migration");
+        ensure_artist_external_identity_schema(&upgrade).expect("idempotent migration");
+        assert_eq!(
+            query_single_text(&upgrade, "SELECT name FROM artists WHERE id='artist-1'"),
+            "Existing Artist"
+        );
+        assert!(column_exists(&upgrade, "artists", "lastfm_mbid").expect("upgraded column"));
+        assert_eq!(
+            query_single_i64(
+                &upgrade,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_artists_lastfm_mbid'"
+            ),
+            1
+        );
     }
 
     #[test]

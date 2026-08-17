@@ -364,6 +364,17 @@ pub fn get_lastfm_cached(conn: &Connection, cache_key: &str) -> Option<String> {
     .ok()
 }
 
+/// Returns a Last.fm/provider cache payload regardless of expiry so discovery
+/// routes can degrade to stale data when a remote provider is unavailable.
+pub fn get_lastfm_cached_stale(conn: &Connection, cache_key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT data FROM lastfm_cache WHERE cache_key = ?",
+        params![cache_key],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
 /// Documents the Save Lastfm Cache public API surface.
 pub fn save_lastfm_cache(conn: &Connection, cache_key: &str, data: &str, expires_days: i64) {
     let _ = conn.execute(
@@ -375,4 +386,29 @@ pub fn save_lastfm_cache(conn: &Connection, cache_key: &str, data: &str, expires
            expires_at=excluded.expires_at",
         params![cache_key, data, expires_days],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_lastfm_cached, get_lastfm_cached_stale};
+    use rusqlite::Connection;
+
+    #[test]
+    fn stale_provider_cache_is_available_only_through_explicit_fallback() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE lastfm_cache(
+               cache_key TEXT PRIMARY KEY, data TEXT NOT NULL,
+               fetched_at TEXT NOT NULL, expires_at TEXT NOT NULL
+             );
+             INSERT INTO lastfm_cache(cache_key, data, fetched_at, expires_at)
+               VALUES('similar:test', '[1]', datetime('now','-2 days'), datetime('now','-1 day'));",
+        )
+        .unwrap();
+        assert_eq!(get_lastfm_cached(&conn, "similar:test"), None);
+        assert_eq!(
+            get_lastfm_cached_stale(&conn, "similar:test").as_deref(),
+            Some("[1]")
+        );
+    }
 }

@@ -394,6 +394,27 @@ describe('api.artistAppearsOn', () => {
   });
 });
 
+describe('api.artistSimilar', () => {
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('calls GET /api/artists/:id/similar with a limit', async () => {
+    const response = {
+      sourceArtistId: '5',
+      artists: [{ id: '9', name: 'Related Artist', score: 1, providers: ['lastfm'] }],
+    };
+    vi.mocked(fetch).mockReturnValue(okJson(response));
+
+    const result = await api.artistSimilar('5', 7);
+    const rawUrl = vi.mocked(fetch).mock.calls[0][0] as string;
+    const url = new URL(rawUrl, window.location.href);
+
+    expect(url.pathname).toContain('/api/artists/5/similar');
+    expect(url.searchParams.get('limit')).toBe('7');
+    expect(result).toEqual(response);
+  });
+});
+
 describe('api recently played', () => {
   beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
   afterEach(() => { vi.restoreAllMocks(); });

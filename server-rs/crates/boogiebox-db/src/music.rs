@@ -488,6 +488,206 @@ pub struct ArtistRow {
     pub styles: Vec<String>,
 }
 
+/// External artist namespaces supported by the metadata enrichment pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtistIdentityProvider {
+    LastFm,
+    Deezer,
+    Spotify,
+    Discogs,
+}
+
+/// Optional provider identities stored for one local artist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistExternalIdentity {
+    pub artist_id: EntityId,
+    pub name: String,
+    pub lastfm_mbid: Option<String>,
+    pub lastfm_canonical_name: Option<String>,
+    pub lastfm_identity_checked_at: Option<String>,
+    pub deezer_artist_id: Option<String>,
+    pub deezer_identity_checked_at: Option<String>,
+    pub spotify_artist_id: Option<String>,
+    pub spotify_identity_checked_at: Option<String>,
+    pub discogs_artist_id: Option<String>,
+    pub discogs_identity_checked_at: Option<String>,
+}
+
+/// Loads the complete optional external identity state for one artist.
+pub fn get_artist_external_identity(
+    conn: &Connection,
+    artist_id: &EntityId,
+) -> rusqlite::Result<Option<ArtistExternalIdentity>> {
+    conn.query_row(
+        "SELECT id, name, lastfm_mbid, lastfm_canonical_name, lastfm_identity_checked_at,
+                deezer_artist_id, deezer_identity_checked_at,
+                spotify_artist_id, spotify_identity_checked_at,
+                discogs_artist_id, discogs_identity_checked_at
+         FROM artists WHERE id=?1",
+        [artist_id],
+        |row| {
+            Ok(ArtistExternalIdentity {
+                artist_id: row.get(0)?,
+                name: row.get(1)?,
+                lastfm_mbid: row.get(2)?,
+                lastfm_canonical_name: row.get(3)?,
+                lastfm_identity_checked_at: row.get(4)?,
+                deezer_artist_id: row.get(5)?,
+                deezer_identity_checked_at: row.get(6)?,
+                spotify_artist_id: row.get(7)?,
+                spotify_identity_checked_at: row.get(8)?,
+                discogs_artist_id: row.get(9)?,
+                discogs_identity_checked_at: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+}
+
+fn nonempty_identity(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+/// Fills a provider identity only when the corresponding local field is null.
+/// A successful provider check is timestamped even when no confident ID exists.
+pub fn persist_artist_identity_if_missing(
+    conn: &Connection,
+    artist_id: &EntityId,
+    provider: ArtistIdentityProvider,
+    external_id: Option<&str>,
+    canonical_name: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let external_id = nonempty_identity(external_id);
+    let canonical_name = nonempty_identity(canonical_name);
+    let changed = match provider {
+        ArtistIdentityProvider::LastFm => conn.execute(
+            "UPDATE artists
+             SET lastfm_mbid=COALESCE(lastfm_mbid, ?1),
+                 lastfm_canonical_name=COALESCE(lastfm_canonical_name, ?2),
+                 lastfm_identity_checked_at=datetime('now')
+             WHERE id=?3
+               AND (lastfm_mbid IS NULL OR lastfm_canonical_name IS NULL
+                    OR lastfm_identity_checked_at IS NULL)",
+            rusqlite::params![external_id, canonical_name, artist_id],
+        )?,
+        ArtistIdentityProvider::Deezer => conn.execute(
+            "UPDATE artists
+             SET deezer_artist_id=COALESCE(deezer_artist_id, ?1),
+                 deezer_identity_checked_at=datetime('now')
+             WHERE id=?2 AND (deezer_artist_id IS NULL OR deezer_identity_checked_at IS NULL)",
+            rusqlite::params![external_id, artist_id],
+        )?,
+        ArtistIdentityProvider::Spotify => conn.execute(
+            "UPDATE artists
+             SET spotify_artist_id=COALESCE(spotify_artist_id, ?1),
+                 spotify_identity_checked_at=datetime('now')
+             WHERE id=?2 AND (spotify_artist_id IS NULL OR spotify_identity_checked_at IS NULL)",
+            rusqlite::params![external_id, artist_id],
+        )?,
+        ArtistIdentityProvider::Discogs => conn.execute(
+            "UPDATE artists
+             SET discogs_artist_id=COALESCE(discogs_artist_id, ?1),
+                 discogs_identity_checked_at=datetime('now')
+             WHERE id=?2 AND (discogs_artist_id IS NULL OR discogs_identity_checked_at IS NULL)",
+            rusqlite::params![external_id, artist_id],
+        )?,
+    };
+    Ok(changed > 0)
+}
+
+/// Returns library artists with at least one missing identity whose last
+/// confirmed check is absent or older than the supplied SQLite timestamp.
+pub fn list_artists_needing_external_identity(
+    conn: &Connection,
+    library_id: &EntityId,
+    stale_before: &str,
+) -> rusqlite::Result<Vec<ArtistExternalIdentity>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT ar.id, ar.name, ar.lastfm_mbid, ar.lastfm_canonical_name,
+                ar.lastfm_identity_checked_at, ar.deezer_artist_id,
+                ar.deezer_identity_checked_at, ar.spotify_artist_id,
+                ar.spotify_identity_checked_at, ar.discogs_artist_id,
+                ar.discogs_identity_checked_at
+         FROM artists ar
+         JOIN tracks t ON t.artist_id=ar.id
+         WHERE t.library_id=?1 AND (
+           (ar.lastfm_mbid IS NULL AND (ar.lastfm_identity_checked_at IS NULL OR ar.lastfm_identity_checked_at < ?2)) OR
+           (ar.deezer_artist_id IS NULL AND (ar.deezer_identity_checked_at IS NULL OR ar.deezer_identity_checked_at < ?2)) OR
+           (ar.spotify_artist_id IS NULL AND (ar.spotify_identity_checked_at IS NULL OR ar.spotify_identity_checked_at < ?2)) OR
+           (ar.discogs_artist_id IS NULL AND (ar.discogs_identity_checked_at IS NULL OR ar.discogs_identity_checked_at < ?2))
+         )
+         ORDER BY ar.name, ar.id",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![library_id, stale_before], |row| {
+            Ok(ArtistExternalIdentity {
+                artist_id: row.get(0)?,
+                name: row.get(1)?,
+                lastfm_mbid: row.get(2)?,
+                lastfm_canonical_name: row.get(3)?,
+                lastfm_identity_checked_at: row.get(4)?,
+                deezer_artist_id: row.get(5)?,
+                deezer_identity_checked_at: row.get(6)?,
+                spotify_artist_id: row.get(7)?,
+                spotify_identity_checked_at: row.get(8)?,
+                discogs_artist_id: row.get(9)?,
+                discogs_identity_checked_at: row.get(10)?,
+            })
+        })?
+        .collect();
+    rows
+}
+
+/// Resolves an external identifier to exactly one local artist that owns at
+/// least one release. Ambiguous identifiers intentionally produce no match.
+pub fn find_owned_artist_by_external_identity(
+    conn: &Connection,
+    provider: ArtistIdentityProvider,
+    external_id: &str,
+) -> rusqlite::Result<Option<EntityId>> {
+    let sql = match provider {
+        ArtistIdentityProvider::LastFm => "SELECT ar.id FROM artists ar WHERE ar.lastfm_mbid=?1",
+        ArtistIdentityProvider::Deezer => {
+            "SELECT ar.id FROM artists ar WHERE ar.deezer_artist_id=?1"
+        }
+        ArtistIdentityProvider::Spotify => {
+            "SELECT ar.id FROM artists ar WHERE ar.spotify_artist_id=?1"
+        }
+        ArtistIdentityProvider::Discogs => {
+            "SELECT ar.id FROM artists ar WHERE ar.discogs_artist_id=?1"
+        }
+    };
+    let sql =
+        format!("{sql} AND EXISTS (SELECT 1 FROM albums al WHERE al.artist_id=ar.id) LIMIT 2");
+    let matches: Vec<EntityId> = conn
+        .prepare(&sql)?
+        .query_map([external_id.trim()], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok((matches.len() == 1).then(|| matches[0].clone()))
+}
+
+/// Resolves an exact normalized local/canonical name to one release-owning
+/// artist. Multiple local homonyms intentionally produce no match.
+pub fn find_owned_artist_by_name(
+    conn: &Connection,
+    name: &str,
+) -> rusqlite::Result<Option<EntityId>> {
+    let matches: Vec<EntityId> = conn
+        .prepare(
+            "SELECT ar.id FROM artists ar
+             WHERE (LOWER(TRIM(ar.name))=LOWER(TRIM(?1))
+                    OR LOWER(TRIM(COALESCE(ar.lastfm_canonical_name,'')))=LOWER(TRIM(?1)))
+               AND EXISTS (SELECT 1 FROM albums al WHERE al.artist_id=ar.id)
+             LIMIT 2",
+        )?
+        .query_map([name], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok((matches.len() == 1).then(|| matches[0].clone()))
+}
+
 /// Public Artist Browse Page data shape used by BoogieBox.
 #[derive(Debug, Serialize)]
 pub struct ArtistBrowsePage {
@@ -2502,5 +2702,139 @@ mod tests {
         )
         .unwrap();
         assert!(result.is_none());
+    }
+
+    fn seed_identity_library(conn: &Connection) {
+        crate::initialize_schema(conn).expect("identity schema");
+        conn.execute_batch(
+            "INSERT INTO libraries(id, path, name) VALUES('library-1', 'D:/Music', 'Music');
+             INSERT INTO artists(id, name) VALUES
+               ('artist-owned', 'Owned Artist'),
+               ('artist-duplicate', 'Duplicate Artist'),
+               ('artist-appears', 'Appears Only');
+             INSERT INTO albums(id, title, album_artist, artist_id) VALUES
+               ('album-owned', 'Owned Release', 'Owned Artist', 'artist-owned'),
+               ('album-duplicate', 'Duplicate Release', 'Duplicate Artist', 'artist-duplicate');
+             INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) VALUES
+               ('track-owned', 'library-1', 'artist-owned', 'album-owned', 'Owned Track', 'D:/Music/owned.flac'),
+               ('track-duplicate', 'library-1', 'artist-duplicate', 'album-duplicate', 'Duplicate Track', 'D:/Music/duplicate.flac'),
+               ('track-appears', 'library-1', 'artist-appears', 'album-owned', 'Guest Track', 'D:/Music/guest.flac');",
+        )
+        .expect("identity fixtures");
+    }
+
+    #[test]
+    fn artist_identity_persistence_is_optional_and_never_overwrites() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_identity_library(&conn);
+        let artist_id = coerce_entity_id("artist-owned");
+
+        assert!(persist_artist_identity_if_missing(
+            &conn,
+            &artist_id,
+            ArtistIdentityProvider::LastFm,
+            Some("mbid-1"),
+            Some("Owned Artist Canonical"),
+        )
+        .unwrap());
+        persist_artist_identity_if_missing(
+            &conn,
+            &artist_id,
+            ArtistIdentityProvider::LastFm,
+            Some("mbid-replacement"),
+            Some("Replacement Name"),
+        )
+        .unwrap();
+        persist_artist_identity_if_missing(
+            &conn,
+            &artist_id,
+            ArtistIdentityProvider::Deezer,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let identity = get_artist_external_identity(&conn, &artist_id)
+            .unwrap()
+            .expect("artist identity");
+        assert_eq!(identity.lastfm_mbid.as_deref(), Some("mbid-1"));
+        assert_eq!(
+            identity.lastfm_canonical_name.as_deref(),
+            Some("Owned Artist Canonical")
+        );
+        assert!(identity.lastfm_identity_checked_at.is_some());
+        assert_eq!(identity.deezer_artist_id, None);
+        assert!(identity.deezer_identity_checked_at.is_some());
+    }
+
+    #[test]
+    fn identity_selection_respects_missing_and_fresh_checks() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_identity_library(&conn);
+        conn.execute_batch(
+            "UPDATE artists SET
+               lastfm_identity_checked_at='2026-08-17 12:00:00',
+               deezer_identity_checked_at='2026-08-17 12:00:00',
+               spotify_identity_checked_at='2026-08-17 12:00:00',
+               discogs_identity_checked_at='2026-08-17 12:00:00'
+             WHERE id='artist-owned';",
+        )
+        .unwrap();
+
+        let pending = list_artists_needing_external_identity(
+            &conn,
+            &coerce_entity_id("library-1"),
+            "2026-08-01 00:00:00",
+        )
+        .unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending
+            .iter()
+            .all(|row| row.artist_id != coerce_entity_id("artist-owned")));
+    }
+
+    #[test]
+    fn local_identity_resolution_requires_one_release_owning_artist() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_identity_library(&conn);
+        conn.execute_batch(
+            "UPDATE artists SET lastfm_mbid='shared-mbid' WHERE id IN ('artist-owned','artist-duplicate');
+             UPDATE artists SET deezer_artist_id='deezer-owned' WHERE id='artist-owned';
+             UPDATE artists SET deezer_artist_id='deezer-appears' WHERE id='artist-appears';
+             UPDATE artists SET lastfm_canonical_name='Canonical Owned' WHERE id='artist-owned';",
+        )
+        .unwrap();
+
+        assert_eq!(
+            find_owned_artist_by_external_identity(
+                &conn,
+                ArtistIdentityProvider::Deezer,
+                "deezer-owned"
+            )
+            .unwrap(),
+            Some(coerce_entity_id("artist-owned"))
+        );
+        assert_eq!(
+            find_owned_artist_by_external_identity(
+                &conn,
+                ArtistIdentityProvider::LastFm,
+                "shared-mbid"
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            find_owned_artist_by_external_identity(
+                &conn,
+                ArtistIdentityProvider::Deezer,
+                "deezer-appears"
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            find_owned_artist_by_name(&conn, " canonical owned ").unwrap(),
+            Some(coerce_entity_id("artist-owned"))
+        );
     }
 }

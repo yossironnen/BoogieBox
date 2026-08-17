@@ -8,6 +8,7 @@ import type {
   Track,
   Artist,
   ArtistBrowsePage,
+  SimilarArtistsResponse,
   Album,
   LatestAlbum,
   HomeTopRated,
@@ -332,6 +333,8 @@ export const api = {
     get<any[]>(`/artists/${artistId}/albums`, { library_ids: encodeLibraryIdsParam(libraryIds) }),
   artistAppearsOn: (artistId: ApiEntityId, libraryIds?: ApiEntityId[]) =>
     get<any[]>(`/artists/${artistId}/appears-on`, { library_ids: encodeLibraryIdsParam(libraryIds) }),
+  artistSimilar: (artistId: ApiEntityId, limit = 12) =>
+    get<SimilarArtistsResponse>(`/artists/${artistId}/similar`, { limit }),
   resolveArtistReleaseTypes: (artistId: ApiEntityId) =>
     post<{ ok: boolean; updated: number }>(`/artists/${artistId}/release-types/resolve`),
   artistRadio: (artistId: ApiEntityId, limit = 100) =>

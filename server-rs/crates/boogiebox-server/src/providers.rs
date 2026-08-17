@@ -5,6 +5,46 @@ use serde_json::Value;
 
 const USER_AGENT: &str = "BoogieBox/1.0";
 
+/// A conservatively validated provider artist result. Identity and image are
+/// returned together so callers cannot persist an ID from a different hit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArtistProviderMatch {
+    pub external_id: String,
+    pub canonical_name: String,
+    pub image_url: Option<String>,
+    pub confidence: f64,
+}
+
+/// Provider-neutral related artist candidate used by the local resolver.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RelatedArtistCandidate {
+    pub external_id: Option<String>,
+    pub name: String,
+    pub url: Option<String>,
+    pub image_url: Option<String>,
+    pub match_score: Option<f64>,
+    pub rank: usize,
+}
+
+fn normalize_artist_name(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn valid_artist_image(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains("spacer")
+        && !value.contains("artist_default")
+        && !value.contains("default_avatar")
+        && !value.starts_with("https://st.discogs.com")
+}
+
 /// Discogs `format` search-result entries mix physical media (Vinyl, CD) with
 /// release-type descriptors (Album, EP, Single, Compilation). Scans for a
 /// known descriptor rather than assuming the first entry is the type.
@@ -158,12 +198,41 @@ pub async fn search_discogs_album_cover(
     pick_discogs_cover_image(results, artist_name, album_title)
 }
 
-/// Documents the Search Discogs Artist Image public API surface.
-pub async fn search_discogs_artist_image(
+fn pick_discogs_artist_match(results: &[Value], artist_name: &str) -> Option<ArtistProviderMatch> {
+    let target = normalize_artist_name(artist_name);
+    results.iter().find_map(|result| {
+        let canonical_name = result["title"].as_str()?.trim();
+        if normalize_artist_name(canonical_name) != target {
+            return None;
+        }
+        let external_id = result["id"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| result["id"].as_i64().map(|value| value.to_string()))?;
+        let image_url = result["cover_image"]
+            .as_str()
+            .filter(|value| valid_artist_image(value))
+            .or_else(|| {
+                result["thumb"]
+                    .as_str()
+                    .filter(|value| valid_artist_image(value))
+            })
+            .map(str::to_owned);
+        Some(ArtistProviderMatch {
+            external_id,
+            canonical_name: canonical_name.to_owned(),
+            image_url,
+            confidence: 0.9,
+        })
+    })
+}
+
+/// Searches Discogs for a conservatively validated artist identity.
+pub async fn search_discogs_artist_match(
     client: &Client,
     token: &str,
     artist_name: &str,
-) -> Option<String> {
+) -> Option<ArtistProviderMatch> {
     let url = format!(
         "https://api.discogs.com/database/search?type=artist&q={}&per_page=3&page=1",
         urlencoding::encode(artist_name.trim())
@@ -183,32 +252,53 @@ pub async fn search_discogs_artist_image(
 
     let data: Value = resp.json().await.ok()?;
     let results = data["results"].as_array()?;
+    pick_discogs_artist_match(results, artist_name)
+}
 
-    for result in results {
-        let thumb = result["thumb"].as_str().unwrap_or("");
-        if !thumb.is_empty()
-            && !thumb.contains("spacer")
-            && !thumb.starts_with("https://st.discogs.com")
-        {
-            // Try the full-size cover_image first
-            if let Some(cover) = result["cover_image"].as_str() {
-                if !cover.is_empty()
-                    && !cover.contains("spacer")
-                    && !cover.starts_with("https://st.discogs.com")
-                {
-                    return Some(cover.to_owned());
-                }
-            }
-            return Some(thumb.to_owned());
-        }
-    }
-    None
+/// Documents the Search Discogs Artist Image public API surface.
+pub async fn search_discogs_artist_image(
+    client: &Client,
+    token: &str,
+    artist_name: &str,
+) -> Option<String> {
+    search_discogs_artist_match(client, token, artist_name)
+        .await?
+        .image_url
 }
 
 // ── Deezer ────────────────────────────────────────────────────────────────────
 
-/// Documents the Search Deezer Artist Image public API surface.
-pub async fn search_deezer_artist_image(client: &Client, artist_name: &str) -> Option<String> {
+fn pick_deezer_artist_match(artists: &[Value], artist_name: &str) -> Option<ArtistProviderMatch> {
+    let target = normalize_artist_name(artist_name);
+    artists.iter().find_map(|artist| {
+        let canonical_name = artist["name"].as_str()?.trim();
+        if normalize_artist_name(canonical_name) != target {
+            return None;
+        }
+        let external_id = artist["id"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| artist["id"].as_i64().map(|value| value.to_string()))?;
+        let image_url = artist["picture_xl"]
+            .as_str()
+            .or_else(|| artist["picture_big"].as_str())
+            .or_else(|| artist["picture_medium"].as_str())
+            .filter(|value| valid_artist_image(value))
+            .map(str::to_owned);
+        Some(ArtistProviderMatch {
+            external_id,
+            canonical_name: canonical_name.to_owned(),
+            image_url,
+            confidence: 0.9,
+        })
+    })
+}
+
+/// Searches Deezer for a conservatively validated artist identity.
+pub async fn search_deezer_artist_match(
+    client: &Client,
+    artist_name: &str,
+) -> Option<ArtistProviderMatch> {
     let url = format!(
         "https://api.deezer.com/search/artist?q={}",
         urlencoding::encode(artist_name.trim())
@@ -227,38 +317,14 @@ pub async fn search_deezer_artist_image(client: &Client, artist_name: &str) -> O
 
     let data: Value = resp.json().await.ok()?;
     let artists = data["data"].as_array()?;
+    pick_deezer_artist_match(artists, artist_name)
+}
 
-    for artist in artists {
-        let name = artist["name"].as_str().unwrap_or("");
-        if name.to_lowercase() == artist_name.to_lowercase() {
-            if let Some(pic) = artist["picture_xl"]
-                .as_str()
-                .or_else(|| artist["picture_big"].as_str())
-                .or_else(|| artist["picture_medium"].as_str())
-            {
-                if !pic.is_empty()
-                    && !pic.contains("artist_default")
-                    && !pic.contains("default_avatar")
-                {
-                    return Some(pic.to_owned());
-                }
-            }
-        }
-    }
-
-    // Second pass: take the first result with a real picture
-    for artist in artists {
-        if let Some(pic) = artist["picture_xl"]
-            .as_str()
-            .or_else(|| artist["picture_big"].as_str())
-        {
-            if !pic.is_empty() && !pic.contains("artist_default") && !pic.contains("default_avatar")
-            {
-                return Some(pic.to_owned());
-            }
-        }
-    }
-    None
+/// Documents the Search Deezer Artist Image public API surface.
+pub async fn search_deezer_artist_image(client: &Client, artist_name: &str) -> Option<String> {
+    search_deezer_artist_match(client, artist_name)
+        .await?
+        .image_url
 }
 
 // ── Spotify ───────────────────────────────────────────────────────────────────
@@ -288,19 +354,42 @@ pub async fn get_spotify_access_token(
     data["access_token"].as_str().map(str::to_owned)
 }
 
-/// Documents the Search Spotify Artist Image public API surface.
-pub async fn search_spotify_artist_image(
+fn pick_spotify_artist_match(artists: &[Value], artist_name: &str) -> Option<ArtistProviderMatch> {
+    let target = normalize_artist_name(artist_name);
+    artists.iter().find_map(|artist| {
+        let canonical_name = artist["name"].as_str()?.trim();
+        if normalize_artist_name(canonical_name) != target {
+            return None;
+        }
+        let external_id = artist["id"].as_str()?.trim();
+        if external_id.is_empty() {
+            return None;
+        }
+        let image_url = artist["images"]
+            .as_array()
+            .and_then(|images| images.first())
+            .and_then(|image| image["url"].as_str())
+            .filter(|value| valid_artist_image(value))
+            .map(str::to_owned);
+        Some(ArtistProviderMatch {
+            external_id: external_id.to_owned(),
+            canonical_name: canonical_name.to_owned(),
+            image_url,
+            confidence: 0.9,
+        })
+    })
+}
+
+/// Searches Spotify with an already acquired client-credentials token.
+pub async fn search_spotify_artist_match_with_token(
     client: &Client,
-    client_id: &str,
-    client_secret: &str,
+    token: &str,
     artist_name: &str,
-) -> Option<String> {
-    let token = get_spotify_access_token(client, client_id, client_secret).await?;
+) -> Option<ArtistProviderMatch> {
     let url = format!(
         "https://api.spotify.com/v1/search?type=artist&limit=3&q={}",
         urlencoding::encode(artist_name.trim())
     );
-
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {token}"))
@@ -308,31 +397,34 @@ pub async fn search_spotify_artist_image(
         .send()
         .await
         .ok()?;
-
     if !resp.status().is_success() {
         return None;
     }
-
     let data: Value = resp.json().await.ok()?;
-    let artists = data["artists"]["items"].as_array()?;
+    pick_spotify_artist_match(data["artists"]["items"].as_array()?, artist_name)
+}
 
-    for artist in artists {
-        let name = artist["name"].as_str().unwrap_or("");
-        if name.to_lowercase() == artist_name.to_lowercase() {
-            if let Some(img) = artist["images"].as_array().and_then(|imgs| imgs.first()) {
-                if let Some(url_str) = img["url"].as_str() {
-                    return Some(url_str.to_owned());
-                }
-            }
-        }
-    }
-    // First result fallback
-    if let Some(artist) = artists.first() {
-        if let Some(img) = artist["images"].as_array().and_then(|imgs| imgs.first()) {
-            return img["url"].as_str().map(str::to_owned);
-        }
-    }
-    None
+/// Searches Spotify for a conservatively validated artist identity.
+pub async fn search_spotify_artist_match(
+    client: &Client,
+    client_id: &str,
+    client_secret: &str,
+    artist_name: &str,
+) -> Option<ArtistProviderMatch> {
+    let token = get_spotify_access_token(client, client_id, client_secret).await?;
+    search_spotify_artist_match_with_token(client, &token, artist_name).await
+}
+
+/// Documents the Search Spotify Artist Image public API surface.
+pub async fn search_spotify_artist_image(
+    client: &Client,
+    client_id: &str,
+    client_secret: &str,
+    artist_name: &str,
+) -> Option<String> {
+    search_spotify_artist_match(client, client_id, client_secret, artist_name)
+        .await?
+        .image_url
 }
 
 // ── Metadata search (multi-provider) ─────────────────────────────────────────
@@ -797,8 +889,12 @@ pub async fn fetch_lyricsovh(client: &Client, artist: &str, title: &str) -> Opti
 const LASTFM_API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 
 /// Public Last Fm Info Payload data shape used by BoogieBox.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LastFmInfoPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mbid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<String>,
     /// Documents the Summary public API surface.
     pub summary: String,
     /// Documents the Full public API surface.
@@ -815,6 +911,47 @@ pub struct LastFmInfoPayload {
     pub tags: Vec<String>,
 }
 
+fn optional_nonempty_json_string(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn parse_lastfm_artist_info(data: &Value) -> Option<LastFmInfoPayload> {
+    let artist = &data["artist"];
+    if artist.is_null() || artist["name"].as_str().is_none() {
+        return None;
+    }
+    let image = artist["image"].as_array().and_then(|images| {
+        images
+            .iter()
+            .rev()
+            .find_map(|image| optional_nonempty_json_string(&image["#text"]))
+    });
+    let tags = artist["tags"]["tag"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|tag| optional_nonempty_json_string(&tag["name"]))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(LastFmInfoPayload {
+        mbid: optional_nonempty_json_string(&artist["mbid"]),
+        canonical_name: optional_nonempty_json_string(&artist["name"]),
+        summary: artist["bio"]["summary"].as_str().unwrap_or("").to_owned(),
+        full: artist["bio"]["content"].as_str().unwrap_or("").to_owned(),
+        listeners: artist["stats"]["listeners"].as_str().map(str::to_owned),
+        playcount: artist["stats"]["playcount"].as_str().map(str::to_owned),
+        url: optional_nonempty_json_string(&artist["url"]),
+        image,
+        tags,
+    })
+}
+
 /// Documents the Fetch Lastfm Artist Info public API surface.
 pub async fn fetch_lastfm_artist_info(
     client: &Client,
@@ -822,46 +959,141 @@ pub async fn fetch_lastfm_artist_info(
     artist_name: &str,
 ) -> Option<LastFmInfoPayload> {
     let url = format!(
-        "{LASTFM_API_ROOT}?method=artist.getinfo&artist={}&api_key={}&format=json",
+        "{LASTFM_API_ROOT}?method=artist.getinfo&artist={}&api_key={}&format=json&autocorrect=1",
         urlencoding::encode(artist_name),
         api_key
     );
     let data: Value = client.get(&url).send().await.ok()?.json().await.ok()?;
-    let artist = &data["artist"];
-    if artist.is_null() {
-        return None;
-    }
-    let summary = artist["bio"]["summary"].as_str().unwrap_or("").to_owned();
-    let full = artist["bio"]["content"].as_str().unwrap_or("").to_owned();
-    let listeners = artist["stats"]["listeners"].as_str().map(str::to_owned);
-    let playcount = artist["stats"]["playcount"].as_str().map(str::to_owned);
-    let url = artist["url"].as_str().map(str::to_owned);
-    let image = artist["image"]
+    parse_lastfm_artist_info(&data)
+}
+
+fn parse_lastfm_similar_artists(data: &Value) -> Vec<RelatedArtistCandidate> {
+    data["similarartists"]["artist"]
         .as_array()
-        .and_then(|imgs| {
-            imgs.iter()
-                .rev()
-                .find(|i| !i["#text"].as_str().unwrap_or("").is_empty())
-        })
-        .and_then(|i| i["#text"].as_str())
-        .map(str::to_owned);
-    let tags = artist["tags"]["tag"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .map(|artists| {
+            artists
+                .iter()
+                .enumerate()
+                .filter_map(|(index, artist)| {
+                    let name = optional_nonempty_json_string(&artist["name"])?;
+                    let match_score = artist["match"]
+                        .as_f64()
+                        .or_else(|| artist["match"].as_str()?.parse::<f64>().ok())
+                        .map(|score| score.clamp(0.0, 1.0));
+                    let image_url = artist["image"].as_array().and_then(|images| {
+                        images
+                            .iter()
+                            .rev()
+                            .find_map(|image| optional_nonempty_json_string(&image["#text"]))
+                    });
+                    Some(RelatedArtistCandidate {
+                        external_id: optional_nonempty_json_string(&artist["mbid"]),
+                        name,
+                        url: optional_nonempty_json_string(&artist["url"]),
+                        image_url,
+                        match_score,
+                        rank: index + 1,
+                    })
+                })
                 .collect()
         })
-        .unwrap_or_default();
-    Some(LastFmInfoPayload {
-        summary,
-        full,
-        listeners,
-        playcount,
-        url,
-        image,
-        tags,
-    })
+        .unwrap_or_default()
+}
+
+/// Fetches Last.fm's ranked similar-artist graph for a source artist.
+pub async fn fetch_lastfm_similar_artists(
+    client: &Client,
+    api_key: &str,
+    artist_name: &str,
+    mbid: Option<&str>,
+    limit: usize,
+) -> Result<Vec<RelatedArtistCandidate>, String> {
+    let identity = mbid
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("mbid={}", urlencoding::encode(value)))
+        .unwrap_or_else(|| format!("artist={}", urlencoding::encode(artist_name.trim())));
+    let url = format!(
+        "{LASTFM_API_ROOT}?method=artist.getSimilar&{identity}&api_key={}&format=json&autocorrect=1&limit={}",
+        urlencoding::encode(api_key),
+        limit.clamp(1, 100)
+    );
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Last.fm returned {}", response.status().as_u16()));
+    }
+    let data: Value = response.json().await.map_err(|error| error.to_string())?;
+    if data["error"].is_number() {
+        return Err(data["message"]
+            .as_str()
+            .unwrap_or("Last.fm request failed")
+            .to_owned());
+    }
+    Ok(parse_lastfm_similar_artists(&data))
+}
+
+fn parse_deezer_related_artists(data: &Value) -> Vec<RelatedArtistCandidate> {
+    data["data"]
+        .as_array()
+        .map(|artists| {
+            artists
+                .iter()
+                .enumerate()
+                .filter_map(|(index, artist)| {
+                    let name = optional_nonempty_json_string(&artist["name"])?;
+                    let external_id = artist["id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| artist["id"].as_i64().map(|value| value.to_string()));
+                    let image_url = artist["picture_xl"]
+                        .as_str()
+                        .or_else(|| artist["picture_big"].as_str())
+                        .or_else(|| artist["picture_medium"].as_str())
+                        .filter(|value| valid_artist_image(value))
+                        .map(str::to_owned);
+                    Some(RelatedArtistCandidate {
+                        external_id,
+                        name,
+                        url: optional_nonempty_json_string(&artist["link"]),
+                        image_url,
+                        match_score: None,
+                        rank: index + 1,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Fetches Deezer's ordered related-artist list.
+pub async fn fetch_deezer_related_artists(
+    client: &Client,
+    artist_id: &str,
+    limit: usize,
+) -> Result<Vec<RelatedArtistCandidate>, String> {
+    let url = format!(
+        "https://api.deezer.com/artist/{}/related?limit={}",
+        urlencoding::encode(artist_id.trim()),
+        limit.clamp(1, 100)
+    );
+    let response = client
+        .get(&url)
+        .header("User-Agent", USER_AGENT)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Deezer returned {}", response.status().as_u16()));
+    }
+    let data: Value = response.json().await.map_err(|error| error.to_string())?;
+    if data["error"].is_object() {
+        return Err("Deezer request failed".to_owned());
+    }
+    Ok(parse_deezer_related_artists(&data))
 }
 
 /// Documents the Fetch Lastfm Album Info public API surface.
@@ -905,6 +1137,8 @@ pub async fn fetch_lastfm_album_info(
         })
         .unwrap_or_default();
     Some(LastFmInfoPayload {
+        mbid: None,
+        canonical_name: None,
         summary,
         full,
         listeners,
@@ -1008,6 +1242,107 @@ pub async fn fetch_lastfm_top_tracks(
     });
     tracks.truncate(5);
     Ok(tracks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_artist_pickers_require_exact_normalized_names() {
+        let deezer = serde_json::json!([
+            {"id": 1, "name": "Massive Attack Tribute", "picture_xl": "https://img/wrong.jpg"},
+            {"id": 2, "name": "Massive-Attack", "picture_xl": "https://img/right.jpg"}
+        ]);
+        let selected = pick_deezer_artist_match(deezer.as_array().unwrap(), "Massive Attack")
+            .expect("exact normalized match");
+        assert_eq!(selected.external_id, "2");
+        assert_eq!(selected.image_url.as_deref(), Some("https://img/right.jpg"));
+
+        let spotify = serde_json::json!([
+            {"id": "wrong", "name": "Portishead Tribute", "images": [{"url": "https://img/wrong.jpg"}]},
+            {"id": "right", "name": "Portishead", "images": [{"url": "https://img/right.jpg"}]}
+        ]);
+        assert_eq!(
+            pick_spotify_artist_match(spotify.as_array().unwrap(), "Portishead")
+                .unwrap()
+                .external_id,
+            "right"
+        );
+        assert!(pick_spotify_artist_match(spotify.as_array().unwrap(), "Tricky").is_none());
+    }
+
+    #[test]
+    fn discogs_picker_keeps_selected_identity_and_image_together() {
+        let results = serde_json::json!([
+            {"id": 11, "title": "UNKLE Tribute", "cover_image": "https://img/wrong.jpg"},
+            {"id": 22, "title": "UNKLE", "cover_image": "https://img/right.jpg", "thumb": "https://img/thumb.jpg"}
+        ]);
+        let selected = pick_discogs_artist_match(results.as_array().unwrap(), "UNKLE").unwrap();
+        assert_eq!(selected.external_id, "22");
+        assert_eq!(selected.canonical_name, "UNKLE");
+        assert_eq!(selected.image_url.as_deref(), Some("https://img/right.jpg"));
+    }
+
+    #[test]
+    fn lastfm_artist_info_parses_identity_and_old_cache_defaults() {
+        let data = serde_json::json!({
+            "artist": {
+                "name": "Massive Attack",
+                "mbid": "10adbe5c-6cb4-4d2a-82a2-bfbdd0488cbd",
+                "url": "https://last.fm/music/Massive+Attack",
+                "stats": {"listeners": "10", "playcount": "20"},
+                "bio": {"summary": "Summary", "content": "Full"},
+                "image": [{"#text": ""}, {"#text": "https://img/artist.jpg"}],
+                "tags": {"tag": [{"name": "trip-hop"}]}
+            }
+        });
+        let parsed = parse_lastfm_artist_info(&data).unwrap();
+        assert_eq!(
+            parsed.mbid.as_deref(),
+            Some("10adbe5c-6cb4-4d2a-82a2-bfbdd0488cbd")
+        );
+        assert_eq!(parsed.canonical_name.as_deref(), Some("Massive Attack"));
+        assert_eq!(parsed.tags, vec!["trip-hop"]);
+
+        let old: LastFmInfoPayload = serde_json::from_value(serde_json::json!({
+            "summary": "Old", "full": "Old", "listeners": null,
+            "playcount": null, "url": null, "image": null, "tags": []
+        }))
+        .unwrap();
+        assert_eq!(old.mbid, None);
+        assert_eq!(old.canonical_name, None);
+    }
+
+    #[test]
+    fn related_artist_parsers_preserve_rank_score_and_ids() {
+        let lastfm = serde_json::json!({
+            "similarartists": {"artist": [
+                {"name": "Portishead", "mbid": "mbid-portishead", "match": "0.93", "url": "https://last.fm/portishead", "image": [{"#text": "https://img/p.jpg"}]},
+                {"name": "Tricky", "mbid": "", "match": 1.5}
+            ]}
+        });
+        let candidates = parse_lastfm_similar_artists(&lastfm);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].rank, 1);
+        assert_eq!(
+            candidates[0].external_id.as_deref(),
+            Some("mbid-portishead")
+        );
+        assert_eq!(candidates[0].match_score, Some(0.93));
+        assert_eq!(candidates[1].match_score, Some(1.0));
+
+        let deezer = serde_json::json!({"data": [
+            {"id": 27, "name": "Daft Punk", "link": "https://deezer.com/artist/27", "picture_big": "https://img/dp.jpg"}
+        ]});
+        let related = parse_deezer_related_artists(&deezer);
+        assert_eq!(related[0].external_id.as_deref(), Some("27"));
+        assert_eq!(related[0].rank, 1);
+        assert_eq!(related[0].match_score, None);
+
+        assert!(parse_lastfm_similar_artists(&serde_json::json!({})).is_empty());
+        assert!(parse_deezer_related_artists(&serde_json::json!({})).is_empty());
+    }
 }
 
 // ── URL encoding helper ───────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-﻿//! Defines Rust API routes for Music Routes server behavior.
+//! Defines Rust API routes for Music Routes server behavior.
 
 use axum::{
     extract::{Path, Query, State},
@@ -7,20 +7,30 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use boogiebox_db::artwork::{
+    get_lastfm_cached, get_lastfm_cached_stale, get_setting, save_lastfm_cache,
+};
 use boogiebox_db::boogiemix::get_track_sonic_fingerprint;
 use boogiebox_db::music::{
-    coerce_entity_id, get_album, get_artist, get_artist_name, get_home_top_rated, get_track,
-    interleave_by_artist, list_album_tracks, list_albums, list_albums_by_group_tracks,
-    list_albums_latest, list_artist_albums, list_artist_appears_on, list_artist_own_random_tracks,
-    list_artist_radio_candidates, list_artist_radio_tags, list_artists, list_artists_most_played,
-    list_auto_dj_candidates, list_genres, list_home_genre_summaries, list_recently_played,
-    list_top_played, normalize_artist_release_types, search_music, update_track_metadata,
-    ArtistList, EntityId, ListAlbumsParams, ListArtistsParams, SearchMusicParams,
-    TrackMetadataUpdate,
+    coerce_entity_id, get_album, get_artist, get_artist_external_identity, get_artist_name,
+    get_home_top_rated, get_track, interleave_by_artist, list_album_tracks, list_albums,
+    list_albums_by_group_tracks, list_albums_latest, list_artist_albums, list_artist_appears_on,
+    list_artist_own_random_tracks, list_artist_radio_candidates, list_artist_radio_tags,
+    list_artists, list_artists_most_played, list_auto_dj_candidates, list_genres,
+    list_home_genre_summaries, list_recently_played, list_top_played,
+    normalize_artist_release_types, search_music, update_track_metadata, ArtistList, EntityId,
+    ListAlbumsParams, ListArtistsParams, SearchMusicParams, TrackMetadataUpdate,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{auth::AuthenticatedUser, DbPool, ErrorResponse, SharedState};
+use crate::{
+    auth::AuthenticatedUser,
+    providers::{
+        fetch_deezer_related_artists, fetch_lastfm_similar_artists, RelatedArtistCandidate,
+    },
+    similar_artists::{resolve_local_similar_artists, SimilarArtistResult},
+    DbPool, ErrorResponse, SharedState,
+};
 
 /// Documents the Music Router public API surface.
 pub fn music_router(state: SharedState) -> Router {
@@ -36,6 +46,7 @@ pub fn music_router(state: SharedState) -> Router {
         .route("/api/artists/most-played", get(artists_most_played_handler))
         .route("/api/artists", get(list_artists_handler))
         .route("/api/artists/{id}", get(get_artist_handler))
+        .route("/api/artists/{id}/similar", get(similar_artists_handler))
         .route("/api/artists/{id}/albums", get(artist_albums_handler))
         .route(
             "/api/artists/{id}/appears-on",
@@ -92,6 +103,13 @@ struct SearchQuery {
 #[derive(Debug, Deserialize)]
 struct LimitQuery {
     limit: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SimilarArtistsResponse {
+    source_artist_id: EntityId,
+    artists: Vec<SimilarArtistResult>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -528,6 +546,138 @@ async fn get_artist_handler(
     {
         Ok(Ok(Some(artist))) => (StatusCode::OK, Json(artist)).into_response(),
         Ok(Ok(None)) => not_found("Artist not found"),
+        _ => internal_error(),
+    }
+}
+
+fn decode_related_cache(payload: Option<String>) -> Option<Vec<RelatedArtistCandidate>> {
+    payload.and_then(|raw| serde_json::from_str(&raw).ok())
+}
+
+async fn similar_artists_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Query(q): Query<LimitQuery>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let http_client = state
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .http_client
+        .clone();
+    let artist_id = coerce_entity_id(&id);
+    let limit = parse_limit(q.limit.as_deref(), 12, 50) as usize;
+    let context_db = db.clone();
+    let source_id = artist_id.clone();
+    let context = tokio::task::spawn_blocking(move || {
+        let conn = context_db.lock().expect("db");
+        let Some(identity) = get_artist_external_identity(&conn, &source_id)? else {
+            return Ok::<_, rusqlite::Error>(None);
+        };
+        let source_key = identity.artist_id.to_string();
+        let lastfm_cache_key = format!("artist-similar:lastfm:{source_key}");
+        let deezer_cache_key = format!("artist-similar:deezer:{source_key}");
+        Ok(Some((
+            identity,
+            get_setting(&conn, "lastfmKey"),
+            lastfm_cache_key.clone(),
+            get_lastfm_cached(&conn, &lastfm_cache_key),
+            get_lastfm_cached_stale(&conn, &lastfm_cache_key),
+            deezer_cache_key.clone(),
+            get_lastfm_cached(&conn, &deezer_cache_key),
+            get_lastfm_cached_stale(&conn, &deezer_cache_key),
+        )))
+    })
+    .await;
+    let Some((
+        identity,
+        lastfm_key,
+        lastfm_cache_key,
+        lastfm_fresh,
+        lastfm_stale,
+        deezer_cache_key,
+        deezer_fresh,
+        deezer_stale,
+    )) = (match context {
+        Ok(Ok(value)) => value,
+        _ => return internal_error(),
+    })
+    else {
+        return not_found("Artist not found");
+    };
+
+    let mut cache_updates: Vec<(String, String)> = Vec::new();
+    let lastfm = if let Some(cached) = decode_related_cache(lastfm_fresh) {
+        cached
+    } else if let Some(api_key) = lastfm_key.as_deref() {
+        match fetch_lastfm_similar_artists(
+            &http_client,
+            api_key,
+            &identity.name,
+            identity.lastfm_mbid.as_deref(),
+            100,
+        )
+        .await
+        {
+            Ok(candidates) => {
+                if let Ok(payload) = serde_json::to_string(&candidates) {
+                    cache_updates.push((lastfm_cache_key, payload));
+                }
+                candidates
+            }
+            Err(_) => decode_related_cache(lastfm_stale).unwrap_or_default(),
+        }
+    } else {
+        decode_related_cache(lastfm_stale).unwrap_or_default()
+    };
+
+    let deezer = if let Some(cached) = decode_related_cache(deezer_fresh) {
+        cached
+    } else if let Some(deezer_id) = identity.deezer_artist_id.as_deref() {
+        match fetch_deezer_related_artists(&http_client, deezer_id, 100).await {
+            Ok(candidates) => {
+                if let Ok(payload) = serde_json::to_string(&candidates) {
+                    cache_updates.push((deezer_cache_key, payload));
+                }
+                candidates
+            }
+            Err(_) => decode_related_cache(deezer_stale).unwrap_or_default(),
+        }
+    } else {
+        decode_related_cache(deezer_stale).unwrap_or_default()
+    };
+
+    if !cache_updates.is_empty() {
+        let cache_db = db.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = cache_db.lock().expect("db");
+            for (key, payload) in cache_updates {
+                save_lastfm_cache(&conn, &key, &payload, 7);
+            }
+        })
+        .await;
+    }
+
+    let user_id = user.id;
+    let response_source_id = artist_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let conn = db.lock().expect("db");
+        resolve_local_similar_artists(&conn, &user_id, &artist_id, &lastfm, &deezer, limit)
+    })
+    .await
+    {
+        Ok(Ok(artists)) => (
+            StatusCode::OK,
+            Json(SimilarArtistsResponse {
+                source_artist_id: response_source_id,
+                artists,
+            }),
+        )
+            .into_response(),
         _ => internal_error(),
     }
 }
@@ -1022,5 +1172,107 @@ async fn auto_dj_handler(
         )
             .into_response(),
         _ => internal_error(),
+    }
+}
+
+#[cfg(test)]
+mod similar_artist_route_tests {
+    use super::*;
+    use crate::AppState;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use boogiebox_db::{artwork::save_lastfm_cache, initialize_schema};
+    use rusqlite::Connection;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex, RwLock};
+    use tower::ServiceExt;
+
+    fn candidate(external_id: &str, name: &str, rank: usize) -> RelatedArtistCandidate {
+        RelatedArtistCandidate {
+            external_id: Some(external_id.to_owned()),
+            name: name.to_owned(),
+            url: None,
+            image_url: None,
+            match_score: Some(0.9),
+            rank,
+        }
+    }
+
+    fn test_app() -> axum::Router {
+        let conn = Connection::open_in_memory().expect("memory db");
+        initialize_schema(&conn).expect("schema");
+        conn.execute_batch(
+            "INSERT INTO users(id, username) VALUES('user-1', 'user');
+             INSERT INTO sessions(token, user_id, expires_at)
+               VALUES('session-1', 'user-1', datetime('now', '+1 day'));
+             INSERT INTO artists(id, name, lastfm_mbid, deezer_artist_id) VALUES
+               ('source', 'Source', 'source-mbid', 'source-deezer'),
+               ('related', 'Related', 'related-mbid', 'related-deezer'),
+               ('unowned', 'Unowned', 'unowned-mbid', 'unowned-deezer');
+             INSERT INTO albums(id, title, album_artist, artist_id) VALUES
+               ('source-album', 'Source Album', 'Source', 'source'),
+               ('related-album', 'Related Album', 'Related', 'related');",
+        )
+        .expect("fixtures");
+        let lastfm = serde_json::to_string(&vec![
+            candidate("related-mbid", "Related", 1),
+            candidate("unowned-mbid", "Unowned", 2),
+        ])
+        .expect("lastfm cache");
+        let deezer = serde_json::to_string(&vec![candidate("related-deezer", "Related", 1)])
+            .expect("deezer cache");
+        save_lastfm_cache(&conn, "artist-similar:lastfm:source", &lastfm, 7);
+        save_lastfm_cache(&conn, "artist-similar:deezer:source", &deezer, 7);
+
+        let shared = Arc::new(RwLock::new(AppState {
+            setup_required: false,
+            db: Some(Arc::new(Mutex::new(conn))),
+            ..AppState::default()
+        }));
+        music_router(shared)
+    }
+
+    #[tokio::test]
+    async fn similar_artists_route_requires_authentication() {
+        let response = test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/artists/source/similar")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn similar_artists_route_returns_only_owned_cached_matches() {
+        let response = test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/artists/source/similar?limit=1")
+                    .header("cookie", "bb_session=session-1")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["sourceArtistId"], "source");
+        assert_eq!(json["artists"].as_array().expect("artists").len(), 1);
+        assert_eq!(json["artists"][0]["id"], "related");
+        assert_eq!(
+            json["artists"][0]["providers"],
+            serde_json::json!(["lastfm", "deezer"])
+        );
     }
 }

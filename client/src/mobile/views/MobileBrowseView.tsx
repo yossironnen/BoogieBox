@@ -8,7 +8,7 @@ import ArtImage from '../../components/ArtImage';
 import type { PlaybackSnapshot } from '../../components/Player';
 import StarRating from '../../components/StarRating';
 import { hybridMobileContentStyles } from '../../hybridPreview';
-import type { Album, Artist, Library, Playlist, Track } from '../../types';
+import type { Album, Artist, Library, Playlist, SimilarArtist, Track } from '../../types';
 import { phase2 } from '../../uiPhase2';
 import { useMobileTrackActions } from '../components/MobileActionSheets';
 import type { MobileBrowseSelection } from '../mobileShell';
@@ -37,6 +37,7 @@ export default function MobileBrowseView({
   const [albums, setAlbums] = useState<Album[]>([]);
   const [tracks, setTracks] = useState<Track[]>(selection.tracks);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [similarArtists, setSimilarArtists] = useState<SimilarArtist[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -125,6 +126,25 @@ export default function MobileBrowseView({
       cancelled = true;
     };
   }, [onSelectionChange, selection.album, selection.artist]);
+
+  useEffect(() => {
+    if (!selection.artist || selection.album) {
+      setSimilarArtists([]);
+      return;
+    }
+    let cancelled = false;
+    setSimilarArtists([]);
+    api.artistSimilar(selection.artist.id, 12)
+      .then(response => {
+        if (!cancelled) setSimilarArtists(response.artists);
+      })
+      .catch(() => {
+        if (!cancelled) setSimilarArtists([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selection.album, selection.artist]);
 
   const trackActions = useMobileTrackActions<Track>({ playlists, onPlayTrack, onAddToQueue });
   const nowPlayingId = playbackSnapshot?.currentTrack?.id ?? null;
@@ -278,6 +298,31 @@ export default function MobileBrowseView({
         )
       ) : null}
 
+      {atArtist && similarArtists.length > 0 ? (
+        <section style={styles.similarSection}>
+          <h2 style={styles.similarHeading}>similar artists</h2>
+          <div style={styles.similarGrid}>
+            {similarArtists.map(artist => (
+              <button
+                key={artist.id}
+                type="button"
+                style={styles.similarCard}
+                onClick={() => onSelectionChange({ artist, album: null, tracks: [] })}
+              >
+                <span style={styles.similarArtwork}>
+                  <ArtImage
+                    src={api.artistPhotoUrl(artist.id, 300)}
+                    alt=""
+                    imgStyle={styles.detailImage}
+                  />
+                </span>
+                <span style={styles.similarName}>{artist.name}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {selection.album && !loading && !error ? (
         tracks.length > 0 ? (
           <div aria-label="Album tracks" style={hybridMobileContentStyles.list}>
@@ -379,6 +424,56 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 14,
     background: 'var(--surface-subtle)',
     boxShadow: 'var(--shadow-subtle)',
+  },
+  similarSection: {
+    display: 'grid',
+    gap: 10,
+    paddingTop: 4,
+  },
+  similarHeading: {
+    margin: 0,
+    color: 'var(--text-muted)',
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+  },
+  similarGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 12,
+  },
+  similarCard: {
+    minWidth: 0,
+    minHeight: 44,
+    display: 'grid',
+    justifyItems: 'center',
+    gap: 8,
+    padding: 10,
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 16,
+    background: 'var(--surface)',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
+  similarArtwork: {
+    width: '100%',
+    maxWidth: 128,
+    aspectRatio: '1 / 1',
+    overflow: 'hidden',
+    borderRadius: '50%',
+    background: 'var(--surface-subtle)',
+    boxShadow: 'var(--shadow-subtle)',
+  },
+  similarName: {
+    maxWidth: '100%',
+    overflow: 'hidden',
+    fontSize: 13,
+    fontWeight: 750,
+    lineHeight: 1.25,
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   },
   trackRow: {
     minHeight: 76,

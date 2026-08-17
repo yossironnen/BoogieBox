@@ -11,6 +11,7 @@ const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     artists: vi.fn(),
     artistAlbums: vi.fn(),
+    artistSimilar: vi.fn(),
     albumTracks: vi.fn(),
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number) => `/api/albums/${albumId}/art?size=${size}`),
     artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number) => `/api/artists/${artistId}/photo?size=${size}`),
@@ -31,6 +32,7 @@ describe('MobileBrowseView', () => {
     vi.clearAllMocks();
     apiMock.artists.mockResolvedValue([]);
     apiMock.artistAlbums.mockResolvedValue([]);
+    apiMock.artistSimilar.mockResolvedValue({ sourceArtistId: '2', artists: [] });
     apiMock.albumTracks.mockResolvedValue([]);
     apiMock.playlists.list.mockResolvedValue([{ id: '77', name: 'Pocket Mix', track_count: 2, total_duration: 500, created_at: '2026-01-01', updated_at: '2026-01-01', description: null }]);
     apiMock.playlists.addTrack.mockResolvedValue({ ok: true });
@@ -78,6 +80,32 @@ describe('MobileBrowseView', () => {
 
     expect(await screen.findByRole('button', { name: /Big Album/i })).toBeInTheDocument();
     expect(apiMock.albumArtUrl).toHaveBeenCalledWith('11', 300);
+  });
+
+  it('renders owned similar artists and opens the selected artist', async () => {
+    const onSelectionChange = vi.fn();
+    apiMock.artistSimilar.mockResolvedValue({
+      sourceArtistId: '2',
+      artists: [{ id: '3', name: 'Kindred Artist', track_count: 8, album_count: 2, score: 1, providers: ['deezer'] }],
+    });
+
+    render(
+      <MobileBrowseView
+        onPlayTrack={() => {}}
+        onAddToQueue={() => {}}
+        selection={{ artist: { id: '2', name: 'Artist', track_count: 10, album_count: 1 }, album: null, tracks: [] }}
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'similar artists' })).toBeInTheDocument();
+    expect(apiMock.artistSimilar).toHaveBeenCalledWith('2', 12);
+    fireEvent.click(screen.getByRole('button', { name: 'Kindred Artist' }));
+    expect(onSelectionChange).toHaveBeenCalledWith({
+      artist: expect.objectContaining({ id: '3', name: 'Kindred Artist' }),
+      album: null,
+      tracks: [],
+    });
   });
 
   it('loads album tracks and opens mobile track actions', async () => {
