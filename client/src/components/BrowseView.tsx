@@ -1735,6 +1735,7 @@ interface Props {
   openAlbumRequest?: { album: Album; token: number } | null;
   openArtistRequest?: { artist: Artist; token: number } | null;
   openGenreRequest?: { genre: string; token: number } | null;
+  resetRequest?: number | null;
   adaptiveAccentEnabled?: boolean;
   forcedLibraryIds?: ClientEntityId[] | null;
   hybridPreview?: boolean;
@@ -1751,6 +1752,7 @@ export default function BrowseView({
   openAlbumRequest,
   openArtistRequest,
   openGenreRequest,
+  resetRequest,
   adaptiveAccentEnabled = true,
   forcedLibraryIds = null,
   hybridPreview = false,
@@ -2234,6 +2236,12 @@ export default function BrowseView({
     setGenreFilterOpen(false);
     setLibraryFilterOpen(false);
   }, [openGenreRequest]);
+
+  // Allow external navigation (sidebar "Browse Music" / library click while drilled in) to reset to root.
+  useEffect(() => {
+    if (resetRequest == null) return;
+    goRoot();
+  }, [resetRequest, goRoot]);
 
   // Build breadcrumb
   const breadcrumb = (() => {

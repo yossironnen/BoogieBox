@@ -978,6 +978,7 @@ export default function App() {
   const [view, setView]         = useState<View>(() => hybridPreviewActive ? 'browse' : 'home');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [activeSidebarLibraryId, setActiveSidebarLibraryId] = useState<ClientEntityId | null>(null);
+  const [browseResetRequest, setBrowseResetRequest] = useState<number | null>(null);
   const [hoveredSidebarLibraryId, setHoveredSidebarLibraryId] = useState<ClientEntityId | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [stats, setStats]       = useState<Stats | null>(null);
@@ -1355,6 +1356,7 @@ export default function App() {
   const openView = useCallback((nextView: View) => {
     if (nextView === 'browse') {
       setActiveSidebarLibraryId(null);
+      setBrowseResetRequest(Date.now());
     } else {
       clearSidebarLibrarySelection();
     }
@@ -1363,6 +1365,7 @@ export default function App() {
 
   const openLibraryBrowse = useCallback((libraryId: ClientEntityId) => {
     setActiveSidebarLibraryId(libraryId);
+    setBrowseResetRequest(Date.now());
     setView('browse');
   }, []);
 
@@ -1682,6 +1685,7 @@ export default function App() {
                 openAlbumRequest={browseOpenAlbumRequest}
                 openArtistRequest={browseOpenArtistRequest}
                 openGenreRequest={browseOpenGenreRequest}
+                resetRequest={browseResetRequest}
                 adaptiveAccentEnabled={adaptiveAccentEnabled}
                 hybridPreview={hybridDesignActive}
                 hideCompilationOnlyArtists={hideCompilationOnlyArtists}
