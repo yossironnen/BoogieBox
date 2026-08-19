@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 macro_rules! dlog {
     ($enabled:expr, $($arg:tt)*) => {
         if $enabled {
-            tracing::info!($($arg)*);
+            tracing::debug!($($arg)*);
         }
     };
 }
@@ -236,7 +236,7 @@ async fn run_tick(
     };
     if !runtime.enabled() {
         if dbg {
-            tracing::info!(
+            tracing::debug!(
                 "[boogiemix:deep] runtime not usable — python={}, ffmpeg={}, demucs={}, torch={}, gpu={}",
                 runtime.python.as_ref().map(|p| p.display_name.as_str()).unwrap_or("missing"),
                 runtime.ffmpeg_available,
@@ -610,10 +610,10 @@ async fn process_job(
 
     // Write bpm_refined back to tracks.bpm_detected so it's available for
     // BPM matching without needing to reload deep features every time.
-    tracing::info!(track_id = %job.track_id, bpm_refined = ?bpm_refined, "deep analysis bpm_refined");
+    tracing::debug!(track_id = %job.track_id, bpm_refined = ?bpm_refined, "deep analysis bpm_refined");
     if let Some(bpm) = bpm_refined.filter(|&b| (60.0..=220.0).contains(&b)) {
         match set_track_bpm_detected(&conn, &job.track_id, bpm, "deep_analysis") {
-            Ok(_) => tracing::info!(track_id = %job.track_id, bpm, "wrote bpm_detected to tracks"),
+            Ok(_) => tracing::debug!(track_id = %job.track_id, bpm, "wrote bpm_detected to tracks"),
             Err(e) => {
                 tracing::warn!(track_id = %job.track_id, bpm, err = %e, "failed to write bpm_detected")
             }

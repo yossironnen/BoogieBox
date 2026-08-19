@@ -96,6 +96,12 @@ async fn put_settings_handler(
         "dlnaMediaMode",
     ];
     let dlna_changed = validated.keys().any(|k| DLNA_KEYS.contains(&k.as_str()));
+    let scan_debug_toggle = validated
+        .get("scanDebugLoggingEnabled")
+        .map(|v| v == "true");
+    let deep_debug_toggle = validated
+        .get("deepmixDebugLoggingEnabled")
+        .map(|v| v == "true");
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = db.lock().unwrap_or_else(|p| p.into_inner());
@@ -108,6 +114,12 @@ async fn put_settings_handler(
 
     match result {
         Ok(Ok(())) => {
+            if let Some(enabled) = scan_debug_toggle {
+                crate::logging::set_scan_debug_enabled(enabled);
+            }
+            if let Some(enabled) = deep_debug_toggle {
+                crate::logging::set_deep_debug_enabled(enabled);
+            }
             if dlna_changed {
                 let (dlna_manager, dlna_db) = {
                     let s = state.read().unwrap_or_else(|p| p.into_inner());

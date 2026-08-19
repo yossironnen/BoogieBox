@@ -10,5 +10,11 @@
   <startmode>Automatic</startmode>
   <onfailure action="restart" delay="10 sec" />
   <logpath>%PROGRAMDATA%\BoogieBox\service-logs</logpath>
-  <log mode="roll" />
+  <!-- Bounds WinSW's own stdout/stderr capture (separate from the app's own
+       server.log/scan-debug.log/deep-analysis-debug.log rotation) so it can't
+       grow unbounded. -->
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
 </service>

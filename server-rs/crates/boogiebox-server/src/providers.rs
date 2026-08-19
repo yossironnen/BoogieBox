@@ -2,8 +2,25 @@
 
 use reqwest::Client;
 use serde_json::Value;
+use std::time::Instant;
 
 const USER_AGENT: &str = "BoogieBox/1.0";
+
+/// Logs an outbound metadata-provider request. Only visible when scan debug
+/// logging is enabled — routed via this module's target to `scan-debug.log`.
+fn log_request(provider: &str, action: &str, detail: &str) -> Instant {
+    tracing::debug!("provider call → {provider} {action} {detail}");
+    Instant::now()
+}
+
+/// Logs the outcome of an outbound metadata-provider request: HTTP status
+/// (when available) and elapsed time.
+fn log_response(provider: &str, action: &str, start: Instant, status: impl std::fmt::Display) {
+    tracing::debug!(
+        "provider call ← {provider} {action} status={status} elapsed_ms={}",
+        start.elapsed().as_millis()
+    );
+}
 
 /// A conservatively validated provider artist result. Identity and image are
 /// returned together so callers cannot persist an ID from a different hit.
@@ -181,6 +198,7 @@ pub async fn search_discogs_album_cover(
         urlencoding::encode(q.trim())
     );
 
+    let t0 = log_request("discogs", "album_cover", &q);
     let resp = client
         .get(&url)
         .header("Authorization", format!("Discogs token={token}"))
@@ -188,6 +206,7 @@ pub async fn search_discogs_album_cover(
         .send()
         .await
         .ok()?;
+    log_response("discogs", "album_cover", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -238,6 +257,7 @@ pub async fn search_discogs_artist_match(
         urlencoding::encode(artist_name.trim())
     );
 
+    let t0 = log_request("discogs", "artist_match", artist_name);
     let resp = client
         .get(&url)
         .header("Authorization", format!("Discogs token={token}"))
@@ -245,6 +265,7 @@ pub async fn search_discogs_artist_match(
         .send()
         .await
         .ok()?;
+    log_response("discogs", "artist_match", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -304,12 +325,14 @@ pub async fn search_deezer_artist_match(
         urlencoding::encode(artist_name.trim())
     );
 
+    let t0 = log_request("deezer", "artist_match", artist_name);
     let resp = client
         .get(&url)
         .header("User-Agent", USER_AGENT)
         .send()
         .await
         .ok()?;
+    log_response("deezer", "artist_match", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -337,6 +360,7 @@ pub async fn get_spotify_access_token(
 ) -> Option<String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     let credentials = STANDARD.encode(format!("{client_id}:{client_secret}"));
+    let t0 = log_request("spotify", "access_token", "client_credentials");
     let resp = client
         .post("https://accounts.spotify.com/api/token")
         .header("Authorization", format!("Basic {credentials}"))
@@ -345,6 +369,7 @@ pub async fn get_spotify_access_token(
         .send()
         .await
         .ok()?;
+    log_response("spotify", "access_token", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -390,6 +415,7 @@ pub async fn search_spotify_artist_match_with_token(
         "https://api.spotify.com/v1/search?type=artist&limit=3&q={}",
         urlencoding::encode(artist_name.trim())
     );
+    let t0 = log_request("spotify", "artist_match", artist_name);
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {token}"))
@@ -397,6 +423,7 @@ pub async fn search_spotify_artist_match_with_token(
         .send()
         .await
         .ok()?;
+    log_response("spotify", "artist_match", t0, resp.status());
     if !resp.status().is_success() {
         return None;
     }
@@ -498,6 +525,7 @@ async fn search_discogs_metadata(
         urlencoding::encode(q.trim())
     );
 
+    let t0 = log_request("discogs", "metadata_search", &q);
     let resp = client
         .get(&url)
         .header("Authorization", format!("Discogs token={token}"))
@@ -505,6 +533,7 @@ async fn search_discogs_metadata(
         .send()
         .await
         .ok()?;
+    log_response("discogs", "metadata_search", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -512,6 +541,10 @@ async fn search_discogs_metadata(
 
     let data: Value = resp.json().await.ok()?;
     let items = data["results"].as_array()?;
+    tracing::debug!(
+        "provider result discogs metadata_search query={q:?} hits={}",
+        items.len()
+    );
 
     let results = items
         .iter()
@@ -581,6 +614,7 @@ async fn search_spotify_metadata(
         urlencoding::encode(&q)
     );
 
+    let t0 = log_request("spotify", "metadata_search", &q);
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {token}"))
@@ -588,6 +622,7 @@ async fn search_spotify_metadata(
         .send()
         .await
         .ok()?;
+    log_response("spotify", "metadata_search", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -664,12 +699,14 @@ async fn search_spotify_metadata(
 
 /// Documents the Download Image public API surface.
 pub async fn download_image(client: &Client, url: &str) -> Option<(Vec<u8>, String)> {
+    let t0 = log_request("image", "download", url);
     let resp = client
         .get(url)
         .header("User-Agent", USER_AGENT)
         .send()
         .await
         .ok()?;
+    log_response("image", "download", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -802,12 +839,14 @@ pub async fn fetch_lrclib_lyrics(
         urlencoding::encode(title)
     );
 
+    let t0 = log_request("lrclib", "lyrics", &format!("{artist} — {title}"));
     let resp = client
         .get(&url)
         .header("User-Agent", USER_AGENT)
         .send()
         .await
         .ok()?;
+    log_response("lrclib", "lyrics", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -860,12 +899,14 @@ pub async fn fetch_lyricsovh(client: &Client, artist: &str, title: &str) -> Opti
         urlencoding::encode(title)
     );
 
+    let t0 = log_request("lyrics.ovh", "lyrics", &format!("{artist} — {title}"));
     let resp = client
         .get(&url)
         .header("User-Agent", USER_AGENT)
         .send()
         .await
         .ok()?;
+    log_response("lyrics.ovh", "lyrics", t0, resp.status());
 
     if !resp.status().is_success() {
         return None;
@@ -963,7 +1004,10 @@ pub async fn fetch_lastfm_artist_info(
         urlencoding::encode(artist_name),
         api_key
     );
-    let data: Value = client.get(&url).send().await.ok()?.json().await.ok()?;
+    let t0 = log_request("lastfm", "artist_info", artist_name);
+    let resp = client.get(&url).send().await.ok()?;
+    log_response("lastfm", "artist_info", t0, resp.status());
+    let data: Value = resp.json().await.ok()?;
     parse_lastfm_artist_info(&data)
 }
 
@@ -1018,11 +1062,13 @@ pub async fn fetch_lastfm_similar_artists(
         urlencoding::encode(api_key),
         limit.clamp(1, 100)
     );
+    let t0 = log_request("lastfm", "similar_artists", artist_name);
     let response = client
         .get(&url)
         .send()
         .await
         .map_err(|error| error.to_string())?;
+    log_response("lastfm", "similar_artists", t0, response.status());
     if !response.status().is_success() {
         return Err(format!("Last.fm returned {}", response.status().as_u16()));
     }
@@ -1033,7 +1079,12 @@ pub async fn fetch_lastfm_similar_artists(
             .unwrap_or("Last.fm request failed")
             .to_owned());
     }
-    Ok(parse_lastfm_similar_artists(&data))
+    let candidates = parse_lastfm_similar_artists(&data);
+    tracing::debug!(
+        "provider result lastfm similar_artists artist={artist_name:?} hits={}",
+        candidates.len()
+    );
+    Ok(candidates)
 }
 
 fn parse_deezer_related_artists(data: &Value) -> Vec<RelatedArtistCandidate> {
@@ -1080,12 +1131,14 @@ pub async fn fetch_deezer_related_artists(
         urlencoding::encode(artist_id.trim()),
         limit.clamp(1, 100)
     );
+    let t0 = log_request("deezer", "related_artists", artist_id);
     let response = client
         .get(&url)
         .header("User-Agent", USER_AGENT)
         .send()
         .await
         .map_err(|error| error.to_string())?;
+    log_response("deezer", "related_artists", t0, response.status());
     if !response.status().is_success() {
         return Err(format!("Deezer returned {}", response.status().as_u16()));
     }
@@ -1093,7 +1146,12 @@ pub async fn fetch_deezer_related_artists(
     if data["error"].is_object() {
         return Err("Deezer request failed".to_owned());
     }
-    Ok(parse_deezer_related_artists(&data))
+    let candidates = parse_deezer_related_artists(&data);
+    tracing::debug!(
+        "provider result deezer related_artists artist_id={artist_id:?} hits={}",
+        candidates.len()
+    );
+    Ok(candidates)
 }
 
 /// Documents the Fetch Lastfm Album Info public API surface.
@@ -1109,7 +1167,14 @@ pub async fn fetch_lastfm_album_info(
         urlencoding::encode(album_name),
         api_key
     );
-    let data: Value = client.get(&url).send().await.ok()?.json().await.ok()?;
+    let t0 = log_request(
+        "lastfm",
+        "album_info",
+        &format!("{artist_name} — {album_name}"),
+    );
+    let resp = client.get(&url).send().await.ok()?;
+    log_response("lastfm", "album_info", t0, resp.status());
+    let data: Value = resp.json().await.ok()?;
     let album = &data["album"];
     if album.is_null() {
         return None;
@@ -1160,10 +1225,12 @@ pub async fn fetch_lastfm_artist_top_tags(
         urlencoding::encode(artist_name),
         api_key
     );
+    let t0 = log_request("lastfm", "artist_top_tags", artist_name);
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(_) => return vec![],
     };
+    log_response("lastfm", "artist_top_tags", t0, resp.status());
     let data: Value = match resp.json().await {
         Ok(v) => v,
         Err(_) => return vec![],
@@ -1193,14 +1260,10 @@ pub async fn fetch_lastfm_top_tracks(
         api_key,
         urlencoding::encode(artist_name),
     );
-    let data: Value = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
+    let t0 = log_request("lastfm", "top_tracks", artist_name);
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    log_response("lastfm", "top_tracks", t0, resp.status());
+    let data: Value = resp.json().await.map_err(|e| e.to_string())?;
     if data["error"].is_number() {
         return Err(data["message"].as_str().unwrap_or("Not found").to_owned());
     }

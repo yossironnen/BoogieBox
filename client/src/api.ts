@@ -423,7 +423,7 @@ export const api = {
   fsMkdir: (parent: string, name: string) =>
     post<{ path: string }>('/admin/fs/mkdir', { parent, name }),
   debugTestPath: (path: string) => post<any>('/debug/test-path', { path }),
-  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string; dbFolder?: string; version?: string }>('/system/status'),
+  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string; dbFolder?: string; version?: string; logFile?: string; scanDebugLogFile?: string; deepDebugLogFile?: string }>('/system/status'),
   systemSelectFolder: (initialDir?: string) => post<{ folder: string | null }>('/system/select-folder', { initialDir }),
   systemSetup: (dbFolder: string) => post<{ ok: boolean }>('/system/setup', { dbFolder }),
   systemSwitchDb: (dbFolder: string) => post<{ ok: boolean }>('/system/switch-db', { dbFolder }),

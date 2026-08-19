@@ -581,6 +581,7 @@ export default function SettingsPage({
   const [boogiemixDeepSelectedLibrary, setBoogiemixDeepSelectedLibrary] = useState<ClientEntityId | ''>('');
   const showGeniusIntegration = false;
   const [currentDbFolder, setCurrentDbFolder] = useState<string>('');
+  const [logFilePaths, setLogFilePaths] = useState<{ server?: string; scan?: string; deep?: string }>({});
   const [switchDbFolder, setSwitchDbFolder] = useState<string>('');
   const [switchDbSaving, setSwitchDbSaving] = useState(false);
   const [switchDbResult, setSwitchDbResult] = useState<string | null>(null);
@@ -762,7 +763,10 @@ export default function SettingsPage({
       loadWaveformStatus();
       loadBpmStatus();
       loadBoogieMixDeepStatus(true);
-      api.systemStatus().then(s => { if (s.dbFolder) setCurrentDbFolder(s.dbFolder); }).catch(() => {});
+      api.systemStatus().then(s => {
+        if (s.dbFolder) setCurrentDbFolder(s.dbFolder);
+        setLogFilePaths({ server: s.logFile, scan: s.scanDebugLogFile, deep: s.deepDebugLogFile });
+      }).catch(() => {});
     }
   }, [activeTab, isAdmin, canManageLibraries, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
 
@@ -2458,8 +2462,10 @@ export default function SettingsPage({
                   Scan debug logging
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  Writes detailed scan and post-scan backend diagnostics to <code style={{ color: 'var(--accent)' }}>logs/debug.log</code>.
-                  Leave this disabled unless you are troubleshooting large-library scans or stuck post-scan work.
+                  Writes detailed scan and post-scan diagnostics — including metadata provider requests
+                  (Discogs, Last.fm, Deezer, Spotify, LRCLIB, lyrics.ovh) and their results — to{' '}
+                  <code style={{ color: 'var(--accent)' }}>scan-debug.log</code>. Takes effect immediately, no restart
+                  needed. Leave this disabled unless you are troubleshooting large-library scans or stuck post-scan work.
                 </div>
               </div>
               <div
@@ -2506,10 +2512,11 @@ export default function SettingsPage({
                   BoogieMix deep analysis debug logging
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  Writes verbose deep analysis diagnostics to the server log. Logs every tick decision, Python runtime
-                  detection step (candidates, venv paths, version checks, demucs/torch/CUDA probes), job claim,
-                  worker spawn, stdin write, process exit status, stdout/stderr, JSON parse result, DB upsert outcome,
-                  and completion. Enable when deep analysis jobs are timing out or producing no output.
+                  Writes verbose deep analysis diagnostics to <code style={{ color: 'var(--accent)' }}>deep-analysis-debug.log</code>.
+                  Logs every tick decision, Python runtime detection step (candidates, venv paths, version checks,
+                  demucs/torch/CUDA probes), job claim, worker spawn, stdin write, process exit status, stdout/stderr,
+                  JSON parse result, DB upsert outcome, and completion. Takes effect immediately, no restart needed.
+                  Enable when deep analysis jobs are timing out or producing no output.
                 </div>
               </div>
               <div
@@ -2539,13 +2546,27 @@ export default function SettingsPage({
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
               Deep analysis debug is <strong style={{ color: 'var(--text)' }}>{deepmixDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
-              Logs appear in the server log at <code style={{ color: 'var(--accent)' }}>INFO</code> level under the <code style={{ color: 'var(--accent)'}}>[boogiemix:deep]</code> prefix.
-              Disable after investigation to reduce log noise.
+              Logs appear in <code style={{ color: 'var(--accent)' }}>deep-analysis-debug.log</code> under the <code style={{ color: 'var(--accent)'}}>[boogiemix:deep]</code> prefix.
+              Disable after investigation — the server's main log stays clean regardless.
             </div>
             {(deepmixDebugSaving || deepmixDebugResult) && (
               <div style={{ fontSize: 11, marginTop: 6, color: deepmixDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
                 {deepmixDebugSaving ? 'Saving…' : deepmixDebugResult}
               </div>
+            )}
+
+            {(logFilePaths.server || logFilePaths.scan || logFilePaths.deep) && (
+              <>
+                <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '16px 0' }} />
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+                  Log files
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.9, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                  {logFilePaths.server && <div>server.log — {logFilePaths.server}</div>}
+                  {logFilePaths.scan && <div>scan-debug.log — {logFilePaths.scan}</div>}
+                  {logFilePaths.deep && <div>deep-analysis-debug.log — {logFilePaths.deep}</div>}
+                </div>
+              </>
             )}
           </div>
 

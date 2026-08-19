@@ -11,9 +11,7 @@ use boogiebox_db::{database_exists, init_db, InitDbError};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
-    env,
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    env, fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
@@ -26,16 +24,16 @@ use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
 };
-use tracing_subscriber::fmt::MakeWriter;
-
 pub mod artwork_cache;
 pub mod auth;
 pub mod bpm_analysis;
 pub mod cors;
 pub mod deep_analysis;
 pub mod dlna;
+pub mod event_log;
 pub mod ffmpeg;
 pub mod image_thumb;
+pub mod logging;
 pub mod mix_worker;
 pub mod post_scan;
 pub mod providers;
@@ -100,6 +98,10 @@ pub struct AppState {
     pub ffmpeg_path: PathBuf,
     /// Optional durable log file path reported by system status.
     pub log_file: Option<PathBuf>,
+    /// Scan/post-scan debug log path (populated when `scanDebugLoggingEnabled` is on).
+    pub scan_debug_log_file: Option<PathBuf>,
+    /// BoogieMix deep-analysis debug log path (populated when `deepmixDebugLoggingEnabled` is on).
+    pub deep_debug_log_file: Option<PathBuf>,
     /// Suggested local database folder shown during first-run setup.
     pub suggested_db_folder: PathBuf,
     /// Writable locator path for the persisted database-folder config.
@@ -147,12 +149,16 @@ impl Default for AppState {
             .unwrap_or_default();
 
         let ffmpeg_path = ffmpeg::resolve_ffmpeg();
+        let log_file = resolve_log_file();
+        let log_paths = log_file.as_deref().and_then(logging::resolve_log_paths);
 
         Self {
             setup_required,
             ffmpeg_available: ffmpeg::ffmpeg_available(),
             ffmpeg_path,
-            log_file: resolve_log_file(),
+            log_file,
+            scan_debug_log_file: log_paths.as_ref().map(|p| p.scan_debug_log.clone()),
+            deep_debug_log_file: log_paths.as_ref().map(|p| p.deep_debug_log.clone()),
             suggested_db_folder: suggested_db_folder(),
             db_config_path: server_config::get_writable_db_locator_path(),
             folder_picker: FolderPicker::System,
@@ -184,6 +190,8 @@ struct StatusResponse {
     ffmpeg_path: String,
     ffprobe_available: bool,
     log_file: Option<String>,
+    scan_debug_log_file: Option<String>,
+    deep_debug_log_file: Option<String>,
     setup_required: bool,
     suggested_db_folder: String,
     db_folder: Option<String>,
@@ -245,8 +253,9 @@ pub async fn run_from_env() -> Result<(), ServerError> {
     let log_file = init_logging();
     let config = ServerConfig::from_env()?;
     let state = AppState::default();
-    tracing::info!(
-        "BoogieBox Rust server starting; log_file={}; ffmpeg_path={}; ffmpeg_available={}; ffprobe_available={}",
+    let startup_banner = format!(
+        "BoogieBox Rust server starting; version={}; log_file={}; ffmpeg_path={}; ffmpeg_available={}; ffprobe_available={}",
+        env!("CARGO_PKG_VERSION"),
         log_file
             .as_ref()
             .map(|p| p.display().to_string())
@@ -255,9 +264,28 @@ pub async fn run_from_env() -> Result<(), ServerError> {
         state.ffmpeg_available,
         ffmpeg::ffprobe_available()
     );
+    // The startup banner must reach the console, server.log, and the Windows
+    // Event Log no matter how logging is configured — a stray
+    // `BOOGIEBOX_LOG_LEVEL=error` or a disabled debug toggle shouldn't be
+    // able to hide it. All three writes bypass the tracing filter pipeline
+    // entirely (a `tracing::info!` here would double-print to the console,
+    // since the server layer already tees its writes to stdout).
+    println!("{startup_banner}");
+    event_log::write_startup_event(&startup_banner);
+    if let Some(path) = log_file.as_ref() {
+        logging::append_log_marker(path, &startup_banner);
+    }
     if let Some(db) = state.db.clone() {
         {
             let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            let scan_debug = boogiebox_db::boogiemix::get_setting(&conn, "scanDebugLoggingEnabled")
+                .map(|v| v == "true")
+                .unwrap_or(false);
+            let deep_debug =
+                boogiebox_db::boogiemix::get_setting(&conn, "deepmixDebugLoggingEnabled")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+            logging::sync_debug_toggles(scan_debug, deep_debug);
             match boogiebox_db::jobs::reset_orphaned_scan_jobs(&conn) {
                 Ok(n) if n > 0 => tracing::info!("Startup: recovered {n} orphaned scan job(s)"),
                 Ok(_) => {}
@@ -316,82 +344,28 @@ pub async fn run_from_env() -> Result<(), ServerError> {
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-struct TeeLogWriter {
-    path: PathBuf,
-}
-
-struct TeeLogFile {
-    file: Option<fs::File>,
-}
-
-impl Write for TeeLogFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let _ = io::stdout().write_all(buf);
-        if let Some(file) = self.file.as_mut() {
-            let _ = file.write_all(buf);
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        let _ = io::stdout().flush();
-        if let Some(file) = self.file.as_mut() {
-            let _ = file.flush();
-        }
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for TeeLogWriter {
-    type Writer = TeeLogFile;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .ok();
-        TeeLogFile { file }
-    }
-}
-
+/// Initializes the three-way log split (`server.log` + the two opt-in debug
+/// logs, see [`logging`]). `scan_enabled`/`deep_enabled` reflect the last
+/// known settings state (env-var override only at this point — the DB isn't
+/// open yet); [`logging::sync_debug_toggles`] reconciles against the real
+/// settings once it is.
 fn init_logging() -> Option<PathBuf> {
-    let filter = env::var("BOOGIEBOX_LOG_LEVEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| tracing_subscriber::EnvFilter::new(value.trim()))
-        .unwrap_or_else(|| {
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
-        });
-    let log_file = resolve_log_file().filter(|path| {
+    let server_log = resolve_log_file().filter(|path| {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).is_ok()
         } else {
             false
         }
-    });
-
-    if let Some(path) = log_file.clone() {
-        let _ = OpenOptions::new().create(true).append(true).open(&path);
-        append_log_marker(&path, "BoogieBox server log initialized");
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_ansi(false)
-            .with_writer(TeeLogWriter { path })
-            .try_init();
-    } else {
-        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
-    }
-
-    log_file
-}
-
-fn append_log_marker(path: &Path, message: &str) {
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{message}");
-    }
+    })?;
+    let paths = logging::resolve_log_paths(&server_log)?;
+    let scan_enabled = env::var("BOOGIEBOX_SCAN_DEBUG_LOGGING")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let deep_enabled = env::var("BOOGIEBOX_DEEPMIX_DEBUG_LOGGING")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    logging::init(&paths, scan_enabled, deep_enabled);
+    Some(paths.server_log)
 }
 
 /// Documents the Resolve Log File public API surface.
@@ -423,6 +397,22 @@ pub fn resolve_log_file() -> Option<PathBuf> {
             return Some(
                 PathBuf::from(trimmed)
                     .join("BoogieBox")
+                    .join("logs")
+                    .join("boogiebox-server.log"),
+            );
+        }
+    }
+
+    // Linux equivalent of the PROGRAMDATA branch above: the packaged systemd
+    // unit (installer/linux/boogiebox.service) already sets this to
+    // /var/lib/boogiebox, which is owned by the service user, so logs land
+    // in /var/lib/boogiebox/logs instead of inside the install directory
+    // (/opt/boogiebox) that the exe-adjacent fallback below would otherwise use.
+    if let Ok(config_dir) = env::var("BOOGIEBOX_CONFIG_DIR") {
+        let trimmed = config_dir.trim();
+        if !trimmed.is_empty() {
+            return Some(
+                PathBuf::from(trimmed)
                     .join("logs")
                     .join("boogiebox-server.log"),
             );
@@ -632,6 +622,14 @@ async fn status_handler(State(state): State<SharedState>) -> impl IntoResponse {
             ffprobe_available: ffmpeg::ffprobe_available(),
             log_file: state
                 .log_file
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            scan_debug_log_file: state
+                .scan_debug_log_file
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            deep_debug_log_file: state
+                .deep_debug_log_file
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
             setup_required: state.setup_required,
