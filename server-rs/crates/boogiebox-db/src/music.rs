@@ -982,6 +982,17 @@ pub struct ListAlbumsParams<'a> {
     pub by_album_artist: bool,
     /// Filter to albums with at least one Sonic Fingerprint (deep analysis) track.
     pub sonic_fingerprint_only: bool,
+    /// Return only album rows created after this SQLite row id.
+    pub after_album_rowid: Option<i64>,
+    /// Bound incremental results to this SQLite row id so cursor advancement cannot skip rows.
+    pub through_album_rowid: Option<i64>,
+}
+
+/// Returns the current album insertion cursor used by incremental Browse refreshes.
+pub fn album_change_cursor(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM albums", [], |row| {
+        row.get(0)
+    })
 }
 
 /// Documents the List Albums public API surface.
@@ -1011,6 +1022,33 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
     if p.sonic_fingerprint_only {
         conditions
             .push("EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".into());
+    }
+    if let Some(after) = p.after_album_rowid {
+        if p.by_album_artist {
+            let upper_bound = if p.through_album_rowid.is_some() {
+                " AND changed_al.rowid <= ?"
+            } else {
+                ""
+            };
+            conditions.push(format!(
+                "EXISTS (
+                   SELECT 1 FROM albums changed_al
+                   WHERE changed_al.rowid > ?{upper_bound}
+                     AND changed_al.title = al.title
+                     AND COALESCE(changed_al.album_artist,'') = COALESCE(al.album_artist,'')
+                 )"
+            ));
+        } else {
+            conditions.push(if p.through_album_rowid.is_some() {
+                "al.rowid > ? AND al.rowid <= ?".into()
+            } else {
+                "al.rowid > ?".into()
+            });
+        }
+        filter_params.push(Value::Integer(after));
+        if let Some(through) = p.through_album_rowid {
+            filter_params.push(Value::Integer(through));
+        }
     }
 
     let where_clause = if conditions.is_empty() {
@@ -1436,11 +1474,17 @@ pub fn list_albums_by_group_tracks(
         format!("AND t.library_id IN ({ph})")
     };
 
+    // Driven from `albums` (filtered by the WHERE clause) rather than `tracks`: SQLite has no
+    // index usable for `LOWER(al.title) = ...`, so starting the scan from `tracks` — the much
+    // larger table — made the planner iterate every track in the library for every album click
+    // (measured ~350ms on a 63k-track/9k-album library) before joining out to the one matching
+    // album. Starting from `albums` and joining tracks via the indexed `idx_tracks_album` cuts
+    // that to a few ms even without a supporting index, since the WHERE now only scans albums.
     let sql = format!(
         "SELECT {TRACK_COLS}, trr.rating
-         FROM tracks t
+         FROM albums al
+         JOIN tracks t ON t.album_id = al.id
          LEFT JOIN artists ar ON ar.id = t.artist_id
-         JOIN albums al ON al.id = t.album_id
          LEFT JOIN track_ratings trr ON trr.track_id = t.id AND trr.user_id = ?
          LEFT JOIN libraries l ON l.id = t.library_id
          WHERE LOWER(al.title) = LOWER(?) AND al.album_artist = COALESCE(?,'')
@@ -2423,6 +2467,7 @@ mod tests {
                 release_type TEXT,
                 metadata_locked INTEGER,
                 description TEXT,
+                label TEXT,
                 added_at TEXT
             );
             CREATE TABLE libraries (id TEXT PRIMARY KEY, name TEXT);
@@ -2617,6 +2662,157 @@ mod tests {
         let tracks = list_album_tracks(&conn, "user-1", &coerce_entity_id("album-1")).unwrap();
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].file_path, None);
+    }
+
+    #[test]
+    fn list_albums_by_group_tracks_matches_title_and_album_artist_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch(
+            "
+            INSERT INTO libraries (id, name) VALUES ('library-1', 'Home Library');
+            INSERT INTO artists (id, name) VALUES ('artist-1', 'Weezer'), ('artist-2', 'Green Day');
+            -- Two different releases happen to share a title, distinguished only by album_artist —
+            -- exactly the case list_albums_by_group_tracks groups on (client's group_by=album_artist mode).
+            INSERT INTO albums (id, title, album_artist, artist_id) VALUES
+                ('album-1', 'Greatest Hits', 'Weezer', 'artist-1'),
+                ('album-2', 'Greatest Hits', 'Green Day', 'artist-2');
+            INSERT INTO tracks (
+                id, library_id, artist_id, album_id, title, file_name, genre, format,
+                duration, file_size, track_number, scanned_at
+            ) VALUES
+                ('track-1', 'library-1', 'artist-1', 'album-1', 'Buddy Holly', 'buddy-holly.flac', 'Rock', 'flac', 160, 1, 1, '2026-08-10'),
+                ('track-2', 'library-1', 'artist-2', 'album-2', 'Basket Case', 'basket-case.flac', 'Rock', 'flac', 180, 1, 1, '2026-08-10');
+            ",
+        )
+        .unwrap();
+
+        let tracks =
+            list_albums_by_group_tracks(&conn, "user-1", "Greatest Hits", "Weezer", &[]).unwrap();
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].id, coerce_entity_id("track-1"));
+    }
+
+    #[test]
+    fn list_albums_returns_bounded_incremental_rows_and_group_aggregates() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch(
+            "
+            INSERT INTO libraries (id, name) VALUES ('library-1', 'Home Library');
+            INSERT INTO artists (id, name) VALUES ('artist-1', 'Artist One');
+            INSERT INTO albums (id, title, album_artist, artist_id) VALUES
+                ('album-1', 'Existing Album', 'Artist One', 'artist-1'),
+                ('album-2', 'Shared Album', 'Artist One', 'artist-1');
+            INSERT INTO tracks (
+                id, library_id, artist_id, album_id, title, file_name, duration, scanned_at
+            ) VALUES
+                ('track-1', 'library-1', 'artist-1', 'album-1', 'Existing Track', 'existing.flac', 180, '2026-08-19'),
+                ('track-2', 'library-1', 'artist-1', 'album-2', 'Shared One', 'shared-1.flac', 200, '2026-08-19');
+            ",
+        )
+        .unwrap();
+        let after = album_change_cursor(&conn).unwrap();
+
+        conn.execute_batch(
+            "
+            INSERT INTO albums (id, title, album_artist, artist_id) VALUES
+                ('album-3', 'Shared Album', 'Artist One', 'artist-1'),
+                ('album-4', 'New Album', 'Artist One', 'artist-1');
+            INSERT INTO tracks (
+                id, library_id, artist_id, album_id, title, file_name, duration, scanned_at
+            ) VALUES
+                ('track-3', 'library-1', 'artist-1', 'album-3', 'Shared Two', 'shared-2.flac', 220, '2026-08-19'),
+                ('track-4', 'library-1', 'artist-1', 'album-4', 'New Track', 'new.flac', 240, '2026-08-19');
+            ",
+        )
+        .unwrap();
+        let through = album_change_cursor(&conn).unwrap();
+
+        conn.execute_batch(
+            "
+            INSERT INTO albums (id, title, album_artist, artist_id)
+              VALUES ('album-5', 'Later Album', 'Artist One', 'artist-1');
+            INSERT INTO tracks (
+                id, library_id, artist_id, album_id, title, file_name, duration, scanned_at
+            ) VALUES
+                ('track-5', 'library-1', 'artist-1', 'album-5', 'Later Track', 'later.flac', 260, '2026-08-19');
+            ",
+        )
+        .unwrap();
+
+        let rows = list_albums(
+            &conn,
+            ListAlbumsParams {
+                user_id: "user-1",
+                library_ids: &[],
+                genres: &[],
+                by_album_artist: true,
+                sonic_fingerprint_only: false,
+                after_album_rowid: Some(after),
+                through_album_rowid: Some(through),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["New Album", "Shared Album"]
+        );
+        let shared = rows
+            .iter()
+            .find(|row| row.title == "Shared Album")
+            .expect("changed grouped album");
+        assert_eq!(shared.track_count, 2);
+        assert_eq!(shared.total_duration, Some(420.0));
+    }
+
+    #[test]
+    fn list_albums_by_group_tracks_scans_albums_not_tracks() {
+        // Regression guard for the query-plan bug where the query was driven from `tracks`
+        // (the larger table) instead of `albums`, forcing a full scan of every track in the
+        // library per album click. Filtering by title/album_artist has no supporting index, so
+        // the driving table must be `albums` — asserting that keeps the planner from
+        // regressing to a `tracks`-first scan even without measuring wall-clock time.
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        // Matches the real schema's idx_tracks_album (see boogiebox-db::lib::initialize_schema)
+        // — the minimal test fixture otherwise has no track index, which changes which table
+        // the planner prefers to drive from and would make this guard test meaningless.
+        conn.execute_batch("CREATE INDEX idx_tracks_album ON tracks(album_id)")
+            .unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN \
+                 SELECT t.id FROM albums al \
+                 JOIN tracks t ON t.album_id = al.id \
+                 WHERE LOWER(al.title) = LOWER(?) AND al.album_artist = COALESCE(?,'')",
+            )
+            .unwrap();
+        let details: Vec<String> = stmt
+            .query_map(rusqlite::params!["Greatest Hits", "Weezer"], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        // The first step in the plan is the driving (outermost) table; it must be `albums`
+        // (the smaller, filtered table), not `tracks` (the whole-library scan this regression
+        // test guards against).
+        let driving_step = details.first().expect("plan has at least one step");
+        assert!(
+            driving_step.starts_with("SCAN al") || driving_step.starts_with("SEARCH al"),
+            "expected albums to be the driving table, got: {details:?}"
+        );
+        assert!(
+            details.iter().any(|d| d.contains("SEARCH t")),
+            "expected tracks to be joined via an index seek, got: {details:?}"
+        );
     }
 
     #[test]

@@ -19,9 +19,15 @@ export interface ScanActivityState {
   refresh: () => Promise<void>;
 }
 
+/** Describes why a scan-driven view refresh is running. */
+export interface ScanRefreshContext {
+  scanActive: boolean;
+  scanFinished: boolean;
+}
+
 /** Use Scan Activity Refresh is part of this module's public API. */
 export function useScanActivityRefresh(
-  onRefresh: () => void | Promise<void>,
+  onRefresh: (context: ScanRefreshContext) => void | Promise<void>,
   intervalMs: number = SCAN_ACTIVITY_POLL_MS,
 ): ScanActivityState {
   const onRefreshRef = useRef(onRefresh);
@@ -43,9 +49,12 @@ export function useScanActivityRefresh(
       try {
         const jobs = await api.scanJobs.active();
         const scanActive = jobs.length > 0;
+        const scanFinished = !scanActive && scanWasActive;
         if (cancelled) return;
         setActiveJobs(jobs);
-        if (scanActive || scanWasActive) await onRefreshRef.current();
+        if (scanActive || scanFinished) {
+          await onRefreshRef.current({ scanActive, scanFinished });
+        }
         scanWasActive = scanActive;
       } catch {
         // Ignore transient polling failures.

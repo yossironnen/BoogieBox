@@ -14,13 +14,22 @@ type ArtImageProps = {
   wrapperStyle?: React.CSSProperties;
   fallback?: React.ReactNode;
   eager?: boolean;
-  rootMargin?: string;
   fetchPriority?: 'high' | 'low' | 'auto';
   onLoadStateChange?: (state: ArtImageLoadState) => void;
   onImageReady?: (img: HTMLImageElement | null) => void;
 };
 
-/** Art Image is part of this module's public API. */
+/**
+ * Art Image is part of this module's public API.
+ *
+ * Deferral is delegated entirely to the native `loading="lazy"` attribute rather than a
+ * manual IntersectionObserver: the browser's own lazy-image scheduler is designed to work
+ * alongside `content-visibility: auto` ancestors (as used by Browse's virtualized rows/grid
+ * tiles), whereas a nested IntersectionObserver watching a span inside a `content-visibility:
+ * auto` subtree may not fire promptly — that subtree isn't laid out until the ancestor itself
+ * decides it's near-viewport, so a second, JS-driven lazy gate on top just adds latency before
+ * the image starts loading.
+ */
 export default function ArtImage({
   src,
   alt,
@@ -28,39 +37,17 @@ export default function ArtImage({
   wrapperStyle,
   fallback = null,
   eager = false,
-  rootMargin = '160px',
   fetchPriority,
   onLoadStateChange,
   onImageReady,
 }: ArtImageProps) {
-  const hostRef = useRef<HTMLSpanElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
-  const [enabled, setEnabled] = useState(eager || !src || typeof window === 'undefined' || typeof window.IntersectionObserver === 'undefined');
-  const [loadState, setLoadState] = useState<ArtImageLoadState>(src ? (enabled ? 'loading' : 'idle') : 'error');
+  const [loadState, setLoadState] = useState<ArtImageLoadState>(src ? 'loading' : 'error');
   const imgProps = fetchPriority ? ({ fetchpriority: fetchPriority } as Record<string, string>) : null;
 
   useEffect(() => {
-    const immediate = eager || !src || typeof window === 'undefined' || typeof window.IntersectionObserver === 'undefined';
-    setEnabled(immediate);
-    setLoadState(src ? (immediate ? 'loading' : 'idle') : 'error');
-  }, [eager, src]);
-
-  useEffect(() => {
-    if (enabled || !src) return;
-    const node = hostRef.current;
-    if (!node || typeof window === 'undefined' || typeof window.IntersectionObserver === 'undefined') return;
-    const observer = new window.IntersectionObserver(
-      ([entry]) => {
-        if (!entry.isIntersecting) return;
-        observer.disconnect();
-        setEnabled(true);
-        setLoadState('loading');
-      },
-      { rootMargin },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [enabled, rootMargin, src]);
+    setLoadState(src ? 'loading' : 'error');
+  }, [src]);
 
   useEffect(() => {
     onLoadStateChange?.(loadState);
@@ -70,14 +57,12 @@ export default function ArtImage({
     onImageReady?.(imgRef.current);
   }, [loadState, onImageReady]);
 
-  const activeSrc = src && enabled ? src : null;
-
   return (
-    <span ref={hostRef} style={{ display: 'block', ...wrapperStyle }}>
-      {activeSrc ? (
+    <span style={{ display: 'block', ...wrapperStyle }}>
+      {src ? (
         <img
           ref={imgRef}
-          src={activeSrc}
+          src={src}
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"
@@ -90,7 +75,7 @@ export default function ArtImage({
           }}
         />
       ) : null}
-      {(!activeSrc || loadState === 'error') ? fallback : null}
+      {(!src || loadState === 'error') ? fallback : null}
     </span>
   );
 }

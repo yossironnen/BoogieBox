@@ -338,6 +338,25 @@ describe('api browse genre filters', () => {
     expect(url.searchParams.get('genres')).toBe('Electronic');
   });
 
+  it('passes bounded album delta cursors and fetches the current cursor', async () => {
+    vi.mocked(fetch).mockReturnValue(okJson([]));
+    await api.albums({
+      group_by: 'album_artist',
+      after_album_rowid: 40,
+      through_album_rowid: 52,
+    });
+    let rawUrl = vi.mocked(fetch).mock.calls[0][0] as string;
+    let url = new URL(rawUrl, window.location.href);
+    expect(url.searchParams.get('after_album_rowid')).toBe('40');
+    expect(url.searchParams.get('through_album_rowid')).toBe('52');
+
+    vi.mocked(fetch).mockReturnValue(okJson({ cursor: 52 }));
+    await api.albumChangeCursor();
+    rawUrl = vi.mocked(fetch).mock.calls[1][0] as string;
+    url = new URL(rawUrl, window.location.href);
+    expect(url.pathname).toContain('/api/albums/change-cursor');
+  });
+
   it('passes UUID library filters for paged artist browse requests', async () => {
     vi.mocked(fetch).mockReturnValue(okJson({ items: [], total: 0, limit: 50, offset: 0, has_more: false }));
     await api.artistBrowsePage({

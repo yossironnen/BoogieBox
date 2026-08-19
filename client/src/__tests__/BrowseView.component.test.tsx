@@ -5,7 +5,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import BrowseView from '../components/BrowseView';
+import BrowseView, { mergeAlbumChanges } from '../components/BrowseView';
 import { ContextMenuRoot } from '../components/ContextMenu';
 import type { Album, ClientEntityId, Library, Track } from '../types';
 
@@ -14,6 +14,7 @@ const { apiMock } = vi.hoisted(() => ({
     genres: vi.fn(),
     artists: vi.fn(),
     albums: vi.fn(),
+    albumChangeCursor: vi.fn(),
     artistAlbums: vi.fn(),
     artistAppearsOn: vi.fn(),
     artistSimilar: vi.fn(),
@@ -25,6 +26,7 @@ const { apiMock } = vi.hoisted(() => ({
     setArtistRating: vi.fn(),
     setAlbumRating: vi.fn(),
     setTrackRating: vi.fn(),
+    scanJobs: { active: vi.fn() },
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number, version?: string | number) => `/api/albums/${albumId}/art?size=${size}${version ? `&v=${version}` : ''}`),
     artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number, version?: string | number) => `/api/artists/${artistId}/photo?size=${size}${version ? `&v=${version}` : ''}`),
     lastfm: {
@@ -89,6 +91,8 @@ describe('BrowseView component flows', () => {
     apiMock.genres.mockResolvedValue([{ genre: 'Rock', track_count: 2 }]);
     apiMock.artists.mockResolvedValue([{ id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: 3.5 }]);
     apiMock.albums.mockResolvedValue([album]);
+    apiMock.albumChangeCursor.mockResolvedValue({ cursor: 1 });
+    apiMock.scanJobs.active.mockResolvedValue([]);
     apiMock.artistAlbums.mockResolvedValue([album]);
     apiMock.artistAppearsOn.mockResolvedValue([]);
     apiMock.artistSimilar.mockResolvedValue({ sourceArtistId: '1', artists: [] });
@@ -169,6 +173,70 @@ describe('BrowseView component flows', () => {
         json: async () => ({}),
       } as unknown as Response;
     });
+  });
+
+  it('merges grouped album scan deltas without replacing unchanged albums', () => {
+    const unchanged = { id: '1', title: 'Existing', artist: 'One', album_artist: 'One', year: 2020, genre: null, track_count: 1 } satisfies Album;
+    const grouped = { id: '2', title: 'Shared', artist: 'Two', album_artist: 'Two', year: 2021, genre: null, track_count: 1 } satisfies Album;
+    const updatedGroup = { ...grouped, id: '3', track_count: 2 };
+    const added = { id: '4', title: 'New', artist: 'Four', album_artist: 'Four', year: 2026, genre: null, track_count: 1 } satisfies Album;
+
+    const merged = mergeAlbumChanges([unchanged, grouped], [updatedGroup, added], 'album_artist');
+
+    expect(merged).toEqual([unchanged, updatedGroup, added]);
+    expect(merged[0]).toBe(unchanged);
+    expect(mergeAlbumChanges(merged, [], 'album_artist')).toBe(merged);
+  });
+
+  it('keeps same-title albums distinct in artist grouping mode', () => {
+    const first = { id: '1', title: 'Shared', artist: 'One', album_artist: 'One', year: 2020, genre: null, track_count: 1 } satisfies Album;
+    const second = { id: '2', title: 'Shared', artist: 'Two', album_artist: 'Two', year: 2021, genre: null, track_count: 1 } satisfies Album;
+
+    expect(mergeAlbumChanges([first], [second], 'artist')).toEqual([first, second]);
+  });
+
+  it('merges bounded album deltas during a scan and fully reconciles after completion', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const initial = { id: '10', title: 'Initial Album', artist: 'One', album_artist: 'One', year: 2020, genre: null, track_count: 1 } satisfies Album;
+      const discovered = { id: '11', title: 'Discovered Album', artist: 'Two', album_artist: 'Two', year: 2026, genre: null, track_count: 1 } satisfies Album;
+      let cursor = 1;
+      let activeJobs: Array<{ id: string; status: string }> = [];
+      apiMock.albumChangeCursor.mockImplementation(async () => ({ cursor }));
+      apiMock.scanJobs.active.mockImplementation(async () => activeJobs);
+      apiMock.albums.mockImplementation(async (params?: { after_album_rowid?: number }) => (
+        params?.after_album_rowid ? [discovered] : cursor === 1 ? [initial] : [initial, discovered]
+      ));
+
+      render(
+        <BrowseView
+          libraries={[]}
+          playTrack={vi.fn()}
+          playAlbumInVinylMode={vi.fn()}
+          addToQueue={vi.fn()}
+          lastfmKey=""
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
+      await waitFor(() => expect(screen.getByText('Initial Album')).toBeInTheDocument());
+
+      cursor = 2;
+      activeJobs = [{ id: 'scan-1', status: 'running' }];
+      await vi.advanceTimersByTimeAsync(5000);
+      await waitFor(() => expect(screen.getByText('Discovered Album')).toBeInTheDocument());
+      expect(apiMock.albums).toHaveBeenLastCalledWith(expect.objectContaining({
+        after_album_rowid: 1,
+        through_album_rowid: 2,
+      }));
+
+      activeJobs = [];
+      await vi.advanceTimersByTimeAsync(5000);
+      await waitFor(() => expect(apiMock.albums).toHaveBeenLastCalledWith(expect.not.objectContaining({
+        after_album_rowid: expect.anything(),
+      })));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('drills artist -> album and plays radio, top tracks, album tracks, and queue-all actions', async () => {

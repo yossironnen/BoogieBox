@@ -263,6 +263,31 @@ export function applyAlbumRating(list: Album[], target: Album, rating: number | 
   ));
 }
 
+/** Merge scan-discovered albums without replacing unchanged collection objects. */
+export function mergeAlbumChanges(
+  current: Album[],
+  changes: Album[],
+  groupBy: 'artist' | 'album_artist',
+): Album[] {
+  if (!changes.length) return current;
+  const keyFor = (album: Album) => groupBy === 'album_artist'
+    ? `${album.title}\u0000${album.album_artist ?? ''}`
+    : String(album.id);
+  const next = [...current];
+  const indexes = new Map(next.map((album, index) => [keyFor(album), index]));
+  for (const album of changes) {
+    const key = keyFor(album);
+    const index = indexes.get(key);
+    if (index == null) {
+      indexes.set(key, next.length);
+      next.push(album);
+    } else {
+      next[index] = album;
+    }
+  }
+  return next;
+}
+
 export function applyTrackRating(list: Track[], trackId: ClientEntityId, rating: number | null): Track[] {
   return list.map((track) => (track.id === trackId ? { ...track, rating } : track));
 }
@@ -1778,6 +1803,7 @@ export default function BrowseView({
   const libraryFilterRef = useRef<HTMLDivElement | null>(null);
   const refinePanelRef = useRef<HTMLDivElement | null>(null);
   const rootFetchTokenRef = useRef(0);
+  const albumChangeCursorRef = useRef<number | null>(null);
   // Guards drill-down (artist/album) fetches the same way rootFetchTokenRef guards the
   // root lists: a slow background refresh must not overwrite a newer navigation's data.
   const drillFetchTokenRef = useRef(0);
@@ -1912,18 +1938,55 @@ export default function BrowseView({
           setLoading(false);
         });
     } else {
-      api.albums({ group_by: groupBy, genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined })
-        .then((rows) => {
+      return (async () => {
+        let cursor: number | null = null;
+        try {
+          cursor = (await api.albumChangeCursor()).cursor;
+        } catch {}
+        try {
+          const rows = await api.albums({ group_by: groupBy, genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined });
           if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
+          albumChangeCursorRef.current = cursor;
           setAllAlbums(rows);
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
-          setLoading(false);
-        });
+        } catch {
+          // Keep the last successful collection visible across transient failures.
+        } finally {
+          if (shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) {
+            setLoading(false);
+          }
+        }
+      })();
     }
   }, [activeLibraryIds, drill.level, tab, groupBy, selectedGenres, sonicFingerprintOnly, hideCompilationOnlyArtists]);
+
+  const loadRootAlbumChanges = useCallback(async () => {
+    if (drill.level !== 'root' || tab !== 'albums') return;
+    const after = albumChangeCursorRef.current;
+    if (after == null) {
+      await loadRootData(false);
+      return;
+    }
+    const fetchToken = rootFetchTokenRef.current;
+    try {
+      const through = (await api.albumChangeCursor()).cursor;
+      if (through <= after) return;
+      const rows = await api.albums({
+        group_by: groupBy,
+        genres: selectedGenres,
+        library_ids: activeLibraryIds,
+        sonic_fingerprint_only: sonicFingerprintOnly || undefined,
+        after_album_rowid: after,
+        through_album_rowid: through,
+      });
+      if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
+      albumChangeCursorRef.current = through;
+      if (rows.length) {
+        setAllAlbums((current) => mergeAlbumChanges(current, rows, groupBy));
+      }
+    } catch {
+      // Do not advance the cursor after a failed delta; the next poll retries the same range.
+    }
+  }, [activeLibraryIds, drill.level, groupBy, loadRootData, selectedGenres, sonicFingerprintOnly, tab]);
 
   useEffect(() => {
     loadRootData(true);
@@ -2013,11 +2076,16 @@ export default function BrowseView({
   }, [loadAlbumTracks]);
 
   // Keep whichever level the user is looking at current while a library scan is running.
-  useScanActivityRefresh(useCallback(() => {
+  useScanActivityRefresh(useCallback(({ scanActive, scanFinished }) => {
+    if (drill.level === 'root' && tab === 'albums') {
+      if (scanFinished) return loadRootData(false);
+      if (scanActive) return loadRootAlbumChanges();
+      return;
+    }
     if (drill.level === 'root') loadRootData(false);
     else if (drill.level === 'artist') loadArtistData(false);
     else loadAlbumTracks(false);
-  }, [drill.level, loadRootData, loadArtistData, loadAlbumTracks]));
+  }, [drill.level, tab, loadRootData, loadRootAlbumChanges, loadArtistData, loadAlbumTracks]));
 
   const goRoot   = useCallback(() => { setCurrentArtist(null); setCurrentAlbum(null); setDrill({ level: 'root' }); }, []);
   const goArtist = useCallback((artist: Artist) => { setCurrentArtist(artist); setCurrentAlbum(null); setDrill({ level: 'artist', artist }); }, []);
@@ -3247,6 +3315,11 @@ const L: Record<string, React.CSSProperties> = {
     textAlign: 'left',
     fontFamily: 'inherit',
     minWidth: 0,
+    // See L.row: same off-screen layout/paint skip for grid tiles. Column width
+    // still comes from the grid track (minmax(160px, 1fr)), not from this box's
+    // intrinsic size, so containment doesn't disturb the auto-fill column count.
+    contentVisibility: 'auto',
+    containIntrinsicSize: 'auto 200px',
   },
   gridArt: {
     position: 'relative',
@@ -3325,6 +3398,12 @@ const L: Record<string, React.CSSProperties> = {
     borderRadius: 'var(--browse-row-radius, 0)',
     margin: 'var(--browse-row-margin, 0)',
     transition: 'background 0.1s',
+    // Skip layout/paint for off-screen rows so large libraries (10k+ artists/albums)
+    // don't pay full-list layout cost on every render; `auto` remembers each row's
+    // real rendered size once measured, so this is a placeholder only for rows that
+    // have never been on-screen yet.
+    contentVisibility: 'auto',
+    containIntrinsicSize: 'auto 46px',
   },
   rowIcon: { color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center' },
   rowThumb: {

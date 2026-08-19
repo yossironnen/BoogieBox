@@ -311,13 +311,14 @@ export const api = {
       sonic_fingerprint_only: params?.sonic_fingerprint_only || undefined,
       hide_compilation_only: params?.hide_compilation_only || undefined,
     } as any),
-  albums: (params?: { artist_id?: ApiEntityId; library_id?: ApiEntityId; library_ids?: ApiEntityId[]; group_by?: 'artist' | 'album_artist'; genres?: string[]; sonic_fingerprint_only?: boolean }) =>
+  albums: (params?: { artist_id?: ApiEntityId; library_id?: ApiEntityId; library_ids?: ApiEntityId[]; group_by?: 'artist' | 'album_artist'; genres?: string[]; sonic_fingerprint_only?: boolean; after_album_rowid?: number; through_album_rowid?: number }) =>
     get<Album[]>('/albums', {
       ...params,
       library_ids: encodeLibraryIdsParam(params?.library_ids),
       genres: encodeGenresParam(params?.genres),
       sonic_fingerprint_only: params?.sonic_fingerprint_only || undefined,
     } as any),
+  albumChangeCursor: () => get<{ cursor: number }>('/albums/change-cursor'),
   latestAlbums: (limit = 60) => get<LatestAlbum[]>('/albums/latest', { limit }),
   homeTopRated: (limit = 5) => get<HomeTopRated>('/home/top-rated', { limit }),
   homeGenres: (limit = 6) => get<HomeGenreSummary[]>('/home/genres', { limit }),

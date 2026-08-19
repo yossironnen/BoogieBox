@@ -12,12 +12,12 @@ use boogiebox_db::artwork::{
 };
 use boogiebox_db::boogiemix::get_track_sonic_fingerprint;
 use boogiebox_db::music::{
-    coerce_entity_id, get_album, get_artist, get_artist_external_identity, get_artist_name,
-    get_home_top_rated, get_track, interleave_by_artist, list_album_tracks, list_albums,
-    list_albums_by_group_tracks, list_albums_latest, list_artist_albums, list_artist_appears_on,
-    list_artist_own_random_tracks, list_artist_radio_candidates, list_artist_radio_tags,
-    list_artists, list_artists_most_played, list_auto_dj_candidates, list_genres,
-    list_home_genre_summaries, list_recently_played, list_top_played,
+    album_change_cursor, coerce_entity_id, get_album, get_artist, get_artist_external_identity,
+    get_artist_name, get_home_top_rated, get_track, interleave_by_artist, list_album_tracks,
+    list_albums, list_albums_by_group_tracks, list_albums_latest, list_artist_albums,
+    list_artist_appears_on, list_artist_own_random_tracks, list_artist_radio_candidates,
+    list_artist_radio_tags, list_artists, list_artists_most_played, list_auto_dj_candidates,
+    list_genres, list_home_genre_summaries, list_recently_played, list_top_played,
     normalize_artist_release_types, search_music, update_track_metadata, ArtistList, EntityId,
     ListAlbumsParams, ListArtistsParams, SearchMusicParams, TrackMetadataUpdate,
 };
@@ -62,6 +62,10 @@ pub fn music_router(state: SharedState) -> Router {
         .route(
             "/api/albums/by-group/tracks",
             get(albums_by_group_tracks_handler),
+        )
+        .route(
+            "/api/albums/change-cursor",
+            get(album_change_cursor_handler),
         )
         .route("/api/albums", get(list_albums_handler))
         .route("/api/albums/{id}", get(get_album_handler))
@@ -135,6 +139,8 @@ struct AlbumBrowseQuery {
     genres: Option<String>,
     group_by: Option<String>,
     sonic_fingerprint_only: Option<String>,
+    after_album_rowid: Option<u64>,
+    through_album_rowid: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -864,6 +870,12 @@ async fn list_albums_handler(
         .as_deref()
         .map(|s| s == "true" || s == "1")
         .unwrap_or(false);
+    let after_album_rowid = q
+        .after_album_rowid
+        .map(|value| value.min(i64::MAX as u64) as i64);
+    let through_album_rowid = q
+        .through_album_rowid
+        .map(|value| value.min(i64::MAX as u64) as i64);
     let user_id = user.id;
     match tokio::task::spawn_blocking(move || {
         list_albums(
@@ -874,12 +886,32 @@ async fn list_albums_handler(
                 genres: &genres,
                 by_album_artist,
                 sonic_fingerprint_only,
+                after_album_rowid,
+                through_album_rowid,
             },
         )
     })
     .await
     {
         Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
+        _ => internal_error(),
+    }
+}
+
+async fn album_change_cursor_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(d) => d,
+        None => return setup_required(),
+    };
+    match tokio::task::spawn_blocking(move || album_change_cursor(&db.lock().expect("db"))).await {
+        Ok(Ok(cursor)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "cursor": cursor })),
+        )
+            .into_response(),
         _ => internal_error(),
     }
 }
@@ -1247,6 +1279,27 @@ mod similar_artist_route_tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn album_change_cursor_route_returns_authenticated_snapshot() {
+        let response = test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/albums/change-cursor")
+                    .header("cookie", "bb_session=session-1")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["cursor"], 2);
     }
 
     #[tokio::test]

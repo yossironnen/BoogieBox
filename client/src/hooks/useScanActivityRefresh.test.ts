@@ -31,6 +31,7 @@ describe('useScanActivityRefresh', () => {
     await vi.advanceTimersByTimeAsync(15000);
 
     expect(onRefresh).toHaveBeenCalledTimes(4);
+    expect(onRefresh).toHaveBeenLastCalledWith({ scanActive: true, scanFinished: false });
   });
 
   it('refreshes once after the last scan finishes, then goes quiet', async () => {
@@ -40,6 +41,7 @@ describe('useScanActivityRefresh', () => {
 
     await vi.advanceTimersByTimeAsync(10000);
     expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(onRefresh).toHaveBeenLastCalledWith({ scanActive: false, scanFinished: true });
 
     await vi.advanceTimersByTimeAsync(20000);
     expect(onRefresh).toHaveBeenCalledTimes(2);
