@@ -32,6 +32,9 @@ pub fn ffprobe_available() -> bool {
 }
 
 fn tool_available(path: &Path) -> bool {
+    // Path comes from resolve_tool's fixed candidate list (config dir / exe dir /
+    // PATH lookup for "ffmpeg"/"ffprobe"), never from user input.
+    // nosemgrep: boogiebox-rust-dynamic-command
     Command::new(path)
         .arg("-version")
         .stdin(Stdio::null())
