@@ -2306,8 +2306,14 @@ export default function BrowseView({
   }, [openGenreRequest]);
 
   // Allow external navigation (sidebar "Browse Music" / library click while drilled in) to reset to root.
+  // Seeded with the mount-time value so a stale token left over from an earlier sidebar
+  // click doesn't fire on remount and clobber an openAlbumRequest/openArtistRequest that
+  // is navigating to a specific album/artist in this same mount.
+  const seenResetRequestRef = useRef(resetRequest);
   useEffect(() => {
     if (resetRequest == null) return;
+    if (seenResetRequestRef.current === resetRequest) return;
+    seenResetRequestRef.current = resetRequest;
     goRoot();
   }, [resetRequest, goRoot]);
 
