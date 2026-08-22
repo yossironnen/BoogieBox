@@ -1652,3 +1652,419 @@ fn post_scan_stale_timeout_minutes(job_type: &str) -> i64 {
 fn allowed_post_scan_job_types(_library_type: &str) -> &'static [&'static str] {
     MUSIC_POST_SCAN_JOB_TYPES
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::init_db;
+    use std::time::SystemTime;
+
+    /// Real, fully-migrated temp database plus one seeded music library, so the
+    /// scan/post-scan job lifecycle functions can be exercised against production
+    /// schema/constraints instead of a hand-rolled subset.
+    struct Fixture {
+        conn: Connection,
+        library_id: EntityId,
+        _dir: std::path::PathBuf,
+    }
+
+    fn fixture(prefix: &str) -> Fixture {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("jobs-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let initialized = init_db(&dir).expect("init test db");
+        let conn = initialized.connection;
+
+        let library = create_library(
+            &conn,
+            CreateLibraryInput {
+                folders: vec![dir.join("music").to_string_lossy().into_owned()],
+                name: Some("Test Library".to_string()),
+                library_type: None,
+                scanner_profile: None,
+                metadata_mode: None,
+            },
+        )
+        .expect("create test library");
+
+        Fixture {
+            conn,
+            library_id: library.id,
+            _dir: dir,
+        }
+    }
+
+    fn scanned_track(library_id: &EntityId, file_path: &str, title: &str) -> ScannedTrackInput {
+        ScannedTrackInput {
+            library_id: library_id.clone(),
+            file_path: file_path.to_string(),
+            file_name: format!("{title}.mp3"),
+            file_size: 1000,
+            format: "mp3".to_string(),
+            title: title.to_string(),
+            artist: "Test Artist".to_string(),
+            album: "Test Album".to_string(),
+            album_artist: "Test Artist".to_string(),
+            genre: "Rock".to_string(),
+            composer: "".to_string(),
+            track_number: Some(1),
+            disc_number: Some(1),
+            year: Some(2020),
+            comment: None,
+            bpm: None,
+            duration: 180.0,
+            bitrate: Some(320),
+            sample_rate: Some(44100),
+            channels: Some(2),
+        }
+    }
+
+    #[test]
+    fn scan_job_lifecycle_claim_progress_and_done() {
+        let f = fixture("scan-lifecycle");
+        let job_id = enqueue_scan_job(&f.conn, &f.library_id.to_string()).unwrap();
+
+        // Enqueueing again while pending reuses the same job, not a duplicate.
+        let same_job_id = enqueue_scan_job(&f.conn, &f.library_id.to_string()).unwrap();
+        assert_eq!(job_id, same_job_id);
+
+        let claimed = claim_next_scan_job(&f.conn)
+            .unwrap()
+            .expect("job should be claimable");
+        assert_eq!(claimed.job_id, job_id);
+        assert_eq!(claimed.library_id, f.library_id);
+
+        assert!(!is_scan_cancelled(&f.conn, &job_id).unwrap());
+        update_scan_progress(&f.conn, &job_id, 10, 5, 0).unwrap();
+
+        mark_scan_done(&f.conn, &job_id, &f.library_id, 10, 10, 0, None).unwrap();
+        let detail = get_scan_job_detail(&f.conn, &job_id.to_string()).unwrap();
+        assert_eq!(detail.job.status, "done");
+        assert_eq!(detail.job.files_scanned, 10);
+    }
+
+    #[test]
+    fn claim_scan_job_by_id_ignores_older_pending_jobs_in_other_libraries() {
+        let f = fixture("scan-claim-specific");
+        let other_library = create_library(
+            &f.conn,
+            CreateLibraryInput {
+                folders: vec!["/other".to_string()],
+                name: Some("Other Library".to_string()),
+                library_type: None,
+                scanner_profile: None,
+                metadata_mode: None,
+            },
+        )
+        .unwrap();
+        let older_job = enqueue_scan_job(&f.conn, &other_library.id.to_string()).unwrap();
+        let target_job = enqueue_scan_job(&f.conn, &f.library_id.to_string()).unwrap();
+
+        let claimed = claim_scan_job(&f.conn, &target_job).unwrap().unwrap();
+        assert_eq!(claimed.job_id, target_job);
+        // The older job in the other library is untouched (still pending).
+        let older_detail = get_scan_job_detail(&f.conn, &older_job.to_string()).unwrap();
+        assert_eq!(older_detail.job.status, "pending");
+    }
+
+    #[test]
+    fn claim_next_scan_job_returns_none_when_queue_is_empty() {
+        let f = fixture("scan-claim-empty");
+        assert!(claim_next_scan_job(&f.conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_scan_progress_rejects_writes_after_cancellation() {
+        let f = fixture("scan-cancel");
+        let job_id = enqueue_scan_job(&f.conn, &f.library_id.to_string()).unwrap();
+        claim_scan_job(&f.conn, &job_id).unwrap();
+        mark_scan_cancelled(&f.conn, &job_id, "user requested").unwrap();
+        assert!(is_scan_cancelled(&f.conn, &job_id).unwrap());
+
+        let result = update_scan_progress(&f.conn, &job_id, 1, 1, 0);
+        assert!(matches!(result, Err(JobError::ScanCancelled)));
+    }
+
+    #[test]
+    fn mark_scan_failed_sets_status_and_error_log() {
+        let f = fixture("scan-failed");
+        let job_id = enqueue_scan_job(&f.conn, &f.library_id.to_string()).unwrap();
+        claim_scan_job(&f.conn, &job_id).unwrap();
+        mark_scan_failed(&f.conn, &job_id, "disk error").unwrap();
+        let detail = get_scan_job_detail(&f.conn, &job_id.to_string()).unwrap();
+        assert_eq!(detail.job.status, "failed");
+    }
+
+    #[test]
+    fn recover_stale_and_reset_orphaned_scan_jobs() {
+        let f = fixture("scan-recover");
+        let job_id = enqueue_scan_job(&f.conn, &f.library_id.to_string()).unwrap();
+        claim_scan_job(&f.conn, &job_id).unwrap();
+
+        // Freshly claimed job is not yet stale at a 30-minute timeout.
+        assert_eq!(recover_stale_scan_jobs(&f.conn, 30).unwrap(), 0);
+
+        // reset_orphaned_scan_jobs recovers every running job unconditionally
+        // (simulating a server restart mid-scan).
+        assert_eq!(reset_orphaned_scan_jobs(&f.conn).unwrap(), 1);
+        let detail = get_scan_job_detail(&f.conn, &job_id.to_string()).unwrap();
+        assert_eq!(detail.job.status, "pending");
+    }
+
+    #[test]
+    fn enqueue_due_scheduled_scans_only_queues_due_libraries() {
+        let f = fixture("scan-schedule-due");
+        // create_library seeds an enabled schedule with next_run 24h out (not due
+        // yet) — force it into the past to simulate a due schedule.
+        f.conn
+            .execute(
+                "UPDATE scan_schedules SET next_run = datetime('now', '-1 hours') WHERE library_id = ?1",
+                [&f.library_id],
+            )
+            .unwrap();
+        let queued = enqueue_due_scheduled_scans(&f.conn).unwrap();
+        assert_eq!(queued.len(), 1);
+
+        // Running again immediately should not queue a second job: next_run was
+        // just pushed into the future.
+        let queued_again = enqueue_due_scheduled_scans(&f.conn).unwrap();
+        assert!(queued_again.is_empty());
+    }
+
+    #[test]
+    fn upsert_scanned_track_inserts_then_updates_by_file_path() {
+        let f = fixture("upsert-track");
+        let path = "/music/track.mp3";
+        let track_id =
+            upsert_scanned_track(&f.conn, &scanned_track(&f.library_id, path, "Song One")).unwrap();
+
+        let mut updated_input = scanned_track(&f.library_id, path, "Song One (Remastered)");
+        updated_input.year = Some(2021);
+        let updated_id = upsert_scanned_track(&f.conn, &updated_input).unwrap();
+        assert_eq!(
+            track_id, updated_id,
+            "same file_path must update, not duplicate"
+        );
+
+        let title: String = f
+            .conn
+            .query_row("SELECT title FROM tracks WHERE id=?1", [&track_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(title, "Song One (Remastered)");
+
+        let count: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn prune_missing_tracks_removes_tracks_not_in_seen_paths() {
+        let f = fixture("prune-missing");
+        let kept_path = "/music/kept.mp3";
+        let removed_path = "/music/removed.mp3";
+        upsert_scanned_track(&f.conn, &scanned_track(&f.library_id, kept_path, "Kept")).unwrap();
+        upsert_scanned_track(
+            &f.conn,
+            &scanned_track(&f.library_id, removed_path, "Removed"),
+        )
+        .unwrap();
+
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(kept_path.to_string());
+        let pruned = prune_missing_tracks(&f.conn, &f.library_id, &seen).unwrap();
+        assert_eq!(pruned, 1);
+
+        let remaining: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn prune_orphaned_music_entities_removes_trackless_albums_and_artists() {
+        let f = fixture("prune-orphaned");
+        let path = "/music/only-track.mp3";
+        upsert_scanned_track(&f.conn, &scanned_track(&f.library_id, path, "Only Track")).unwrap();
+        // Delete the track directly (bypassing prune_missing_tracks) to leave an
+        // orphaned album+artist behind, matching the "stale mistag" scenario.
+        f.conn.execute("DELETE FROM tracks", []).unwrap();
+
+        let (albums_pruned, artists_pruned) = prune_orphaned_music_entities(&f.conn).unwrap();
+        assert_eq!(albums_pruned, 1);
+        assert_eq!(artists_pruned, 1);
+    }
+
+    #[test]
+    fn post_scan_job_lifecycle_enqueue_claim_touch_and_complete() {
+        let f = fixture("post-scan-lifecycle");
+        let job_ids = enqueue_default_music_post_scan_jobs(&f.conn, &f.library_id).unwrap();
+        assert_eq!(job_ids.len(), 9);
+
+        let claimed = claim_next_post_scan_job(&f.conn, PostScanLane::Music)
+            .unwrap()
+            .expect("one job should be claimable");
+        assert_eq!(claimed.library_id, f.library_id);
+
+        touch_post_scan_job(&f.conn, &claimed.job_id).unwrap();
+        mark_post_scan_done(&f.conn, &claimed.job_id).unwrap();
+
+        let status: String = f
+            .conn
+            .query_row(
+                "SELECT status FROM post_scan_jobs WHERE id=?1",
+                [&claimed.job_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "done");
+    }
+
+    #[test]
+    fn claim_next_post_scan_job_returns_none_while_another_job_is_running_in_the_lane() {
+        let f = fixture("post-scan-lane-busy");
+        enqueue_default_music_post_scan_jobs(&f.conn, &f.library_id).unwrap();
+        let first = claim_next_post_scan_job(&f.conn, PostScanLane::Music)
+            .unwrap()
+            .unwrap();
+        // A second claim while the first job is still 'running' must not also
+        // start running (avoids two post-scan jobs racing on the same library).
+        let second = claim_next_post_scan_job(&f.conn, PostScanLane::Music).unwrap();
+        assert!(second.is_none());
+
+        mark_post_scan_failed(&f.conn, &first.job_id, "boom").unwrap();
+        let status: String = f
+            .conn
+            .query_row(
+                "SELECT status FROM post_scan_jobs WHERE id=?1",
+                [&first.job_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn reset_orphaned_post_scan_jobs_marks_running_jobs_failed() {
+        let f = fixture("post-scan-orphaned");
+        enqueue_default_music_post_scan_jobs(&f.conn, &f.library_id).unwrap();
+        claim_next_post_scan_job(&f.conn, PostScanLane::Music).unwrap();
+        let reset = reset_orphaned_post_scan_jobs(&f.conn).unwrap();
+        assert_eq!(reset, 1);
+    }
+
+    #[test]
+    fn enqueue_missing_artist_identity_backfill_jobs_targets_libraries_with_gaps() {
+        let f = fixture("post-scan-backfill");
+        upsert_scanned_track(
+            &f.conn,
+            &scanned_track(&f.library_id, "/music/backfill.mp3", "Backfill Track"),
+        )
+        .unwrap();
+        // Freshly scanned artists have no external identity set on any provider.
+        let queued = enqueue_missing_artist_identity_backfill_jobs(&f.conn).unwrap();
+        assert_eq!(queued, 1);
+    }
+
+    #[test]
+    fn library_crud_rejects_duplicate_names_and_removing_the_last_folder() {
+        let f = fixture("library-crud");
+        let dup = create_library(
+            &f.conn,
+            CreateLibraryInput {
+                folders: vec!["/some/other/path".to_string()],
+                name: Some("Test Library".to_string()),
+                library_type: None,
+                scanner_profile: None,
+                metadata_mode: None,
+            },
+        );
+        assert!(matches!(dup, Err(JobError::DuplicateLibraryName)));
+
+        let folder_id: EntityId = f
+            .conn
+            .query_row(
+                "SELECT id FROM library_folders WHERE library_id=?1",
+                [&f.library_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let removed =
+            remove_library_folder(&f.conn, &f.library_id.to_string(), &folder_id.to_string());
+        assert!(matches!(removed, Err(JobError::LastFolder)));
+
+        let renamed =
+            rename_library(&f.conn, &f.library_id.to_string(), "Renamed Library").unwrap();
+        assert_eq!(renamed.name, "Renamed Library");
+
+        delete_library(&f.conn, &f.library_id.to_string()).unwrap();
+        let count: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM libraries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn schedule_crud_round_trips_and_deletes() {
+        let f = fixture("schedule-crud");
+        let schedule = upsert_schedule(&f.conn, &f.library_id, true, 12.0).unwrap();
+        assert_eq!(schedule.frequency_hours, 12.0);
+
+        let fetched = get_schedule(&f.conn, &f.library_id).unwrap().unwrap();
+        assert_eq!(fetched.frequency_hours, 12.0);
+
+        let all = list_schedules(&f.conn).unwrap();
+        assert_eq!(all.len(), 1);
+
+        delete_schedule(&f.conn, &f.library_id.to_string()).unwrap();
+        assert_eq!(list_schedules(&f.conn).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn queue_snapshot_reflects_pending_scan_and_post_scan_jobs() {
+        let f = fixture("queue-snapshot");
+        enqueue_scan_job(&f.conn, &f.library_id.to_string()).unwrap();
+        enqueue_default_music_post_scan_jobs(&f.conn, &f.library_id).unwrap();
+        let snapshot = queue_snapshot(&f.conn).unwrap();
+        assert!(!snapshot.queues.scan.is_empty());
+        assert!(!snapshot.queues.post_scan.is_empty());
+    }
+
+    #[test]
+    fn cancel_fail_and_retry_post_scan_job_state_transitions() {
+        let f = fixture("post-scan-cancel-retry");
+        let job_ids = enqueue_default_music_post_scan_jobs(&f.conn, &f.library_id).unwrap();
+        let job_id = job_ids[0].to_string();
+
+        cancel_post_scan_job(&f.conn, &job_id).unwrap();
+        let status: String = f
+            .conn
+            .query_row(
+                "SELECT status FROM post_scan_jobs WHERE id=?1",
+                [&job_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+
+        // Cancelled jobs can be retried back to pending.
+        retry_post_scan_job(&f.conn, &job_id).unwrap();
+        let status_after_retry: String = f
+            .conn
+            .query_row(
+                "SELECT status FROM post_scan_jobs WHERE id=?1",
+                [&job_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status_after_retry, "pending");
+    }
+}

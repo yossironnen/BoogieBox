@@ -48,3 +48,21 @@ pub fn write_startup_event(message: &str) {
 
 #[cfg(not(windows))]
 pub fn write_startup_event(_message: &str) {}
+
+#[cfg(test)]
+mod tests {
+    use super::write_startup_event;
+
+    // Same call the server already makes once at every real startup — exercising it here
+    // just confirms it never panics (on Windows) / is a true no-op (elsewhere), not that
+    // Event Viewer received it (out of unit-test scope, see module docs).
+    #[test]
+    fn write_startup_event_does_not_panic_on_a_normal_message() {
+        write_startup_event("BoogieBox test startup message");
+    }
+
+    #[test]
+    fn write_startup_event_does_not_panic_on_an_empty_message() {
+        write_startup_event("");
+    }
+}

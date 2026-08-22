@@ -17,6 +17,7 @@ use boogiebox_db::{
         queue_library_deep_analysis, queue_playlist_deep_analysis, DeepAnalysisCacheStatus,
         DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow, MixTransitionRow,
     },
+    jobs::JobError,
     music::coerce_entity_id,
     upsert_setting,
 };
@@ -229,16 +230,19 @@ async fn enqueue_for_playlist_handler(
             )
                 .into_response(),
             Err(e) => {
-                let msg = e.to_string();
-                let status = if msg.contains("not found") || msg.contains("EmptyFolders") {
-                    StatusCode::BAD_REQUEST
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
+                // Match the JobError variant directly rather than sniffing its Display
+                // text: `EmptyFolders` (reused here for "playlist needs >= 2 tracks")
+                // renders as "At least one folder is required", which never contained
+                // the literal substrings this branch used to check for — so this path
+                // always 500'd instead of 400ing (found via coverage testing 2026-08-21).
+                let status = match e {
+                    JobError::LibraryNotFound | JobError::EmptyFolders => StatusCode::BAD_REQUEST,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
                 (
                     status,
                     Json(ErrorResponse {
-                        error: msg,
+                        error: e.to_string(),
                         setup_required: None,
                     }),
                 )
@@ -288,19 +292,16 @@ async fn create_handler(
             )
                 .into_response(),
             Err(e) => {
-                let msg = e.to_string();
-                let status = if msg.contains("not found")
-                    || msg.contains("EmptyFolders")
-                    || msg.contains("playlist_id")
-                {
-                    StatusCode::BAD_REQUEST
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
+                // See the matching note in `enqueue_for_playlist_handler`: match the
+                // JobError variant directly, not its Display text.
+                let status = match e {
+                    JobError::LibraryNotFound | JobError::EmptyFolders => StatusCode::BAD_REQUEST,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
                 (
                     status,
                     Json(ErrorResponse {
-                        error: msg,
+                        error: e.to_string(),
                         setup_required: None,
                     }),
                 )
@@ -1233,5 +1234,404 @@ mod tests {
             runtime_summary(true, &[], false),
             "Ready using CPU analysis."
         );
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use crate::test_support::{
+        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send,
+    };
+    use crate::DbPool;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use rusqlite::params;
+    use uuid::Uuid;
+
+    /// Seeds a playlist owned by `user_id` with 2 tracks (the minimum `enqueue_mix_job`
+    /// requires), returning the playlist id.
+    fn seed_playlist_with_two_tracks(pool: &DbPool, user_id: &str) -> String {
+        let conn = pool.lock().unwrap();
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, '/music', 'Lib')",
+            params![library_id],
+        )
+        .unwrap();
+        let artist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Artist')",
+            params![artist_id],
+        )
+        .unwrap();
+        let playlist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO playlists(id, user_id, name) VALUES (?, ?, 'Mix Source')",
+            params![playlist_id, user_id],
+        )
+        .unwrap();
+        for n in 0..2 {
+            let track_id = Uuid::now_v7().to_string();
+            conn.execute(
+                "INSERT INTO tracks(id, library_id, artist_id, title, file_path) \
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    track_id,
+                    library_id,
+                    artist_id,
+                    format!("Track {n}"),
+                    format!("/music/{track_id}.mp3")
+                ],
+            )
+            .unwrap();
+            let pt_id = Uuid::now_v7().to_string();
+            conn.execute(
+                "INSERT INTO playlist_tracks(id, playlist_id, track_id, position) VALUES (?, ?, ?, ?)",
+                params![pt_id, playlist_id, track_id, n],
+            )
+            .unwrap();
+        }
+        playlist_id
+    }
+
+    #[tokio::test]
+    async fn enqueue_for_playlist_requires_two_tracks_and_a_real_playlist() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-enqueue");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists/does-not-exist/boogiemix/jobs")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::BAD_REQUEST);
+
+        // Playlist with 0 tracks -> EmptyFolders (reused as "needs at least 2 tracks").
+        pool.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO playlists(id, user_id, name) VALUES ('empty-pl', 'u1', 'Empty')",
+                [],
+            )
+            .unwrap();
+        let (too_few_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists/empty-pl/boogiemix/jobs")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(too_few_status, StatusCode::BAD_REQUEST);
+
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/playlists/{playlist_id}/boogiemix/jobs"))
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"style":"long_build","quality":"high_quality"}"#,
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(json_body(&body)["jobId"].is_string());
+    }
+
+    #[tokio::test]
+    async fn create_handler_requires_playlist_id_in_body() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-create");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let (missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/boogiemix/create")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::BAD_REQUEST);
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/boogiemix/create")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"playlistId":"{playlist_id}"}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(json_body(&body)["jobId"].is_string());
+    }
+
+    #[tokio::test]
+    async fn get_job_returns_full_response_and_404s_for_missing_job() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-get-job");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let (_, create_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/playlists/{playlist_id}/boogiemix/jobs"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        let job_id = json_body(&create_body)["jobId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/boogiemix/jobs/{job_id}"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["status"], "pending");
+
+        let (missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/boogiemix/jobs/does-not-exist")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+
+        let (cancel_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/boogiemix/jobs/{job_id}/cancel"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(cancel_status, StatusCode::OK);
+
+        // Cancelling an already-cancelled job is a conflict, not success.
+        let (recancel_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/boogiemix/jobs/{job_id}/cancel"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(recancel_status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn list_outputs_404s_for_unowned_playlist_and_ok_for_owned() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-outputs");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let (missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/playlists/does-not-exist/boogiemix/outputs")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/playlists/{playlist_id}/boogiemix/outputs"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json_body(&body).as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_output_404s_for_unknown_output_id() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-download");
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/boogiemix/outputs/does-not-exist/file")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn deep_analysis_status_route_requires_auth_and_returns_ok() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-deep-status");
+        let (unauth_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/boogiemix/deep-analysis/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unauth_status, StatusCode::UNAUTHORIZED);
+
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/boogiemix/deep-analysis/status")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json_body(&body)["runtime"].is_object());
+    }
+
+    #[tokio::test]
+    async fn deep_analysis_admin_routes_are_admin_gated_and_reachable() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-deep-admin");
+        let user_cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+        let library_id: String = pool
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM libraries LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/boogiemix/deep-analysis/playlists/{playlist_id}/queue"
+                ))
+                .header("cookie", user_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::FORBIDDEN);
+
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+
+        let (queue_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/boogiemix/deep-analysis/playlists/{playlist_id}/queue"
+                ))
+                .header("cookie", admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(queue_status, StatusCode::OK);
+
+        let (progress_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!(
+                    "/api/boogiemix/deep-analysis/playlists/{playlist_id}/progress"
+                ))
+                .header("cookie", admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(progress_status, StatusCode::OK);
+
+        let (lib_queue_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/boogiemix/deep-analysis/libraries/{library_id}/queue"
+                ))
+                .header("cookie", admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(lib_queue_status, StatusCode::OK);
+
+        let (pause_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/boogiemix/deep-analysis/pause")
+                .header("cookie", admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(pause_status, StatusCode::OK);
+
+        let (resume_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/boogiemix/deep-analysis/resume")
+                .header("cookie", admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resume_status, StatusCode::OK);
+
+        let (clear_status, clear_body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/boogiemix/deep-analysis/cache/clear")
+                .header("cookie", admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(clear_status, StatusCode::OK);
+        assert_eq!(json_body(&clear_body)["ok"], true);
     }
 }

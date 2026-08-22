@@ -1049,6 +1049,13 @@ fn ensure_artist_external_identity_schema(connection: &Connection) -> Result<(),
         ("spotify_identity_checked_at", "TEXT"),
         ("discogs_artist_id", "TEXT"),
         ("discogs_identity_checked_at", "TEXT"),
+        // Comma-separated or JSON-array genre tags, read by
+        // `playback::get_track_eq_profile`'s artist-genres EQ-profile fallback. Was
+        // referenced there without ever being added to the schema (discovered via
+        // coverage work on 2026-08-21) — that fallback branch has always raised a
+        // "no such column: ar.genres" error and silently fallen through to the
+        // track-tags/default resolution instead of ever matching.
+        ("genres", "TEXT"),
     ] {
         if !column_exists(connection, "artists", column)? {
             connection.execute_batch(&format!(

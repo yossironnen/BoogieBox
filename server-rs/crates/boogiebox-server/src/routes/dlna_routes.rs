@@ -93,4 +93,44 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(json["running"], false);
     }
+
+    #[tokio::test]
+    async fn restart_without_db_returns_setup_required() {
+        let state = Arc::new(RwLock::new(AppState {
+            db: None,
+            ..AppState::default()
+        }));
+        let response = dlna_router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/dlna/restart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn restart_with_db_and_dlna_disabled_returns_ok_without_binding_a_socket() {
+        use crate::test_support::{new_test_app_with_pool, send};
+
+        // Uses the full app router (not just dlna_router) via the shared harness, since
+        // restart_dlna needs a real DbPool with the real settings schema; dlnaEnabled
+        // defaults to "false" so start_dlna's early-return path is exercised, never a
+        // real SSDP/HTTP bind (see dlna.rs::start_dlna).
+        let (app, _pool) = new_test_app_with_pool("dlna-restart");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/dlna/restart")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
 }

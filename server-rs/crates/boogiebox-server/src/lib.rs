@@ -42,6 +42,8 @@ pub mod scanner;
 pub mod server_config;
 pub mod settings;
 pub mod similar_artists;
+#[cfg(test)]
+pub mod test_support;
 pub mod waveform_map;
 
 const DEFAULT_PORT: u16 = 3001;
@@ -1412,6 +1414,84 @@ mod tests {
         let script = build_folder_picker_script("C:\\Yossi's Music");
 
         assert!(script.contains("C:\\Yossi''s Music"));
+    }
+
+    #[test]
+    fn build_folder_picker_script_with_description_embeds_both_fields() {
+        let script =
+            build_folder_picker_script_with_description("D:\\Music", "Pick a folder, please");
+        assert!(script.contains("$dialog.SelectedPath = 'D:\\Music'"));
+        assert!(script.contains("$dialog.Description = 'Pick a folder, please'"));
+    }
+
+    #[test]
+    fn unique_paths_dedupes_case_insensitively_preserving_first_occurrence() {
+        let paths = vec![
+            PathBuf::from("C:\\Music"),
+            PathBuf::from("C:\\music"),
+            PathBuf::from("D:\\Other"),
+        ];
+        let result = unique_paths(paths);
+        assert_eq!(
+            result,
+            vec![PathBuf::from("C:\\Music"), PathBuf::from("D:\\Other")]
+        );
+    }
+
+    #[test]
+    fn to_absolute_path_leaves_absolute_paths_untouched_and_joins_relative_ones() {
+        let cwd = PathBuf::from("/home/user");
+        assert_eq!(
+            to_absolute_path("/already/absolute", &cwd),
+            PathBuf::from("/already/absolute")
+        );
+        assert_eq!(
+            to_absolute_path("relative/dir", &cwd),
+            cwd.join("relative/dir")
+        );
+    }
+
+    #[test]
+    fn client_build_candidates_is_never_empty_and_honors_env_override() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prior = env::var("BOOGIEBOX_CLIENT_BUILD_DIR").ok();
+        // A platform-absolute path, so `to_absolute_path` passes it through
+        // unchanged instead of joining it onto `cwd` (a bare "/..." path is not
+        // absolute on Windows without a drive letter).
+        let absolute = if cfg!(windows) {
+            "C:\\custom\\client\\build"
+        } else {
+            "/custom/client/build"
+        };
+        env::set_var("BOOGIEBOX_CLIENT_BUILD_DIR", absolute);
+        let candidates = client_build_candidates();
+        assert!(!candidates.is_empty());
+        assert_eq!(candidates[0], PathBuf::from(absolute));
+        restore_env("BOOGIEBOX_CLIENT_BUILD_DIR", prior);
+    }
+
+    #[test]
+    fn is_setup_required_true_when_no_config_given() {
+        assert!(is_setup_required(None));
+    }
+
+    #[test]
+    fn map_init_db_error_maps_variants_to_expected_status_codes() {
+        let (empty_status, empty_body) = map_init_db_error(InitDbError::EmptyDbFolder);
+        assert_eq!(empty_status, StatusCode::BAD_REQUEST);
+        assert_eq!(empty_body.0.error, "dbFolder is required");
+
+        let (create_dir_status, _) = map_init_db_error(InitDbError::CreateDir {
+            path: PathBuf::from("/nope"),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        });
+        assert_eq!(create_dir_status, StatusCode::BAD_REQUEST);
+
+        let (open_status, _) = map_init_db_error(InitDbError::Open {
+            path: PathBuf::from("/nope/boogiebox.db"),
+            source: rusqlite::Error::InvalidQuery,
+        });
+        assert_eq!(open_status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {

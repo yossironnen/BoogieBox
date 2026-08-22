@@ -390,8 +390,10 @@ pub fn save_lastfm_cache(conn: &Connection, cache_key: &str, data: &str, expires
 
 #[cfg(test)]
 mod tests {
-    use super::{get_lastfm_cached, get_lastfm_cached_stale};
-    use rusqlite::Connection;
+    use super::*;
+    use crate::init_db;
+    use std::time::SystemTime;
+    use uuid::Uuid;
 
     #[test]
     fn stale_provider_cache_is_available_only_through_explicit_fallback() {
@@ -409,6 +411,226 @@ mod tests {
         assert_eq!(
             get_lastfm_cached_stale(&conn, "similar:test").as_deref(),
             Some("[1]")
+        );
+    }
+
+    struct Fixture {
+        conn: Connection,
+        artist_id: String,
+        album_id: String,
+        track_id: String,
+    }
+
+    fn fixture(prefix: &str) -> Fixture {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("artwork-db-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = init_db(&dir).unwrap().connection;
+
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, ?, 'Lib')",
+            params![library_id, dir.to_string_lossy()],
+        )
+        .unwrap();
+        let artist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Test Artist')",
+            params![artist_id],
+        )
+        .unwrap();
+        let album_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES (?, 'Test Album', ?)",
+            params![album_id, artist_id],
+        )
+        .unwrap();
+        let track_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) \
+             VALUES (?, ?, ?, ?, 'Test Track', ?)",
+            params![
+                track_id,
+                library_id,
+                artist_id,
+                album_id,
+                format!("/music/{track_id}.mp3")
+            ],
+        )
+        .unwrap();
+
+        Fixture {
+            conn,
+            artist_id,
+            album_id,
+            track_id,
+        }
+    }
+
+    #[test]
+    fn get_setting_returns_none_for_missing_key() {
+        let f = fixture("get-setting");
+        assert!(get_setting(&f.conn, "noSuchSetting").is_none());
+        // Seeded to an empty string by default (see seed_default_settings in
+        // lib.rs) — an empty value reads back as None, same as an unset key.
+        assert!(get_setting(&f.conn, "lastfmKey").is_none());
+        f.conn
+            .execute(
+                "UPDATE settings SET value = 'abc123' WHERE key = 'lastfmKey'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(get_setting(&f.conn, "lastfmKey").as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn record_and_list_provider_usage() {
+        let f = fixture("provider-usage");
+        record_provider_usage(&f.conn, "discogs", "album_art", "fetch");
+        record_provider_usage(&f.conn, "discogs", "album_art", "fetch");
+        record_provider_usage(&f.conn, "deezer", "artist_art", "fetch");
+        let snapshot = list_provider_usage(&f.conn);
+        assert_eq!(snapshot.providers.len(), 2);
+        assert!(!snapshot.rows.is_empty());
+    }
+
+    #[test]
+    fn album_label_year_and_release_type_round_trip_and_reject_defaults() {
+        let f = fixture("album-metadata");
+        assert!(get_album_label(&f.conn, &f.album_id).is_none());
+        set_album_label(&f.conn, &f.album_id, "Real Label Records");
+        assert_eq!(
+            get_album_label(&f.conn, &f.album_id).as_deref(),
+            Some("Real Label Records")
+        );
+
+        assert!(get_album_year(&f.conn, &f.album_id).is_none());
+        set_album_year(&f.conn, &f.album_id, 1999);
+        assert_eq!(get_album_year(&f.conn, &f.album_id), Some(1999));
+        set_album_year(&f.conn, &f.album_id, 0);
+        assert!(
+            get_album_year(&f.conn, &f.album_id).is_none(),
+            "year 0 is not plausible and must read back as None"
+        );
+
+        // Default release_type "album" (set by the schema) reads back as None —
+        // only a non-default classification is considered "set".
+        assert!(get_album_release_type(&f.conn, &f.album_id).is_none());
+        set_album_release_type(&f.conn, &f.album_id, "compilation");
+        assert_eq!(
+            get_album_release_type(&f.conn, &f.album_id).as_deref(),
+            Some("compilation")
+        );
+    }
+
+    #[test]
+    fn album_and_artist_art_lookup_and_metadata_lock() {
+        let f = fixture("art-lookup");
+        let album = get_album_for_art(&f.conn, &f.album_id).expect("album should be found");
+        assert_eq!(album.title, "Test Album");
+        assert!(!album.metadata_locked);
+        set_album_metadata_locked(&f.conn, &f.album_id);
+        let locked_album = get_album_for_art(&f.conn, &f.album_id).unwrap();
+        assert!(locked_album.metadata_locked);
+
+        assert!(get_album_for_art(&f.conn, "does-not-exist").is_none());
+
+        let artist = get_artist_for_art(&f.conn, &f.artist_id).expect("artist should be found");
+        assert_eq!(artist.name, "Test Artist");
+        assert!(!artist.metadata_locked);
+        set_artist_metadata_locked(&f.conn, &f.artist_id);
+        let locked_artist = get_artist_for_art(&f.conn, &f.artist_id).unwrap();
+        assert!(locked_artist.metadata_locked);
+
+        assert!(get_artist_for_art(&f.conn, "does-not-exist").is_none());
+    }
+
+    #[test]
+    fn get_track_for_lyrics_requires_both_artist_and_title() {
+        let f = fixture("track-lyrics-lookup");
+        let info = get_track_for_lyrics(&f.conn, &f.track_id).expect("should resolve artist+title");
+        assert_eq!(info.artist, "Test Artist");
+        assert_eq!(info.title, "Test Track");
+
+        assert!(get_track_for_lyrics(&f.conn, "does-not-exist").is_none());
+    }
+
+    #[test]
+    fn upsert_cached_lyrics_inserts_then_updates() {
+        let f = fixture("upsert-lyrics");
+        upsert_cached_lyrics(
+            &f.conn,
+            &f.track_id,
+            "Test Artist",
+            "Test Track",
+            "la la la",
+            "lrclib",
+            None,
+        );
+        let lyrics: String = f
+            .conn
+            .query_row(
+                "SELECT lyrics FROM lyrics_cache WHERE track_id = ?",
+                params![f.track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(lyrics, "la la la");
+
+        upsert_cached_lyrics(
+            &f.conn,
+            &f.track_id,
+            "Test Artist",
+            "Test Track",
+            "updated lyrics",
+            "ovh",
+            Some("[]"),
+        );
+        let (updated_lyrics, source): (String, String) = f
+            .conn
+            .query_row(
+                "SELECT lyrics, source FROM lyrics_cache WHERE track_id = ?",
+                params![f.track_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(updated_lyrics, "updated lyrics");
+        assert_eq!(source, "ovh");
+
+        let count: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM lyrics_cache", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "same track_id must update, not duplicate");
+    }
+
+    #[test]
+    fn lastfm_cache_save_and_get_round_trips_and_respects_expiry() {
+        let f = fixture("lastfm-cache");
+        assert!(get_lastfm_cached(&f.conn, "artist:test").is_none());
+        save_lastfm_cache(&f.conn, "artist:test", "{\"a\":1}", 7);
+        assert_eq!(
+            get_lastfm_cached(&f.conn, "artist:test").as_deref(),
+            Some("{\"a\":1}")
+        );
+
+        // Simulate a cache entry that has passed its TTL: get_lastfm_cached
+        // excludes it, but get_lastfm_cached_stale (used to degrade gracefully
+        // when a provider is unavailable) still finds it regardless of expiry.
+        save_lastfm_cache(&f.conn, "artist:expired", "{\"b\":2}", 7);
+        f.conn
+            .execute(
+                "UPDATE lastfm_cache SET expires_at = datetime('now', '-1 day') WHERE cache_key = 'artist:expired'",
+                [],
+            )
+            .unwrap();
+        assert!(get_lastfm_cached(&f.conn, "artist:expired").is_none());
+        assert_eq!(
+            get_lastfm_cached_stale(&f.conn, "artist:expired").as_deref(),
+            Some("{\"b\":2}")
         );
     }
 }

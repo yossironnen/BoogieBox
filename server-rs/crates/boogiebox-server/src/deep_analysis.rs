@@ -1220,4 +1220,108 @@ mod tests {
         let roots = candidate_roots();
         assert!(!roots.is_empty());
     }
+
+    fn running_job() -> RunningJob {
+        RunningJob {
+            priority: 0,
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    #[test]
+    fn running_snapshot_reports_count_and_max_priority() {
+        let running: RunningJobs = Arc::new(Mutex::new(HashMap::new()));
+        assert_eq!(running_snapshot(&running), (0, i64::MIN));
+
+        running.lock().unwrap().insert(
+            "job-1".to_string(),
+            RunningJob {
+                priority: 5,
+                ..running_job()
+            },
+        );
+        running.lock().unwrap().insert(
+            "job-2".to_string(),
+            RunningJob {
+                priority: 9,
+                ..running_job()
+            },
+        );
+        assert_eq!(running_snapshot(&running), (2, 9));
+    }
+
+    #[test]
+    fn preempt_below_cancels_only_lower_priority_jobs() {
+        let running: RunningJobs = Arc::new(Mutex::new(HashMap::new()));
+        let low = running_job();
+        let high = running_job();
+        running.lock().unwrap().insert(
+            "low".to_string(),
+            RunningJob {
+                priority: 1,
+                cancel: low.cancel.clone(),
+            },
+        );
+        running.lock().unwrap().insert(
+            "high".to_string(),
+            RunningJob {
+                priority: 10,
+                cancel: high.cancel.clone(),
+            },
+        );
+
+        preempt_below(&running, 5);
+
+        assert!(
+            low.cancel.is_cancelled(),
+            "priority 1 job should be preempted for a priority-5 request"
+        );
+        assert!(
+            !high.cancel.is_cancelled(),
+            "priority 10 job should keep running"
+        );
+    }
+
+    #[test]
+    fn load_settings_uses_seeded_defaults_and_respects_overrides() {
+        use boogiebox_db::init_db;
+        use std::time::SystemTime;
+
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("deep-analysis-test-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let initialized = init_db(&dir).unwrap();
+        let conn = initialized.connection;
+
+        let state = PostScanState {
+            db: Arc::new(std::sync::Mutex::new(conn)),
+            http_client: reqwest::Client::default(),
+            db_folder: Some(dir),
+            cancel: CancellationToken::new(),
+        };
+
+        // `seed_default_settings` (boogiebox-db/lib.rs) seeds
+        // boogiemixDeepAnalysisEnabled=true and the model to mdx_extra_q on every
+        // fresh DB.
+        let settings = load_settings(&state).expect("load settings on fresh db");
+        assert!(settings.enabled);
+        assert_eq!(settings.max_concurrent, 1);
+        assert_eq!(settings.preferred_model, MODEL_HEAVY);
+        assert_eq!(settings.background_mode, "off");
+
+        {
+            let conn = state.db.lock().unwrap();
+            boogiebox_db::upsert_setting(&conn, "boogiemixDeepAnalysisMaxConcurrent", "3").unwrap();
+            boogiebox_db::upsert_setting(&conn, "boogiemixDeepAnalysisModel", "htdemucs").unwrap();
+            boogiebox_db::upsert_setting(&conn, "boogiemixDeepAnalysisBackgroundMode", "all_music")
+                .unwrap();
+        }
+        let updated = load_settings(&state).expect("load settings after override");
+        assert_eq!(updated.max_concurrent, 3);
+        assert_eq!(updated.preferred_model, MODEL_LIGHT);
+        assert_eq!(updated.background_mode, "all_music");
+    }
 }

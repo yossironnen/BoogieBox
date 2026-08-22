@@ -1,4 +1,4 @@
-﻿//! Defines Rust API routes for Playlist Routes server behavior.
+//! Defines Rust API routes for Playlist Routes server behavior.
 
 use axum::{
     extract::{Path, State},
@@ -749,5 +749,447 @@ async fn artist_metadata_handler(
         Ok(Ok(Some(result))) => (StatusCode::OK, Json(result)).into_response(),
         Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Artist not found"),
         _ => internal_error(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{json_body, new_test_app_with_pool, seed_user_session, send};
+    use crate::DbPool;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use rusqlite::params;
+    use uuid::Uuid;
+
+    /// Seeds one library/artist/album/track, returning their ids.
+    fn seed_music(pool: &DbPool) -> (String, String, String) {
+        let conn = pool.lock().unwrap();
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, '/music', 'Lib')",
+            params![library_id],
+        )
+        .unwrap();
+        let artist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Artist')",
+            params![artist_id],
+        )
+        .unwrap();
+        let album_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES (?, 'Album', ?)",
+            params![album_id, artist_id],
+        )
+        .unwrap();
+        let track_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) \
+             VALUES (?, ?, ?, ?, 'Track', ?)",
+            params![
+                track_id,
+                library_id,
+                artist_id,
+                album_id,
+                format!("/music/{track_id}.mp3")
+            ],
+        )
+        .unwrap();
+        (artist_id, album_id, track_id)
+    }
+
+    #[tokio::test]
+    async fn create_list_get_update_delete_playlist_lifecycle() {
+        let (app, pool) = new_test_app_with_pool("playlist-lifecycle");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (create_status, create_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"My Mix"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(create_status, StatusCode::CREATED);
+        let created = json_body(&create_body);
+        let playlist_id = created["id"].as_str().unwrap().to_owned();
+
+        // duplicate name -> conflict
+        let (dup_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"My Mix"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(dup_status, StatusCode::CONFLICT);
+
+        // missing name -> bad request
+        let (missing_name_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_name_status, StatusCode::BAD_REQUEST);
+
+        let (list_status, list_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/playlists")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(list_status, StatusCode::OK);
+        assert_eq!(json_body(&list_body).as_array().unwrap().len(), 1);
+
+        let (get_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/playlists/{playlist_id}"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(get_status, StatusCode::OK);
+
+        let (get_missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/playlists/does-not-exist")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(get_missing_status, StatusCode::NOT_FOUND);
+
+        let (update_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/playlists/{playlist_id}"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Renamed Mix"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(update_status, StatusCode::OK);
+
+        let (delete_status, _) = send(
+            app,
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/playlists/{playlist_id}"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(delete_status, StatusCode::OK);
+    }
+
+    async fn create_playlist_id(app: axum::Router, cookie: &str) -> String {
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Tracks Test"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        json_body(&body)["id"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn add_batch_add_reorder_progress_remove_and_export_tracks() {
+        let (app, pool) = new_test_app_with_pool("playlist-tracks");
+        let cookie = seed_user_session(&pool, "u1");
+        let (_artist_id, _album_id, track_id) = seed_music(&pool);
+        let playlist_id = create_playlist_id(app.clone(), &cookie).await;
+
+        let (add_status, add_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/playlists/{playlist_id}/tracks"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"track_id":"{track_id}"}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(add_status, StatusCode::CREATED);
+        assert_eq!(json_body(&add_body)["ok"], true);
+
+        // Already in playlist -> conflict.
+        let (conflict_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/playlists/{playlist_id}/tracks"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"track_id":"{track_id}"}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(conflict_status, StatusCode::CONFLICT);
+
+        let (list_status, list_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/playlists/{playlist_id}/tracks"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(list_status, StatusCode::OK);
+        assert_eq!(json_body(&list_body).as_array().unwrap().len(), 1);
+
+        let (progress_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/playlists/{playlist_id}/tracks/{track_id}/progress"
+                ))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"seconds":12.5}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(progress_status, StatusCode::OK);
+
+        let (reorder_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/playlists/{playlist_id}/tracks/order"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"track_ids":["{track_id}"]}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(reorder_status, StatusCode::OK);
+
+        let (export_status, export_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/playlists/{playlist_id}/export.m3u"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(export_status, StatusCode::OK);
+        let export_text = String::from_utf8(export_body).unwrap();
+        assert!(export_text.starts_with("#EXTM3U"));
+
+        let (remove_status, _) = send(
+            app,
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/playlists/{playlist_id}/tracks/{track_id}"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(remove_status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn batch_add_tracks_requires_nonempty_array_and_404s_for_missing_playlist() {
+        let (app, pool) = new_test_app_with_pool("playlist-batch");
+        let cookie = seed_user_session(&pool, "u1");
+        let (_artist_id, _album_id, track_id) = seed_music(&pool);
+        let playlist_id = create_playlist_id(app.clone(), &cookie).await;
+
+        let (empty_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/playlists/{playlist_id}/tracks/batch"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"track_ids":[]}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(empty_status, StatusCode::BAD_REQUEST);
+
+        let (ok_status, ok_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/playlists/{playlist_id}/tracks/batch"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"track_ids":["{track_id}"]}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok_status, StatusCode::OK);
+        assert_eq!(json_body(&ok_body)["added"], 1);
+
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/playlists/does-not-exist/tracks/batch")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"track_ids":["{track_id}"]}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn ratings_round_trip_validate_and_404_on_missing_entity() {
+        let (app, pool) = new_test_app_with_pool("playlist-ratings");
+        let cookie = seed_user_session(&pool, "u1");
+        let (artist_id, album_id, track_id) = seed_music(&pool);
+
+        for (kind, id) in [
+            ("artists", &artist_id),
+            ("albums", &album_id),
+            ("tracks", &track_id),
+        ] {
+            let (status, body) = send(
+                app.clone(),
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/{kind}/{id}/rating"))
+                    .header("cookie", cookie.clone())
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rating":4.5}"#))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{kind} rating should succeed");
+            assert_eq!(json_body(&body)["rating"], 4.5);
+
+            let (bad_status, _) = send(
+                app.clone(),
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/{kind}/{id}/rating"))
+                    .header("cookie", cookie.clone())
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rating":4.3}"#))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(bad_status, StatusCode::BAD_REQUEST, "{kind} bad rating");
+
+            let (missing_status, _) = send(
+                app.clone(),
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/{kind}/does-not-exist/rating"))
+                    .header("cookie", cookie.clone())
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rating":3}"#))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(
+                missing_status,
+                StatusCode::NOT_FOUND,
+                "{kind} missing entity"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn album_and_artist_metadata_require_edit_permission_and_validate() {
+        let (app, pool) = new_test_app_with_pool("playlist-metadata");
+        let cookie = seed_user_session(&pool, "u1"); // plain user: cannot edit metadata
+        let (artist_id, album_id, _track_id) = seed_music(&pool);
+
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/albums/{album_id}/metadata"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"New Title"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::FORBIDDEN);
+
+        // Grant metadata-edit permission directly and retry.
+        pool.lock()
+            .unwrap()
+            .execute("UPDATE users SET can_edit_metadata = 1 WHERE id = 'u1'", [])
+            .unwrap();
+
+        let (album_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/albums/{album_id}/metadata"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"New Title","year":1999}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(album_status, StatusCode::OK);
+
+        let (artist_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/artists/{artist_id}/metadata"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Renamed Artist"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(artist_status, StatusCode::OK);
+
+        let (bad_name_status, _) = send(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/artists/{artist_id}/metadata"))
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"  "}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_name_status, StatusCode::BAD_REQUEST);
     }
 }

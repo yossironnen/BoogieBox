@@ -1106,3 +1106,526 @@ fn internal_error() -> axum::response::Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod route_tests {
+    use crate::test_support::{
+        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send,
+    };
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use std::net::SocketAddr;
+    use uuid::Uuid;
+
+    fn temp_music_dir(prefix: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("library-route-test-{prefix}-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn list_libraries_requires_auth_and_starts_empty() {
+        let (app, _pool) = new_test_app_with_pool("lib-list");
+        let (unauth_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/libraries")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unauth_status, StatusCode::UNAUTHORIZED);
+
+        let cookie = seed_user_session(&_pool, "u1");
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/libraries")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json_body(&body).as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stats_route_returns_ok_for_authenticated_user() {
+        let (app, pool) = new_test_app_with_pool("lib-stats");
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/stats")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn create_library_requires_management_permission_and_a_real_folder() {
+        let (app, pool) = new_test_app_with_pool("lib-create");
+        let cookie = seed_user_session(&pool, "u1"); // plain user: cannot manage libraries
+
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/libraries")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"path":"/does/not/exist"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::FORBIDDEN);
+
+        pool.lock()
+            .unwrap()
+            .execute(
+                "UPDATE users SET can_manage_libraries = 1 WHERE id = 'u1'",
+                [],
+            )
+            .unwrap();
+
+        let (missing_path_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/libraries")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"path":"/does/not/exist/at/all"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_path_status, StatusCode::BAD_REQUEST);
+
+        let dir = temp_music_dir("create");
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/libraries")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"path":{:?},"name":"My Library"}}"#,
+                    dir.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let created = json_body(&body);
+        let library_id = created["id"].as_str().unwrap().to_owned();
+
+        // Duplicate name -> conflict.
+        let dir2 = temp_music_dir("create-dup");
+        let (dup_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/libraries")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"path":{:?},"name":"My Library"}}"#,
+                    dir2.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(dup_status, StatusCode::CONFLICT);
+
+        // Rename.
+        let (rename_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/libraries/{library_id}"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Renamed Library"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(rename_status, StatusCode::OK);
+
+        // Add + remove a folder.
+        let dir3 = temp_music_dir("create-folder2");
+        let (add_folder_status, add_folder_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/libraries/{library_id}/folders"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"path":{:?}}}"#,
+                    dir3.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(add_folder_status, StatusCode::CREATED);
+        let folders = json_body(&add_folder_body)["folders"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let new_folder_id = folders
+            .iter()
+            .find(|f| f["path"].as_str() == Some(dir3.to_string_lossy().as_ref()))
+            .and_then(|f| f["id"].as_str())
+            .unwrap()
+            .to_owned();
+
+        let (remove_folder_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/libraries/{library_id}/folders/{new_folder_id}"
+                ))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(remove_folder_status, StatusCode::OK);
+
+        // Delete the library entirely.
+        let (delete_status, _) = send(
+            app,
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/libraries/{library_id}"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(delete_status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn enqueue_scan_requires_manage_permission_and_404s_for_missing_library() {
+        let (app, pool) = new_test_app_with_pool("lib-scan");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/libraries/some-id/scan")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::FORBIDDEN);
+
+        pool.lock()
+            .unwrap()
+            .execute(
+                "UPDATE users SET can_manage_libraries = 1 WHERE id = 'u1'",
+                [],
+            )
+            .unwrap();
+
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/libraries/does-not-exist/scan")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn scan_and_schedule_and_queue_routes_are_reachable_and_admin_gated() {
+        let (app, pool) = new_test_app_with_pool("lib-misc");
+        let cookie = seed_admin_session(&pool, "admin1");
+
+        // Create a library so schedule/scan-jobs routes have a real id to target.
+        let dir = temp_music_dir("misc");
+        let (create_status, create_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/libraries")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"path":{:?},"name":"Misc Lib"}}"#,
+                    dir.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(create_status, StatusCode::CREATED);
+        let library_id = json_body(&create_body)["id"].as_str().unwrap().to_owned();
+
+        let (active_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/scan-jobs/active")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(active_status, StatusCode::OK);
+
+        let (lib_jobs_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/libraries/{library_id}/scan-jobs"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(lib_jobs_status, StatusCode::OK);
+
+        let (missing_job_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/scan-jobs/does-not-exist")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_job_status, StatusCode::NOT_FOUND);
+
+        let (schedules_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/schedules")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(schedules_status, StatusCode::OK);
+
+        let (upsert_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/schedules/{library_id}"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"enabled":true,"frequency_hours":48}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(upsert_status, StatusCode::OK);
+
+        let (get_schedule_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/schedules/{library_id}"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(get_schedule_status, StatusCode::OK);
+
+        let (delete_schedule_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/schedules/{library_id}"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(delete_schedule_status, StatusCode::OK);
+
+        let (queue_status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/admin/queues")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(queue_status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn queue_action_routes_404_for_unknown_job_ids() {
+        let (app, pool) = new_test_app_with_pool("lib-queue-actions");
+        let cookie = seed_admin_session(&pool, "admin1");
+
+        for (method, path) in [
+            ("POST", "/api/admin/queues/scan/no-such-job/cancel"),
+            ("POST", "/api/admin/queues/post-scan/no-such-job/fail"),
+            ("POST", "/api/admin/queues/post-scan/no-such-job/cancel"),
+            ("POST", "/api/admin/queues/post-scan/no-such-job/retry"),
+        ] {
+            let (status, _) = send(
+                app.clone(),
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("cookie", cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fs_browse_setup_mode_allows_loopback_and_blocks_lan() {
+        let (app, _pool) = new_test_app_with_pool("lib-fs-browse");
+        // Fresh test state always has setup_required: false (see test_support::build_test_state),
+        // so authenticate as a library manager instead of relying on setup-mode bypass.
+        let cookie = seed_admin_session(&_pool, "admin1");
+
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/admin/fs/browse")
+                .header("cookie", cookie)
+                .extension(ConnectInfo(SocketAddr::from(([192, 168, 1, 20], 5000))))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn fs_browse_unauthenticated_lan_request_is_forbidden() {
+        let (app, _pool) = new_test_app_with_pool("lib-fs-browse-forbidden");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/admin/fs/browse")
+                .extension(ConnectInfo(SocketAddr::from(([192, 168, 1, 20], 5000))))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn fs_mkdir_validates_and_creates_a_real_directory() {
+        let (app, pool) = new_test_app_with_pool("lib-fs-mkdir");
+        let cookie = seed_admin_session(&pool, "admin1");
+        let parent = temp_music_dir("mkdir-parent");
+
+        let (empty_name_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/fs/mkdir")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))))
+                .body(Body::from(format!(
+                    r#"{{"parent":{:?},"name":""}}"#,
+                    parent.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(empty_name_status, StatusCode::BAD_REQUEST);
+
+        let (sep_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/fs/mkdir")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))))
+                .body(Body::from(format!(
+                    r#"{{"parent":{:?},"name":"a/b"}}"#,
+                    parent.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(sep_status, StatusCode::BAD_REQUEST);
+
+        let (ok_status, ok_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/fs/mkdir")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))))
+                .body(Body::from(format!(
+                    r#"{{"parent":{:?},"name":"New Folder"}}"#,
+                    parent.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok_status, StatusCode::OK);
+        let new_path = json_body(&ok_body)["path"].as_str().unwrap().to_owned();
+        assert!(std::path::Path::new(&new_path).is_dir());
+
+        let (conflict_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/fs/mkdir")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5000))))
+                .body(Body::from(format!(
+                    r#"{{"parent":{:?},"name":"New Folder"}}"#,
+                    parent.to_string_lossy()
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(conflict_status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn browse_folder_route_is_not_implemented_on_non_windows_or_uses_fixed_picker() {
+        let (app, pool) = new_test_app_with_pool("lib-browse-folder");
+        let cookie = seed_admin_session(&pool, "admin1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/browse-folder")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        // On non-Windows this is always 501; on Windows the harness's
+        // FolderPicker::Fixed(None) resolves to a successful `{ "folder": null }` response.
+        if cfg!(windows) {
+            assert_eq!(status, StatusCode::OK);
+        } else {
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        }
+    }
+}

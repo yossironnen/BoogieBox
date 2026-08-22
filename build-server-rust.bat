@@ -41,6 +41,12 @@ if "%SKIP_TESTS%"=="1" (
   echo  [1/8] Running quality checks...
   call npm run lint
   IF ERRORLEVEL 1 (echo [ERROR] Lint and typecheck failed & exit /b 1)
+
+  echo.
+  echo  Running test suites ^(client + Rust^)...
+  call npm test
+  IF ERRORLEVEL 1 (echo [ERROR] Test suite failed & exit /b 1)
+
   call npm run security:semgrep
   IF ERRORLEVEL 1 (echo [ERROR] Semgrep security scan failed & exit /b 1)
 
@@ -55,6 +61,12 @@ if "%SKIP_TESTS%"=="1" (
     cargo audit
     IF ERRORLEVEL 1 (popd & echo [ERROR] Rust dependency advisory scan failed. Run 'npm run server-rs:audit' for details. & exit /b 1)
     popd
+  )
+
+  where cargo-llvm-cov >nul 2>nul
+  IF ERRORLEVEL 1 (
+    echo [INFO] cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov ^&^& rustup component add llvm-tools-preview
+    echo        ^(Only needed to run 'cargo llvm-cov' coverage reports locally -- not required to build or test.^)
   )
 )
 

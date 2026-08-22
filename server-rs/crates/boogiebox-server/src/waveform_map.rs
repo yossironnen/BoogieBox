@@ -221,3 +221,125 @@ fn timestamp_now() -> String {
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "0".into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use boogiebox_db::init_db;
+    use rusqlite::params;
+    use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
+    use uuid::Uuid;
+
+    /// `WAVEFORM_MAP_RUNNING` is a module-wide static: two tests calling
+    /// `run_waveform_map_batch` concurrently (the default) could otherwise race
+    /// on it, with one seeing "already running" and returning a no-op result.
+    /// Every test that drives a batch run holds this (a `tokio::sync::Mutex` so
+    /// the guard can be held across `.await`) for its duration.
+    static RUN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn temp_db(prefix: &str) -> DbPool {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("waveform-map-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        Arc::new(Mutex::new(init_db(&dir).unwrap().connection))
+    }
+
+    /// Seeds one track missing a waveform, whose file does not exist on disk —
+    /// so `run_waveform_map_batch_inner` takes the "skipped: unreadable file"
+    /// branch and never spawns a real ffmpeg subprocess (accepted gap; see
+    /// wip/server-rust-coverage-gap-plan.md).
+    fn seed_track_missing_waveform(db: &DbPool) -> String {
+        let conn = db.lock().unwrap();
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, '/music', 'Lib')",
+            params![library_id],
+        )
+        .unwrap();
+        let track_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, title, file_path) \
+             VALUES (?, ?, 'Track', '/does/not/exist.mp3')",
+            params![track_id, library_id],
+        )
+        .unwrap();
+        track_id
+    }
+
+    #[tokio::test]
+    async fn run_waveform_map_batch_on_empty_library_processes_nothing() {
+        let _guard = RUN_LOCK.lock().await;
+        let db = temp_db("empty");
+        let result = run_waveform_map_batch(db, "test").await.unwrap();
+        assert!(result.started);
+        assert_eq!(result.processed, 0);
+        assert_eq!(result.generated, 0);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.errors, 0);
+    }
+
+    #[tokio::test]
+    async fn run_waveform_map_batch_skips_tracks_missing_from_disk() {
+        let _guard = RUN_LOCK.lock().await;
+        let db = temp_db("missing-file");
+        seed_track_missing_waveform(&db);
+        let result = run_waveform_map_batch(db.clone(), "test").await.unwrap();
+        assert_eq!(result.processed, 1);
+        assert_eq!(result.skipped, 1);
+        assert_eq!(result.generated, 0);
+        assert_eq!(result.errors, 0);
+        assert_eq!(result.total_missing, 1);
+
+        let status = boogiebox_db::playback::get_waveform_map_status(&db.lock().unwrap()).unwrap();
+        assert!(status.last_run.is_some());
+    }
+
+    #[tokio::test]
+    async fn run_waveform_map_if_due_is_a_no_op_when_disabled_or_nothing_missing() {
+        let _guard = RUN_LOCK.lock().await;
+        let db = temp_db("if-due-disabled");
+        // Fresh DBs default waveformBackgroundEnabled=false (see
+        // seed_default_settings in boogiebox-db/lib.rs) — background scheduling
+        // off means this must never run a batch.
+        run_waveform_map_if_due(&db).await;
+        let status = boogiebox_db::playback::get_waveform_map_status(&db.lock().unwrap()).unwrap();
+        assert!(status.last_run.is_none(), "no batch should have run");
+
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value='true' WHERE key='waveformBackgroundEnabled'",
+                [],
+            )
+            .unwrap();
+        run_waveform_map_if_due(&db).await;
+        let status_after =
+            boogiebox_db::playback::get_waveform_map_status(&db.lock().unwrap()).unwrap();
+        assert!(
+            status_after.last_run.is_none(),
+            "no missing tracks means nothing to run"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_waveform_map_if_due_runs_when_enabled_with_missing_tracks_and_no_next_run() {
+        let _guard = RUN_LOCK.lock().await;
+        let db = temp_db("if-due-runs");
+        seed_track_missing_waveform(&db);
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value='true' WHERE key='waveformBackgroundEnabled'",
+                [],
+            )
+            .unwrap();
+
+        run_waveform_map_if_due(&db).await;
+        let status = boogiebox_db::playback::get_waveform_map_status(&db.lock().unwrap()).unwrap();
+        assert!(status.last_run.is_some(), "a due batch should have run");
+    }
+}

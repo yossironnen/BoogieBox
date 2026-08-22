@@ -1,4 +1,4 @@
-﻿//! Defines Rust API routes for Admin Routes server behavior.
+//! Defines Rust API routes for Admin Routes server behavior.
 
 use axum::{
     extract::{Path, State},
@@ -369,4 +369,244 @@ fn internal_error() -> axum::response::Response {
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{
+        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send,
+    };
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+
+    fn seed_admin_id(pool: &crate::DbPool) -> String {
+        pool.lock()
+            .unwrap()
+            .query_row("SELECT id FROM users WHERE role='admin' LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .expect("seed admin exists")
+    }
+
+    #[tokio::test]
+    async fn list_users_requires_admin() {
+        let (app, pool) = new_test_app_with_pool("admin-list-forbidden");
+        let user_cookie = seed_user_session(&pool, "u1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/admin/users")
+                .header("cookie", user_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_users_returns_seed_admin() {
+        let (app, pool) = new_test_app_with_pool("admin-list");
+        let admin_id = seed_admin_id(&pool);
+        let cookie = seed_admin_session(&pool, &admin_id);
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/admin/users")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json = json_body(&body);
+        assert!(!json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_user_then_list_includes_it_and_duplicate_username_conflicts() {
+        let (app, pool) = new_test_app_with_pool("admin-create");
+        let admin_id = seed_admin_id(&pool);
+        let cookie = seed_admin_session(&pool, &admin_id);
+
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/users")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"username":"newbie","role":"user"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let json = json_body(&body);
+        assert_eq!(json["username"], "newbie");
+        assert_eq!(json["hasPin"], false);
+
+        let (dup_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/users")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"username":"newbie","role":"user"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(dup_status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn create_user_rejects_missing_username_and_bad_role() {
+        let (app, pool) = new_test_app_with_pool("admin-create-invalid");
+        let admin_id = seed_admin_id(&pool);
+        let cookie = seed_admin_session(&pool, &admin_id);
+
+        let (status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/users")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"username":"  "}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (role_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/users")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"username":"x","role":"superuser"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(role_status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_permissions_updates_existing_and_404s_for_missing() {
+        let (app, pool) = new_test_app_with_pool("admin-permissions");
+        let admin_id = seed_admin_id(&pool);
+        let cookie = seed_admin_session(&pool, &admin_id);
+
+        let (status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/admin/users/{admin_id}/permissions"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"canManageLibraries":true}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri("/api/admin/users/no-such-user/permissions")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"canManageLibraries":true}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_pin_sets_and_clears_pin() {
+        let (app, pool) = new_test_app_with_pool("admin-pin");
+        let admin_id = seed_admin_id(&pool);
+        let cookie = seed_admin_session(&pool, &admin_id);
+
+        let (set_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/admin/users/{admin_id}/pin"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"pin":"1234"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(set_status, StatusCode::OK);
+
+        let (clear_status, _) = send(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/admin/users/{admin_id}/pin"))
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"pin":null}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(clear_status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn delete_user_blocks_self_delete_and_404s_for_missing() {
+        let (app, pool) = new_test_app_with_pool("admin-delete");
+        let admin_id = seed_admin_id(&pool);
+        let cookie = seed_admin_session(&pool, &admin_id);
+
+        let (self_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/admin/users/{admin_id}"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(self_status, StatusCode::BAD_REQUEST);
+
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/admin/users/no-such-user")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_user_removes_a_non_admin_user() {
+        let (app, pool) = new_test_app_with_pool("admin-delete-other");
+        let admin_id = seed_admin_id(&pool);
+        let cookie = seed_admin_session(&pool, &admin_id);
+        let other_cookie = seed_user_session(&pool, "u-other");
+        let _ = other_cookie; // just needed the user row created
+
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/admin/users/u-other")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
 }

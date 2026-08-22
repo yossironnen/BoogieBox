@@ -333,4 +333,112 @@ mod tests {
         assert!(validate_user_setting_value("uiThemeMode", "custom").is_ok());
         assert!(validate_user_setting_value("uiThemeMode", "neon").is_err());
     }
+
+    fn normalize_one(key: &str, value: &str) -> Result<String, String> {
+        let mut map = HashMap::new();
+        map.insert(key.to_string(), value.to_string());
+        normalize_settings_payload(&map).map(|out| out.get(key).cloned().unwrap())
+    }
+
+    #[test]
+    fn validates_boolean_style_user_settings() {
+        assert!(validate_user_setting_value("hideCompilationOnlyArtists", "true").is_ok());
+        assert!(validate_user_setting_value("hideCompilationOnlyArtists", "maybe").is_err());
+        for key in ["vinylHardcore", "vinylNeedleDrop", "vinylAnalogFxDisabled"] {
+            assert!(validate_user_setting_value(key, "true").is_ok());
+            assert!(validate_user_setting_value(key, "false").is_ok());
+            assert!(validate_user_setting_value(key, "sometimes").is_err());
+        }
+    }
+
+    #[test]
+    fn validates_vinyl_needle_drop_intensity_range() {
+        assert!(validate_user_setting_value("vinylNeedleDropIntensity", "0.5").is_ok());
+        assert!(validate_user_setting_value("vinylNeedleDropIntensity", "0").is_ok());
+        assert!(validate_user_setting_value("vinylNeedleDropIntensity", "1").is_ok());
+        assert!(validate_user_setting_value("vinylNeedleDropIntensity", "1.5").is_err());
+        assert!(validate_user_setting_value("vinylNeedleDropIntensity", "-0.1").is_err());
+        assert!(validate_user_setting_value("vinylNeedleDropIntensity", "not-a-number").is_err());
+    }
+
+    #[test]
+    fn keys_with_no_extra_constraint_pass_through_unvalidated() {
+        // volume/muted/theme/etc. carry no format restriction in
+        // validate_user_setting_value — anything is accepted.
+        assert!(validate_user_setting_value("volume", "loud").is_ok());
+        assert!(validate_user_setting_value("theme", "anything").is_ok());
+    }
+
+    #[test]
+    fn boogiemix_deep_analysis_model_and_background_mode_enums() {
+        assert!(normalize_one("boogiemixDeepAnalysisModel", "mdx_extra_q").is_ok());
+        assert!(normalize_one("boogiemixDeepAnalysisModel", "htdemucs").is_ok());
+        assert!(normalize_one("boogiemixDeepAnalysisModel", "hpss").is_ok());
+        assert!(normalize_one("boogiemixDeepAnalysisModel", "bogus").is_err());
+
+        for mode in [
+            "off",
+            "playlists_only",
+            "favorites_and_playlists",
+            "all_music",
+        ] {
+            assert!(normalize_one("boogiemixDeepAnalysisBackgroundMode", mode).is_ok());
+        }
+        assert!(normalize_one("boogiemixDeepAnalysisBackgroundMode", "bogus").is_err());
+    }
+
+    #[test]
+    fn dlna_media_mode_only_accepts_audio() {
+        assert!(normalize_one("dlnaMediaMode", "audio").is_ok());
+        assert!(normalize_one("dlnaMediaMode", "video").is_err());
+    }
+
+    #[test]
+    fn vinyl_mode_and_crossfade_mode_enums() {
+        assert!(normalize_one("vinylMode", "standard").is_ok());
+        assert!(normalize_one("vinylMode", "vinyl").is_ok());
+        assert!(normalize_one("vinylMode", "bogus").is_err());
+
+        for mode in ["off", "crossfade", "zerogap"] {
+            assert!(normalize_one("crossfadeMode", mode).is_ok());
+        }
+        assert!(normalize_one("crossfadeMode", "bogus").is_err());
+    }
+
+    #[test]
+    fn frequency_hours_and_batch_size_are_range_checked() {
+        assert!(normalize_one("waveformBackgroundFrequencyHours", "24").is_ok());
+        assert!(normalize_one("waveformBackgroundFrequencyHours", "0.5").is_ok());
+        assert!(normalize_one("waveformBackgroundFrequencyHours", "0.1").is_err());
+        assert!(normalize_one("waveformBackgroundFrequencyHours", "1000").is_err());
+        assert!(normalize_one("waveformBackgroundFrequencyHours", "abc").is_err());
+
+        assert!(normalize_one("bpmBackgroundFrequencyHours", "12").is_ok());
+        assert!(normalize_one("bpmBackgroundFrequencyHours", "0").is_err());
+
+        assert!(normalize_one("waveformBackgroundBatchSize", "100").is_ok());
+        assert!(normalize_one("waveformBackgroundBatchSize", "0").is_err());
+        assert!(normalize_one("waveformBackgroundBatchSize", "10000").is_err());
+        assert!(normalize_one("waveformBackgroundBatchSize", "abc").is_err());
+    }
+
+    #[test]
+    fn unrestricted_keys_pass_through_as_is() {
+        // discogsToken/lastfmKey/etc. hit the catch-all `_ => Ok(value)` arm.
+        assert_eq!(
+            normalize_one("discogsToken", "some-token-value").unwrap(),
+            "some-token-value"
+        );
+    }
+
+    #[test]
+    fn normalize_settings_payload_handles_multiple_keys_atomically() {
+        let mut map = HashMap::new();
+        map.insert("dlnaEnabled".to_string(), "true".to_string());
+        map.insert("transcodeQuality".to_string(), "medium".to_string());
+        let result = normalize_settings_payload(&map).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result["dlnaEnabled"], "true");
+        assert_eq!(result["transcodeQuality"], "medium");
+    }
 }

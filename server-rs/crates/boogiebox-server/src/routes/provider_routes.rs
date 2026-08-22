@@ -563,3 +563,223 @@ fn internal_error() -> axum::response::Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{
+        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send,
+    };
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+
+    // These tests cover validation, auth-gating, and cache-hit paths that don't require
+    // a real network call. The actual provider-fetch branches (Spotify/Genius/Last.fm/
+    // LRCLIB HTTP requests) are deferred to Phase 3 (wiremock-backed tests), per
+    // wip/server-rust-coverage-gap-plan.md.
+
+    #[tokio::test]
+    async fn spotify_test_requires_auth_and_configured_credentials() {
+        let (app, pool) = new_test_app_with_pool("provider-spotify");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (unauth_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/integrations/spotify/test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unauth_status, StatusCode::UNAUTHORIZED);
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/integrations/spotify/test")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(json_body(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("Set spotifyClientId"));
+    }
+
+    #[tokio::test]
+    async fn genius_test_requires_credentials_from_body_or_settings() {
+        let (app, pool) = new_test_app_with_pool("provider-genius");
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/integrations/genius/test")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(json_body(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("Set geniusClientId"));
+    }
+
+    #[tokio::test]
+    async fn lyrics_search_requires_artist_and_title() {
+        let (app, pool) = new_test_app_with_pool("provider-lyrics");
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/integrations/lyrics?artist=Artist")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(json_body(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("artist and title"));
+    }
+
+    #[tokio::test]
+    async fn metadata_search_requires_artist() {
+        let (app, pool) = new_test_app_with_pool("provider-metadata");
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/integrations/metadata-search")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn provider_usage_requires_admin_and_lists_snapshot() {
+        let (app, pool) = new_test_app_with_pool("provider-usage");
+        let user_cookie = seed_user_session(&pool, "u1");
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/admin/provider-usage")
+                .header("cookie", user_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::FORBIDDEN);
+
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/admin/provider-usage")
+                .header("cookie", admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn lastfm_info_requires_artist_and_returns_cached_value_without_a_network_call() {
+        let (app, pool) = new_test_app_with_pool("provider-lastfm-info");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (missing_artist_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/lastfm/info")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_artist_status, StatusCode::BAD_REQUEST);
+
+        boogiebox_db::artwork::save_lastfm_cache(
+            &pool.lock().unwrap(),
+            "artist:cached artist",
+            r#"{"summary":"cached summary"}"#,
+            7,
+        );
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/lastfm/info?artist=Cached%20Artist")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["summary"], "cached summary");
+    }
+
+    #[tokio::test]
+    async fn lastfm_info_returns_bad_request_when_no_key_configured_and_cache_misses() {
+        let (app, pool) = new_test_app_with_pool("provider-lastfm-no-key");
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/lastfm/info?artist=Uncached%20Artist")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(&body)["error"], "no-key");
+    }
+
+    #[tokio::test]
+    async fn lastfm_top_tracks_requires_artist_and_returns_cached_value() {
+        let (app, pool) = new_test_app_with_pool("provider-lastfm-top");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/lastfm/top-tracks")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::BAD_REQUEST);
+
+        boogiebox_db::artwork::save_lastfm_cache(
+            &pool.lock().unwrap(),
+            "toptracks:cached artist",
+            r#"[{"name":"Song One"}]"#,
+            7,
+        );
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/lastfm/top-tracks?artist=Cached%20Artist")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)[0]["name"], "Song One");
+    }
+}

@@ -6,6 +6,48 @@ use std::time::Instant;
 
 const USER_AGENT: &str = "BoogieBox/1.0";
 
+/// Resolves a provider's API base URL, checking an env var override first so tests
+/// can point requests at a local `wiremock` server instead of the real provider
+/// (see `wip/server-rust-coverage-gap-plan.md` Phase 3). Production code paths never
+/// set these env vars, so this is a no-op outside tests.
+fn provider_base_url(env_var: &str, default: &'static str) -> String {
+    std::env::var(env_var).unwrap_or_else(|_| default.to_owned())
+}
+
+fn discogs_api_base() -> String {
+    provider_base_url("BOOGIEBOX_DISCOGS_API_BASE", "https://api.discogs.com")
+}
+
+fn deezer_api_base() -> String {
+    provider_base_url("BOOGIEBOX_DEEZER_API_BASE", "https://api.deezer.com")
+}
+
+fn spotify_accounts_base() -> String {
+    provider_base_url(
+        "BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE",
+        "https://accounts.spotify.com",
+    )
+}
+
+fn spotify_api_base() -> String {
+    provider_base_url("BOOGIEBOX_SPOTIFY_API_BASE", "https://api.spotify.com")
+}
+
+fn lrclib_api_base() -> String {
+    provider_base_url("BOOGIEBOX_LRCLIB_API_BASE", "https://lrclib.net")
+}
+
+fn lyrics_ovh_api_base() -> String {
+    provider_base_url("BOOGIEBOX_LYRICS_OVH_API_BASE", "https://api.lyrics.ovh")
+}
+
+fn lastfm_api_base() -> String {
+    provider_base_url(
+        "BOOGIEBOX_LASTFM_API_BASE",
+        "https://ws.audioscrobbler.com/2.0/",
+    )
+}
+
 /// Logs an outbound metadata-provider request. Only visible when scan debug
 /// logging is enabled — routed via this module's target to `scan-debug.log`.
 fn log_request(provider: &str, action: &str, detail: &str) -> Instant {
@@ -194,7 +236,8 @@ pub async fn search_discogs_album_cover(
 ) -> Option<String> {
     let q = format!("{} {}", artist_name, album_title);
     let url = format!(
-        "https://api.discogs.com/database/search?type=release&q={}&per_page=3&page=1",
+        "{}/database/search?type=release&q={}&per_page=3&page=1",
+        discogs_api_base(),
         urlencoding::encode(q.trim())
     );
 
@@ -253,7 +296,8 @@ pub async fn search_discogs_artist_match(
     artist_name: &str,
 ) -> Option<ArtistProviderMatch> {
     let url = format!(
-        "https://api.discogs.com/database/search?type=artist&q={}&per_page=3&page=1",
+        "{}/database/search?type=artist&q={}&per_page=3&page=1",
+        discogs_api_base(),
         urlencoding::encode(artist_name.trim())
     );
 
@@ -321,7 +365,8 @@ pub async fn search_deezer_artist_match(
     artist_name: &str,
 ) -> Option<ArtistProviderMatch> {
     let url = format!(
-        "https://api.deezer.com/search/artist?q={}",
+        "{}/search/artist?q={}",
+        deezer_api_base(),
         urlencoding::encode(artist_name.trim())
     );
 
@@ -362,7 +407,7 @@ pub async fn get_spotify_access_token(
     let credentials = STANDARD.encode(format!("{client_id}:{client_secret}"));
     let t0 = log_request("spotify", "access_token", "client_credentials");
     let resp = client
-        .post("https://accounts.spotify.com/api/token")
+        .post(format!("{}/api/token", spotify_accounts_base()))
         .header("Authorization", format!("Basic {credentials}"))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body("grant_type=client_credentials")
@@ -412,7 +457,8 @@ pub async fn search_spotify_artist_match_with_token(
     artist_name: &str,
 ) -> Option<ArtistProviderMatch> {
     let url = format!(
-        "https://api.spotify.com/v1/search?type=artist&limit=3&q={}",
+        "{}/v1/search?type=artist&limit=3&q={}",
+        spotify_api_base(),
         urlencoding::encode(artist_name.trim())
     );
     let t0 = log_request("spotify", "artist_match", artist_name);
@@ -521,7 +567,8 @@ async fn search_discogs_metadata(
 ) -> Option<Vec<MetadataSearchResult>> {
     let q = format!("{} {}", artist, album);
     let url = format!(
-        "https://api.discogs.com/database/search?type=release&q={}&per_page=5&page=1",
+        "{}/database/search?type=release&q={}&per_page=5&page=1",
+        discogs_api_base(),
         urlencoding::encode(q.trim())
     );
 
@@ -610,7 +657,8 @@ async fn search_spotify_metadata(
 
     let search_type = if album.is_some() { "album" } else { "artist" };
     let url = format!(
-        "https://api.spotify.com/v1/search?type={search_type}&limit=5&q={}",
+        "{}/v1/search?type={search_type}&limit=5&q={}",
+        spotify_api_base(),
         urlencoding::encode(&q)
     );
 
@@ -834,7 +882,8 @@ pub async fn fetch_lrclib_lyrics(
     title: &str,
 ) -> Option<LyricsResult> {
     let url = format!(
-        "https://lrclib.net/api/get?artist_name={}&track_name={}",
+        "{}/api/get?artist_name={}&track_name={}",
+        lrclib_api_base(),
         urlencoding::encode(artist),
         urlencoding::encode(title)
     );
@@ -894,7 +943,8 @@ pub async fn fetch_lrclib_lyrics(
 /// Documents the Fetch Lyricsovh public API surface.
 pub async fn fetch_lyricsovh(client: &Client, artist: &str, title: &str) -> Option<LyricsResult> {
     let url = format!(
-        "https://api.lyrics.ovh/v1/{}/{}",
+        "{}/v1/{}/{}",
+        lyrics_ovh_api_base(),
         urlencoding::encode(artist),
         urlencoding::encode(title)
     );
@@ -926,8 +976,6 @@ pub async fn fetch_lyricsovh(client: &Client, artist: &str, title: &str) -> Opti
 }
 
 // ── Last.fm ───────────────────────────────────────────────────────────────────
-
-const LASTFM_API_ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 
 /// Public Last Fm Info Payload data shape used by BoogieBox.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -999,8 +1047,9 @@ pub async fn fetch_lastfm_artist_info(
     api_key: &str,
     artist_name: &str,
 ) -> Option<LastFmInfoPayload> {
+    let lastfm_api_root = lastfm_api_base();
     let url = format!(
-        "{LASTFM_API_ROOT}?method=artist.getinfo&artist={}&api_key={}&format=json&autocorrect=1",
+        "{lastfm_api_root}?method=artist.getinfo&artist={}&api_key={}&format=json&autocorrect=1",
         urlencoding::encode(artist_name),
         api_key
     );
@@ -1057,8 +1106,9 @@ pub async fn fetch_lastfm_similar_artists(
         .filter(|value| !value.is_empty())
         .map(|value| format!("mbid={}", urlencoding::encode(value)))
         .unwrap_or_else(|| format!("artist={}", urlencoding::encode(artist_name.trim())));
+    let lastfm_api_root = lastfm_api_base();
     let url = format!(
-        "{LASTFM_API_ROOT}?method=artist.getSimilar&{identity}&api_key={}&format=json&autocorrect=1&limit={}",
+        "{lastfm_api_root}?method=artist.getSimilar&{identity}&api_key={}&format=json&autocorrect=1&limit={}",
         urlencoding::encode(api_key),
         limit.clamp(1, 100)
     );
@@ -1127,7 +1177,8 @@ pub async fn fetch_deezer_related_artists(
     limit: usize,
 ) -> Result<Vec<RelatedArtistCandidate>, String> {
     let url = format!(
-        "https://api.deezer.com/artist/{}/related?limit={}",
+        "{}/artist/{}/related?limit={}",
+        deezer_api_base(),
         urlencoding::encode(artist_id.trim()),
         limit.clamp(1, 100)
     );
@@ -1161,8 +1212,9 @@ pub async fn fetch_lastfm_album_info(
     artist_name: &str,
     album_name: &str,
 ) -> Option<LastFmInfoPayload> {
+    let lastfm_api_root = lastfm_api_base();
     let url = format!(
-        "{LASTFM_API_ROOT}?method=album.getinfo&artist={}&album={}&api_key={}&format=json",
+        "{lastfm_api_root}?method=album.getinfo&artist={}&album={}&api_key={}&format=json",
         urlencoding::encode(artist_name),
         urlencoding::encode(album_name),
         api_key
@@ -1220,8 +1272,9 @@ pub async fn fetch_lastfm_artist_top_tags(
     api_key: &str,
     artist_name: &str,
 ) -> Vec<(String, u64)> {
+    let lastfm_api_root = lastfm_api_base();
     let url = format!(
-        "{LASTFM_API_ROOT}?method=artist.gettoptags&artist={}&api_key={}&format=json",
+        "{lastfm_api_root}?method=artist.gettoptags&artist={}&api_key={}&format=json",
         urlencoding::encode(artist_name),
         api_key
     );
@@ -1255,8 +1308,9 @@ pub async fn fetch_lastfm_top_tracks(
     api_key: &str,
     artist_name: &str,
 ) -> Result<Vec<Value>, String> {
+    let lastfm_api_root = lastfm_api_base();
     let url = format!(
-        "{LASTFM_API_ROOT}?method=artist.getTopTracks&api_key={}&artist={}&format=json&autocorrect=1&limit=10",
+        "{lastfm_api_root}?method=artist.getTopTracks&api_key={}&artist={}&format=json&autocorrect=1&limit=10",
         api_key,
         urlencoding::encode(artist_name),
     );
@@ -1405,6 +1459,372 @@ mod tests {
 
         assert!(parse_lastfm_similar_artists(&serde_json::json!({})).is_empty());
         assert!(parse_deezer_related_artists(&serde_json::json!({})).is_empty());
+    }
+}
+
+/// Phase 3 of wip/server-rust-coverage-gap-plan.md: exercises the real HTTP-fetch
+/// functions (as opposed to `mod tests` above, which only covers offline
+/// parsing/picker logic) against a local `wiremock` server, via the
+/// `BOOGIEBOX_*_API_BASE` env var overrides added to each `*_api_base()` helper.
+///
+/// These tests mutate process-wide env vars, so every test here holds `ENV_LOCK`
+/// for its whole body to serialize against every other test in this module —
+/// otherwise two tests running concurrently (the default) could each point their
+/// providers at the other's mock server.
+#[cfg(test)]
+mod provider_fetch_tests {
+    use super::*;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn search_discogs_album_cover_returns_first_valid_cover() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DISCOGS_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/database/search"))
+            .and(query_param("type", "release"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [{ "cover_image": "https://images.example/cover.jpg" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let cover = search_discogs_album_cover(&client, "tok", "Artist", "Album").await;
+        assert_eq!(cover.as_deref(), Some("https://images.example/cover.jpg"));
+
+        std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_discogs_album_cover_returns_none_on_server_error() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DISCOGS_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/database/search"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let cover = search_discogs_album_cover(&client, "tok", "Artist", "Album").await;
+        assert!(cover.is_none());
+
+        std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_deezer_artist_match_and_image_use_the_first_exact_hit() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/search/artist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {"id": 1, "name": "Daft Punk Tribute", "picture_xl": "https://img/wrong.jpg"},
+                    {"id": 27, "name": "Daft Punk", "picture_xl": "https://img/right.jpg"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let matched = search_deezer_artist_match(&client, "Daft Punk")
+            .await
+            .unwrap();
+        assert_eq!(matched.external_id, "27");
+
+        let image = search_deezer_artist_image(&client, "Daft Punk").await;
+        assert_eq!(image.as_deref(), Some("https://img/right.jpg"));
+
+        std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn get_spotify_access_token_succeeds_and_fails() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/api/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "tok123" })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let token = get_spotify_access_token(&client, "id", "secret").await;
+        assert_eq!(token.as_deref(), Some("tok123"));
+
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_metadata_combines_discogs_and_spotify_results() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DISCOGS_API_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/database/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [{ "title": "Artist - Album", "cover_image": "https://images.example/cover.jpg" }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "tok123" })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "albums": { "items": [] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let results = search_metadata(
+            &client,
+            Some("discogs-tok"),
+            Some("spotify-id"),
+            Some("spotify-secret"),
+            "Artist",
+            Some("Album"),
+        )
+        .await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].provider, "discogs");
+        assert_eq!(results[0].title.as_deref(), Some("Album"));
+
+        std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_lrclib_lyrics_returns_plain_lyrics_and_none_when_missing() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LRCLIB_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/api/get"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "plainLyrics": "la la la"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let result = fetch_lrclib_lyrics(&client, "Artist", "Title")
+            .await
+            .unwrap();
+        assert_eq!(result.lyrics, "la la la");
+        assert_eq!(result.source, "lrclib");
+
+        std::env::remove_var("BOOGIEBOX_LRCLIB_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_lrclib_lyrics_returns_none_on_404() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LRCLIB_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/api/get"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        assert!(fetch_lrclib_lyrics(&client, "Artist", "Title")
+            .await
+            .is_none());
+
+        std::env::remove_var("BOOGIEBOX_LRCLIB_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_lyricsovh_returns_lyrics() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LYRICS_OVH_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lyrics": "fallback lyrics"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let result = fetch_lyricsovh(&client, "Artist", "Title").await.unwrap();
+        assert_eq!(result.lyrics, "fallback lyrics");
+        assert_eq!(result.source, "lyrics.ovh");
+
+        std::env::remove_var("BOOGIEBOX_LYRICS_OVH_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_lastfm_artist_info_parses_bio_and_tags() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artist": {
+                    "name": "Massive Attack",
+                    "mbid": "mbid-1",
+                    "url": "https://last.fm/music/Massive+Attack",
+                    "bio": { "summary": "short bio", "content": "long bio" },
+                    "stats": { "listeners": "100", "playcount": "200" },
+                    "image": [{ "#text": "" }, { "#text": "https://img/artist.jpg" }],
+                    "tags": { "tag": [{ "name": "trip-hop" }] }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let info = fetch_lastfm_artist_info(&client, "key", "Massive Attack")
+            .await
+            .unwrap();
+        assert_eq!(info.summary, "short bio");
+        assert_eq!(info.image.as_deref(), Some("https://img/artist.jpg"));
+        assert_eq!(info.tags, vec!["trip-hop".to_string()]);
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_lastfm_artist_info_returns_none_when_artist_missing() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        assert!(fetch_lastfm_artist_info(&client, "key", "Nobody")
+            .await
+            .is_none());
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_lastfm_top_tracks_returns_track_list_and_errors_on_failure() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptracks": { "track": [
+                    { "name": "Song One", "playcount": "500" },
+                    { "name": "Song Two", "playcount": "300" }
+                ] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let tracks = fetch_lastfm_top_tracks(&client, "key", "Artist")
+            .await
+            .unwrap();
+        assert_eq!(tracks.len(), 2);
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_lastfm_artist_top_tags_parses_tag_counts() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptags": { "tag": [{ "name": "rock", "count": 50 }] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let tags = fetch_lastfm_artist_top_tags(&client, "key", "Artist").await;
+        assert_eq!(tags, vec![("rock".to_string(), 50)]);
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_deezer_related_artists_parses_and_errors_on_server_failure() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/artist/27/related"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": 5, "name": "Related Artist", "link": "https://deezer.com/artist/5", "picture_big": "https://img/r.jpg"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let related = fetch_deezer_related_artists(&client, "27", 10)
+            .await
+            .unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].name, "Related Artist");
+
+        std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn download_image_returns_bytes_and_extension() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cover.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![1u8, 2, 3, 4])
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (bytes, ext) = download_image(&client, &format!("{}/cover.png", server.uri()))
+            .await
+            .unwrap();
+        assert_eq!(bytes, vec![1, 2, 3, 4]);
+        assert_eq!(ext, ".png");
     }
 }
 

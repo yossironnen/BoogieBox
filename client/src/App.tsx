@@ -747,7 +747,23 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
             <div style={{ ...S.quickSection, ...hybridSearchStyles.quickSection }}>
               <div style={S.quickSectionLabel}>Artists</div>
               {displayedArtists.map(artist => (
-                <button type="button" key={artist.id} style={{ ...S.quickRow, ...hybridSearchStyles.quickRow }} onClick={() => onOpenArtist(artist)}>
+                // A plain `role="button"` div, not a real `<button>`: StarRating renders its own
+                // interactive `<button>` segments, and nesting a `<button>` inside a `<button>` is
+                // invalid HTML (React warns "cannot be a descendant of" and it breaks assistive-tech
+                // semantics) — this keeps the row's click/keyboard affordance without that nesting.
+                <div
+                  role="button"
+                  tabIndex={0}
+                  key={artist.id}
+                  style={{ ...S.quickRow, ...hybridSearchStyles.quickRow, cursor: 'pointer' }}
+                  onClick={() => onOpenArtist(artist)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onOpenArtist(artist);
+                    }
+                  }}
+                >
                   <span style={S.quickIcon}><ArtistRowIcon /></span>
                   <span style={S.quickName}>{artist.name}</span>
                   <span style={S.quickMeta}>
@@ -757,7 +773,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
                     <StarRating value={artist.rating ?? null} onChange={rating => onRateArtist(artist.id, rating)} ariaLabel={`${artist.name} artist rating`} size="compact" subdued={!artist.rating} />
                   </span>
                   <span style={S.quickArrow}><OpenIcon /></span>
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -765,7 +781,21 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
             <div style={{ ...S.quickSection, ...hybridSearchStyles.quickSection }}>
               <div style={S.quickSectionLabel}>Albums</div>
               {displayedAlbums.map((album: Album) => (
-                <button type="button" key={album.id} style={{ ...S.quickRow, ...hybridSearchStyles.quickRow }} onClick={() => onOpenAlbum(album)}>
+                // See the artists row above: a `role="button"` div instead of a real `<button>`
+                // so StarRating's own `<button>` segments don't end up nested inside another button.
+                <div
+                  role="button"
+                  tabIndex={0}
+                  key={album.id}
+                  style={{ ...S.quickRow, ...hybridSearchStyles.quickRow, cursor: 'pointer' }}
+                  onClick={() => onOpenAlbum(album)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onOpenAlbum(album);
+                    }
+                  }}
+                >
                   <span style={S.quickIcon}><AlbumRowIcon /></span>
                   <span style={S.quickName}>{album.title}</span>
                   <span style={S.quickMeta}>
@@ -776,7 +806,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
                     <StarRating value={album.rating ?? null} onChange={rating => onRateAlbum(album.id, rating)} ariaLabel={`${album.title} album rating`} size="compact" subdued={!album.rating} />
                   </span>
                   <span style={S.quickArrow}><OpenIcon /></span>
-                </button>
+                </div>
               ))}
             </div>
           )}

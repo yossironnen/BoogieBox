@@ -1329,3 +1329,371 @@ mod similar_artist_route_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod browse_route_tests {
+    use crate::test_support::{json_body, new_test_app_with_pool, seed_user_session, send};
+    use crate::DbPool;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use rusqlite::params;
+    use uuid::Uuid;
+
+    /// Seeds one library/artist/album/track with a genre tag, returning their ids.
+    fn seed_music(pool: &DbPool) -> (String, String, String) {
+        let conn = pool.lock().unwrap();
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, '/music', 'Lib')",
+            params![library_id],
+        )
+        .unwrap();
+        let artist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Artist')",
+            params![artist_id],
+        )
+        .unwrap();
+        let album_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id, album_artist, genre) VALUES (?, 'Album', ?, 'Artist', 'Rock')",
+            params![album_id, artist_id],
+        )
+        .unwrap();
+        let track_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path, genre, album_artist) \
+             VALUES (?, ?, ?, ?, 'Track', ?, 'Rock', 'Artist')",
+            params![
+                track_id,
+                library_id,
+                artist_id,
+                album_id,
+                format!("/music/{track_id}.mp3")
+            ],
+        )
+        .unwrap();
+        (artist_id, album_id, track_id)
+    }
+
+    #[tokio::test]
+    async fn search_and_browse_routes_require_authentication() {
+        let (app, _pool) = new_test_app_with_pool("music-auth");
+        for path in ["/api/search", "/api/genres", "/api/artists", "/api/albums"] {
+            let (status, _) = send(
+                app.clone(),
+                Request::builder().uri(path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn browse_and_lookup_routes_cover_the_seeded_music() {
+        let (app, pool) = new_test_app_with_pool("music-browse");
+        let cookie = seed_user_session(&pool, "u1");
+        let (artist_id, album_id, track_id) = seed_music(&pool);
+
+        let get = |path: String, app: axum::Router, cookie: String| async move {
+            send(
+                app,
+                Request::builder()
+                    .uri(path)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+        };
+
+        let (search_status, search_body) =
+            get("/api/search?q=Track".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(search_status, StatusCode::OK);
+        assert!(search_body.len() > 2);
+
+        let (genres_status, _) = get("/api/genres".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(genres_status, StatusCode::OK);
+
+        let (home_genres_status, _) =
+            get("/api/home/genres".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(home_genres_status, StatusCode::OK);
+
+        let (home_top_status, _) =
+            get("/api/home/top-rated".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(home_top_status, StatusCode::OK);
+
+        let (artists_status, artists_body) =
+            get("/api/artists".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(artists_status, StatusCode::OK);
+        assert_eq!(json_body(&artists_body).as_array().unwrap().len(), 1);
+
+        let (most_played_status, _) = get(
+            "/api/artists/most-played".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(most_played_status, StatusCode::OK);
+
+        let (artist_status, artist_body) = get(
+            format!("/api/artists/{artist_id}"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(artist_status, StatusCode::OK);
+        assert_eq!(json_body(&artist_body)["name"], "Artist");
+
+        let (artist_missing_status, _) = get(
+            "/api/artists/does-not-exist".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(artist_missing_status, StatusCode::NOT_FOUND);
+
+        let (artist_albums_status, artist_albums_body) = get(
+            format!("/api/artists/{artist_id}/albums"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(artist_albums_status, StatusCode::OK);
+        assert_eq!(json_body(&artist_albums_body).as_array().unwrap().len(), 1);
+
+        let (appears_on_status, _) = get(
+            format!("/api/artists/{artist_id}/appears-on"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(appears_on_status, StatusCode::OK);
+
+        let (appears_on_missing_status, _) = get(
+            "/api/artists/does-not-exist/appears-on".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(appears_on_missing_status, StatusCode::NOT_FOUND);
+
+        // No saved Last.fm style tags yet -> radio 404s with a helpful message rather
+        // than 500ing.
+        let (radio_status, _) = get(
+            format!("/api/artists/{artist_id}/radio"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(radio_status, StatusCode::NOT_FOUND);
+
+        let (release_types_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/artists/{artist_id}/release-types/resolve"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(release_types_status, StatusCode::OK);
+
+        let (albums_status, albums_body) =
+            get("/api/albums".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(albums_status, StatusCode::OK);
+        assert_eq!(json_body(&albums_body).as_array().unwrap().len(), 1);
+
+        let (albums_latest_status, _) =
+            get("/api/albums/latest".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(albums_latest_status, StatusCode::OK);
+
+        let (cursor_status, _) = get(
+            "/api/albums/change-cursor".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(cursor_status, StatusCode::OK);
+
+        let (by_group_status, by_group_body) = get(
+            "/api/albums/by-group/tracks?title=Album&album_artist=Artist".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(by_group_status, StatusCode::OK);
+        assert_eq!(json_body(&by_group_body).as_array().unwrap().len(), 1);
+
+        let (by_group_missing_title_status, _) = get(
+            "/api/albums/by-group/tracks".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(by_group_missing_title_status, StatusCode::BAD_REQUEST);
+
+        let (album_status, album_body) = get(
+            format!("/api/albums/{album_id}"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(album_status, StatusCode::OK);
+        assert_eq!(json_body(&album_body)["title"], "Album");
+
+        let (album_missing_status, _) = get(
+            "/api/albums/does-not-exist".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(album_missing_status, StatusCode::NOT_FOUND);
+
+        let (album_tracks_status, album_tracks_body) = get(
+            format!("/api/albums/{album_id}/tracks"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(album_tracks_status, StatusCode::OK);
+        assert_eq!(json_body(&album_tracks_body).as_array().unwrap().len(), 1);
+
+        let (recently_played_status, _) = get(
+            "/api/tracks/recently-played".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(recently_played_status, StatusCode::OK);
+
+        let (top_played_status, _) =
+            get("/api/tracks/top-played".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(top_played_status, StatusCode::OK);
+
+        let (track_status, track_body) = get(
+            format!("/api/tracks/{track_id}"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(track_status, StatusCode::OK);
+        assert_eq!(json_body(&track_body)["title"], "Track");
+
+        let (track_missing_status, _) = get(
+            "/api/tracks/does-not-exist".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(track_missing_status, StatusCode::NOT_FOUND);
+
+        // Not analyzed yet -> 404, not 500.
+        let (fingerprint_status, _) = get(
+            format!("/api/tracks/{track_id}/sonic-fingerprint"),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(fingerprint_status, StatusCode::NOT_FOUND);
+
+        let (auto_dj_missing_genre_status, _) =
+            get("/api/auto-dj/tracks".into(), app.clone(), cookie.clone()).await;
+        assert_eq!(auto_dj_missing_genre_status, StatusCode::BAD_REQUEST);
+
+        let (auto_dj_status, auto_dj_body) = get(
+            "/api/auto-dj/tracks?genres=Rock".into(),
+            app.clone(),
+            cookie.clone(),
+        )
+        .await;
+        assert_eq!(auto_dj_status, StatusCode::OK);
+        assert_eq!(
+            json_body(&auto_dj_body)["tracks"].as_array().unwrap().len(),
+            1
+        );
+
+        // Track metadata edit requires the edit-metadata permission.
+        let (metadata_forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/tracks/{track_id}/metadata"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"New Title"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(metadata_forbidden_status, StatusCode::FORBIDDEN);
+
+        pool.lock()
+            .unwrap()
+            .execute("UPDATE users SET can_edit_metadata = 1 WHERE id = 'u1'", [])
+            .unwrap();
+
+        let (metadata_status, metadata_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/tracks/{track_id}/metadata"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"New Title"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(metadata_status, StatusCode::OK);
+        assert_eq!(json_body(&metadata_body)["ok"], true);
+
+        let updated_title: String = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT title FROM tracks WHERE id = ?",
+                params![track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(updated_title, "New Title");
+
+        let (metadata_bad_title_status, _) = send(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/tracks/{track_id}/metadata"))
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"  "}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(metadata_bad_title_status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_artists_validates_query_params() {
+        let (app, pool) = new_test_app_with_pool("music-artists-validate");
+        let cookie = seed_user_session(&pool, "u1");
+
+        for (query, label) in [
+            ("limit=0", "limit out of range"),
+            ("offset=-1", "negative offset"),
+            ("order=sideways", "bad order"),
+            ("view=huge", "bad view"),
+            ("starts_with=AB", "multi-char starts_with"),
+        ] {
+            let (status, _) = send(
+                app.clone(),
+                Request::builder()
+                    .uri(format!("/api/artists?{query}"))
+                    .header("cookie", cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{label}");
+        }
+    }
+}

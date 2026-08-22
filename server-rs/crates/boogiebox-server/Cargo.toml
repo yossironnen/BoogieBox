@@ -42,3 +42,7 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tower.workspace = true
+# Mocks provider HTTP endpoints (Discogs/Deezer/Spotify/Last.fm/LRCLIB/lyrics.ovh/Genius)
+# for Phase 3 of wip/server-rust-coverage-gap-plan.md, so provider-fetch tests never hit
+# real external services.
+wiremock = "0.6"

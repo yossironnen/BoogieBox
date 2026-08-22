@@ -57,6 +57,11 @@ if [ "$SKIP_TESTS" -eq 1 ]; then
 else
   echo " [1/8] Running quality checks..."
   npm run lint
+
+  echo ""
+  echo " Running test suites (client + Rust)..."
+  npm test
+
   npm run security:semgrep
 
   echo ""
@@ -68,6 +73,11 @@ else
   else
     echo "[INFO] cargo-audit not installed. Install with: cargo install cargo-audit"
     echo "       Continuing build without audit check..."
+  fi
+
+  if ! command -v cargo-llvm-cov &>/dev/null; then
+    echo "[INFO] cargo-llvm-cov not installed. Install with: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview"
+    echo "       (Only needed to run 'cargo llvm-cov' coverage reports locally -- not required to build or test.)"
   fi
 fi
 

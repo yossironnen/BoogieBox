@@ -990,3 +990,479 @@ pub fn delete_crossfade_override(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::init_db;
+    use std::time::SystemTime;
+
+    /// Real, fully-migrated temp database plus one seeded library/artist/album/track,
+    /// so playback-layer functions can be exercised against production schema/constraints
+    /// instead of a hand-rolled subset.
+    struct Fixture {
+        conn: Connection,
+        track_id: String,
+        artist_id: String,
+        user_id: String,
+        _dir: PathBuf,
+    }
+
+    use std::path::PathBuf;
+
+    fn fixture(prefix: &str) -> Fixture {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("playback-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let initialized = init_db(&dir).expect("init test db");
+        let conn = initialized.connection;
+
+        let user_id: String = conn
+            .query_row("SELECT id FROM users LIMIT 1", [], |r| r.get(0))
+            .expect("seed admin user must exist");
+
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, ?, 'Test Library')",
+            params![library_id, dir.join("music").to_string_lossy()],
+        )
+        .unwrap();
+
+        let artist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Test Artist')",
+            params![artist_id],
+        )
+        .unwrap();
+
+        let album_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES (?, 'Test Album', ?)",
+            params![album_id, artist_id],
+        )
+        .unwrap();
+
+        let track_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path, genre) \
+             VALUES (?, ?, ?, ?, 'Test Track', ?, '')",
+            params![
+                track_id,
+                library_id,
+                artist_id,
+                album_id,
+                dir.join("track.mp3").to_string_lossy()
+            ],
+        )
+        .unwrap();
+
+        Fixture {
+            conn,
+            track_id,
+            artist_id,
+            user_id,
+            _dir: dir,
+        }
+    }
+
+    // ── Track streaming ────────────────────────────────────────────────────
+
+    #[test]
+    fn get_track_for_stream_returns_row_for_existing_track() {
+        let f = fixture("stream-hit");
+        let row = get_track_for_stream(&f.conn, &f.track_id)
+            .unwrap()
+            .expect("track should be found");
+        assert_eq!(row.id, f.track_id);
+    }
+
+    #[test]
+    fn get_track_for_stream_returns_none_for_missing_track() {
+        let f = fixture("stream-miss");
+        assert!(get_track_for_stream(&f.conn, "does-not-exist")
+            .unwrap()
+            .is_none());
+    }
+
+    // ── Play count / history ───────────────────────────────────────────────
+
+    #[test]
+    fn increment_track_play_count_updates_track_and_artist_and_reports_true() {
+        let f = fixture("play-count");
+        let changed = increment_track_play_count(&f.conn, &f.track_id).unwrap();
+        assert!(changed);
+
+        let track_count: i64 = f
+            .conn
+            .query_row(
+                "SELECT play_count FROM tracks WHERE id=?",
+                params![f.track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(track_count, 1);
+
+        let artist_count: i64 = f
+            .conn
+            .query_row(
+                "SELECT play_count FROM artists WHERE id=?",
+                params![f.artist_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(artist_count, 1);
+    }
+
+    #[test]
+    fn increment_track_play_count_returns_false_for_missing_track() {
+        let f = fixture("play-count-miss");
+        assert!(!increment_track_play_count(&f.conn, "nope").unwrap());
+    }
+
+    #[test]
+    fn insert_and_list_play_history_orders_newest_first_and_clamps_limit() {
+        let f = fixture("history");
+        insert_play_history(&f.conn, &f.user_id, &f.track_id).unwrap();
+        insert_play_history(&f.conn, &f.user_id, &f.track_id).unwrap();
+
+        let rows = list_user_history(&f.conn, &f.user_id, 500).unwrap(); // over max, clamps to 200
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].track_id.to_string(), f.track_id);
+        assert_eq!(rows[0].title.as_deref(), Some("Test Track"));
+        assert_eq!(rows[0].artist.as_deref(), Some("Test Artist"));
+    }
+
+    #[test]
+    fn list_user_history_is_empty_for_unknown_user() {
+        let f = fixture("history-empty");
+        let rows = list_user_history(&f.conn, "unknown-user", 10).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    // ── Lyrics ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn get_track_lyrics_cached_direct_hit_by_track_id() {
+        let f = fixture("lyrics-direct");
+        f.conn
+            .execute(
+                "INSERT INTO lyrics_cache(track_id, artist, title, lyrics, source) VALUES (?, 'Test Artist', 'Test Track', 'la la la', 'lrclib')",
+                params![f.track_id],
+            )
+            .unwrap();
+        let row = get_track_lyrics_cached(&f.conn, &f.track_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.lyrics, "la la la");
+        assert_eq!(row.source.as_deref(), Some("lrclib"));
+    }
+
+    #[test]
+    fn get_track_lyrics_cached_falls_back_to_artist_title_match() {
+        let f = fixture("lyrics-fallback");
+        // Cache row keyed by a *different* real track (lyrics_cache.track_id has a real FK
+        // to tracks), matched by artist+title instead of by track_id.
+        let other_track_id = Uuid::now_v7().to_string();
+        f.conn
+            .execute(
+                "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path, genre) \
+                 SELECT ?, library_id, artist_id, album_id, 'Other Track', ?, '' FROM tracks WHERE id = ?",
+                params![other_track_id, format!("{}-other.mp3", other_track_id), f.track_id],
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO lyrics_cache(track_id, artist, title, lyrics, source) VALUES (?, ' Test Artist ', ' TEST TRACK ', 'fallback lyrics', 'ovh')",
+                params![other_track_id],
+            )
+            .unwrap();
+        let row = get_track_lyrics_cached(&f.conn, &f.track_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.lyrics, "fallback lyrics");
+    }
+
+    #[test]
+    fn get_track_lyrics_cached_returns_none_when_nothing_matches() {
+        let f = fixture("lyrics-none");
+        assert!(get_track_lyrics_cached(&f.conn, &f.track_id)
+            .unwrap()
+            .is_none());
+    }
+
+    // ── Waveforms ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_and_get_track_waveform_round_trips_and_upserts() {
+        let f = fixture("waveform");
+        assert!(get_track_waveform(&f.conn, &f.track_id).unwrap().is_none());
+
+        save_track_waveform(&f.conn, &f.track_id, 10, Some(3.5), "[1,2,3]").unwrap();
+        let row = get_track_waveform(&f.conn, &f.track_id).unwrap().unwrap();
+        assert_eq!(row.sample_count, 10);
+        assert_eq!(row.waveform_json, "[1,2,3]");
+
+        // Upsert should replace, not duplicate.
+        save_track_waveform(&f.conn, &f.track_id, 20, Some(4.0), "[4,5,6]").unwrap();
+        let updated = get_track_waveform(&f.conn, &f.track_id).unwrap().unwrap();
+        assert_eq!(updated.sample_count, 20);
+        assert_eq!(updated.waveform_json, "[4,5,6]");
+    }
+
+    #[test]
+    fn list_tracks_missing_waveforms_excludes_tracks_that_have_one() {
+        let f = fixture("waveform-missing");
+        let missing_before = list_tracks_missing_waveforms(&f.conn, 100).unwrap();
+        assert_eq!(missing_before.len(), 1);
+
+        save_track_waveform(&f.conn, &f.track_id, 1, None, "[]").unwrap();
+        let missing_after = list_tracks_missing_waveforms(&f.conn, 100).unwrap();
+        assert!(missing_after.is_empty());
+    }
+
+    #[test]
+    fn mark_waveform_map_run_complete_updates_settings() {
+        let f = fixture("waveform-run");
+        mark_waveform_map_run_complete(&f.conn, 12.0).unwrap();
+        let settings = get_waveform_settings(&f.conn);
+        assert!(settings.last_run.is_some());
+        assert!(settings.next_run.is_some());
+    }
+
+    #[test]
+    fn get_waveform_settings_reflects_seeded_defaults_when_run_history_unset() {
+        let f = fixture("waveform-defaults");
+        let settings = get_waveform_settings(&f.conn);
+        // `seed_default_settings` (lib.rs) seeds these to true/false on every fresh DB.
+        assert!(settings.generate_on_missing);
+        assert!(!settings.background_enabled);
+        assert_eq!(settings.frequency_hours, 24.0);
+        assert_eq!(settings.batch_size, 100);
+        assert!(settings.last_run.is_none());
+    }
+
+    #[test]
+    fn get_waveform_map_status_reports_totals() {
+        let f = fixture("waveform-status");
+        save_track_waveform(&f.conn, &f.track_id, 1, None, "[]").unwrap();
+        let status = get_waveform_map_status(&f.conn).unwrap();
+        assert_eq!(status.total_tracks, 1);
+        assert_eq!(status.mapped_tracks, 1);
+        assert_eq!(status.missing_tracks, 0);
+        assert!(!status.in_progress);
+    }
+
+    // ── BPM analysis ────────────────────────────────────────────────────────
+
+    #[test]
+    fn get_bpm_settings_defaults_and_spotify_fallback_flag() {
+        let f = fixture("bpm-defaults");
+        let settings = get_bpm_settings(&f.conn);
+        // `seed_default_settings` (lib.rs) seeds bpmAnalysisEnabled to true on every fresh DB.
+        assert!(settings.enabled);
+        assert_eq!(settings.frequency_hours, 24.0);
+
+        let status = get_bpm_analysis_status(&f.conn).unwrap();
+        assert!(!status.spotify_fallback_enabled);
+        assert_eq!(status.total_tracks, 1);
+        assert_eq!(status.analyzed_tracks, 0);
+
+        f.conn
+            .execute(
+                "INSERT INTO settings(key, value) VALUES ('spotifyClientId', 'abc123') \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )
+            .unwrap();
+        assert!(spotify_configured(&f.conn));
+    }
+
+    #[test]
+    fn list_and_save_tracks_missing_bpm() {
+        let f = fixture("bpm-missing");
+        let missing = list_tracks_missing_bpm(&f.conn, 10).unwrap();
+        assert_eq!(missing.len(), 1);
+
+        save_track_bpm_detected(&f.conn, &f.track_id, 128.0, "librosa", 1.5).unwrap();
+        let missing_after = list_tracks_missing_bpm(&f.conn, 10).unwrap();
+        assert!(missing_after.is_empty());
+
+        // confidence is clamped to [0,1] even when an out-of-range value is passed.
+        let confidence: f64 = f
+            .conn
+            .query_row(
+                "SELECT bpm_confidence FROM tracks WHERE id=?",
+                params![f.track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(confidence, 1.0);
+    }
+
+    #[test]
+    fn mark_bpm_analysis_run_complete_updates_settings() {
+        let f = fixture("bpm-run");
+        mark_bpm_analysis_run_complete(&f.conn, 6.0).unwrap();
+        let settings = get_bpm_settings(&f.conn);
+        assert!(settings.last_run.is_some());
+        assert!(settings.next_run.is_some());
+    }
+
+    // ── EQ profile ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn get_track_eq_profile_defaults_to_rock_for_missing_track() {
+        let f = fixture("eq-missing-track");
+        let res = get_track_eq_profile(&f.conn, "no-such-track").unwrap();
+        assert_eq!(res.eq_profile, "Rock");
+        assert_eq!(res.source, "default");
+    }
+
+    #[test]
+    fn get_track_eq_profile_prefers_artist_eq_cache() {
+        let f = fixture("eq-artist-cache");
+        f.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS artist_eq_cache (artist TEXT, eq_profile TEXT);",
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO artist_eq_cache(artist, eq_profile) VALUES ('Test Artist', 'Jazz')",
+                [],
+            )
+            .unwrap();
+        let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
+        assert_eq!(res.eq_profile, "Jazz");
+        assert_eq!(res.source, "artist_eq_cache");
+    }
+
+    #[test]
+    fn get_track_eq_profile_falls_back_to_track_genre_tag() {
+        let f = fixture("eq-track-genre");
+        f.conn
+            .execute(
+                "UPDATE tracks SET genre='Hip Hop' WHERE id=?",
+                params![f.track_id],
+            )
+            .unwrap();
+        let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
+        assert_eq!(res.eq_profile, "Hip-Hop");
+        assert_eq!(res.source, "track_tags");
+    }
+
+    #[test]
+    fn get_track_eq_profile_falls_back_to_artist_genres_json_array() {
+        let f = fixture("eq-artist-genres-json");
+        f.conn
+            .execute(
+                "UPDATE artists SET genres='[\"electronic\"]' WHERE id=?",
+                params![f.artist_id],
+            )
+            .unwrap();
+        let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
+        assert_eq!(res.eq_profile, "Electronic");
+        assert_eq!(res.source, "artist_tags");
+    }
+
+    #[test]
+    fn get_track_eq_profile_defaults_when_nothing_matches() {
+        let f = fixture("eq-default-fallback");
+        let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
+        assert_eq!(res.eq_profile, "Rock");
+        assert_eq!(res.source, "default");
+    }
+
+    // ── Crossfade ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn crossfade_config_falls_back_to_global_settings_when_no_override() {
+        let f = fixture("cf-global");
+        let cfg = get_crossfade_config(&f.conn, Some("album"), Some("abc")).unwrap();
+        assert_eq!(cfg.mode, "off");
+        assert_eq!(cfg.duration, 2);
+        assert_eq!(cfg.source, "global");
+    }
+
+    #[test]
+    fn crossfade_upsert_then_get_config_returns_override() {
+        let f = fixture("cf-override");
+        upsert_crossfade_override(&f.conn, "playlist", "pl-1", "crossfade", 5).unwrap();
+        let cfg = get_crossfade_config(&f.conn, Some("playlist"), Some("pl-1")).unwrap();
+        assert_eq!(cfg.mode, "crossfade");
+        assert_eq!(cfg.duration, 5);
+        assert_eq!(cfg.source, "override");
+    }
+
+    #[test]
+    fn crossfade_upsert_rejects_invalid_entity_type_mode_and_duration() {
+        let f = fixture("cf-invalid");
+        assert!(matches!(
+            upsert_crossfade_override(&f.conn, "bogus", "x", "off", 2),
+            Err(CrossfadeUpsertError::InvalidEntityType)
+        ));
+        assert!(matches!(
+            upsert_crossfade_override(&f.conn, "album", "x", "bogus", 2),
+            Err(CrossfadeUpsertError::InvalidMode)
+        ));
+        assert!(matches!(
+            upsert_crossfade_override(&f.conn, "album", "x", "off", 99),
+            Err(CrossfadeUpsertError::InvalidDuration)
+        ));
+        assert!(matches!(
+            upsert_crossfade_override(&f.conn, "album", "  ", "off", 2),
+            Err(CrossfadeUpsertError::InvalidDuration)
+        ));
+    }
+
+    #[test]
+    fn crossfade_upsert_replaces_existing_override_for_same_entity() {
+        let f = fixture("cf-replace");
+        upsert_crossfade_override(&f.conn, "album", "a1", "zerogap", 1).unwrap();
+        upsert_crossfade_override(&f.conn, "album", "a1", "crossfade", 8).unwrap();
+        let overrides = get_crossfade_overrides(&f.conn, Some("album")).unwrap();
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].mode, "crossfade");
+        assert_eq!(overrides[0].duration, 8);
+    }
+
+    #[test]
+    fn get_crossfade_overrides_unfiltered_returns_all_entity_types() {
+        let f = fixture("cf-unfiltered");
+        upsert_crossfade_override(&f.conn, "album", "a1", "crossfade", 3).unwrap();
+        upsert_crossfade_override(&f.conn, "autodj", "global", "zerogap", 1).unwrap();
+        let all = get_crossfade_overrides(&f.conn, None).unwrap();
+        assert_eq!(all.len(), 2);
+        // Filtering by an entity_type not in VALID_CF_ENTITY_TYPES falls back to unfiltered.
+        let bogus_filtered = get_crossfade_overrides(&f.conn, Some("bogus")).unwrap();
+        assert_eq!(bogus_filtered.len(), 2);
+    }
+
+    #[test]
+    fn delete_crossfade_override_removes_the_row() {
+        let f = fixture("cf-delete");
+        upsert_crossfade_override(&f.conn, "album", "a1", "crossfade", 3).unwrap();
+        delete_crossfade_override(&f.conn, "album", "a1").unwrap();
+        let overrides = get_crossfade_overrides(&f.conn, Some("album")).unwrap();
+        assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn crossfade_upsert_error_display_messages() {
+        assert_eq!(
+            CrossfadeUpsertError::InvalidEntityType.to_string(),
+            "entity_type must be one of: album, playlist, autodj"
+        );
+        assert_eq!(
+            CrossfadeUpsertError::InvalidMode.to_string(),
+            "mode must be one of: off, zerogap, crossfade"
+        );
+        assert_eq!(
+            CrossfadeUpsertError::InvalidDuration.to_string(),
+            "duration must be an integer between 1 and 10"
+        );
+    }
+}

@@ -901,3 +901,293 @@ fn internal_error() -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{json_body, new_test_app_with_pool, seed_admin_session, send};
+    use crate::DbPool;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use rusqlite::params;
+    use uuid::Uuid;
+
+    /// Seeds one library/artist/album/track whose `file_path` lives inside a real temp
+    /// directory, so `find_folder_cover_image` can find a `folder.jpg` placed alongside
+    /// it. Returns (artist_id, album_id, track_dir).
+    fn seed_music(pool: &DbPool) -> (String, String, std::path::PathBuf) {
+        let conn = pool.lock().unwrap();
+        let track_dir = std::env::temp_dir().join(format!("artwork-route-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&track_dir).unwrap();
+
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, ?, 'Lib')",
+            params![library_id, track_dir.to_string_lossy()],
+        )
+        .unwrap();
+        let artist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Artist')",
+            params![artist_id],
+        )
+        .unwrap();
+        let album_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES (?, 'Album', ?)",
+            params![album_id, artist_id],
+        )
+        .unwrap();
+        let track_id = Uuid::now_v7().to_string();
+        let track_path = track_dir.join("track.mp3");
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) \
+             VALUES (?, ?, ?, ?, 'Track', ?)",
+            params![
+                track_id,
+                library_id,
+                artist_id,
+                album_id,
+                track_path.to_string_lossy()
+            ],
+        )
+        .unwrap();
+        (artist_id, album_id, track_dir)
+    }
+
+    fn tiny_png_bytes() -> Vec<u8> {
+        use image::{ImageBuffer, Rgb};
+        let buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_pixel(4, 4, Rgb([10, 20, 30]));
+        let mut out = Vec::new();
+        buf.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[tokio::test]
+    async fn album_cover_404s_for_missing_album() {
+        let (app, _pool) = new_test_app_with_pool("artwork-cover-404");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/albums/does-not-exist/cover")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn album_cover_finds_folder_jpg_next_to_track_file() {
+        let (app, pool) = new_test_app_with_pool("artwork-cover-folder");
+        let (_artist_id, album_id, track_dir) = seed_music(&pool);
+        std::fs::write(track_dir.join("folder.jpg"), tiny_png_bytes()).unwrap();
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/albums/{album_id}/cover"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn album_art_rejects_unsupported_size_and_404s_for_missing_album() {
+        let (app, pool) = new_test_app_with_pool("artwork-art-validate");
+        let (_artist_id, album_id, _dir) = seed_music(&pool);
+
+        let (bad_size_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/albums/{album_id}/art?size=42"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_size_status, StatusCode::BAD_REQUEST);
+
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/albums/does-not-exist/art?size=300")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn album_art_generates_thumbnail_from_folder_jpg() {
+        let (app, pool) = new_test_app_with_pool("artwork-art-thumb");
+        let (_artist_id, album_id, track_dir) = seed_music(&pool);
+        std::fs::write(track_dir.join("folder.jpg"), tiny_png_bytes()).unwrap();
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/albums/{album_id}/art?size=300"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn artist_photo_404s_for_missing_artist_and_rejects_bad_size() {
+        let (app, pool) = new_test_app_with_pool("artwork-photo-404");
+        let (artist_id, _album_id, _dir) = seed_music(&pool);
+
+        let (missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/artists/does-not-exist/photo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+
+        let (bad_size_status, _) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/artists/{artist_id}/photo?size=999"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_size_status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn album_artwork_upload_requires_admin_fields_and_valid_base64() {
+        let (app, pool) = new_test_app_with_pool("artwork-upload-album");
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+        let (_artist_id, album_id, _dir) = seed_music(&pool);
+
+        let (unauth_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/albums/{album_id}/artwork"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unauth_status, StatusCode::UNAUTHORIZED);
+
+        let (missing_fields_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/albums/{album_id}/artwork"))
+                .header("cookie", admin_cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_fields_status, StatusCode::BAD_REQUEST);
+
+        let (bad_b64_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/albums/{album_id}/artwork"))
+                .header("cookie", admin_cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"imageBase64":"not-valid-base64!!","mimeType":"image/png"}"#,
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_b64_status, StatusCode::BAD_REQUEST);
+
+        let png_b64 = STANDARD.encode(tiny_png_bytes());
+        let (missing_album_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/albums/does-not-exist/artwork")
+                .header("cookie", admin_cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"imageBase64":"{png_b64}","mimeType":"image/png"}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_album_status, StatusCode::NOT_FOUND);
+
+        let (ok_status, ok_body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/albums/{album_id}/artwork"))
+                .header("cookie", admin_cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"imageBase64":"{png_b64}","mimeType":"image/png"}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok_status, StatusCode::OK);
+        assert_eq!(json_body(&ok_body)["ok"], true);
+
+        let locked: i64 = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT metadata_locked FROM albums WHERE id = ?",
+                params![album_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(locked, 1);
+    }
+
+    #[tokio::test]
+    async fn artist_artwork_upload_succeeds_and_locks_metadata() {
+        let (app, pool) = new_test_app_with_pool("artwork-upload-artist");
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+        let (artist_id, _album_id, _dir) = seed_music(&pool);
+        let png_b64 = STANDARD.encode(tiny_png_bytes());
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/artists/{artist_id}/artwork"))
+                .header("cookie", admin_cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"imageBase64":"{png_b64}","mimeType":"image/png"}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["ok"], true);
+
+        let locked: i64 = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT metadata_locked FROM artists WHERE id = ?",
+                params![artist_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(locked, 1);
+    }
+}

@@ -1008,3 +1008,348 @@ fn http_date_secs(secs: u64) -> String {
         dt.second()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{
+        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send,
+    };
+    use crate::DbPool;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use rusqlite::params;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    /// Seeds one library/artist/album/track whose file lives on real disk with real
+    /// bytes and a `.mp3` extension, so `stream_track_handler` takes the native-file
+    /// streaming path (no ffmpeg transcode spawn — see `ffmpeg::needs_audio_transcode`
+    /// / the accepted-gap note in wip/server-rust-coverage-gap-plan.md).
+    fn seed_streamable_track(pool: &DbPool) -> (String, std::path::PathBuf) {
+        let conn = pool.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("playback-route-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let track_path = dir.join("track.mp3");
+        std::fs::write(&track_path, b"fake mp3 bytes for streaming tests").unwrap();
+
+        let library_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, ?, 'Lib')",
+            params![library_id, dir.to_string_lossy()],
+        )
+        .unwrap();
+        let artist_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Artist')",
+            params![artist_id],
+        )
+        .unwrap();
+        let album_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES (?, 'Album', ?)",
+            params![album_id, artist_id],
+        )
+        .unwrap();
+        let track_id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) \
+             VALUES (?, ?, ?, ?, 'Track', ?)",
+            params![
+                track_id,
+                library_id,
+                artist_id,
+                album_id,
+                track_path.to_string_lossy()
+            ],
+        )
+        .unwrap();
+        (track_id, track_path)
+    }
+
+    #[tokio::test]
+    async fn stream_track_serves_full_file_and_404s_for_missing_track() {
+        let (app, pool) = new_test_app_with_pool("playback-stream");
+        let (track_id, _path) = seed_streamable_track(&pool);
+
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"fake mp3 bytes for streaming tests");
+
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/tracks/does-not-exist/stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stream_track_supports_byte_ranges_and_conditional_requests() {
+        let (app, pool) = new_test_app_with_pool("playback-stream-range");
+        let (track_id, _path) = seed_streamable_track(&pool);
+
+        let (range_status, range_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/stream"))
+                .header("range", "bytes=0-3")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(range_status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(range_body, b"fake");
+
+        let (full_status, full_resp_headers) = {
+            let resp = axum::Router::clone(&app)
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/tracks/{track_id}/stream"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            (resp.status(), resp.headers().clone())
+        };
+        assert_eq!(full_status, StatusCode::OK);
+        let etag = full_resp_headers
+            .get(axum::http::header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        let not_modified = axum::Router::clone(&app)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/tracks/{track_id}/stream"))
+                    .header("if-none-match", etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
+    async fn track_played_increments_count_and_history_and_404s_for_missing() {
+        let (app, pool) = new_test_app_with_pool("playback-played");
+        let cookie = seed_user_session(&pool, "u1");
+        let (track_id, _path) = seed_streamable_track(&pool);
+
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track_id}/played"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["ok"], true);
+
+        let (history_status, history_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/user/history")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(history_status, StatusCode::OK);
+        assert_eq!(json_body(&history_body).as_array().unwrap().len(), 1);
+
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks/does-not-exist/played")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn track_lyrics_returns_cached_value_and_404s_for_missing_track_without_network() {
+        let (app, pool) = new_test_app_with_pool("playback-lyrics");
+        let (track_id, _path) = seed_streamable_track(&pool);
+
+        pool.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO lyrics_cache(track_id, artist, title, lyrics, source) \
+                 VALUES (?, 'Artist', 'Track', 'la la la', 'lrclib')",
+                params![track_id],
+            )
+            .unwrap();
+
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/lyrics"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["lyrics"], "la la la");
+
+        // A track that doesn't exist at all returns 404 immediately (no cache to check,
+        // no network fetch attempted) — this is the only lyrics path safe to exercise
+        // without a live LRCLIB/lyrics.ovh call (see accepted gaps in the coverage plan).
+        let (missing_status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/tracks/does-not-exist/lyrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn track_waveform_reports_missing_then_ready_after_saving() {
+        let (app, pool) = new_test_app_with_pool("playback-waveform");
+        let (track_id, _path) = seed_streamable_track(&pool);
+        // Fresh DBs seed waveformGenerateOnMissing=true (see seed_default_settings in
+        // boogiebox-db/lib.rs); disable it so the "missing" branch is deterministic and
+        // doesn't fire a background ffmpeg waveform-generation spawn.
+        pool.lock()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value='false' WHERE key='waveformGenerateOnMissing'",
+                [],
+            )
+            .unwrap();
+
+        let (missing_status, missing_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/waveform"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::OK);
+        assert_eq!(json_body(&missing_body)["status"], "missing");
+
+        boogiebox_db::playback::save_track_waveform(
+            &pool.lock().unwrap(),
+            &track_id,
+            3,
+            Some(1.5),
+            "[1,2,3]",
+        )
+        .unwrap();
+
+        let (ready_status, ready_body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/waveform"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ready_status, StatusCode::OK);
+        assert_eq!(json_body(&ready_body)["status"], "ready");
+    }
+
+    #[tokio::test]
+    async fn track_waveform_generate_404s_when_track_or_file_is_missing() {
+        let (app, pool) = new_test_app_with_pool("playback-waveform-generate");
+        let (track_id, path) = seed_streamable_track(&pool);
+        std::fs::remove_file(&path).unwrap();
+
+        let (missing_file_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track_id}/waveform/generate"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_file_status, StatusCode::NOT_FOUND);
+
+        let (missing_track_status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks/does-not-exist/waveform/generate")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_track_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn track_eq_profile_returns_default_for_seeded_track() {
+        let (app, pool) = new_test_app_with_pool("playback-eq-profile");
+        let (track_id, _path) = seed_streamable_track(&pool);
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/eq-profile"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["eqProfile"], "Rock");
+    }
+
+    #[tokio::test]
+    async fn waveform_map_and_bpm_admin_routes_are_reachable_on_an_empty_library() {
+        let (app, pool) = new_test_app_with_pool("playback-admin-batches");
+        let cookie = seed_admin_session(&pool, "admin1");
+
+        for (method, path) in [
+            ("GET", "/api/waveforms/map/status"),
+            ("POST", "/api/waveforms/map/run"),
+            ("GET", "/api/bpm/status"),
+            ("POST", "/api/bpm/run"),
+        ] {
+            let (status, _) = send(
+                app.clone(),
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("cookie", cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{method} {path}");
+        }
+
+        let (forbidden_status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/waveforms/map/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::UNAUTHORIZED);
+    }
+}

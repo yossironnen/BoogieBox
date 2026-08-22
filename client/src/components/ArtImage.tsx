@@ -43,7 +43,6 @@ export default function ArtImage({
 }: ArtImageProps) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [loadState, setLoadState] = useState<ArtImageLoadState>(src ? 'loading' : 'error');
-  const imgProps = fetchPriority ? ({ fetchpriority: fetchPriority } as Record<string, string>) : null;
 
   useEffect(() => {
     setLoadState(src ? 'loading' : 'error');
@@ -66,7 +65,7 @@ export default function ArtImage({
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"
-          {...imgProps}
+          fetchPriority={fetchPriority}
           style={imgStyle}
           onLoad={() => setLoadState('loaded')}
           onError={() => {

@@ -1,4 +1,4 @@
-﻿//! Defines Rust server support logic for Dlna.
+//! Defines Rust server support logic for Dlna.
 
 use axum::{
     body::Body,
@@ -1353,5 +1353,298 @@ mod tests {
             Some("BrowseDirectChildren")
         );
         assert_eq!(extract_xml_element(xml, "Missing"), None);
+    }
+
+    #[test]
+    fn build_device_xml_embeds_friendly_name_udn_and_address() {
+        let xml = build_device_xml(
+            "My Box",
+            "uuid-123",
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)),
+            8200,
+        );
+        assert!(xml.contains("<friendlyName>My Box</friendlyName>"));
+        assert!(xml.contains("uuid:uuid-123"));
+        assert!(xml.contains("192.168.1.5:8200"));
+    }
+
+    #[test]
+    fn soap_error_wraps_code_and_description() {
+        let xml = soap_error(701, "No Such Object");
+        assert!(xml.contains("701"));
+        assert!(xml.contains("No Such Object"));
+    }
+
+    #[test]
+    fn wrap_didl_and_wrap_browse_response_embed_items_and_counts() {
+        let didl = wrap_didl("<item/>");
+        assert!(didl.contains("<item/>"));
+        assert!(didl.starts_with("&lt;DIDL-Lite") || didl.contains("DIDL-Lite"));
+
+        let resp = wrap_browse_response(&["<item/>".to_string()], 1, 5);
+        assert!(resp.contains("<NumberReturned>1</NumberReturned>"));
+        assert!(resp.contains("<TotalMatches>5</TotalMatches>"));
+    }
+
+    #[test]
+    fn container_xml_includes_child_count_when_present() {
+        let with_count = container_xml("id1", "parent1", "Name", "object.container", Some(3));
+        assert!(with_count.contains("childCount=\"3\""));
+        let without_count = container_xml("id1", "parent1", "Name", "object.container", None);
+        assert!(!without_count.contains("childCount"));
+    }
+
+    #[test]
+    fn track_to_didl_embeds_stream_url_and_metadata() {
+        let track = TrackRow {
+            id: "t1".to_string(),
+            title: "My Song".to_string(),
+            file_path: "/music/t1.mp3".to_string(),
+            file_size: Some(1000),
+            duration: Some(125.0),
+            genre: Some("Rock".to_string()),
+            track_number: Some(3),
+            artist_name: Some("Some Artist".to_string()),
+            album_title: Some("Some Album".to_string()),
+        };
+        let xml = track_to_didl(&track, "all", &IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8200);
+        assert!(xml.contains("My Song"));
+        assert!(xml.contains("Some Artist"));
+        assert!(xml.contains("Some Album"));
+        assert!(xml.contains("http://10.0.0.1:8200/dlna/media/track/t1"));
+    }
+
+    // -- DB-backed handle_browse tests -----------------------------------------
+
+    fn temp_db(prefix: &str) -> Connection {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dlna-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        boogiebox_db::init_db(&dir).unwrap().connection
+    }
+
+    fn seed_track(conn: &Connection) -> (String, String, String) {
+        let library_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, '/music', 'Lib')",
+            rusqlite::params![library_id],
+        )
+        .unwrap();
+        let artist_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Test Artist')",
+            rusqlite::params![artist_id],
+        )
+        .unwrap();
+        let album_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES (?, 'Test Album', ?)",
+            rusqlite::params![album_id, artist_id],
+        )
+        .unwrap();
+        let track_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path, genre) \
+             VALUES (?, ?, ?, ?, 'Test Track', '/music/t.mp3', 'Rock')",
+            rusqlite::params![track_id, library_id, artist_id, album_id],
+        )
+        .unwrap();
+        (artist_id, album_id, track_id)
+    }
+
+    fn local_ip() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+    }
+
+    #[test]
+    fn handle_browse_root_lists_the_music_container() {
+        let conn = temp_db("browse-root");
+        seed_track(&conn);
+        let xml = handle_browse(&conn, "0", "BrowseDirectChildren", 0, 0, &local_ip(), 8200);
+        assert!(xml.contains("id=&quot;music&quot;"));
+        assert!(xml.contains("<NumberReturned>1</NumberReturned>"));
+    }
+
+    #[test]
+    fn handle_browse_music_lists_all_artists_albums_and_genres_containers() {
+        let conn = temp_db("browse-music");
+        seed_track(&conn);
+        let xml = handle_browse(
+            &conn,
+            "music",
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(xml.contains("id=&quot;all&quot;"));
+        assert!(xml.contains("id=&quot;artists&quot;"));
+        assert!(xml.contains("id=&quot;albums&quot;"));
+        assert!(xml.contains("id=&quot;genres&quot;"));
+    }
+
+    #[test]
+    fn handle_browse_all_lists_tracks_as_didl_items() {
+        let conn = temp_db("browse-all");
+        seed_track(&conn);
+        let xml = handle_browse(
+            &conn,
+            "all",
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(xml.contains("Test Track"));
+        assert!(xml.contains("<NumberReturned>1</NumberReturned>"));
+    }
+
+    #[test]
+    fn handle_browse_artists_then_drills_into_artist_albums() {
+        let conn = temp_db("browse-artists");
+        let (artist_id, _album_id, _track_id) = seed_track(&conn);
+        let artists_xml = handle_browse(
+            &conn,
+            "artists",
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(artists_xml.contains("Test Artist"));
+
+        let artist_container_xml = handle_browse(
+            &conn,
+            &format!("artist:{artist_id}"),
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(artist_container_xml.contains("Test Album"));
+    }
+
+    #[test]
+    fn handle_browse_albums_then_drills_into_album_tracks() {
+        let conn = temp_db("browse-albums");
+        let (_artist_id, album_id, _track_id) = seed_track(&conn);
+        let albums_xml = handle_browse(
+            &conn,
+            "albums",
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(albums_xml.contains("Test Album"));
+
+        let album_tracks_xml = handle_browse(
+            &conn,
+            &format!("album:{album_id}"),
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(album_tracks_xml.contains("Test Track"));
+    }
+
+    #[test]
+    fn handle_browse_genres_then_drills_into_genre_tracks() {
+        let conn = temp_db("browse-genres");
+        seed_track(&conn);
+        let genres_xml = handle_browse(
+            &conn,
+            "genres",
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(genres_xml.contains("Rock"));
+
+        let genre_tracks_xml = handle_browse(
+            &conn,
+            "genre:Rock",
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(genre_tracks_xml.contains("Test Track"));
+    }
+
+    #[test]
+    fn handle_browse_unknown_object_id_returns_soap_error() {
+        let conn = temp_db("browse-unknown");
+        let xml = handle_browse(
+            &conn,
+            "no-such-id",
+            "BrowseDirectChildren",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(xml.contains("701"));
+    }
+
+    #[test]
+    fn handle_browse_metadata_for_root_music_and_track() {
+        let conn = temp_db("browse-metadata");
+        let (_artist_id, _album_id, track_id) = seed_track(&conn);
+
+        let root_xml = handle_browse(&conn, "0", "BrowseMetadata", 0, 0, &local_ip(), 8200);
+        assert!(root_xml.contains("id=&quot;0&quot;"));
+
+        let music_xml = handle_browse(&conn, "music", "BrowseMetadata", 0, 0, &local_ip(), 8200);
+        assert!(music_xml.contains("id=&quot;music&quot;"));
+
+        let track_xml = handle_browse(
+            &conn,
+            &format!("track:{track_id}"),
+            "BrowseMetadata",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(track_xml.contains("Test Track"));
+
+        let missing_xml = handle_browse(
+            &conn,
+            "track:does-not-exist",
+            "BrowseMetadata",
+            0,
+            0,
+            &local_ip(),
+            8200,
+        );
+        assert!(missing_xml.contains("701"));
+    }
+
+    #[test]
+    fn read_dlna_settings_returns_defaults_and_generates_a_udn() {
+        let conn = temp_db("dlna-settings");
+        let settings = read_dlna_settings(&conn);
+        assert!(!settings.enabled);
+        assert_eq!(settings.port, DEFAULT_DLNA_PORT);
+        assert_eq!(settings.friendly_name, "BoogieBox");
+        assert!(!settings.udn.is_empty());
+
+        // A second read reuses the persisted UDN instead of generating a new one.
+        let settings_again = read_dlna_settings(&conn);
+        assert_eq!(settings.udn, settings_again.udn);
     }
 }

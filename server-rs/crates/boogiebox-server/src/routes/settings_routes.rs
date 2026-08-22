@@ -298,3 +298,172 @@ fn internal_error() -> axum::response::Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{
+        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send,
+    };
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+
+    #[tokio::test]
+    async fn get_settings_requires_admin() {
+        let (app, pool) = new_test_app_with_pool("settings-admin-only");
+        let user_cookie = seed_user_session(&pool, "u1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/settings")
+                .header("cookie", user_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_can_get_and_put_settings() {
+        let (app, pool) = new_test_app_with_pool("settings-admin");
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+
+        let (get_status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/settings")
+                .header("cookie", admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(get_status, StatusCode::OK);
+        let json = json_body(&body);
+        assert!(json.is_object());
+
+        let (put_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("cookie", admin_cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"lastfmKey":"abc123"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(put_status, StatusCode::OK);
+
+        let (get2_status, body2) = send(
+            app,
+            Request::builder()
+                .uri("/api/settings")
+                .header("cookie", admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(get2_status, StatusCode::OK);
+        let json2 = json_body(&body2);
+        assert_eq!(json2["lastfmKey"], "abc123");
+    }
+
+    #[tokio::test]
+    async fn put_settings_rejects_invalid_payload() {
+        let (app, pool) = new_test_app_with_pool("settings-invalid");
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("cookie", admin_cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"dlnaPort":"not-a-number"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn playback_settings_route_has_public_defaults_and_no_auth_required() {
+        let (app, _pool) = new_test_app_with_pool("settings-playback");
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/playback-settings")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json = json_body(&body);
+        assert_eq!(json["transcodeQuality"], "low");
+        assert_eq!(json["lastfmConfigured"], "false");
+    }
+
+    #[tokio::test]
+    async fn user_settings_round_trip_and_reject_bad_values() {
+        let (app, pool) = new_test_app_with_pool("settings-user");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (put_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/user/settings")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"uiThemeMode":"dark","unknownKey":"ignored-not-error"}"#,
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(put_status, StatusCode::OK);
+
+        let (get_status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/user/settings")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(get_status, StatusCode::OK);
+        let json = json_body(&body);
+        assert_eq!(json["uiThemeMode"], "dark");
+        assert!(json.get("unknownKey").is_none());
+
+        let (bad_status, bad_body) = send(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri("/api/user/settings")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"uiThemeMode":"neon"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+        let bad_json = json_body(&bad_body);
+        assert!(bad_json["error"].as_str().unwrap().contains("uiThemeMode"));
+    }
+
+    #[tokio::test]
+    async fn user_settings_require_authentication() {
+        let (app, _pool) = new_test_app_with_pool("settings-user-auth");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/user/settings")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
