@@ -726,7 +726,10 @@ pub fn upsert_scanned_track(
             year=excluded.year,
             comment=excluded.comment,
             bpm=excluded.bpm,
-            scanned_at=datetime('now')",
+            scanned_at=CASE
+                WHEN tracks.file_size IS excluded.file_size THEN tracks.scanned_at
+                ELSE datetime('now')
+            END",
         params![
             track_id,
             input.library_id,
