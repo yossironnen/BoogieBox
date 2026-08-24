@@ -16,6 +16,7 @@ import {
   getAlbumDisplayArtist,
   getAlbumSortLabel,
   getRatingFilterLabel,
+  isVariousArtistsName,
   matchesAlbumRatingTarget,
   matchesRatingFilter,
   parseArtistPhotoPayload,
@@ -503,6 +504,22 @@ describe('BrowseView data formatting and local update helpers', () => {
     ];
     expect(sortAlbums(albums, 'rating', 'asc').map(item => item.id)).toEqual(['5', '4', '3', '2', '1']);
     expect(sortAlbums(albums, 'rating', 'desc').map(item => item.id)).toEqual(['4', '3', '5', '2', '1']);
+  });
+});
+
+describe('isVariousArtistsName', () => {
+  it('matches the compilation pseudo-artist case- and whitespace-insensitively', () => {
+    expect(isVariousArtistsName('Various Artists')).toBe(true);
+    expect(isVariousArtistsName('  various artists  ')).toBe(true);
+    expect(isVariousArtistsName('VARIOUS ARTISTS')).toBe(true);
+  });
+
+  it('does not match a real artist name, including a partial match', () => {
+    expect(isVariousArtistsName('Various')).toBe(false);
+    expect(isVariousArtistsName('Madonna')).toBe(false);
+    expect(isVariousArtistsName(null)).toBe(false);
+    expect(isVariousArtistsName(undefined)).toBe(false);
+    expect(isVariousArtistsName('')).toBe(false);
   });
 });
 

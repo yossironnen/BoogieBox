@@ -4,11 +4,13 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../api';
-import type { Artist, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist } from '../types';
+import type { Artist, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
 import type { EntityId } from '../entityId';
 import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
 import MetadataEditModal from './MetadataEditModal';
+import MergeArtistsModal from './MergeArtistsModal';
+import UnmergeModal from './UnmergeModal';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
 import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
 import { groupArtistDiscographyByReleaseType } from '../releaseTypes';
@@ -21,6 +23,12 @@ import { HYBRID_ARTWORK_HOVER, hybridBrowseStyles } from '../hybridPreview';
 const ALPHA_RAIL_LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
 const ROOT_SCROLL_BY_VIEW: Record<string, number> = {};
 const ROOT_ANCHOR_BY_VIEW: Record<string, ClientEntityId> = {};
+
+/** True for the compilation pseudo-artist — excluded from merge selection
+ * eligibility (artist consolidation, plan §8 decision #4). */
+export function isVariousArtistsName(name: string | null | undefined): boolean {
+  return (name ?? '').trim().toLowerCase() === 'various artists';
+}
 
 export function toAlphaBucket(raw: string | null | undefined): string {
   const normalized = (raw ?? '').trim();
@@ -394,11 +402,16 @@ function QuickJumpRail({
 
 function ArtistList({
   artists, loading, onSelect, onPlay, alphabeticalJump = false, sortDir = 'asc', initialScrollTop = 0, onScrollTopChange,
+  selectMode = false, selectedIds, onToggleSelect,
 }: {
   artists: Artist[]; loading: boolean; onSelect: (a: Artist) => void; onPlay: (a: Artist) => void;
   alphabeticalJump?: boolean; sortDir?: 'asc' | 'desc';
   initialScrollTop?: number;
   onScrollTopChange?: (top: number) => void;
+  /** Artist consolidation multi-select (see wip/artist-consolidation-implementation-plan.md). */
+  selectMode?: boolean;
+  selectedIds?: Set<ClientEntityId>;
+  onToggleSelect?: (a: Artist) => void;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const anchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -472,35 +485,74 @@ function ArtistList({
   return (
     <div style={L.alphaShellFill}>
       <div ref={listRef} style={{ ...L.list, ...(alphabeticalJump ? L.alphaScrollable : {}) }}>
-        {artists.map((artist, i) => (
+        {artists.map((artist, i) => {
+          const selectable = selectMode && !isVariousArtistsName(artist.name);
+          const selected = selectMode && !!selectedIds?.has(artist.id);
+          const handleActivate = () => {
+            if (selectMode) {
+              if (selectable) onToggleSelect?.(artist);
+              return;
+            }
+            const container = listRef.current;
+            if (container) onScrollTopChange?.(container.scrollTop);
+            onSelect(artist);
+          };
+          return (
           <div
             key={artist.id}
             ref={letterFirstIndexMap[toAlphaBucket(artist.name)] === i
               ? (el) => { anchorRefs.current[toAlphaBucket(artist.name)] = el; }
               : undefined}
-            style={{ ...L.row, backgroundColor: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.018)' }}
-            onClick={() => {
-              const container = listRef.current;
-              if (container) onScrollTopChange?.(container.scrollTop);
-              onSelect(artist);
+            style={{
+              ...L.row,
+              backgroundColor: selected
+                ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
+                : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.018)',
+              ...(selectMode && !selectable ? { opacity: 0.5 } : {}),
             }}
+            onClick={handleActivate}
             onMouseEnter={() => setHoveredArtistId(artist.id)}
             onMouseLeave={() => setHoveredArtistId((prev) => (prev === artist.id ? null : prev))}
+            title={selectMode && !selectable ? 'Not eligible for merging' : undefined}
           >
+            {selectMode && (
+              <div
+                aria-hidden="true"
+                style={{
+                  width: 17, height: 17, borderRadius: 4, flexShrink: 0,
+                  background: selected ? 'var(--accent)' : 'transparent',
+                  border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  opacity: selectable ? 1 : 0.45,
+                }}
+              >
+                {selected && (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                )}
+              </div>
+            )}
             <div style={L.rowIcon}><ArtistIcon /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={L.primaryText}>{artist.name}</div>
+              <div style={L.primaryText}>
+                {artist.name}
+                {!!artist.metadata_locked && <LockBadge />}
+              </div>
             </div>
             <div style={L.meta}>{artist.album_count} {artist.album_count === 1 ? 'album' : 'albums'}</div>
             <div style={L.meta}>{artist.track_count} tracks</div>
-            <KebabButton
-              target={{ kind: 'artist', artistId: artist.id, name: artist.name }}
-              callbacks={{ onPlay: () => onPlay(artist), onOpen: () => onSelect(artist) }}
-              visible={hoveredArtistId === artist.id}
-            />
+            {!selectMode && (
+              <KebabButton
+                target={{ kind: 'artist', artistId: artist.id, name: artist.name }}
+                callbacks={{ onPlay: () => onPlay(artist), onOpen: () => onSelect(artist) }}
+                visible={hoveredArtistId === artist.id}
+              />
+            )}
             <div style={L.chevron}><ChevronRight /></div>
           </div>
-        ))}
+          );
+        })}
       </div>
       {alphabeticalJump && (
         <QuickJumpRail availableLetters={availableLetters} activeLetter={activeLetter} onJump={jumpToLetter} />
@@ -1055,6 +1107,7 @@ function AlbumTileImage({ albumId, title }: { albumId: ClientEntityId; title: st
 
 function ArtistGrid({
   artists, loading, onSelect, onPlay, alphabeticalJump = false, sortDir = 'asc', initialScrollTop = 0, initialAnchorId, onScrollTopChange, onAnchorChange, hybridPreview = false,
+  selectMode = false, selectedIds, onToggleSelect,
 }: {
   artists: Artist[]; loading: boolean; onSelect: (a: Artist) => void; onPlay: (a: Artist) => void;
   alphabeticalJump?: boolean; sortDir?: 'asc' | 'desc';
@@ -1063,6 +1116,10 @@ function ArtistGrid({
   onScrollTopChange?: (top: number) => void;
   onAnchorChange?: (id: ClientEntityId) => void;
   hybridPreview?: boolean;
+  /** Artist consolidation multi-select (see wip/artist-consolidation-implementation-plan.md). */
+  selectMode?: boolean;
+  selectedIds?: Set<ClientEntityId>;
+  onToggleSelect?: (a: Artist) => void;
 }) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const anchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1146,7 +1203,20 @@ function ArtistGrid({
   return (
     <div style={L.alphaShellFill}>
       <div ref={gridRef} style={{ ...L.gridWrap, ...(alphabeticalJump ? L.alphaScrollable : {}) }}>
-        {artists.map((artist, i) => (
+        {artists.map((artist, i) => {
+          const selectable = selectMode && !isVariousArtistsName(artist.name);
+          const selected = selectMode && !!selectedIds?.has(artist.id);
+          const handleActivate = () => {
+            if (selectMode) {
+              if (selectable) onToggleSelect?.(artist);
+              return;
+            }
+            const container = gridRef.current;
+            if (container) onScrollTopChange?.(container.scrollTop);
+            onAnchorChange?.(artist.id);
+            onSelect(artist);
+          };
+          return (
           <div
             role="button"
             tabIndex={0}
@@ -1164,36 +1234,34 @@ function ArtistGrid({
                     boxShadow: 'none',
                   }
                 : {
-                    backgroundColor: hoveredArtistId === artist.id
+                    backgroundColor: selected
                       ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
-                      : 'var(--surface)',
-                    borderColor: hoveredArtistId === artist.id
+                      : hoveredArtistId === artist.id
+                        ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
+                        : 'var(--surface)',
+                    borderColor: selected
                       ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
-                      : 'var(--border)',
+                      : hoveredArtistId === artist.id
+                        ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
+                        : 'var(--border)',
                   }),
+              ...(selectMode && !selectable ? { opacity: 0.5 } : {}),
             }}
-            onClick={() => {
-              const container = gridRef.current;
-              if (container) onScrollTopChange?.(container.scrollTop);
-              onAnchorChange?.(artist.id);
-              onSelect(artist);
-            }}
+            onClick={handleActivate}
             onMouseEnter={() => setHoveredArtistId(artist.id)}
             onMouseLeave={() => setHoveredArtistId((prev) => (prev === artist.id ? null : prev))}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                const container = gridRef.current;
-                if (container) onScrollTopChange?.(container.scrollTop);
-                onAnchorChange?.(artist.id);
-                onSelect(artist);
+                handleActivate();
               }
             }}
-            title={artist.name}
+            title={selectMode && !selectable ? 'Not eligible for merging' : artist.name}
           >
             <div style={{
               ...L.gridArt,
               ...(hybridPreview && hoveredArtistId === artist.id ? L.gridArtHovered : {}),
+              ...(selected ? { outline: '2px solid var(--accent)', outlineOffset: -2 } : {}),
             }}>
               <ArtistTileImage artistId={artist.id} artist={artist.name} />
               {hybridPreview && (
@@ -1206,16 +1274,41 @@ function ArtistGrid({
                   }}
                 />
               )}
-              <KebabButton
-                target={{ kind: 'artist', artistId: artist.id, name: artist.name }}
-                callbacks={{ onPlay: () => onPlay(artist), onOpen: () => onSelect(artist) }}
-                visible={hoveredArtistId === artist.id}
-                style={L.gridArtKebabBtn}
-              />
+              {selectMode ? (
+                <div
+                  aria-hidden="true"
+                  style={{
+                    position: 'absolute', top: 8, left: 8, zIndex: 2,
+                    width: 20, height: 20, borderRadius: 5,
+                    background: selected ? 'var(--accent)' : 'color-mix(in srgb, var(--surface) 72%, transparent)',
+                    backdropFilter: 'blur(2px)',
+                    border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    opacity: selectable ? 1 : 0.45,
+                  }}
+                >
+                  {selected && (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </div>
+              ) : (
+                <KebabButton
+                  target={{ kind: 'artist', artistId: artist.id, name: artist.name }}
+                  callbacks={{ onPlay: () => onPlay(artist), onOpen: () => onSelect(artist) }}
+                  visible={hoveredArtistId === artist.id}
+                  style={L.gridArtKebabBtn}
+                />
+              )}
             </div>
-            <div style={L.gridTitle}>{artist.name}</div>
+            <div style={L.gridTitle}>
+              {artist.name}
+              {!!artist.metadata_locked && <LockBadge />}
+            </div>
           </div>
-        ))}
+          );
+        })}
       </div>
       {alphabeticalJump && (
         <QuickJumpRail availableLetters={availableLetters} activeLetter={activeLetter} onJump={jumpToLetter} />
@@ -1457,7 +1550,7 @@ function LockBadge() {
 }
 
 function ArtistHeader({
-  artist, onPlayRadio, radioLoading, onRefreshed, onRateArtist, adaptiveAccentEnabled,
+  artist, onPlayRadio, radioLoading, onRefreshed, onRateArtist, adaptiveAccentEnabled, canEditMetadata = false,
 }: {
   artist: Artist;
   onPlayRadio: () => void;
@@ -1465,10 +1558,38 @@ function ArtistHeader({
   onRefreshed: () => void;
   onRateArtist: (rating: number | null) => void | Promise<void>;
   adaptiveAccentEnabled: boolean;
+  canEditMetadata?: boolean;
 }) {
   const [showMeta, setShowMeta] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [photoToken, setPhotoToken] = useState(0);
+  const [mergeInfo, setMergeInfo] = useState<ArtistMergeInfo | null>(null);
+  const [showUnmerge, setShowUnmerge] = useState(false);
+  const [lockingIdentity, setLockingIdentity] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMergeInfo(null);
+    api.getArtistMergeInfo(artist.id).then((info) => {
+      if (!cancelled) setMergeInfo(info);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [artist.id]);
+
+  const handleLockNow = async () => {
+    if (lockingIdentity) return;
+    setLockingIdentity(true);
+    try {
+      await api.lockArtistIdentity(artist.id);
+      onRefreshed();
+    } catch {
+      // Surfaced only via the state staying pending — not critical enough
+      // to interrupt the page with an error banner.
+    } finally {
+      setLockingIdentity(false);
+    }
+  };
+
   return (
     <div style={L.artistHeader}>
       <div style={L.artistHeaderLeft}>
@@ -1481,6 +1602,43 @@ function ArtistHeader({
           <div style={L.albumMeta}>
             {artist.album_count} {artist.album_count === 1 ? 'album' : 'albums'} · {artist.track_count} tracks
           </div>
+          {!!artist.identity_lock_pending && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'var(--accent)', opacity: 0.6, animation: 'pulse 1.2s ease-in-out infinite' }} />
+              <span>Matching artist metadata online…</span>
+              {canEditMetadata && (
+                <button
+                  onClick={handleLockNow}
+                  disabled={lockingIdentity}
+                  style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: lockingIdentity ? 'default' : 'pointer', fontSize: 11, fontFamily: 'inherit' }}
+                >
+                  {lockingIdentity ? 'Locking…' : 'Lock now'}
+                </button>
+              )}
+            </div>
+          )}
+          {!!mergeInfo?.merged && !!mergeInfo.members.length && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)', marginTop: 6, flexWrap: 'wrap' }}>
+              <span>
+                Merged from: {mergeInfo.members.map((m, i) => (
+                  <React.Fragment key={String(m.id)}>
+                    {i > 0 ? ', ' : ''}<span style={{ color: 'var(--text)' }}>{m.original_name}</span>
+                  </React.Fragment>
+                ))}
+              </span>
+              {canEditMetadata && (
+                <>
+                  <span style={{ opacity: 0.4 }}>·</span>
+                  <button
+                    onClick={() => setShowUnmerge(true)}
+                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}
+                  >
+                    Unmerge
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           {!!artist.styles?.length && (
             <div style={{ ...L.bioTags, marginTop: 8 }}>
               {artist.styles.map(style => (
@@ -1529,6 +1687,15 @@ function ArtistHeader({
           initialData={artist}
           onClose={() => setShowEdit(false)}
           onSaved={() => { setShowEdit(false); setPhotoToken(t => t + 1); onRefreshed(); }}
+        />
+      )}
+      {showUnmerge && mergeInfo?.merged && (
+        <UnmergeModal
+          artistId={artist.id}
+          artistName={artist.name}
+          members={mergeInfo.members}
+          onClose={() => setShowUnmerge(false)}
+          onUnmerged={() => { setShowUnmerge(false); onRefreshed(); }}
         />
       )}
     </div>
@@ -1765,6 +1932,10 @@ interface Props {
   forcedLibraryIds?: ClientEntityId[] | null;
   hybridPreview?: boolean;
   hideCompilationOnlyArtists?: boolean;
+  /** Admins, and users granted "Allow metadata editing", may merge/unmerge
+   * duplicate artists (artist consolidation). Mirrors the server's
+   * `can_edit_metadata` check — see `music_routes.rs`. */
+  canEditMetadata?: boolean;
 }
 
 /** Browse View is part of this module's public API. */
@@ -1782,6 +1953,7 @@ export default function BrowseView({
   forcedLibraryIds = null,
   hybridPreview = false,
   hideCompilationOnlyArtists = true,
+  canEditMetadata = false,
 }: Props) {
   const [tab, setTab]         = useState<BrowseTab>('artists');
   const [rootViewMode, setRootViewMode] = useState<RootViewMode>(() =>
@@ -1790,6 +1962,21 @@ export default function BrowseView({
   const setPersistedRootViewMode = useCallback((mode: RootViewMode) => {
     safeLocalStorageSet('browse_root_view_mode', mode);
     setRootViewMode(mode);
+  }, []);
+  // Artist consolidation multi-select (see wip/artist-consolidation-implementation-plan.md).
+  const [artistSelectMode, setArtistSelectMode] = useState(false);
+  const [selectedArtistIds, setSelectedArtistIds] = useState<Set<ClientEntityId>>(new Set());
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  const toggleArtistSelected = useCallback((artist: Artist) => {
+    setSelectedArtistIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(artist.id)) next.delete(artist.id); else next.add(artist.id);
+      return next;
+    });
+  }, []);
+  const exitArtistSelectMode = useCallback(() => {
+    setArtistSelectMode(false);
+    setSelectedArtistIds(new Set());
   }, []);
   const [groupBy, setGroupBy] = useState<'artist' | 'album_artist'>('album_artist');
   const [drill, setDrill]     = useState<DrillState>({ level: 'root' });
@@ -1864,6 +2051,10 @@ export default function BrowseView({
   const sortedArtists = useMemo(
     () => sortArtists(filteredArtists, artistSortDir),
     [filteredArtists, artistSortDir],
+  );
+  const selectedArtists = useMemo(
+    () => sortedArtists.filter((a) => selectedArtistIds.has(a.id)),
+    [sortedArtists, selectedArtistIds],
   );
 
   // Sorted album list (client-side, derived from allAlbums)
@@ -2716,10 +2907,45 @@ export default function BrowseView({
               >
                 ✦ Sonic Fingerprint
               </button>
+              {tab === 'artists' && canEditMetadata && (
+                <button
+                  style={{
+                    ...L.compactButton,
+                    ...(artistSelectMode ? {
+                      ...L.compactButtonActive,
+                      color: 'var(--accent)',
+                      borderColor: 'color-mix(in srgb, var(--accent) 50%, var(--border))',
+                    } : {}),
+                  }}
+                  onClick={() => (artistSelectMode ? exitArtistSelectMode() : setArtistSelectMode(true))}
+                  title="Select artists to merge duplicate entries"
+                  aria-pressed={artistSelectMode}
+                >
+                  {artistSelectMode ? `Select · ${selectedArtistIds.size} selected` : 'Select'}
+                </button>
+              )}
               {refineControl}
               {libraryFilterControl}
             </div>
           </div>
+          {tab === 'artists' && artistSelectMode && (
+            <div style={L.artistSelectBar}>
+              <div style={L.artistSelectBarText}>
+                <span style={{ fontWeight: 700 }}>{selectedArtistIds.size} artist{selectedArtistIds.size === 1 ? '' : 's'} selected</span>
+                <span style={{ color: 'var(--text-muted)' }}> — select 2 or more to merge them into one</span>
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button style={L.artistSelectBarClear} onClick={exitArtistSelectMode}>Clear</button>
+                <button
+                  style={{ ...L.artistSelectBarMerge, ...(selectedArtistIds.size < 2 ? L.artistSelectBarMergeDisabled : {}) }}
+                  disabled={selectedArtistIds.size < 2}
+                  onClick={() => setShowMergeModal(true)}
+                >
+                  Merge {selectedArtistIds.size || ''} Artists
+                </button>
+              </div>
+            </div>
+          )}
           {activeRefinementChips.length > 0 && (
             <div style={L.activeChipRow}>
               {activeRefinementChips.map((chip) => (
@@ -2741,8 +2967,8 @@ export default function BrowseView({
       {/* Content */}
       {drill.level === 'root' && tab === 'artists' && (
         rootViewMode === 'table'
-          ? <ArtistList artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} onScrollTopChange={handleRootScrollTopChange} />
-          : <ArtistGrid artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} initialAnchorId={rootInitialAnchorId} onScrollTopChange={handleRootScrollTopChange} onAnchorChange={handleRootAnchorChange} hybridPreview={hybridPreview} />
+          ? <ArtistList artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} onScrollTopChange={handleRootScrollTopChange} selectMode={artistSelectMode} selectedIds={selectedArtistIds} onToggleSelect={toggleArtistSelected} />
+          : <ArtistGrid artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} initialAnchorId={rootInitialAnchorId} onScrollTopChange={handleRootScrollTopChange} onAnchorChange={handleRootAnchorChange} hybridPreview={hybridPreview} selectMode={artistSelectMode} selectedIds={selectedArtistIds} onToggleSelect={toggleArtistSelected} />
       )}
       {drill.level === 'root' && tab === 'albums' && (
         rootViewMode === 'table'
@@ -2791,6 +3017,7 @@ export default function BrowseView({
                 api.artist(drill.artist.id).then(setCurrentArtist).catch(() => {});
               }}
               adaptiveAccentEnabled={adaptiveAccentEnabled}
+              canEditMetadata={canEditMetadata}
             />
             <LastFmTopTracks
               artist={drill.artist.name}
@@ -2891,6 +3118,19 @@ export default function BrowseView({
           }}
         />
       )}
+      {showMergeModal && selectedArtists.length >= 2 && (
+        <MergeArtistsModal
+          artists={selectedArtists}
+          onClose={() => setShowMergeModal(false)}
+          onMerged={() => {
+            setShowMergeModal(false);
+            exitArtistSelectMode();
+            api.artists({ genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined, hide_compilation_only: hideCompilationOnlyArtists })
+              .then(setArtists)
+              .catch(() => {});
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2957,6 +3197,30 @@ const L: Record<string, React.CSSProperties> = {
     gap: 6,
     marginLeft: 'auto',
     flexWrap: 'wrap',
+  },
+  // Artist consolidation multi-select contextual bar (see
+  // wip/artist-consolidation-implementation-plan.md).
+  artistSelectBar: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '12px 24px',
+    background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
+    borderBottom: '1px solid color-mix(in srgb, var(--accent) 28%, var(--border))',
+    flexShrink: 0, fontSize: 12.5, color: 'var(--text)',
+  },
+  artistSelectBarText: { display: 'flex', alignItems: 'center', gap: 8 },
+  artistSelectBarClear: {
+    padding: '8px 16px', background: 'var(--bg)', border: '1px solid var(--border)',
+    borderRadius: 999, color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12,
+    fontFamily: 'inherit', fontWeight: 700,
+  },
+  artistSelectBarMerge: {
+    padding: '8px 16px', background: 'var(--accent)', border: 'none',
+    borderRadius: 999, color: '#fff', cursor: 'pointer', fontSize: 12,
+    fontFamily: 'inherit', fontWeight: 700,
+    boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent), 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent)',
+  },
+  artistSelectBarMergeDisabled: {
+    opacity: 0.5, cursor: 'not-allowed', boxShadow: 'none',
   },
   tab: {
     padding: '10px 16px', background: 'rgba(255,255,255,0.03)', border: '1px solid color-mix(in srgb, var(--border) 74%, transparent)',

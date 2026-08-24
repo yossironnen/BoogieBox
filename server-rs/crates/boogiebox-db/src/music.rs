@@ -482,6 +482,11 @@ pub struct ArtistRow {
     pub play_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_locked: Option<i64>,
+    /// Set while a merge master (§ artist consolidation) is waiting on its
+    /// one-shot post-merge online identity match — see `merge_artists`.
+    /// `None` outside the artist-detail fetch, same as `metadata_locked`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_lock_pending: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -806,9 +811,9 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
     let owned_counts_sql = "(SELECT COUNT(*) FROM tracks ot JOIN albums oal ON oal.id = ot.album_id WHERE oal.artist_id = ar.id) AS track_count, \
          (SELECT COUNT(*) FROM albums oal2 WHERE oal2.artist_id = ar.id) AS album_count";
     let meta_fields = if p.full_view {
-        format!("ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.description, {owned_counts_sql}")
+        format!("ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.identity_lock_pending, ar.description, {owned_counts_sql}")
     } else {
-        format!("ar.id, ar.name, MAX(arr.rating) AS rating, NULL AS metadata_locked, NULL AS description, {owned_counts_sql}")
+        format!("ar.id, ar.name, MAX(arr.rating) AS rating, NULL AS metadata_locked, NULL AS identity_lock_pending, NULL AS description, {owned_counts_sql}")
     };
     let order = p.order_dir;
     let limit_clause = if wants_paged { "LIMIT ? OFFSET ?" } else { "" };
@@ -837,9 +842,10 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
                 name: row.get(1)?,
                 rating: row.get(2)?,
                 metadata_locked: row.get(3)?,
-                description: row.get(4)?,
-                track_count: row.get(5)?,
-                album_count: row.get(6)?,
+                identity_lock_pending: row.get(4)?,
+                description: row.get(5)?,
+                track_count: row.get(6)?,
+                album_count: row.get(7)?,
                 play_count: None,
                 styles: Vec::new(),
             })
@@ -869,7 +875,8 @@ pub fn get_artist(
 ) -> rusqlite::Result<Option<ArtistRow>> {
     let artist = conn
         .query_row(
-            "SELECT ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked, ar.description,
+            "SELECT ar.id, ar.name, MAX(arr.rating) AS rating, ar.metadata_locked,
+                ar.identity_lock_pending, ar.description,
                 (SELECT COUNT(*) FROM tracks t JOIN albums al ON al.id = t.album_id WHERE al.artist_id = ar.id) AS track_count,
                 (SELECT COUNT(*) FROM albums al WHERE al.artist_id = ar.id) AS album_count
          FROM artists ar
@@ -882,9 +889,10 @@ pub fn get_artist(
                     name: row.get(1)?,
                     rating: row.get(2)?,
                     metadata_locked: row.get(3)?,
-                    description: row.get(4)?,
-                    track_count: row.get(5)?,
-                    album_count: row.get(6)?,
+                    identity_lock_pending: row.get(4)?,
+                    description: row.get(5)?,
+                    track_count: row.get(6)?,
+                    album_count: row.get(7)?,
                     play_count: None,
                     styles: Vec::new(),
                 })
@@ -923,6 +931,7 @@ pub fn list_artists_most_played(
             name: row.get(1)?,
             rating: row.get(2)?,
             metadata_locked: row.get(3)?,
+            identity_lock_pending: None,
             description: row.get(4)?,
             track_count: row.get(5)?,
             album_count: row.get(6)?,
@@ -931,6 +940,740 @@ pub fn list_artists_most_played(
         })
     })?
     .collect()
+}
+
+// ── Artist Merge / Unmerge ───────────────────────────────────────────────────
+// Consolidates duplicate artist rows (see
+// wip/artist-consolidation-implementation-plan.md). A merge reassigns every
+// selected artist's albums/tracks onto one chosen "master" identity, records
+// exactly what moved so an unmerge can reverse it precisely, and registers
+// each absorbed name in `artist_name_aliases` so a rescan whose tag text
+// still says a pre-merge name resolves back to the master instead of
+// recreating the old duplicate (see `jobs::upsert_artist`).
+
+/// Errors from merging or splitting artist rows apart.
+#[derive(Debug, thiserror::Error)]
+pub enum ArtistMergeError {
+    #[error("At least two artists are required to merge")]
+    TooFewArtists,
+    #[error("A name is required")]
+    EmptyName,
+    #[error("Artist not found")]
+    ArtistNotFound,
+    #[error("Various Artists cannot be merged")]
+    VariousArtistsNotMergeable,
+    #[error("Artist is already a merged identity — unmerge it first")]
+    AlreadyMerged,
+    #[error("The selected master must be one of the merged artists")]
+    InvalidMaster,
+    #[error("Artist is not a merged identity")]
+    NotAMergeMaster,
+    #[error("No matching merge members were selected")]
+    NoMembersSelected,
+    #[error("Artist identity is not pending an online match")]
+    IdentityNotPending,
+    #[error(transparent)]
+    Db(#[from] rusqlite::Error),
+}
+
+/// One name absorbed into a merge master, as shown on the artist detail
+/// page's "Merged from" panel and the unmerge modal's member checklist.
+#[derive(Debug, Serialize)]
+pub struct ArtistMergeMember {
+    /// Documents the Id public API surface.
+    pub id: EntityId,
+    /// Documents the Original Name public API surface.
+    pub original_name: String,
+    /// Documents the Album Count public API surface.
+    pub album_count: i64,
+    /// Documents the Track Count public API surface.
+    pub track_count: i64,
+}
+
+/// Whether — and from what — an artist is currently a merge master.
+#[derive(Debug, Serialize)]
+pub struct ArtistMergeInfo {
+    /// Documents the Merged public API surface.
+    pub merged: bool,
+    /// Documents the Members public API surface.
+    pub members: Vec<ArtistMergeMember>,
+}
+
+/// Result of splitting one or more merge members back out.
+#[derive(Debug, Serialize)]
+pub struct UnmergeResult {
+    /// The master artist after unmerging, or `None` if it was a synthetic
+    /// (custom-name) master that got fully dissolved.
+    pub master: Option<ArtistRow>,
+    /// Documents the New Artist Ids public API surface.
+    pub new_artist_ids: Vec<EntityId>,
+}
+
+fn new_merge_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
+fn is_various_artists(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("various artists")
+}
+
+/// True if `artist_id` is currently the master of an active merge.
+fn is_merge_master(conn: &Connection, artist_id: &EntityId) -> rusqlite::Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM artist_merges WHERE master_artist_id = ?1 LIMIT 1",
+            [artist_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Snapshot of one artist's provider identity fields, used by
+/// `adopt_external_identity` — a plain struct (rather than reusing
+/// `ArtistExternalIdentity` directly) so the merge logic below stays
+/// independent of that struct's `artist_id`/`name` fields.
+#[derive(Debug, Clone, Default)]
+struct IdentitySnapshot {
+    lastfm_mbid: Option<String>,
+    lastfm_canonical_name: Option<String>,
+    lastfm_identity_checked_at: Option<String>,
+    deezer_artist_id: Option<String>,
+    deezer_identity_checked_at: Option<String>,
+    spotify_artist_id: Option<String>,
+    spotify_identity_checked_at: Option<String>,
+    discogs_artist_id: Option<String>,
+    discogs_identity_checked_at: Option<String>,
+}
+
+impl From<ArtistExternalIdentity> for IdentitySnapshot {
+    fn from(v: ArtistExternalIdentity) -> Self {
+        IdentitySnapshot {
+            lastfm_mbid: v.lastfm_mbid,
+            lastfm_canonical_name: v.lastfm_canonical_name,
+            lastfm_identity_checked_at: v.lastfm_identity_checked_at,
+            deezer_artist_id: v.deezer_artist_id,
+            deezer_identity_checked_at: v.deezer_identity_checked_at,
+            spotify_artist_id: v.spotify_artist_id,
+            spotify_identity_checked_at: v.spotify_identity_checked_at,
+            discogs_artist_id: v.discogs_artist_id,
+            discogs_identity_checked_at: v.discogs_identity_checked_at,
+        }
+    }
+}
+
+/// Picks, per provider, the first non-null identity across `snapshots`
+/// (master's own pre-merge identity first at index 0, then sources in
+/// selection order). A value adopted from anything but index 0 has its
+/// paired `*_identity_checked_at` cleared instead of carried over, so a
+/// background refresh re-verifies it rather than trusting a stale
+/// timestamp inherited from a differently-named source artist.
+fn adopt_external_identity(snapshots: &[IdentitySnapshot]) -> IdentitySnapshot {
+    fn winner(values: &[Option<&str>]) -> Option<usize> {
+        values.iter().position(|v| v.is_some())
+    }
+
+    let lastfm_vals: Vec<Option<&str>> =
+        snapshots.iter().map(|s| s.lastfm_mbid.as_deref()).collect();
+    let (lastfm_mbid, lastfm_canonical_name, lastfm_identity_checked_at) =
+        match winner(&lastfm_vals) {
+            Some(0) => (
+                snapshots[0].lastfm_mbid.clone(),
+                snapshots[0].lastfm_canonical_name.clone(),
+                snapshots[0].lastfm_identity_checked_at.clone(),
+            ),
+            Some(i) => (
+                snapshots[i].lastfm_mbid.clone(),
+                snapshots[i].lastfm_canonical_name.clone(),
+                None,
+            ),
+            None => (None, None, None),
+        };
+
+    let deezer_vals: Vec<Option<&str>> = snapshots
+        .iter()
+        .map(|s| s.deezer_artist_id.as_deref())
+        .collect();
+    let (deezer_artist_id, deezer_identity_checked_at) = match winner(&deezer_vals) {
+        Some(0) => (
+            snapshots[0].deezer_artist_id.clone(),
+            snapshots[0].deezer_identity_checked_at.clone(),
+        ),
+        Some(i) => (snapshots[i].deezer_artist_id.clone(), None),
+        None => (None, None),
+    };
+
+    let spotify_vals: Vec<Option<&str>> = snapshots
+        .iter()
+        .map(|s| s.spotify_artist_id.as_deref())
+        .collect();
+    let (spotify_artist_id, spotify_identity_checked_at) = match winner(&spotify_vals) {
+        Some(0) => (
+            snapshots[0].spotify_artist_id.clone(),
+            snapshots[0].spotify_identity_checked_at.clone(),
+        ),
+        Some(i) => (snapshots[i].spotify_artist_id.clone(), None),
+        None => (None, None),
+    };
+
+    let discogs_vals: Vec<Option<&str>> = snapshots
+        .iter()
+        .map(|s| s.discogs_artist_id.as_deref())
+        .collect();
+    let (discogs_artist_id, discogs_identity_checked_at) = match winner(&discogs_vals) {
+        Some(0) => (
+            snapshots[0].discogs_artist_id.clone(),
+            snapshots[0].discogs_identity_checked_at.clone(),
+        ),
+        Some(i) => (snapshots[i].discogs_artist_id.clone(), None),
+        None => (None, None),
+    };
+
+    IdentitySnapshot {
+        lastfm_mbid,
+        lastfm_canonical_name,
+        lastfm_identity_checked_at,
+        deezer_artist_id,
+        deezer_identity_checked_at,
+        spotify_artist_id,
+        spotify_identity_checked_at,
+        discogs_artist_id,
+        discogs_identity_checked_at,
+    }
+}
+
+/// Picks a library to scope a merge master's one-shot post-merge enrichment
+/// jobs to (`post_scan_jobs` requires one) — the library any of its tracks
+/// already belong to, or else any configured library as a last resort.
+fn library_id_for_enrichment_scope(
+    conn: &Connection,
+    master_id: &EntityId,
+) -> rusqlite::Result<Option<EntityId>> {
+    if let Some(lib) = conn
+        .query_row(
+            "SELECT t.library_id FROM tracks t
+             JOIN albums al ON al.id = t.album_id
+             WHERE al.artist_id = ?1 LIMIT 1",
+            [master_id],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        return Ok(Some(lib));
+    }
+    conn.query_row("SELECT id FROM libraries LIMIT 1", [], |row| row.get(0))
+        .optional()
+}
+
+/// Merges 2+ artist rows into one. `master_artist_id`, when present, must be
+/// one of `artist_ids` and keeps that artist's row (renamed to
+/// `master_name`); when absent, a brand-new row is created for
+/// `master_name` and every one of `artist_ids` becomes a merge member.
+/// Reassigns every merged artist's albums and direct track credits, unions
+/// their radio-tag styles, carries over per-user ratings (keeping the
+/// higher rating on a conflict), adopts the first available external
+/// identity in selection order (§ Post-merge online identity matching:
+/// when none is found, the result stays unlocked and pending a one-shot
+/// online match instead of locking immediately), and registers each
+/// absorbed name as an alias so a rescan can't recreate it. Records enough
+/// in `artist_merge_members`/`artist_merge_moves` for `unmerge_artists` to
+/// reverse this exactly.
+pub fn merge_artists(
+    conn: &Connection,
+    artist_ids: &[EntityId],
+    master_name: &str,
+    master_artist_id: Option<&EntityId>,
+    acting_user_id: &str,
+) -> Result<ArtistRow, ArtistMergeError> {
+    let master_name = master_name.trim();
+    if master_name.is_empty() {
+        return Err(ArtistMergeError::EmptyName);
+    }
+    let mut ids: Vec<EntityId> = Vec::new();
+    for candidate_id in artist_ids {
+        if !ids.contains(candidate_id) {
+            ids.push(candidate_id.clone());
+        }
+    }
+    if ids.len() < 2 {
+        return Err(ArtistMergeError::TooFewArtists);
+    }
+    if let Some(master_id) = master_artist_id {
+        if !ids.contains(master_id) {
+            return Err(ArtistMergeError::InvalidMaster);
+        }
+    }
+
+    // Validate every selected artist up front, before mutating anything.
+    for candidate_id in &ids {
+        let name: Option<String> = conn
+            .query_row(
+                "SELECT name FROM artists WHERE id = ?1",
+                [candidate_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(name) = name else {
+            return Err(ArtistMergeError::ArtistNotFound);
+        };
+        if is_various_artists(&name) {
+            return Err(ArtistMergeError::VariousArtistsNotMergeable);
+        }
+        if is_merge_master(conn, candidate_id)? {
+            return Err(ArtistMergeError::AlreadyMerged);
+        }
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = merge_artists_tx(conn, &ids, master_name, master_artist_id, acting_user_id);
+    match result {
+        Ok(row) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(row)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn merge_artists_tx(
+    conn: &Connection,
+    ids: &[EntityId],
+    master_name: &str,
+    master_artist_id: Option<&EntityId>,
+    acting_user_id: &str,
+) -> Result<ArtistRow, ArtistMergeError> {
+    let master_is_new = master_artist_id.is_none();
+    let master_id: EntityId = match master_artist_id {
+        Some(existing_id) => existing_id.clone(),
+        None => {
+            let new_id = EntityId::Str(new_merge_id());
+            conn.execute(
+                "INSERT INTO artists(id, name) VALUES(?1, ?2)",
+                rusqlite::params![new_id, master_name],
+            )?;
+            new_id
+        }
+    };
+
+    let mut identity_snapshots: Vec<IdentitySnapshot> =
+        vec![get_artist_external_identity(conn, &master_id)?
+            .map(IdentitySnapshot::from)
+            .unwrap_or_default()];
+
+    let merge_id = new_merge_id();
+    // Inserted now, before any `artist_merge_members` row, since those
+    // reference `artist_merges.id` via a foreign key.
+    conn.execute(
+        "INSERT INTO artist_merges(id, master_artist_id, merged_by_user_id, merged_at, master_is_new)
+         VALUES(?1, ?2, ?3, datetime('now'), ?4)",
+        rusqlite::params![merge_id, master_id, acting_user_id, master_is_new as i64],
+    )?;
+
+    let sources: Vec<EntityId> = ids
+        .iter()
+        .filter(|candidate_id| **candidate_id != master_id)
+        .cloned()
+        .collect();
+
+    for source_id in &sources {
+        let source_name: String = conn.query_row(
+            "SELECT name FROM artists WHERE id = ?1",
+            [source_id],
+            |row| row.get(0),
+        )?;
+
+        if let Some(identity) = get_artist_external_identity(conn, source_id)? {
+            identity_snapshots.push(IdentitySnapshot::from(identity));
+        }
+
+        let album_ids: Vec<EntityId> = conn
+            .prepare("SELECT id FROM albums WHERE artist_id = ?1")?
+            .query_map([source_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let track_ids: Vec<EntityId> = conn
+            .prepare("SELECT id FROM tracks WHERE artist_id = ?1")?
+            .query_map([source_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+
+        conn.execute(
+            "UPDATE albums SET artist_id = ?1 WHERE artist_id = ?2",
+            rusqlite::params![master_id, source_id],
+        )?;
+        conn.execute(
+            "UPDATE tracks SET artist_id = ?1 WHERE artist_id = ?2",
+            rusqlite::params![master_id, source_id],
+        )?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO artist_styles(artist_id, style)
+             SELECT ?1, style FROM artist_styles WHERE artist_id = ?2",
+            rusqlite::params![master_id, source_id],
+        )?;
+        conn.execute(
+            "DELETE FROM artist_styles WHERE artist_id = ?1",
+            [source_id],
+        )?;
+
+        conn.execute(
+            "INSERT INTO artist_ratings(user_id, artist_id, rating, updated_at)
+             SELECT user_id, ?1, rating, datetime('now') FROM artist_ratings WHERE artist_id = ?2
+             ON CONFLICT(user_id, artist_id) DO UPDATE SET
+               rating = MAX(artist_ratings.rating, excluded.rating),
+               updated_at = datetime('now')",
+            rusqlite::params![master_id, source_id],
+        )?;
+
+        let alias_key = source_name.trim().to_lowercase();
+        if alias_key != master_name.to_lowercase() {
+            conn.execute(
+                "INSERT OR REPLACE INTO artist_name_aliases(alias_name_normalized, artist_id)
+                 VALUES(?1, ?2)",
+                rusqlite::params![alias_key, master_id],
+            )?;
+        }
+
+        let member_id = new_merge_id();
+        conn.execute(
+            "INSERT INTO artist_merge_members(
+                id, merge_id, original_name, original_artist_id,
+                album_count_at_merge, track_count_at_merge
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                member_id,
+                merge_id,
+                source_name,
+                source_id.to_string(),
+                album_ids.len() as i64,
+                track_ids.len() as i64,
+            ],
+        )?;
+        for album_id in &album_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO artist_merge_moves(merge_member_id, entity_type, entity_id)
+                 VALUES(?1, 'album', ?2)",
+                rusqlite::params![member_id, album_id.to_string()],
+            )?;
+        }
+        for track_id in &track_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO artist_merge_moves(merge_member_id, entity_type, entity_id)
+                 VALUES(?1, 'track', ?2)",
+                rusqlite::params![member_id, track_id.to_string()],
+            )?;
+        }
+
+        conn.execute("DELETE FROM artists WHERE id = ?1", [source_id])?;
+    }
+
+    let adopted = adopt_external_identity(&identity_snapshots);
+    let has_identity = adopted.lastfm_mbid.is_some()
+        || adopted.deezer_artist_id.is_some()
+        || adopted.spotify_artist_id.is_some()
+        || adopted.discogs_artist_id.is_some();
+
+    conn.execute(
+        "UPDATE artists SET
+            name = ?1,
+            metadata_locked = ?2,
+            identity_lock_pending = ?3,
+            lastfm_mbid = ?4,
+            lastfm_canonical_name = ?5,
+            lastfm_identity_checked_at = ?6,
+            deezer_artist_id = ?7,
+            deezer_identity_checked_at = ?8,
+            spotify_artist_id = ?9,
+            spotify_identity_checked_at = ?10,
+            discogs_artist_id = ?11,
+            discogs_identity_checked_at = ?12
+         WHERE id = ?13",
+        rusqlite::params![
+            master_name,
+            has_identity as i64,
+            (!has_identity) as i64,
+            adopted.lastfm_mbid,
+            adopted.lastfm_canonical_name,
+            adopted.lastfm_identity_checked_at,
+            adopted.deezer_artist_id,
+            adopted.deezer_identity_checked_at,
+            adopted.spotify_artist_id,
+            adopted.spotify_identity_checked_at,
+            adopted.discogs_artist_id,
+            adopted.discogs_identity_checked_at,
+            master_id,
+        ],
+    )?;
+
+    if !has_identity {
+        if let Some(lib_id) = library_id_for_enrichment_scope(conn, &master_id)? {
+            let payload = serde_json::json!({ "artistIds": [master_id.to_string()] }).to_string();
+            let _ = crate::jobs::enqueue_post_scan_job(
+                conn,
+                &lib_id.to_string(),
+                "enrich_artist_external_ids",
+                Some(payload.clone()),
+            );
+            let _ = crate::jobs::enqueue_post_scan_job(
+                conn,
+                &lib_id.to_string(),
+                "cache_artist_images",
+                Some(payload),
+            );
+        } else {
+            // Nothing to scope an online lookup to (no libraries configured
+            // at all) — lock immediately rather than wait forever.
+            conn.execute(
+                "UPDATE artists SET metadata_locked = 1, identity_lock_pending = 0 WHERE id = ?1",
+                [&master_id],
+            )?;
+        }
+    }
+
+    get_artist(conn, acting_user_id, &master_id)?.ok_or(ArtistMergeError::ArtistNotFound)
+}
+
+/// Returns whether `artist_id` is currently a merge master and, if so, the
+/// names absorbed into it — powers the "Merged from" panel and the unmerge
+/// modal's member checklist.
+pub fn get_artist_merge_info(
+    conn: &Connection,
+    artist_id: &EntityId,
+) -> rusqlite::Result<ArtistMergeInfo> {
+    let merge_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM artist_merges WHERE master_artist_id = ?1",
+            [artist_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(merge_id) = merge_id else {
+        return Ok(ArtistMergeInfo {
+            merged: false,
+            members: Vec::new(),
+        });
+    };
+    let members = conn
+        .prepare(
+            "SELECT id, original_name, album_count_at_merge, track_count_at_merge
+             FROM artist_merge_members WHERE merge_id = ?1 ORDER BY original_name",
+        )?
+        .query_map([&merge_id], |row| {
+            Ok(ArtistMergeMember {
+                id: row.get(0)?,
+                original_name: row.get(1)?,
+                album_count: row.get(2)?,
+                track_count: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ArtistMergeInfo {
+        merged: true,
+        members,
+    })
+}
+
+/// Splits the given merge members back out into their own artist rows,
+/// reversing exactly what `merge_artists` moved (via `artist_merge_moves`).
+/// If every member of the merge is split out and the master was a
+/// brand-new row minted for a custom name (`master_is_new`), the now-empty
+/// master row is deleted too; otherwise it's unlocked and kept. Returns the
+/// ids of the newly created artists plus the (possibly now-unlocked, or
+/// deleted → `None`) master.
+pub fn unmerge_artists(
+    conn: &Connection,
+    master_artist_id: &EntityId,
+    member_ids: &[EntityId],
+    acting_user_id: &str,
+) -> Result<UnmergeResult, ArtistMergeError> {
+    if member_ids.is_empty() {
+        return Err(ArtistMergeError::NoMembersSelected);
+    }
+    let merge_row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT id, master_is_new FROM artist_merges WHERE master_artist_id = ?1",
+            [master_artist_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((merge_id, master_is_new)) = merge_row else {
+        return Err(ArtistMergeError::NotAMergeMaster);
+    };
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = unmerge_artists_tx(
+        conn,
+        master_artist_id,
+        &merge_id,
+        master_is_new != 0,
+        member_ids,
+    );
+    let new_ids = match result {
+        Ok(ids) => {
+            conn.execute_batch("COMMIT")?;
+            ids
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    };
+
+    let master = get_artist(conn, acting_user_id, master_artist_id)?;
+    Ok(UnmergeResult {
+        master,
+        new_artist_ids: new_ids,
+    })
+}
+
+fn unmerge_artists_tx(
+    conn: &Connection,
+    master_artist_id: &EntityId,
+    merge_id: &str,
+    master_is_new: bool,
+    member_ids: &[EntityId],
+) -> Result<Vec<EntityId>, ArtistMergeError> {
+    let mut new_ids = Vec::new();
+
+    for member_id in member_ids {
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT original_name, merge_id FROM artist_merge_members WHERE id = ?1",
+                [member_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((original_name, row_merge_id)) = row else {
+            continue; // already split out or unknown id
+        };
+        if row_merge_id != merge_id {
+            continue; // belongs to a different merge — not this master's to split
+        }
+
+        let new_id = EntityId::Str(new_merge_id());
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES(?1, ?2)",
+            rusqlite::params![new_id, original_name],
+        )?;
+
+        let moves: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT entity_type, entity_id FROM artist_merge_moves WHERE merge_member_id = ?1",
+            )?
+            .query_map([member_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (entity_type, entity_id) in moves {
+            match entity_type.as_str() {
+                "album" => {
+                    conn.execute(
+                        "UPDATE albums SET artist_id = ?1 WHERE id = ?2",
+                        rusqlite::params![new_id, entity_id],
+                    )?;
+                }
+                "track" => {
+                    conn.execute(
+                        "UPDATE tracks SET artist_id = ?1 WHERE id = ?2",
+                        rusqlite::params![new_id, entity_id],
+                    )?;
+                }
+                _ => {}
+            }
+        }
+
+        conn.execute(
+            "DELETE FROM artist_name_aliases WHERE alias_name_normalized = LOWER(TRIM(?1))",
+            [&original_name],
+        )?;
+        conn.execute(
+            "DELETE FROM artist_merge_moves WHERE merge_member_id = ?1",
+            [member_id],
+        )?;
+        conn.execute(
+            "DELETE FROM artist_merge_members WHERE id = ?1",
+            [member_id],
+        )?;
+
+        new_ids.push(new_id);
+    }
+
+    if new_ids.is_empty() {
+        return Err(ArtistMergeError::NoMembersSelected);
+    }
+
+    let remaining: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM artist_merge_members WHERE merge_id = ?1",
+        [merge_id],
+        |row| row.get(0),
+    )?;
+
+    if remaining == 0 {
+        conn.execute("DELETE FROM artist_merges WHERE id = ?1", [merge_id])?;
+        if master_is_new {
+            conn.execute(
+                "DELETE FROM artist_styles WHERE artist_id = ?1",
+                [master_artist_id],
+            )?;
+            conn.execute("DELETE FROM artists WHERE id = ?1", [master_artist_id])?;
+        } else {
+            conn.execute(
+                "UPDATE artists SET metadata_locked = 0, identity_lock_pending = 0 WHERE id = ?1",
+                [master_artist_id],
+            )?;
+        }
+    }
+
+    Ok(new_ids)
+}
+
+/// Called after `post_scan::run_enrich_artist_external_ids` attempts a
+/// provider lookup for one artist: if that artist was waiting on a
+/// post-merge identity match (`identity_lock_pending`) and now has at least
+/// one external identity, locks it (same protection any other artist with
+/// `metadata_locked` already gets). A miss leaves `identity_lock_pending`
+/// set so the next periodic backfill sweep tries again (§6.5, §8 decision
+/// #5) — this only ever locks on a hit, never on a miss.
+pub fn finalize_pending_identity_lock(
+    conn: &Connection,
+    artist_id: &EntityId,
+) -> rusqlite::Result<bool> {
+    let updated = conn.execute(
+        "UPDATE artists SET metadata_locked = 1, identity_lock_pending = 0
+         WHERE id = ?1
+           AND identity_lock_pending = 1
+           AND (lastfm_mbid IS NOT NULL OR deezer_artist_id IS NOT NULL
+                OR spotify_artist_id IS NOT NULL OR discogs_artist_id IS NOT NULL)",
+        [artist_id],
+    )?;
+    Ok(updated > 0)
+}
+
+/// Manually locks a merge master that's still waiting on its post-merge
+/// online identity match (§6.5's "Lock now" override) — for an artist that
+/// will never get a match (a local/unreleased act, say).
+pub fn lock_artist_identity(
+    conn: &Connection,
+    artist_id: &EntityId,
+    acting_user_id: &str,
+) -> Result<ArtistRow, ArtistMergeError> {
+    let pending: Option<i64> = conn
+        .query_row(
+            "SELECT identity_lock_pending FROM artists WHERE id = ?1",
+            [artist_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(pending) = pending else {
+        return Err(ArtistMergeError::ArtistNotFound);
+    };
+    if pending == 0 {
+        return Err(ArtistMergeError::IdentityNotPending);
+    }
+    conn.execute(
+        "UPDATE artists SET metadata_locked = 1, identity_lock_pending = 0 WHERE id = ?1",
+        [artist_id],
+    )?;
+    get_artist(conn, acting_user_id, artist_id)?.ok_or(ArtistMergeError::ArtistNotFound)
 }
 
 // ── Album ─────────────────────────────────────────────────────────────────────
@@ -1753,6 +2496,7 @@ pub fn get_home_top_rated(
                 name: row.get(1)?,
                 rating: row.get(2)?,
                 metadata_locked: row.get(3)?,
+                identity_lock_pending: None,
                 description: row.get(4)?,
                 track_count: row.get(5)?,
                 album_count: row.get(6)?,
@@ -2503,6 +3247,7 @@ mod tests {
             CREATE TABLE artist_ratings (artist_id TEXT, user_id TEXT, rating REAL);
             CREATE TABLE album_ratings (album_id TEXT, user_id TEXT, rating REAL);
             CREATE TABLE track_ratings (track_id TEXT, user_id TEXT, rating REAL);
+            CREATE TABLE artist_name_aliases (alias_name_normalized TEXT PRIMARY KEY, artist_id TEXT);
             CREATE TABLE track_deep_analysis (
                 track_id TEXT PRIMARY KEY,
                 confidence REAL NOT NULL DEFAULT 0.0
@@ -3032,5 +3777,716 @@ mod tests {
             find_owned_artist_by_name(&conn, " canonical owned ").unwrap(),
             Some(coerce_entity_id("artist-owned"))
         );
+    }
+
+    // ── Artist Merge / Unmerge ──────────────────────────────────────────────
+    // Real, fully-migrated temp database per test (not a hand-rolled schema)
+    // so merge/unmerge exercise the production FK/CASCADE/CHECK behavior —
+    // mirrors the `Fixture`/`fixture()` pattern established in `jobs.rs`.
+
+    fn merge_test_conn(prefix: &str) -> Connection {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("music-merge-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::init_db(&dir).expect("init test db").connection
+    }
+
+    fn insert_test_library(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES(?1, ?2, 'Music')",
+            rusqlite::params![id, format!("D:\\Music\\{id}")],
+        )
+        .unwrap();
+    }
+
+    fn insert_test_artist(conn: &Connection, id: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES(?1, ?2)",
+            rusqlite::params![id, name],
+        )
+        .unwrap();
+    }
+
+    fn insert_test_album(
+        conn: &Connection,
+        id: &str,
+        title: &str,
+        artist_id: &str,
+        album_artist: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id, album_artist) VALUES(?1, ?2, ?3, ?4)",
+            rusqlite::params![id, title, artist_id, album_artist],
+        )
+        .unwrap();
+    }
+
+    fn insert_test_track(
+        conn: &Connection,
+        id: &str,
+        library_id: &str,
+        artist_id: &str,
+        album_id: &str,
+        title: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO tracks(
+                id, library_id, artist_id, album_id, title, file_name, album_artist,
+                genre, composer, duration, file_path, file_size
+             ) VALUES(?1, ?2, ?3, ?4, ?5, 'file.flac', '', '', '', 0, ?6, 1)",
+            rusqlite::params![
+                id,
+                library_id,
+                artist_id,
+                album_id,
+                title,
+                format!("D:\\Music\\{id}.flac")
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn adopt_external_identity_keeps_masters_own_value() {
+        let master = IdentitySnapshot {
+            deezer_artist_id: Some("d1".into()),
+            deezer_identity_checked_at: Some("t1".into()),
+            ..Default::default()
+        };
+        let source = IdentitySnapshot {
+            deezer_artist_id: Some("d2".into()),
+            deezer_identity_checked_at: Some("t2".into()),
+            ..Default::default()
+        };
+        let adopted = adopt_external_identity(&[master, source]);
+        assert_eq!(adopted.deezer_artist_id.as_deref(), Some("d1"));
+        assert_eq!(adopted.deezer_identity_checked_at.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn adopt_external_identity_adopts_first_non_null_source_and_clears_checked_at() {
+        let master = IdentitySnapshot::default();
+        let source1 = IdentitySnapshot::default();
+        let source2 = IdentitySnapshot {
+            spotify_artist_id: Some("s2".into()),
+            spotify_identity_checked_at: Some("t2".into()),
+            ..Default::default()
+        };
+        let adopted = adopt_external_identity(&[master, source1, source2]);
+        assert_eq!(adopted.spotify_artist_id.as_deref(), Some("s2"));
+        assert_eq!(
+            adopted.spotify_identity_checked_at, None,
+            "adopting from anything but index 0 must clear checked_at to force re-verification"
+        );
+    }
+
+    #[test]
+    fn adopt_external_identity_pairs_lastfm_mbid_with_its_own_canonical_name() {
+        let master = IdentitySnapshot::default();
+        let source = IdentitySnapshot {
+            lastfm_mbid: Some("mbid-1".into()),
+            lastfm_canonical_name: Some("Canonical".into()),
+            lastfm_identity_checked_at: Some("t".into()),
+            ..Default::default()
+        };
+        let adopted = adopt_external_identity(&[master, source]);
+        assert_eq!(adopted.lastfm_mbid.as_deref(), Some("mbid-1"));
+        assert_eq!(adopted.lastfm_canonical_name.as_deref(), Some("Canonical"));
+        assert_eq!(adopted.lastfm_identity_checked_at, None);
+    }
+
+    #[test]
+    fn adopt_external_identity_all_null_stays_null() {
+        let adopted =
+            adopt_external_identity(&[IdentitySnapshot::default(), IdentitySnapshot::default()]);
+        assert!(adopted.lastfm_mbid.is_none());
+        assert!(adopted.deezer_artist_id.is_none());
+        assert!(adopted.spotify_artist_id.is_none());
+        assert!(adopted.discogs_artist_id.is_none());
+    }
+
+    #[test]
+    fn is_various_artists_matches_case_and_whitespace_insensitively() {
+        assert!(is_various_artists("Various Artists"));
+        assert!(is_various_artists("  various artists  "));
+        assert!(!is_various_artists("Various"));
+        assert!(!is_various_artists("Madonna"));
+    }
+
+    #[test]
+    fn merge_artists_requires_at_least_two() {
+        let conn = merge_test_conn("too-few");
+        insert_test_artist(&conn, "a1", "Solo");
+        let err =
+            merge_artists(&conn, &[coerce_entity_id("a1")], "Solo", None, "user-1").unwrap_err();
+        assert!(matches!(err, ArtistMergeError::TooFewArtists));
+    }
+
+    #[test]
+    fn merge_artists_requires_a_name() {
+        let conn = merge_test_conn("empty-name");
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        let err = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "   ",
+            None,
+            "user-1",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ArtistMergeError::EmptyName));
+    }
+
+    #[test]
+    fn merge_artists_rejects_unknown_artist() {
+        let conn = merge_test_conn("not-found");
+        insert_test_artist(&conn, "a1", "One");
+        let err = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("missing")],
+            "One",
+            None,
+            "user-1",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ArtistMergeError::ArtistNotFound));
+    }
+
+    #[test]
+    fn merge_artists_rejects_various_artists() {
+        let conn = merge_test_conn("various");
+        insert_test_artist(&conn, "va", "Various Artists");
+        insert_test_artist(&conn, "a2", "Two");
+        let err = merge_artists(
+            &conn,
+            &[coerce_entity_id("va"), coerce_entity_id("a2")],
+            "Two",
+            None,
+            "user-1",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ArtistMergeError::VariousArtistsNotMergeable));
+    }
+
+    #[test]
+    fn merge_artists_rejects_master_id_not_in_selection() {
+        let conn = merge_test_conn("invalid-master");
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        insert_test_artist(&conn, "a3", "Three");
+        let err = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "One",
+            Some(&coerce_entity_id("a3")),
+            "user-1",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ArtistMergeError::InvalidMaster));
+    }
+
+    #[test]
+    fn merge_artists_rejects_already_merged_artist() {
+        let conn = merge_test_conn("already-merged");
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        insert_test_artist(&conn, "a3", "Three");
+        merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "One",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+        let err = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a3")],
+            "One",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ArtistMergeError::AlreadyMerged));
+    }
+
+    #[test]
+    fn merge_artists_dedupes_repeated_ids() {
+        let conn = merge_test_conn("dedupe");
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        let result = merge_artists(
+            &conn,
+            &[
+                coerce_entity_id("a1"),
+                coerce_entity_id("a2"),
+                coerce_entity_id("a1"),
+            ],
+            "One",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+        assert_eq!(result.name, "One");
+    }
+
+    #[test]
+    fn merge_artists_moves_albums_tracks_styles_and_creates_alias() {
+        let conn = merge_test_conn("happy-path");
+        insert_test_library(&conn, "lib1");
+        insert_test_artist(&conn, "a1", "Madonna");
+        insert_test_artist(&conn, "a2", "Madonna Ciccone");
+        insert_test_album(&conn, "alb1", "True Blue", "a1", "Madonna");
+        insert_test_album(&conn, "alb2", "Erotica", "a2", "Madonna Ciccone");
+        insert_test_track(&conn, "t1", "lib1", "a1", "alb1", "Papa Don't Preach");
+        insert_test_track(&conn, "t2", "lib1", "a2", "alb2", "Deeper and Deeper");
+        conn.execute(
+            "INSERT INTO artist_styles(artist_id, style) VALUES('a1','pop')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO artist_styles(artist_id, style) VALUES('a2','dance')",
+            [],
+        )
+        .unwrap();
+
+        let result = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "Madonna",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+
+        assert_eq!(result.name, "Madonna");
+        assert_eq!(result.album_count, 2);
+        assert_eq!(result.track_count, 2);
+        // no external identity anywhere -> pending an online match, not yet locked
+        assert_eq!(result.metadata_locked, Some(0));
+        assert_eq!(result.identity_lock_pending, Some(1));
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM artists WHERE id='a2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0, "source artist row should be deleted");
+
+        let styles = list_artist_radio_tags(&conn, &coerce_entity_id("a1")).unwrap();
+        assert_eq!(styles, vec!["dance".to_string(), "pop".to_string()]);
+
+        let alias_target: EntityId = conn
+            .query_row(
+                "SELECT artist_id FROM artist_name_aliases WHERE alias_name_normalized = 'madonna ciccone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(alias_target, coerce_entity_id("a1"));
+
+        let info = get_artist_merge_info(&conn, &coerce_entity_id("a1")).unwrap();
+        assert!(info.merged);
+        assert_eq!(info.members.len(), 1);
+        assert_eq!(info.members[0].original_name, "Madonna Ciccone");
+        assert_eq!(info.members[0].album_count, 1);
+        assert_eq!(info.members[0].track_count, 1);
+
+        // A rescan resolving the old, pre-merge name must resolve back to the
+        // master, not create a duplicate (§6.3 — exercised end-to-end here;
+        // see jobs.rs for the focused upsert_artist unit tests).
+        let resolved = crate::jobs::upsert_artist(&conn, "Madonna Ciccone").unwrap();
+        assert_eq!(resolved, coerce_entity_id("a1"));
+        let artist_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM artists", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(artist_count, 1);
+
+        // A scoped post-scan job was enqueued for the one-shot online match.
+        let job_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM post_scan_jobs WHERE job_type='enrich_artist_external_ids'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(job_count, 1);
+    }
+
+    #[test]
+    fn merge_artists_with_custom_name_creates_new_master_and_absorbs_both() {
+        let conn = merge_test_conn("custom-name");
+        insert_test_artist(&conn, "a1", "Prince");
+        insert_test_artist(&conn, "a2", "TAFKAP");
+
+        let result = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "The Artist",
+            None,
+            "user-1",
+        )
+        .unwrap();
+
+        assert_eq!(result.name, "The Artist");
+        let info = get_artist_merge_info(&conn, &result.id).unwrap();
+        assert!(info.merged);
+        assert_eq!(info.members.len(), 2);
+        let mut names: Vec<_> = info
+            .members
+            .iter()
+            .map(|m| m.original_name.clone())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["Prince".to_string(), "TAFKAP".to_string()]);
+    }
+
+    #[test]
+    fn merge_artists_keeps_masters_existing_identity_over_source() {
+        let conn = merge_test_conn("identity-keep");
+        insert_test_artist(&conn, "a1", "Beyonce");
+        insert_test_artist(&conn, "a2", "Beyonce Knowles");
+        conn.execute(
+            "UPDATE artists SET deezer_artist_id='d-master', deezer_identity_checked_at='2020-01-01' WHERE id='a1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE artists SET deezer_artist_id='d-source', deezer_identity_checked_at='2021-01-01' WHERE id='a2'",
+            [],
+        )
+        .unwrap();
+
+        let result = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "Beyonce",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+
+        assert_eq!(result.metadata_locked, Some(1));
+        assert_eq!(result.identity_lock_pending, Some(0));
+        let deezer: String = conn
+            .query_row(
+                "SELECT deezer_artist_id FROM artists WHERE id='a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(deezer, "d-master");
+    }
+
+    #[test]
+    fn merge_artists_keeps_higher_rating_per_user() {
+        let conn = merge_test_conn("ratings");
+        conn.execute(
+            "INSERT INTO users(id, username, role) VALUES('u1','tester','user')",
+            [],
+        )
+        .unwrap();
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        conn.execute(
+            "INSERT INTO artist_ratings(user_id, artist_id, rating) VALUES('u1','a1',3.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO artist_ratings(user_id, artist_id, rating) VALUES('u1','a2',4.5)",
+            [],
+        )
+        .unwrap();
+
+        merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "One",
+            Some(&coerce_entity_id("a1")),
+            "u1",
+        )
+        .unwrap();
+
+        let rating: f64 = conn
+            .query_row(
+                "SELECT rating FROM artist_ratings WHERE user_id='u1' AND artist_id='a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rating, 4.5);
+    }
+
+    #[test]
+    fn unmerge_artists_splits_member_back_out_and_restores_moves() {
+        let conn = merge_test_conn("unmerge-full");
+        insert_test_library(&conn, "lib1");
+        insert_test_artist(&conn, "a1", "Madonna");
+        insert_test_artist(&conn, "a2", "Madonna Ciccone");
+        insert_test_album(&conn, "alb2", "Erotica", "a2", "Madonna Ciccone");
+        insert_test_track(&conn, "t2", "lib1", "a2", "alb2", "Deeper and Deeper");
+
+        merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "Madonna",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+        let info = get_artist_merge_info(&conn, &coerce_entity_id("a1")).unwrap();
+        let member_id = info.members[0].id.clone();
+
+        let result =
+            unmerge_artists(&conn, &coerce_entity_id("a1"), &[member_id], "user-1").unwrap();
+        assert_eq!(result.new_artist_ids.len(), 1);
+        let new_id = &result.new_artist_ids[0];
+
+        let restored_name: String = conn
+            .query_row("SELECT name FROM artists WHERE id = ?1", [new_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(restored_name, "Madonna Ciccone");
+
+        let album_owner: EntityId = conn
+            .query_row("SELECT artist_id FROM albums WHERE id='alb2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(&album_owner, new_id);
+        let track_owner: EntityId = conn
+            .query_row("SELECT artist_id FROM tracks WHERE id='t2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(&track_owner, new_id);
+
+        let alias_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artist_name_aliases WHERE alias_name_normalized='madonna ciccone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(alias_count, 0);
+
+        let master = result
+            .master
+            .expect("master should survive (had a real prior identity)");
+        assert_eq!(master.metadata_locked, Some(0));
+
+        let merge_info = get_artist_merge_info(&conn, &coerce_entity_id("a1")).unwrap();
+        assert!(!merge_info.merged);
+    }
+
+    #[test]
+    fn unmerge_artists_deletes_synthetic_master_when_fully_dissolved() {
+        let conn = merge_test_conn("unmerge-dissolve");
+        insert_test_artist(&conn, "a1", "Prince");
+        insert_test_artist(&conn, "a2", "TAFKAP");
+        let merged = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "The Artist",
+            None,
+            "user-1",
+        )
+        .unwrap();
+        let master_id = merged.id.clone();
+        let info = get_artist_merge_info(&conn, &master_id).unwrap();
+        let all_member_ids: Vec<EntityId> = info.members.iter().map(|m| m.id.clone()).collect();
+
+        let result = unmerge_artists(&conn, &master_id, &all_member_ids, "user-1").unwrap();
+        assert_eq!(result.new_artist_ids.len(), 2);
+        assert!(
+            result.master.is_none(),
+            "a synthetic (custom-name) master with nothing left should be deleted, not kept"
+        );
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artists WHERE id = ?1",
+                [&master_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn unmerge_artists_partial_keeps_master_locked_with_remaining_members() {
+        let conn = merge_test_conn("unmerge-partial");
+        insert_test_artist(&conn, "a1", "Madonna");
+        insert_test_artist(&conn, "a2", "Madonna Ciccone");
+        insert_test_artist(&conn, "a3", "M.D.N.A.");
+        merge_artists(
+            &conn,
+            &[
+                coerce_entity_id("a1"),
+                coerce_entity_id("a2"),
+                coerce_entity_id("a3"),
+            ],
+            "Madonna",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+
+        let info = get_artist_merge_info(&conn, &coerce_entity_id("a1")).unwrap();
+        assert_eq!(info.members.len(), 2);
+        let one_member = info.members[0].id.clone();
+
+        let result =
+            unmerge_artists(&conn, &coerce_entity_id("a1"), &[one_member], "user-1").unwrap();
+        assert_eq!(result.new_artist_ids.len(), 1);
+        assert!(result.master.is_some());
+
+        let remaining_info = get_artist_merge_info(&conn, &coerce_entity_id("a1")).unwrap();
+        assert!(remaining_info.merged);
+        assert_eq!(remaining_info.members.len(), 1);
+    }
+
+    #[test]
+    fn unmerge_artists_rejects_non_master() {
+        let conn = merge_test_conn("unmerge-not-master");
+        insert_test_artist(&conn, "a1", "Solo");
+        let err = unmerge_artists(
+            &conn,
+            &coerce_entity_id("a1"),
+            &[coerce_entity_id("whatever")],
+            "user-1",
+        )
+        .unwrap_err();
+        assert!(matches!(err, ArtistMergeError::NotAMergeMaster));
+    }
+
+    #[test]
+    fn unmerge_artists_requires_member_ids() {
+        let conn = merge_test_conn("unmerge-empty");
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "One",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+        let err = unmerge_artists(&conn, &coerce_entity_id("a1"), &[], "user-1").unwrap_err();
+        assert!(matches!(err, ArtistMergeError::NoMembersSelected));
+    }
+
+    #[test]
+    fn lock_artist_identity_locks_when_pending() {
+        let conn = merge_test_conn("lock-pending");
+        // A library must exist for the merge to have somewhere to scope its
+        // one-shot enrichment job to — otherwise (§6.5's edge case) it locks
+        // immediately instead of going pending, which isn't what this test
+        // wants to exercise.
+        insert_test_library(&conn, "lib1");
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        let merged = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "One",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+        assert_eq!(merged.identity_lock_pending, Some(1));
+
+        let locked = lock_artist_identity(&conn, &coerce_entity_id("a1"), "user-1").unwrap();
+        assert_eq!(locked.metadata_locked, Some(1));
+        assert_eq!(locked.identity_lock_pending, Some(0));
+    }
+
+    #[test]
+    fn merge_artists_locks_immediately_when_no_library_exists_to_scope_enrichment_to() {
+        let conn = merge_test_conn("lock-no-library");
+        insert_test_artist(&conn, "a1", "One");
+        insert_test_artist(&conn, "a2", "Two");
+        let merged = merge_artists(
+            &conn,
+            &[coerce_entity_id("a1"), coerce_entity_id("a2")],
+            "One",
+            Some(&coerce_entity_id("a1")),
+            "user-1",
+        )
+        .unwrap();
+        assert_eq!(
+            merged.metadata_locked,
+            Some(1),
+            "nothing to scope a post-merge online lookup to — must lock immediately"
+        );
+        assert_eq!(merged.identity_lock_pending, Some(0));
+    }
+
+    #[test]
+    fn lock_artist_identity_rejects_when_not_pending() {
+        let conn = merge_test_conn("lock-not-pending");
+        insert_test_artist(&conn, "a1", "Solo");
+        let err = lock_artist_identity(&conn, &coerce_entity_id("a1"), "user-1").unwrap_err();
+        assert!(matches!(err, ArtistMergeError::IdentityNotPending));
+    }
+
+    #[test]
+    fn lock_artist_identity_rejects_unknown_artist() {
+        let conn = merge_test_conn("lock-unknown");
+        let err = lock_artist_identity(&conn, &coerce_entity_id("missing"), "user-1").unwrap_err();
+        assert!(matches!(err, ArtistMergeError::ArtistNotFound));
+    }
+
+    #[test]
+    fn finalize_pending_identity_lock_locks_on_hit_and_leaves_pending_on_miss() {
+        let conn = merge_test_conn("finalize-lock");
+        insert_test_artist(&conn, "a1", "One");
+        conn.execute(
+            "UPDATE artists SET identity_lock_pending = 1 WHERE id='a1'",
+            [],
+        )
+        .unwrap();
+
+        let locked = finalize_pending_identity_lock(&conn, &coerce_entity_id("a1")).unwrap();
+        assert!(!locked, "no identity yet — must not lock");
+        let pending: i64 = conn
+            .query_row(
+                "SELECT identity_lock_pending FROM artists WHERE id='a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1);
+
+        conn.execute("UPDATE artists SET deezer_artist_id='d1' WHERE id='a1'", [])
+            .unwrap();
+        let locked = finalize_pending_identity_lock(&conn, &coerce_entity_id("a1")).unwrap();
+        assert!(locked, "a provider match landed — must lock now");
+        let (locked_flag, pending): (i64, i64) = conn
+            .query_row(
+                "SELECT metadata_locked, identity_lock_pending FROM artists WHERE id='a1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(locked_flag, 1);
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn get_artist_merge_info_reports_unmerged_for_a_plain_artist() {
+        let conn = merge_test_conn("merge-info-plain");
+        insert_test_artist(&conn, "a1", "Solo");
+        let info = get_artist_merge_info(&conn, &coerce_entity_id("a1")).unwrap();
+        assert!(!info.merged);
+        assert!(info.members.is_empty());
     }
 }

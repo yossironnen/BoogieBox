@@ -7,6 +7,8 @@ const { apiMock } = vi.hoisted(() => ({
     track: vi.fn(),
     genres: vi.fn(),
     updateTrackMetadata: vi.fn(),
+    artists: vi.fn(),
+    getArtistMergeInfo: vi.fn(),
   },
 }));
 
@@ -47,6 +49,8 @@ describe('TrackInfoModal', () => {
     apiMock.track.mockResolvedValue(track);
     apiMock.genres.mockResolvedValue([{ genre: 'Progressive House' }, { genre: 'Techno' }]);
     apiMock.updateTrackMetadata.mockResolvedValue({ ok: true });
+    apiMock.artists.mockResolvedValue([]);
+    apiMock.getArtistMergeInfo.mockResolvedValue({ merged: false, members: [] });
   });
 
   it('loads and displays read-only track detail', async () => {
@@ -104,6 +108,15 @@ describe('TrackInfoModal', () => {
     expect(screen.queryByText(/D:\\Music/)).not.toBeInTheDocument();
   });
 
+  it('falls back to "Never" and 0 for a never-played track', async () => {
+    apiMock.track.mockResolvedValue({ ...track, last_played_at: null, play_count: null });
+    render(<TrackInfoModal trackId="track-1" onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    await screen.findByDisplayValue('Strobe');
+    expect(screen.getByText('Never')).toBeInTheDocument();
+    expect(screen.getByText('0')).toBeInTheDocument();
+  });
+
   it('copies the file path to the clipboard', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
@@ -134,5 +147,40 @@ describe('TrackInfoModal', () => {
     apiMock.track.mockRejectedValueOnce(new Error('Track not found'));
     render(<TrackInfoModal trackId="track-1" onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(await screen.findByText('Track not found')).toBeInTheDocument();
+  });
+
+  it('warns before a rename that would detach the track from a merged artist', async () => {
+    apiMock.artists.mockResolvedValue([{ id: 'artist-1', name: 'deadmau5' }]);
+    apiMock.getArtistMergeInfo.mockResolvedValue({
+      merged: true,
+      members: [{ id: 'm1', original_name: 'Deadmau5', album_count: 1, track_count: 1 }],
+    });
+    render(<TrackInfoModal trackId="track-1" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await screen.findByDisplayValue('Strobe');
+    await waitFor(() => expect(apiMock.getArtistMergeInfo).toHaveBeenCalledWith('artist-1'));
+
+    // Unchanged from the track's current (merged) artist — no warning yet.
+    expect(screen.queryByText(/renaming this track.s artist will detach it/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('deadmau5'), { target: { value: 'Joel Zimmerman' } });
+    expect(await screen.findByText(/renaming this track.s artist will detach it/)).toBeInTheDocument();
+
+    // Restoring the original name (even with different casing/whitespace) clears it.
+    // (Composer also happens to read "Joel Zimmerman" in this fixture — the
+    // Artist field renders first, per the Title/Artist row.)
+    fireEvent.change(screen.getAllByDisplayValue('Joel Zimmerman')[0], { target: { value: ' DEADMAU5 ' } });
+    await waitFor(() => expect(
+      screen.queryByText(/renaming this track.s artist will detach it/),
+    ).not.toBeInTheDocument());
+  });
+
+  it('does not warn when the track artist is not a merge master', async () => {
+    apiMock.artists.mockResolvedValue([{ id: 'artist-1', name: 'deadmau5' }]);
+    apiMock.getArtistMergeInfo.mockResolvedValue({ merged: false, members: [] });
+    render(<TrackInfoModal trackId="track-1" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await screen.findByDisplayValue('Strobe');
+
+    fireEvent.change(screen.getByDisplayValue('deadmau5'), { target: { value: 'Joel Zimmerman' } });
+    expect(screen.queryByText(/renaming this track.s artist will detach it/)).not.toBeInTheDocument();
   });
 });

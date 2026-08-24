@@ -693,6 +693,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-08-17-artist-external-identities",
             apply: ensure_artist_external_identity_schema,
         },
+        Migration {
+            id: "2026-08-24-artist-merge-schema",
+            apply: ensure_artist_merge_schema,
+        },
     ];
 
     for migration in migrations {
@@ -1073,6 +1077,68 @@ fn ensure_artist_external_identity_schema(connection: &Connection) -> Result<(),
           ON artists(spotify_artist_id) WHERE spotify_artist_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_artists_discogs_artist_id
           ON artists(discogs_artist_id) WHERE discogs_artist_id IS NOT NULL;
+        "#,
+    )?;
+    Ok(())
+}
+
+/// Backs the artist-consolidation feature (merge/unmerge duplicate artist
+/// rows into one). `artist_merges`/`artist_merge_members`/`artist_merge_moves`
+/// record enough to reverse a merge exactly; `artist_name_aliases` is
+/// consulted by `jobs::upsert_artist` before it would create a new row, so a
+/// rescan can't re-fragment a merge just because a track's tag text still
+/// says a pre-merge name. `identity_lock_pending` lets a merge master that
+/// started with no adoptable external identity (typically a custom-typed
+/// name) get one real online matching pass — like a freshly-scanned artist —
+/// before `metadata_locked` protects it from further auto-scan enrichment.
+fn ensure_artist_merge_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "artists") {
+        return Ok(());
+    }
+    if !column_exists(connection, "artists", "identity_lock_pending")? {
+        connection.execute_batch(
+            "ALTER TABLE artists ADD COLUMN identity_lock_pending INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS artist_merges (
+          id TEXT PRIMARY KEY,
+          master_artist_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+          merged_by_user_id TEXT,
+          merged_at TEXT NOT NULL DEFAULT (datetime('now')),
+          -- 1 when the master row was minted fresh for a custom-typed name (had
+          -- no pre-merge identity of its own): if every member is later
+          -- unmerged, the now-empty master row is deleted instead of kept.
+          master_is_new INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_merges_master
+          ON artist_merges(master_artist_id);
+
+        CREATE TABLE IF NOT EXISTS artist_merge_members (
+          id TEXT PRIMARY KEY,
+          merge_id TEXT NOT NULL REFERENCES artist_merges(id) ON DELETE CASCADE,
+          original_name TEXT NOT NULL,
+          original_artist_id TEXT NOT NULL,
+          album_count_at_merge INTEGER NOT NULL DEFAULT 0,
+          track_count_at_merge INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_merge_members_merge_id
+          ON artist_merge_members(merge_id);
+
+        CREATE TABLE IF NOT EXISTS artist_merge_moves (
+          merge_member_id TEXT NOT NULL REFERENCES artist_merge_members(id) ON DELETE CASCADE,
+          entity_type TEXT NOT NULL CHECK (entity_type IN ('album','track')),
+          entity_id TEXT NOT NULL,
+          PRIMARY KEY (merge_member_id, entity_type, entity_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS artist_name_aliases (
+          alias_name_normalized TEXT PRIMARY KEY,
+          artist_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_name_aliases_artist_id
+          ON artist_name_aliases(artist_id);
         "#,
     )?;
     Ok(())

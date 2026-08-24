@@ -105,6 +105,10 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
   const [saving, setSaving]       = useState(false);
   const [error, setError]         = useState<string | null>(null);
   const [copied, setCopied]       = useState(false);
+  // Artist consolidation (§8 decision #2): warn, don't block, when renaming
+  // this field would detach the track from a merged artist identity — see
+  // wip/artist-consolidation-implementation-plan.md.
+  const [artistIsMergeMaster, setArtistIsMergeMaster] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,6 +138,28 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
   useEffect(() => {
     api.genres().then(rows => setAllGenres((rows as any[]).map(r => r.genre).filter(Boolean))).catch(() => {});
   }, []);
+
+  // Resolve whether the track's current artist is a merge master, so an
+  // edit that renames it away can be flagged. Best-effort: an artist-list
+  // name lookup (the client Track shape has no artist_id), silently skipped
+  // on any failure — this is a UX nicety, not the actual rename-protection
+  // (that's the server's alias table, unaffected either way).
+  useEffect(() => {
+    setArtistIsMergeMaster(false);
+    const name = track?.artist?.trim();
+    if (!name) return;
+    let cancelled = false;
+    api.artists().then(async (all) => {
+      const match = all.find(a => a.name.trim().toLowerCase() === name.toLowerCase());
+      if (!match) return;
+      const info = await api.getArtistMergeInfo(match.id);
+      if (!cancelled) setArtistIsMergeMaster(!!info.merged);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [track?.artist]);
+
+  const artistRenameWillDetach = artistIsMergeMaster
+    && artist.trim().toLowerCase() !== (track?.artist ?? '').trim().toLowerCase();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -310,6 +336,11 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
                   <div>
                     <label style={labelStyle}>Artist</label>
                     <input style={inputStyle} value={artist} onChange={e => setArtist(e.target.value)} />
+                    {artistRenameWillDetach && (
+                      <div style={{ fontSize: 10.5, color: 'var(--accent)', marginTop: 5, lineHeight: 1.4 }}>
+                        This artist is a merged identity — renaming this track&rsquo;s artist will detach it from the merge.
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>

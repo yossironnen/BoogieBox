@@ -13,12 +13,13 @@ use boogiebox_db::artwork::{
 use boogiebox_db::boogiemix::get_track_sonic_fingerprint;
 use boogiebox_db::music::{
     album_change_cursor, coerce_entity_id, get_album, get_artist, get_artist_external_identity,
-    get_artist_name, get_home_top_rated, get_track, interleave_by_artist, list_album_tracks,
-    list_albums, list_albums_by_group_tracks, list_albums_latest, list_artist_albums,
-    list_artist_appears_on, list_artist_own_random_tracks, list_artist_radio_candidates,
-    list_artist_radio_tags, list_artists, list_artists_most_played, list_auto_dj_candidates,
-    list_genres, list_home_genre_summaries, list_recently_played, list_top_played,
-    normalize_artist_release_types, search_music, update_track_metadata, ArtistList, EntityId,
+    get_artist_merge_info, get_artist_name, get_home_top_rated, get_track, interleave_by_artist,
+    list_album_tracks, list_albums, list_albums_by_group_tracks, list_albums_latest,
+    list_artist_albums, list_artist_appears_on, list_artist_own_random_tracks,
+    list_artist_radio_candidates, list_artist_radio_tags, list_artists, list_artists_most_played,
+    list_auto_dj_candidates, list_genres, list_home_genre_summaries, list_recently_played,
+    list_top_played, lock_artist_identity, merge_artists, normalize_artist_release_types,
+    search_music, unmerge_artists, update_track_metadata, ArtistList, ArtistMergeError, EntityId,
     ListAlbumsParams, ListArtistsParams, SearchMusicParams, TrackMetadataUpdate,
 };
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,7 @@ pub fn music_router(state: SharedState) -> Router {
         .route("/api/home/top-rated", get(home_top_rated_handler))
         // Artists - specific routes BEFORE parameterized ones
         .route("/api/artists/most-played", get(artists_most_played_handler))
+        .route("/api/artists/merge", post(merge_artists_handler))
         .route("/api/artists", get(list_artists_handler))
         .route("/api/artists/{id}", get(get_artist_handler))
         .route("/api/artists/{id}/similar", get(similar_artists_handler))
@@ -56,6 +58,15 @@ pub fn music_router(state: SharedState) -> Router {
         .route(
             "/api/artists/{id}/release-types/resolve",
             post(resolve_artist_release_types_handler),
+        )
+        .route(
+            "/api/artists/{id}/merge-info",
+            get(artist_merge_info_handler),
+        )
+        .route("/api/artists/{id}/unmerge", post(unmerge_artist_handler))
+        .route(
+            "/api/artists/{id}/lock-identity",
+            post(lock_artist_identity_handler),
         )
         // Albums - specific routes BEFORE parameterized ones
         .route("/api/albums/latest", get(albums_latest_handler))
@@ -271,6 +282,36 @@ fn internal_error() -> axum::response::Response {
         }),
     )
         .into_response()
+}
+
+fn conflict(msg: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: msg.into(),
+            setup_required: None,
+        }),
+    )
+        .into_response()
+}
+
+/// Maps artist merge/unmerge validation errors to HTTP responses. Matches
+/// the variant directly (not its rendered `Display` text) — see the
+/// `boogiemix_routes.rs` bug this pattern was adopted to avoid.
+fn map_merge_error(err: ArtistMergeError) -> axum::response::Response {
+    match err {
+        ArtistMergeError::TooFewArtists
+        | ArtistMergeError::EmptyName
+        | ArtistMergeError::VariousArtistsNotMergeable
+        | ArtistMergeError::InvalidMaster
+        | ArtistMergeError::NoMembersSelected
+        | ArtistMergeError::IdentityNotPending => bad_request(err.to_string()),
+        ArtistMergeError::ArtistNotFound | ArtistMergeError::NotAMergeMaster => {
+            not_found(err.to_string())
+        }
+        ArtistMergeError::AlreadyMerged => conflict(err.to_string()),
+        ArtistMergeError::Db(_) => internal_error(),
+    }
 }
 
 // -- Search --------------------------------------------------------------------
@@ -553,6 +594,150 @@ async fn get_artist_handler(
         Ok(Ok(Some(artist))) => (StatusCode::OK, Json(artist)).into_response(),
         Ok(Ok(None)) => not_found("Artist not found"),
         _ => internal_error(),
+    }
+}
+
+// -- Artist consolidation (merge/unmerge) --------------------------------------
+// See wip/artist-consolidation-implementation-plan.md.
+
+#[derive(Debug, Deserialize)]
+struct MergeArtistsPayload {
+    artist_ids: Vec<String>,
+    master_name: String,
+    master_artist_id: Option<String>,
+}
+
+/// `POST /api/artists/merge` — merges 2+ artist rows into one. Requires
+/// "Allow metadata editing" (or admin).
+async fn merge_artists_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Json(payload): Json<MergeArtistsPayload>,
+) -> impl IntoResponse {
+    if !can_edit_metadata(&user) {
+        return forbidden("Forbidden");
+    }
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let artist_ids: Vec<EntityId> = payload
+        .artist_ids
+        .iter()
+        .map(|id| coerce_entity_id(id))
+        .collect();
+    let master_artist_id = payload.master_artist_id.as_deref().map(coerce_entity_id);
+    let master_name = payload.master_name;
+    let acting_user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        merge_artists(
+            &db.lock().expect("db"),
+            &artist_ids,
+            &master_name,
+            master_artist_id.as_ref(),
+            &acting_user_id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(artist)) => (StatusCode::OK, Json(artist)).into_response(),
+        Ok(Err(e)) => map_merge_error(e),
+        Err(_) => internal_error(),
+    }
+}
+
+/// `GET /api/artists/{id}/merge-info` — whether `id` is a merge master and,
+/// if so, which names were absorbed into it. Powers the "Merged from" panel
+/// and the unmerge modal's member checklist. No permission gate — read-only.
+async fn artist_merge_info_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let artist_id = coerce_entity_id(&id);
+    match tokio::task::spawn_blocking(move || {
+        get_artist_merge_info(&db.lock().expect("db"), &artist_id)
+    })
+    .await
+    {
+        Ok(Ok(info)) => (StatusCode::OK, Json(info)).into_response(),
+        _ => internal_error(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UnmergePayload {
+    member_ids: Vec<String>,
+}
+
+/// `POST /api/artists/{id}/unmerge` — splits the given merge members back
+/// out into their own artist rows. Requires "Allow metadata editing" (or
+/// admin).
+async fn unmerge_artist_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(payload): Json<UnmergePayload>,
+) -> impl IntoResponse {
+    if !can_edit_metadata(&user) {
+        return forbidden("Forbidden");
+    }
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let master_id = coerce_entity_id(&id);
+    let member_ids: Vec<EntityId> = payload
+        .member_ids
+        .iter()
+        .map(|id| coerce_entity_id(id))
+        .collect();
+    let acting_user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        unmerge_artists(
+            &db.lock().expect("db"),
+            &master_id,
+            &member_ids,
+            &acting_user_id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(result)) => (StatusCode::OK, Json(result)).into_response(),
+        Ok(Err(e)) => map_merge_error(e),
+        Err(_) => internal_error(),
+    }
+}
+
+/// `POST /api/artists/{id}/lock-identity` — manually locks a merge master
+/// still waiting on its post-merge online identity match (§6.5's "Lock
+/// now"). Requires "Allow metadata editing" (or admin).
+async fn lock_artist_identity_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if !can_edit_metadata(&user) {
+        return forbidden("Forbidden");
+    }
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let artist_id = coerce_entity_id(&id);
+    let acting_user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        lock_artist_identity(&db.lock().expect("db"), &artist_id, &acting_user_id)
+    })
+    .await
+    {
+        Ok(Ok(artist)) => (StatusCode::OK, Json(artist)).into_response(),
+        Ok(Err(e)) => map_merge_error(e),
+        Err(_) => internal_error(),
     }
 }
 
@@ -1695,5 +1880,215 @@ mod browse_route_tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{label}");
         }
+    }
+
+    // -- Artist consolidation (merge/unmerge) routes -----------------------
+    // See wip/artist-consolidation-implementation-plan.md.
+
+    /// Seeds a library (so a merge has somewhere to scope its post-merge
+    /// enrichment job to — see §6.5) plus two duplicate artist rows.
+    fn seed_duplicate_artists(pool: &DbPool) -> (String, String) {
+        let conn = pool.lock().unwrap();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES ('lib-merge-test', '/music-merge', 'Music')",
+            [],
+        )
+        .unwrap();
+        let a1 = Uuid::now_v7().to_string();
+        let a2 = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Madonna')",
+            params![a1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Madonna Ciccone')",
+            params![a2],
+        )
+        .unwrap();
+        (a1, a2)
+    }
+
+    #[tokio::test]
+    async fn merge_artists_route_requires_edit_metadata_permission() {
+        let (app, pool) = new_test_app_with_pool("music-merge-forbidden");
+        let cookie = seed_user_session(&pool, "u1");
+        let (a1, a2) = seed_duplicate_artists(&pool);
+
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/artists/merge")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"artist_ids":["{a1}","{a2}"],"master_name":"Madonna","master_artist_id":"{a1}"}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn merge_artists_route_merges_and_powers_merge_info_and_unmerge() {
+        let (app, pool) = new_test_app_with_pool("music-merge-happy");
+        let cookie = seed_user_session(&pool, "u1");
+        let (a1, a2) = seed_duplicate_artists(&pool);
+        pool.lock()
+            .unwrap()
+            .execute("UPDATE users SET can_edit_metadata = 1 WHERE id = 'u1'", [])
+            .unwrap();
+
+        let (merge_status, merge_body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/artists/merge")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"artist_ids":["{a1}","{a2}"],"master_name":"Madonna","master_artist_id":"{a1}"}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(merge_status, StatusCode::OK);
+        let merged = json_body(&merge_body);
+        assert_eq!(merged["name"], "Madonna");
+        assert_eq!(merged["album_count"], 0);
+
+        let (info_status, info_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/artists/{a1}/merge-info"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(info_status, StatusCode::OK);
+        let info = json_body(&info_body);
+        assert_eq!(info["merged"], true);
+        assert_eq!(info["members"].as_array().unwrap().len(), 1);
+        let member_id = info["members"][0]["id"].as_str().unwrap().to_string();
+
+        // Fewer than 2 artist_ids is rejected with 400.
+        let (bad_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/artists/merge")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"artist_ids":["{a1}"],"master_name":"Madonna","master_artist_id":"{a1}"}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+
+        // Unmerge without permission is rejected.
+        pool.lock()
+            .unwrap()
+            .execute("UPDATE users SET can_edit_metadata = 0 WHERE id = 'u1'", [])
+            .unwrap();
+        let (unmerge_forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/artists/{a1}/unmerge"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"member_ids":["{member_id}"]}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unmerge_forbidden_status, StatusCode::FORBIDDEN);
+
+        pool.lock()
+            .unwrap()
+            .execute("UPDATE users SET can_edit_metadata = 1 WHERE id = 'u1'", [])
+            .unwrap();
+        let (unmerge_status, unmerge_body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/artists/{a1}/unmerge"))
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"member_ids":["{member_id}"]}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unmerge_status, StatusCode::OK);
+        let unmerged = json_body(&unmerge_body);
+        assert_eq!(unmerged["new_artist_ids"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn lock_artist_identity_route_requires_permission_and_pending_state() {
+        let (app, pool) = new_test_app_with_pool("music-lock-identity");
+        let cookie = seed_user_session(&pool, "u1");
+        let (a1, a2) = seed_duplicate_artists(&pool);
+
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/artists/{a1}/lock-identity"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::FORBIDDEN);
+
+        pool.lock()
+            .unwrap()
+            .execute("UPDATE users SET can_edit_metadata = 1 WHERE id = 'u1'", [])
+            .unwrap();
+
+        // Not (yet) a merge master waiting on a match — nothing pending.
+        let (not_pending_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/artists/{a1}/lock-identity"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(not_pending_status, StatusCode::BAD_REQUEST);
+
+        send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/artists/merge")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"artist_ids":["{a1}","{a2}"],"master_name":"Madonna","master_artist_id":"{a1}"}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+
+        let (locked_status, locked_body) = send(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/artists/{a1}/lock-identity"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(locked_status, StatusCode::OK);
+        assert_eq!(json_body(&locked_body)["metadata_locked"].as_i64(), Some(1));
     }
 }

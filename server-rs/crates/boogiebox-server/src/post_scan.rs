@@ -783,6 +783,8 @@ async fn run_enrich_artist_external_ids(
             }
         }
 
+        finalize_pending_identity_lock(&state.db, &artist.artist_id).await;
+
         let db = state.db.clone();
         let job_id = job_id.clone();
         let _ = tokio::task::spawn_blocking(move || {
@@ -792,6 +794,19 @@ async fn run_enrich_artist_external_ids(
         .await;
     }
     Ok(())
+}
+
+/// After a provider lookup pass for one artist, locks it if it was a merge
+/// master waiting on its one-shot post-merge identity match (§6.5) and now
+/// has one. See `music::finalize_pending_identity_lock`.
+async fn finalize_pending_identity_lock(db: &DbPool, artist_id: &EntityId) {
+    let db = db.clone();
+    let artist_id = artist_id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        boogiebox_db::music::finalize_pending_identity_lock(&conn, &artist_id)
+    })
+    .await;
 }
 
 // -- warm_lastfm_album_info ----------------------------------------------------
@@ -1874,6 +1889,116 @@ mod tests {
         assert!(result.is_ok());
 
         std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn enrich_artist_external_ids_locks_a_pending_merge_master_on_a_provider_hit() {
+        // § artist consolidation, §6.5: a merge master with no adoptable
+        // identity is left `identity_lock_pending` instead of
+        // `metadata_locked`; this lane must flip it to locked once a
+        // provider match lands, and leave it pending on a miss.
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/search/artist"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": 42, "name": "Test Artist", "picture_xl": "https://img/test.jpg"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let f = fixture("enrich-pending-merge-hit");
+        {
+            let conn = f.state.db.lock().unwrap();
+            conn.execute(
+                "UPDATE artists SET identity_lock_pending = 1 WHERE id = ?1",
+                [&f.artist_id],
+            )
+            .unwrap();
+        }
+
+        let payload = format!(r#"{{"artistIds":["{}"]}}"#, f.artist_id);
+        let result = super::run_enrich_artist_external_ids(
+            &f.state,
+            &boogiebox_db::music::coerce_entity_id("job-1"),
+            &f.library_id_entity(),
+            Some(&payload),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let (locked, pending): (i64, i64) = {
+            let conn = f.state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT metadata_locked, identity_lock_pending FROM artists WHERE id = ?1",
+                [&f.artist_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(locked, 1, "a provider match landed — must lock now");
+        assert_eq!(pending, 0);
+
+        std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn enrich_artist_external_ids_leaves_a_pending_merge_master_unlocked_on_a_miss() {
+        // A guaranteed, deterministic miss (never a real network call): the
+        // mocked Deezer search returns no results, and no Last.fm/Discogs/
+        // Spotify keys are configured, so every provider branch is skipped.
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/search/artist"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "data": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("enrich-pending-merge-miss");
+        {
+            let conn = f.state.db.lock().unwrap();
+            conn.execute(
+                "UPDATE artists SET identity_lock_pending = 1 WHERE id = ?1",
+                [&f.artist_id],
+            )
+            .unwrap();
+        }
+
+        let payload = format!(r#"{{"artistIds":["{}"]}}"#, f.artist_id);
+        let result = super::run_enrich_artist_external_ids(
+            &f.state,
+            &boogiebox_db::music::coerce_entity_id("job-1"),
+            &f.library_id_entity(),
+            Some(&payload),
+        )
+        .await;
+        assert!(result.is_ok());
+        std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+
+        let (locked, pending): (i64, i64) = {
+            let conn = f.state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT metadata_locked, identity_lock_pending FROM artists WHERE id = ?1",
+                [&f.artist_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(locked, 0);
+        assert_eq!(
+            pending, 1,
+            "a miss must leave identity_lock_pending set so the periodic backfill sweep retries"
+        );
     }
 
     #[tokio::test]

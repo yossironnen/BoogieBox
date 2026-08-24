@@ -8,6 +8,8 @@ import type {
   Track,
   Artist,
   ArtistBrowsePage,
+  ArtistMergeInfo,
+  UnmergeResult,
   SimilarArtistsResponse,
   Album,
   LatestAlbum,
@@ -349,6 +351,18 @@ export const api = {
   setArtistRating: (id: ApiEntityId, rating: number | null) =>
     patch<{ ok: boolean; rating: number | null }>(`/artists/${id}/rating`, { rating }),
   refreshArtistPhoto: (id: ApiEntityId) => fetch(`${BASE}/api/artists/${id}/photo?refresh=1`),
+  // Artist consolidation (merge/unmerge duplicate artists) — see
+  // wip/artist-consolidation-implementation-plan.md.
+  mergeArtists: (artistIds: ApiEntityId[], masterName: string, masterArtistId?: ApiEntityId) =>
+    post<Artist>('/artists/merge', {
+      artist_ids: artistIds,
+      master_name: masterName,
+      master_artist_id: masterArtistId,
+    }),
+  getArtistMergeInfo: (id: ApiEntityId) => get<ArtistMergeInfo>(`/artists/${id}/merge-info`),
+  unmergeArtist: (id: ApiEntityId, memberIds: ApiEntityId[]) =>
+    post<UnmergeResult>(`/artists/${id}/unmerge`, { member_ids: memberIds }),
+  lockArtistIdentity: (id: ApiEntityId) => post<Artist>(`/artists/${id}/lock-identity`),
   album: (id: ApiEntityId) => get<Album>(`/albums/${id}`),
   setAlbumRating: (id: ApiEntityId, rating: number | null) =>
     patch<{ ok: boolean; rating: number | null; updated: number }>(`/albums/${id}/rating`, { rating }),

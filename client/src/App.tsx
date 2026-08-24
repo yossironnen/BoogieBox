@@ -1719,6 +1719,7 @@ export default function App() {
                 adaptiveAccentEnabled={adaptiveAccentEnabled}
                 hybridPreview={hybridDesignActive}
                 hideCompilationOnlyArtists={hideCompilationOnlyArtists}
+                canEditMetadata={currentUser.role === 'admin' || currentUser.canEditMetadata}
               />
           )}
           {view === 'playlists' && (

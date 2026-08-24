@@ -1323,6 +1323,20 @@ pub(crate) fn upsert_artist(conn: &Connection, name: &str) -> Result<EntityId, J
     {
         return Ok(existing);
     }
+    // A merged artist (see `music::merge_artists`) keeps every constituent
+    // name resolvable to its master row via this alias table, so a rescan
+    // whose tag text still says a pre-merge name doesn't recreate the old
+    // duplicate row instead of resolving back to the merge.
+    if let Some(resolved) = conn
+        .query_row(
+            "SELECT artist_id FROM artist_name_aliases WHERE alias_name_normalized = LOWER(TRIM(?1))",
+            [&normalized],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        return Ok(resolved);
+    }
     let artist_id = EntityId::Str(new_id());
     conn.execute(
         "INSERT INTO artists(id, name) VALUES(?1, ?2)",
@@ -2069,5 +2083,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status_after_retry, "pending");
+    }
+
+    // -- Artist consolidation: alias resolution (§6.3) --------------------
+
+    #[test]
+    fn upsert_artist_resolves_via_alias_instead_of_creating_a_duplicate() {
+        let f = fixture("alias-resolution");
+        // Simulate a merge having already happened: a master artist exists,
+        // and the pre-merge name is registered as an alias pointing at it.
+        let master_id = upsert_artist(&f.conn, "Madonna").unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO artist_name_aliases(alias_name_normalized, artist_id) VALUES('madonna ciccone', ?1)",
+                params![master_id],
+            )
+            .unwrap();
+
+        let resolved = upsert_artist(&f.conn, "Madonna Ciccone").unwrap();
+        assert_eq!(resolved, master_id);
+
+        let artist_count: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM artists", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            artist_count, 1,
+            "alias should resolve, not create a duplicate row"
+        );
+    }
+
+    #[test]
+    fn upsert_scanned_track_rescan_resolves_pre_merge_name_via_alias() {
+        let f = fixture("alias-rescan");
+        let master_id = upsert_artist(&f.conn, "Madonna").unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO artist_name_aliases(alias_name_normalized, artist_id) VALUES('madonna ciccone', ?1)",
+                params![master_id],
+            )
+            .unwrap();
+
+        let mut input = scanned_track(&f.library_id, "D:\\Music\\track.mp3", "Song");
+        input.artist = "Madonna Ciccone".to_string();
+        upsert_scanned_track(&f.conn, &input).unwrap();
+
+        let track_artist: EntityId = f
+            .conn
+            .query_row(
+                "SELECT artist_id FROM tracks WHERE file_path = ?1",
+                [&input.file_path],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            track_artist, master_id,
+            "a rescan whose tag text still says a pre-merge name must resolve back \
+             to the merge master, not recreate the old duplicate artist row"
+        );
     }
 }

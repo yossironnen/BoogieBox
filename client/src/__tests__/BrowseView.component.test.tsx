@@ -26,6 +26,11 @@ const { apiMock } = vi.hoisted(() => ({
     setArtistRating: vi.fn(),
     setAlbumRating: vi.fn(),
     setTrackRating: vi.fn(),
+    artist: vi.fn(),
+    mergeArtists: vi.fn(),
+    getArtistMergeInfo: vi.fn(),
+    unmergeArtist: vi.fn(),
+    lockArtistIdentity: vi.fn(),
     scanJobs: { active: vi.fn() },
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number, version?: string | number) => `/api/albums/${albumId}/art?size=${size}${version ? `&v=${version}` : ''}`),
     artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number, version?: string | number) => `/api/artists/${artistId}/photo?size=${size}${version ? `&v=${version}` : ''}`),
@@ -103,6 +108,8 @@ describe('BrowseView component flows', () => {
     apiMock.setArtistRating.mockResolvedValue({ ok: true, rating: 4.5 });
     apiMock.setAlbumRating.mockResolvedValue({ ok: true, rating: 5, updated: 1 });
     apiMock.setTrackRating.mockResolvedValue({ ok: true, rating: 0.5 });
+    apiMock.getArtistMergeInfo.mockResolvedValue({ merged: false, members: [] });
+    apiMock.artist.mockResolvedValue({ id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: 3.5 });
     apiMock.search.mockImplementation(async ({ q }: { q?: string }) => ({
       tracks: [makeTrack('100', q || 'Top Song')],
       total: 1,
@@ -1121,5 +1128,123 @@ describe('BrowseView component flows', () => {
       genres: ['Jazz'],
     })));
     expect(screen.getByText('No artists found.')).toBeInTheDocument();
+  });
+
+  // -- Artist consolidation (merge/unmerge) — see
+  // wip/artist-consolidation-implementation-plan.md.
+
+  it('hides the Select entry point without canEditMetadata', async () => {
+    render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+    );
+    await screen.findByText('Artist One');
+    expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument();
+  });
+
+  it('lets a permitted user select 2 artists and merge them', async () => {
+    apiMock.artists.mockResolvedValue([
+      { id: '1', name: 'Madonna', track_count: 2, album_count: 1, rating: null },
+      { id: '2', name: 'Madonna Ciccone', track_count: 1, album_count: 1, rating: null },
+    ]);
+    apiMock.mergeArtists.mockResolvedValue({ id: '1', name: 'Madonna', track_count: 3, album_count: 2 });
+
+    render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+    );
+    await screen.findByText('Madonna');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByText('Madonna'));
+    fireEvent.click(screen.getByText('Madonna Ciccone'));
+    expect(screen.getByText('2 artists selected')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Merge 2 Artists' }));
+    expect(screen.getByText('Merge 2 artists into one')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Merge Artists' }));
+    await waitFor(() => expect(apiMock.mergeArtists).toHaveBeenCalledWith(['1', '2'], 'Madonna', '1'));
+    // Exits select mode and refetches the artist list.
+    await waitFor(() => expect(apiMock.artists).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Merge 2 artists into one')).not.toBeInTheDocument();
+  });
+
+  it('shows "Merged from" on a merged artist and unmerges via the modal', async () => {
+    apiMock.getArtistMergeInfo.mockResolvedValue({
+      merged: true,
+      members: [{ id: 'm1', original_name: 'Madonna Ciccone', album_count: 1, track_count: 1 }],
+    });
+    apiMock.unmergeArtist.mockResolvedValue({ master: { id: '1', name: 'Artist One' }, new_artist_ids: ['n1'] });
+
+    render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+    );
+    fireEvent.click(await screen.findByText('Artist One'));
+
+    expect(await screen.findByText('Madonna Ciccone')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Unmerge' }));
+    expect(screen.getByText('Unmerge Artist One')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Unmerge Selected/ }));
+    await waitFor(() => expect(apiMock.unmergeArtist).toHaveBeenCalledWith('1', ['m1']));
+  });
+
+  it('hides Select on the Albums tab even when canEditMetadata is true', async () => {
+    render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+    );
+    await screen.findByText('Artist One');
+    expect(screen.getByRole('button', { name: 'Select' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Albums/ }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument());
+  });
+
+  it('disables selecting the Various Artists compilation entry', async () => {
+    apiMock.artists.mockResolvedValue([
+      { id: '1', name: 'Madonna', track_count: 2, album_count: 1, rating: null },
+      { id: 'va', name: 'Various Artists', track_count: 40, album_count: 5, rating: null },
+    ]);
+
+    render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+    );
+    await screen.findByText('Various Artists');
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+
+    fireEvent.click(screen.getByText('Various Artists'));
+    expect(screen.queryByText('1 artist selected')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Madonna'));
+    expect(screen.getByText('1 artist selected')).toBeInTheDocument();
+  });
+
+  it('shows the lock badge on a metadata-locked artist tile', async () => {
+    apiMock.artists.mockResolvedValue([
+      { id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: null, metadata_locked: 1 },
+    ]);
+    const { container } = render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+    );
+    await screen.findByText('Artist One');
+    expect(container.querySelector('[title="Custom metadata — protected from auto-scan"]')).toBeInTheDocument();
+  });
+
+  it('shows the pending online-match state and locks it on demand', async () => {
+    apiMock.artists.mockResolvedValue([
+      { id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: null, identity_lock_pending: 1 },
+    ]);
+    apiMock.lockArtistIdentity.mockResolvedValue({
+      id: '1', name: 'Artist One', track_count: 2, album_count: 1, metadata_locked: 1, identity_lock_pending: 0,
+    });
+
+    render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+    );
+    fireEvent.click(await screen.findByText('Artist One'));
+
+    expect(await screen.findByText('Matching artist metadata online…')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Lock now' }));
+    await waitFor(() => expect(apiMock.lockArtistIdentity).toHaveBeenCalledWith('1'));
+    await waitFor(() => expect(apiMock.artist).toHaveBeenCalledWith('1'));
   });
 });

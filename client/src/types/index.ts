@@ -74,8 +74,32 @@ export interface Artist {
   rating?: number | null;
   play_count?: number | null;
   metadata_locked?: number;
+  /** Set while a merge master is waiting on its one-shot post-merge online
+   * identity match (artist consolidation §6.5) — `None` outside the artist
+   * detail fetch, same as `metadata_locked`. */
+  identity_lock_pending?: number;
   description?: string | null;
   styles?: string[];
+}
+
+/** One name absorbed into a merge master (artist consolidation). */
+export interface ArtistMergeMember {
+  id: ClientEntityId;
+  original_name: string;
+  album_count: number;
+  track_count: number;
+}
+
+/** Whether — and from what — an artist is currently a merge master. */
+export interface ArtistMergeInfo {
+  merged: boolean;
+  members: ArtistMergeMember[];
+}
+
+/** Result of splitting one or more merge members back out. */
+export interface UnmergeResult {
+  master: Artist | null;
+  new_artist_ids: ClientEntityId[];
 }
 
 /** A collection-owned artist resolved from provider similarity metadata. */
