@@ -1345,4 +1345,830 @@ mod tests {
             Some("Massive Attack")
         );
     }
+
+    // -- offline pure-logic tests ------------------------------------------------
+
+    #[test]
+    fn parse_entity_ids_from_payload_handles_all_shapes() {
+        use super::parse_entity_ids_from_payload;
+        assert!(parse_entity_ids_from_payload(None, "artistIds").is_empty());
+        assert!(parse_entity_ids_from_payload(Some(""), "artistIds").is_empty());
+        assert!(parse_entity_ids_from_payload(Some("not json"), "artistIds").is_empty());
+        assert!(parse_entity_ids_from_payload(Some("{}"), "artistIds").is_empty());
+        assert!(parse_entity_ids_from_payload(Some(r#"{"artistIds":[]}"#), "artistIds").is_empty());
+        let ids = parse_entity_ids_from_payload(Some(r#"{"artistIds":["a1","a2"]}"#), "artistIds");
+        assert_eq!(ids, vec!["a1".to_string(), "a2".to_string()]);
+        // numeric ids coerce to strings too.
+        let ids = parse_entity_ids_from_payload(Some(r#"{"artistIds":[5,6]}"#), "artistIds");
+        assert_eq!(ids, vec!["5".to_string(), "6".to_string()]);
+    }
+
+    #[test]
+    fn art_root_helpers_build_expected_paths() {
+        use super::{art_original_root, art_thumb_root};
+        let base = std::path::Path::new("/data");
+        assert_eq!(
+            art_original_root(base, "artist"),
+            std::path::PathBuf::from("/data/art/artist/original")
+        );
+        assert_eq!(
+            art_thumb_root(base, "album", 300),
+            std::path::PathBuf::from("/data/art/album/thumb/300")
+        );
+    }
+
+    #[test]
+    fn extract_discogs_label_skips_blank_and_not_on_label() {
+        use super::extract_discogs_label;
+        assert_eq!(
+            extract_discogs_label(
+                &serde_json::json!({"label": ["Not On Label", "  ", "Real Records"]})
+            ),
+            Some("Real Records".to_string())
+        );
+        assert_eq!(
+            extract_discogs_label(&serde_json::json!({"label": ["Not on label"]})),
+            None
+        );
+        assert_eq!(extract_discogs_label(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn normalize_match_text_strips_parens_and_punctuation() {
+        use super::normalize_match_text;
+        assert_eq!(
+            normalize_match_text("The Beatles (Remastered) [2009]"),
+            "the beatles"
+        );
+        assert_eq!(normalize_match_text("Sigur Rós"), "sigur r s");
+    }
+
+    // -- end-to-end fixture -------------------------------------------------------
+
+    struct Fixture {
+        state: super::PostScanState,
+        library_id: String,
+        artist_id: String,
+        album_id: String,
+        track_id: String,
+        dir: std::path::PathBuf,
+    }
+
+    fn fixture(prefix: &str) -> Fixture {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("post-scan-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = boogiebox_db::init_db(&dir).unwrap().connection;
+
+        let library_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES (?, ?, 'Lib')",
+            rusqlite::params![library_id, dir.to_string_lossy()],
+        )
+        .unwrap();
+        let artist_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO artists(id, name) VALUES (?, 'Test Artist')",
+            rusqlite::params![artist_id],
+        )
+        .unwrap();
+        let album_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES (?, 'Test Album', ?)",
+            rusqlite::params![album_id, artist_id],
+        )
+        .unwrap();
+        let track_id = uuid::Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) \
+             VALUES (?, ?, ?, ?, 'Test Track', ?)",
+            rusqlite::params![
+                track_id,
+                library_id,
+                artist_id,
+                album_id,
+                dir.join("Test Track.mp3").to_string_lossy()
+            ],
+        )
+        .unwrap();
+
+        let db: DbPool = Arc::new(Mutex::new(conn));
+        let state = super::PostScanState {
+            db,
+            http_client: reqwest::Client::new(),
+            db_folder: Some(dir.clone()),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        };
+        Fixture {
+            state,
+            library_id,
+            artist_id,
+            album_id,
+            track_id,
+            dir,
+        }
+    }
+
+    fn set_setting(f: &Fixture, key: &str, value: &str) {
+        let conn = f.state.db.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE settings SET value = ? WHERE key = ?",
+                rusqlite::params![value, key],
+            )
+            .unwrap();
+        if changed == 0 {
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?)",
+                rusqlite::params![key, value],
+            )
+            .unwrap();
+        }
+    }
+
+    // -- process_post_scan_job dispatch ------------------------------------------
+
+    #[tokio::test]
+    async fn process_post_scan_job_dispatches_refresh_library_mappings() {
+        let f = fixture("dispatch-refresh");
+        let job = boogiebox_db::jobs::ClaimedPostScanJob {
+            job_id: boogiebox_db::music::coerce_entity_id("job-1"),
+            library_id: boogiebox_db::music::coerce_entity_id(&f.library_id),
+            job_type: "refresh_library_mappings".to_string(),
+            payload: None,
+        };
+        let result = super::process_post_scan_job(&f.state, &job).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn process_post_scan_job_rejects_unsupported_job_type() {
+        let f = fixture("dispatch-unsupported");
+        let job = boogiebox_db::jobs::ClaimedPostScanJob {
+            job_id: boogiebox_db::music::coerce_entity_id("job-1"),
+            library_id: boogiebox_db::music::coerce_entity_id(&f.library_id),
+            job_type: "totally_unknown_job".to_string(),
+            payload: None,
+        };
+        let result = super::process_post_scan_job(&f.state, &job).await;
+        assert!(matches!(
+            result,
+            Err(boogiebox_db::jobs::JobError::UnsupportedPostScanJob(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_one_pending_music_post_scan_runs_a_queued_job_to_completion() {
+        let f = fixture("lane-e2e");
+        {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::jobs::enqueue_post_scan_job(
+                &conn,
+                &f.library_id,
+                "refresh_library_mappings",
+                None,
+            )
+            .unwrap();
+        }
+        super::run_one_pending_music_post_scan(&f.state).await;
+        let status: String = {
+            let conn = f.state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT status FROM post_scan_jobs WHERE library_id = ?",
+                rusqlite::params![f.library_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(status, "done");
+    }
+
+    #[tokio::test]
+    async fn run_one_pending_music_post_scan_marks_unsupported_job_failed() {
+        let f = fixture("lane-failed");
+        {
+            let conn = f.state.db.lock().unwrap();
+            // `claim_next_post_scan_job` only ever selects from the fixed
+            // `MUSIC_POST_SCAN_JOB_TYPES` allow-list, so an arbitrary job_type
+            // (even inserted directly, bypassing `enqueue_post_scan_job`'s own
+            // check) is simply never claimed — it can't reach this failure path.
+            // `refresh_library_mappings` itself no-ops when `artist_libraries`/
+            // `album_libraries` don't exist, so force a real failure via
+            // `enrich_artist_external_ids`'s auto-select query instead, which
+            // propagates a real SQL error (`?`) when its `artists` table is gone.
+            boogiebox_db::jobs::enqueue_post_scan_job(
+                &conn,
+                &f.library_id,
+                "enrich_artist_external_ids",
+                None,
+            )
+            .unwrap();
+            conn.execute("DROP TABLE artists", []).unwrap();
+        }
+        super::run_one_pending_music_post_scan(&f.state).await;
+        let (status, error_log): (String, Option<String>) = {
+            let conn = f.state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT status, error_log FROM post_scan_jobs WHERE library_id = ?",
+                rusqlite::params![f.library_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(status, "failed");
+        assert!(error_log.is_some());
+    }
+
+    #[tokio::test]
+    async fn run_one_pending_music_post_scan_is_a_noop_with_nothing_queued() {
+        let f = fixture("lane-empty");
+        // Should return promptly without panicking when the queue is empty.
+        super::run_one_pending_music_post_scan(&f.state).await;
+    }
+
+    // -- run_cache_artist_images ---------------------------------------------------
+
+    #[tokio::test]
+    async fn cache_artist_images_noop_without_db_folder() {
+        let mut f = fixture("artist-images-no-folder");
+        f.state.db_folder = None;
+        let result = super::run_cache_artist_images(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cache_artist_images_skips_metadata_locked_artist() {
+        let f = fixture("artist-images-locked");
+        {
+            let conn = f.state.db.lock().unwrap();
+            conn.execute(
+                "UPDATE artists SET metadata_locked = 1 WHERE id = ?",
+                rusqlite::params![f.artist_id],
+            )
+            .unwrap();
+        }
+        let result = super::run_cache_artist_images(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        // No art directory should have been created since the artist was skipped.
+        assert!(!f.dir.join("art").join("artist").exists());
+    }
+
+    #[tokio::test]
+    async fn cache_artist_images_downloads_from_deezer_match() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", server.uri());
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/search/artist"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": 99, "name": "Test Artist", "picture_xl": format!("{}/cover.png", server.uri())}]
+            })))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/cover.png"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_bytes(vec![1u8, 2, 3, 4])
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("artist-images-deezer");
+        let result = super::run_cache_artist_images(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        assert!(f.dir.join("art").join("artist").join("original").exists());
+
+        let identity = {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::music::get_artist_external_identity(
+                &conn,
+                &boogiebox_db::music::coerce_entity_id(&f.artist_id),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(identity.deezer_artist_id.as_deref(), Some("99"));
+
+        // Running again should hit the "already cached" branch instead of
+        // re-fetching from the provider.
+        std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+        let result = super::run_cache_artist_images(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cache_artist_images_with_no_provider_match_leaves_no_art() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/search/artist"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "data": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("artist-images-nomatch");
+        let payload = format!(r#"{{"artistIds":["{}"]}}"#, f.artist_id);
+        let result =
+            super::run_cache_artist_images(&f.state, &f.library_id_entity(), Some(&payload)).await;
+        assert!(result.is_ok());
+        assert!(!f.dir.join("art").join("artist").join("original").exists());
+
+        std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+    }
+
+    // -- run_cache_album_images ------------------------------------------------
+
+    #[tokio::test]
+    async fn cache_album_images_uses_folder_jpg_when_present() {
+        let f = fixture("album-images-folder-jpg");
+        let folder = f.dir.clone();
+        std::fs::write(folder.join("folder.jpg"), vec![9u8, 9, 9]).unwrap();
+
+        let result = super::run_cache_album_images(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        assert!(f.dir.join("art").join("album").join("original").exists());
+    }
+
+    #[tokio::test]
+    async fn cache_album_images_skips_metadata_locked_album() {
+        let f = fixture("album-images-locked");
+        {
+            let conn = f.state.db.lock().unwrap();
+            conn.execute(
+                "UPDATE albums SET metadata_locked = 1 WHERE id = ?",
+                rusqlite::params![f.album_id],
+            )
+            .unwrap();
+        }
+        let result = super::run_cache_album_images(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        assert!(!f.dir.join("art").join("album").exists());
+    }
+
+    #[tokio::test]
+    async fn cache_album_images_falls_back_to_discogs_when_no_folder_jpg() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DISCOGS_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/database/search"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "results": [{ "cover_image": format!("{}/cover.png", server.uri()) }]
+                })),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/cover.png"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_bytes(vec![1u8, 2, 3])
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("album-images-discogs");
+        set_setting(&f, "discogsToken", "tok123");
+
+        let result = super::run_cache_album_images(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        assert!(f.dir.join("art").join("album").join("original").exists());
+
+        std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
+    }
+
+    // -- run_warm_lastfm_artist_info ---------------------------------------------
+
+    #[tokio::test]
+    async fn warm_lastfm_artist_info_noop_without_api_key() {
+        let f = fixture("lastfm-artist-nokey");
+        let result =
+            super::run_warm_lastfm_artist_info(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn warm_lastfm_artist_info_fetches_and_caches() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "artist": {
+                        "name": "Test Artist",
+                        "mbid": "mbid-xyz",
+                        "bio": { "summary": "sum", "content": "full" },
+                        "tags": { "tag": [] }
+                    }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("lastfm-artist-fetch");
+        set_setting(&f, "lastfmKey", "key1");
+        let result =
+            super::run_warm_lastfm_artist_info(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+
+        let identity = {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::music::get_artist_external_identity(
+                &conn,
+                &boogiebox_db::music::coerce_entity_id(&f.artist_id),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(identity.lastfm_mbid.as_deref(), Some("mbid-xyz"));
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn warm_lastfm_artist_info_uses_valid_cache_without_refetching() {
+        let f = fixture("lastfm-artist-cached");
+        set_setting(&f, "lastfmKey", "key1");
+        let cache_key = "artist:test artist";
+        let payload = crate::providers::LastFmInfoPayload {
+            mbid: Some("cached-mbid".to_string()),
+            canonical_name: Some("Test Artist".to_string()),
+            summary: String::new(),
+            full: String::new(),
+            listeners: None,
+            playcount: None,
+            url: None,
+            image: None,
+            tags: Vec::new(),
+        };
+        let data = serde_json::to_string(&payload).unwrap();
+        {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::artwork::save_lastfm_cache(&conn, cache_key, &data, 7);
+        }
+        // No mock server mounted at all — a network call here would fail/hang,
+        // proving the cached branch short-circuits before any HTTP fetch.
+        let result =
+            super::run_warm_lastfm_artist_info(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        let identity = {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::music::get_artist_external_identity(
+                &conn,
+                &boogiebox_db::music::coerce_entity_id(&f.artist_id),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(identity.lastfm_mbid.as_deref(), Some("cached-mbid"));
+    }
+
+    // -- run_enrich_artist_external_ids -------------------------------------------
+
+    #[tokio::test]
+    async fn enrich_artist_external_ids_targets_requested_ids() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/search/artist"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "data": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("enrich-targeted");
+        let payload = format!(r#"{{"artistIds":["{}"]}}"#, f.artist_id);
+        let result = super::run_enrich_artist_external_ids(
+            &f.state,
+            &boogiebox_db::music::coerce_entity_id("job-1"),
+            &f.library_id_entity(),
+            Some(&payload),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn enrich_artist_external_ids_falls_back_to_stale_scan_when_no_payload() {
+        let f = fixture("enrich-stale");
+        // No provider keys configured at all, so every provider branch is
+        // skipped and the job only exercises the stale-artist selection query.
+        let result = super::run_enrich_artist_external_ids(
+            &f.state,
+            &boogiebox_db::music::coerce_entity_id("job-1"),
+            &f.library_id_entity(),
+            None,
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    // -- run_warm_lastfm_album_info ------------------------------------------------
+
+    #[tokio::test]
+    async fn warm_lastfm_album_info_noop_without_api_key() {
+        let f = fixture("lastfm-album-nokey");
+        let result =
+            super::run_warm_lastfm_album_info(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn warm_lastfm_album_info_skips_when_already_cached() {
+        let f = fixture("lastfm-album-cached");
+        set_setting(&f, "lastfmKey", "key1");
+        let cache_key = "album:test artist:test album";
+        {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::artwork::save_lastfm_cache(&conn, cache_key, "{}", 7);
+        }
+        // No mock server mounted — proves the cached branch short-circuits.
+        let result =
+            super::run_warm_lastfm_album_info(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn warm_lastfm_album_info_fetches_and_caches() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "album": { "name": "Test Album", "artist": "Test Artist" }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("lastfm-album-fetch");
+        set_setting(&f, "lastfmKey", "key1");
+        let result =
+            super::run_warm_lastfm_album_info(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        let cache_key = "album:test artist:test album";
+        let cached = {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::artwork::get_lastfm_cached(&conn, cache_key)
+        };
+        assert!(cached.is_some());
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    // -- run_warm_track_lyrics -----------------------------------------------------
+
+    #[tokio::test]
+    async fn warm_track_lyrics_skips_unknown_and_already_cached_tracks() {
+        let f = fixture("lyrics-skip");
+        {
+            let conn = f.state.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO lyrics_cache(track_id, artist, title, lyrics, source, fetched_at, updated_at) \
+                 VALUES (?, 'Test Artist', 'Test Track', 'la', 'lrclib', datetime('now'), datetime('now'))",
+                rusqlite::params![f.track_id],
+            )
+            .unwrap();
+        }
+        let payload = format!(r#"{{"trackIds":["{}", "does-not-exist"]}}"#, f.track_id);
+        // No mock server mounted — proves both the missing-track and
+        // already-cached branches short-circuit before any HTTP fetch.
+        let result =
+            super::run_warm_track_lyrics(&f.state, &f.library_id_entity(), Some(&payload)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn warm_track_lyrics_fetches_from_lrclib_then_falls_back_to_lyricsovh() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LRCLIB_API_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_LYRICS_OVH_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/get"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "lyrics": "fallback lyrics"
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("lyrics-fallback");
+        let result = super::run_warm_track_lyrics(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        let stored: String = {
+            let conn = f.state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT lyrics FROM lyrics_cache WHERE track_id = ?",
+                rusqlite::params![f.track_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(stored, "fallback lyrics");
+
+        std::env::remove_var("BOOGIEBOX_LRCLIB_API_BASE");
+        std::env::remove_var("BOOGIEBOX_LYRICS_OVH_API_BASE");
+    }
+
+    // -- run_sync_artist_styles ----------------------------------------------------
+
+    #[tokio::test]
+    async fn sync_artist_styles_noop_without_api_key() {
+        let f = fixture("styles-nokey");
+        let result = super::run_sync_artist_styles(&f.state, &f.library_id_entity()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn sync_artist_styles_filters_low_count_and_blacklisted_tags() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "toptags": { "tag": [
+                        { "name": "seen live", "count": 999 },
+                        { "name": "hi", "count": 999 },
+                        { "name": "rock", "count": 5 }
+                    ] }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("styles-filtered");
+        set_setting(&f, "lastfmKey", "key1");
+        let result = super::run_sync_artist_styles(&f.state, &f.library_id_entity()).await;
+        assert!(result.is_ok());
+        let count: i64 = {
+            let conn = f.state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM artist_styles WHERE artist_id = ?",
+                rusqlite::params![f.artist_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count, 0, "all tags fail the filter, so none should persist");
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn sync_artist_styles_persists_valid_tags() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "toptags": { "tag": [
+                        { "name": "trip-hop", "count": 100 },
+                        { "name": "electronic", "count": 50 }
+                    ] }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("styles-valid");
+        set_setting(&f, "lastfmKey", "key1");
+        let result = super::run_sync_artist_styles(&f.state, &f.library_id_entity()).await;
+        assert!(result.is_ok());
+        let styles: Vec<String> = {
+            let conn = f.state.db.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT style FROM artist_styles WHERE artist_id = ? ORDER BY style")
+                .unwrap();
+            stmt.query_map(rusqlite::params![f.artist_id], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            styles,
+            vec!["electronic".to_string(), "trip-hop".to_string()]
+        );
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    // -- run_sync_discogs_album_metadata --------------------------------------------
+
+    #[tokio::test]
+    async fn sync_discogs_album_metadata_noop_without_any_provider_creds() {
+        let f = fixture("discogs-meta-nocreds");
+        let result =
+            super::run_sync_discogs_album_metadata(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn sync_discogs_album_metadata_skips_album_that_already_has_everything() {
+        let f = fixture("discogs-meta-complete");
+        set_setting(&f, "discogsToken", "tok");
+        {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::artwork::set_album_label(&conn, &f.album_id, "Real Label");
+            boogiebox_db::artwork::set_album_year(&conn, &f.album_id, 2000);
+            boogiebox_db::artwork::set_album_release_type(&conn, &f.album_id, "compilation");
+        }
+        // No mock server mounted — proves the "nothing needed" branch
+        // short-circuits before calling `search_metadata`.
+        let result =
+            super::run_sync_discogs_album_metadata(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn sync_discogs_album_metadata_resolves_label_year_and_release_type() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DISCOGS_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/database/search"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "results": [{
+                        "title": "Test Artist - Test Album",
+                        "year": "1999",
+                        "label": ["Real Records"],
+                        "type": "release"
+                    }]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let f = fixture("discogs-meta-resolve");
+        set_setting(&f, "discogsToken", "tok");
+
+        let result =
+            super::run_sync_discogs_album_metadata(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+
+        let (label, year): (Option<String>, Option<i64>) = {
+            let conn = f.state.db.lock().unwrap();
+            (
+                boogiebox_db::artwork::get_album_label(&conn, &f.album_id),
+                boogiebox_db::artwork::get_album_year(&conn, &f.album_id),
+            )
+        };
+        assert_eq!(label.as_deref(), Some("Real Records"));
+        assert_eq!(year, Some(1999));
+
+        std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
+    }
+
+    impl Fixture {
+        fn library_id_entity(&self) -> boogiebox_db::music::EntityId {
+            boogiebox_db::music::coerce_entity_id(&self.library_id)
+        }
+    }
 }

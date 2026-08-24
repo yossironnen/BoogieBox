@@ -586,12 +586,13 @@ fn read_ogg_technical(path: &Path) -> Option<AudioTechnical> {
     } else if let Some(off) = find_bytes(&buf, b"\x01vorbis") {
         // Vorbis identification header: type(1)+magic(6)+version(4)+channels(1)+sr(4)+max_br(4)+nom_br(4)
         let h = &buf[off + 7..];
-        if h.len() < 13 {
+        if h.len() < 17 {
             return None;
         }
-        let ch = h[0] as i64;
-        let sr = u32::from_le_bytes(h[1..5].try_into().ok()?) as i64;
-        let nom_br = u32::from_le_bytes(h[9..13].try_into().ok()?) as i64;
+        // Skip the 4-byte vorbis_version field (always 0 in practice) before channels/sr/bitrates.
+        let ch = h[4] as i64;
+        let sr = u32::from_le_bytes(h[5..9].try_into().ok()?) as i64;
+        let nom_br = u32::from_le_bytes(h[13..17].try_into().ok()?) as i64;
         let br = if nom_br > 0 {
             Some(nom_br / 1000)
         } else {
@@ -1412,5 +1413,934 @@ mod tests {
         payload.extend_from_slice(&0_u32.to_be_bytes());
         payload.extend_from_slice(value);
         mp4_atom(b"data", &payload)
+    }
+
+    // -- Additional coverage: technical-metadata readers, discovery, build_track_input,
+    // and end-to-end scan-job orchestration -------------------------------------------
+
+    use boogiebox_db::init_db;
+    use boogiebox_db::jobs::{
+        claim_next_scan_job, create_library, enqueue_scan_job, CreateLibraryInput,
+    };
+    use std::sync::{Arc, Mutex};
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("scanner-test-{prefix}-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // -- discover_audio_files / collect_audio_files --------------------------------
+
+    #[test]
+    fn discovers_audio_files_recursively_and_sorts_case_insensitively() {
+        let dir = temp_dir("discover");
+        let sub = dir.join("Artist").join("Album");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("b_track.mp3"), b"x").unwrap();
+        fs::write(sub.join("A_track.FLAC"), b"x").unwrap();
+        fs::write(sub.join("cover.jpg"), b"x").unwrap(); // not audio
+
+        let mut counters = ScanCounters::default();
+        let files = discover_audio_files(&[dir.to_string_lossy().into_owned()], &mut counters);
+
+        assert_eq!(files.len(), 2);
+        assert!(files[0]
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains("a_track"));
+        assert_eq!(counters.errors, 0);
+    }
+
+    #[test]
+    fn discover_audio_files_records_error_for_unreadable_folder() {
+        let dir = temp_dir("discover-missing");
+        let missing = dir.join("does-not-exist");
+        let mut counters = ScanCounters::default();
+        let files = discover_audio_files(&[missing.to_string_lossy().into_owned()], &mut counters);
+
+        assert!(files.is_empty());
+        assert_eq!(counters.errors, 1);
+        assert!(!counters.messages.is_empty());
+    }
+
+    // -- build_track_input -----------------------------------------------------------
+
+    #[test]
+    fn build_track_input_falls_back_to_folder_names_and_cleans_title() {
+        let dir = temp_dir("build-track");
+        let sub = dir.join("Pink_Floyd").join("The_Wall");
+        fs::create_dir_all(&sub).unwrap();
+        let file_path = sub.join("01_Another_Brick.WAV");
+        fs::write(&file_path, b"not really a wav").unwrap();
+
+        let library_id = EntityId::Str("lib1".to_string());
+        let input = build_track_input(&library_id, &file_path).unwrap();
+
+        assert_eq!(input.title, "Another Brick");
+        assert_eq!(input.artist, "Pink Floyd");
+        assert_eq!(input.album, "The Wall");
+        assert_eq!(input.album_artist, "Pink Floyd");
+        assert_eq!(input.format, "WAV");
+        assert_eq!(input.file_name, "01_Another_Brick.WAV");
+    }
+
+    #[test]
+    fn build_track_input_errors_for_missing_file() {
+        let library_id = EntityId::Str("lib1".to_string());
+        let result = build_track_input(&library_id, Path::new("Z:/definitely/missing.mp3"));
+        assert!(result.is_err());
+    }
+
+    // -- WAV / AIFF technical metadata -----------------------------------------------
+
+    fn build_wav_bytes(sample_rate: u32, channels: u16, bits: u16, num_frames: u32) -> Vec<u8> {
+        let block_align = channels * (bits / 8);
+        let byte_rate = sample_rate * block_align as u32;
+        let data_size = num_frames * block_align as u32;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_size).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&channels.to_le_bytes());
+        out.extend_from_slice(&sample_rate.to_le_bytes());
+        out.extend_from_slice(&byte_rate.to_le_bytes());
+        out.extend_from_slice(&block_align.to_le_bytes());
+        out.extend_from_slice(&bits.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_size.to_le_bytes());
+        out.extend(std::iter::repeat_n(0u8, data_size as usize));
+        out
+    }
+
+    #[test]
+    fn reads_wav_technical_metadata() {
+        let dir = temp_dir("wav");
+        let path = dir.join("t.wav");
+        fs::write(&path, build_wav_bytes(44100, 2, 16, 44100)).unwrap();
+
+        let tech = read_wav_technical(&path).expect("wav parse");
+        assert_eq!(tech.sample_rate, Some(44100));
+        assert_eq!(tech.channels, Some(2));
+        assert_eq!(tech.duration, Some(1.0));
+    }
+
+    #[test]
+    fn rejects_non_wav_riff_file() {
+        let dir = temp_dir("wav-bad");
+        let path = dir.join("bad.wav");
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(b"BAD!");
+        fs::write(&path, bytes).unwrap();
+        assert!(read_wav_technical(&path).is_none());
+    }
+
+    fn build_aiff_bytes(sample_rate_ext: [u8; 10], channels: i16, num_frames: u32) -> Vec<u8> {
+        let mut comm = Vec::new();
+        comm.extend_from_slice(&channels.to_be_bytes());
+        comm.extend_from_slice(&num_frames.to_be_bytes());
+        comm.extend_from_slice(&16i16.to_be_bytes()); // sample size
+        comm.extend_from_slice(&sample_rate_ext);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"FORM");
+        out.extend_from_slice(&0u32.to_be_bytes()); // size unused by reader
+        out.extend_from_slice(b"AIFF");
+        out.extend_from_slice(b"COMM");
+        out.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+        out.extend_from_slice(&comm);
+        out
+    }
+
+    #[test]
+    fn reads_aiff_technical_metadata() {
+        // 44100 Hz as 80-bit IEEE 754 extended: exponent 0x400E, mantissa 0xAC44000000000000
+        let sr_bytes: [u8; 10] = [0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0];
+        let dir = temp_dir("aiff");
+        let path = dir.join("t.aiff");
+        fs::write(&path, build_aiff_bytes(sr_bytes, 2, 44100)).unwrap();
+
+        let tech = read_aiff_technical(&path).expect("aiff parse");
+        assert_eq!(tech.channels, Some(2));
+        assert_eq!(tech.sample_rate, Some(44100));
+        assert!((tech.duration.unwrap() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn rejects_non_aiff_form_file() {
+        let dir = temp_dir("aiff-bad");
+        let path = dir.join("bad.aiff");
+        let mut bytes = b"FORM".to_vec();
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(b"XXXX");
+        fs::write(&path, bytes).unwrap();
+        assert!(read_aiff_technical(&path).is_none());
+    }
+
+    // -- M4A / mvhd duration -----------------------------------------------------------
+
+    #[test]
+    fn parses_mvhd_version0_duration() {
+        let mut data = vec![0u8]; // version 0
+        data.extend_from_slice(&[0, 0, 0]); // flags
+        data.extend_from_slice(&0u32.to_be_bytes()); // creation
+        data.extend_from_slice(&0u32.to_be_bytes()); // modification
+        data.extend_from_slice(&1000u32.to_be_bytes()); // time_scale
+        data.extend_from_slice(&5000u32.to_be_bytes()); // duration
+        assert_eq!(parse_mvhd(&data), Some(5.0));
+    }
+
+    #[test]
+    fn parses_mvhd_version1_duration() {
+        let mut data = vec![1u8];
+        data.extend_from_slice(&[0, 0, 0]);
+        data.extend_from_slice(&0u64.to_be_bytes());
+        data.extend_from_slice(&0u64.to_be_bytes());
+        data.extend_from_slice(&1000u32.to_be_bytes());
+        data.extend_from_slice(&8000u64.to_be_bytes());
+        assert_eq!(parse_mvhd(&data), Some(8.0));
+    }
+
+    #[test]
+    fn mvhd_rejects_zero_time_scale_and_short_buffers() {
+        assert_eq!(parse_mvhd(&[]), None);
+        let mut data = vec![0u8; 19];
+        data[0] = 0;
+        assert_eq!(parse_mvhd(&data), None); // too short for v0
+        let mut zero_scale = vec![0u8; 20];
+        zero_scale[0] = 0;
+        assert_eq!(parse_mvhd(&zero_scale), None); // time_scale 0
+    }
+
+    #[test]
+    fn reads_m4a_technical_via_moov_mvhd() {
+        let mut mvhd_payload = vec![0u8];
+        mvhd_payload.extend_from_slice(&[0, 0, 0]);
+        mvhd_payload.extend_from_slice(&0u32.to_be_bytes());
+        mvhd_payload.extend_from_slice(&0u32.to_be_bytes());
+        mvhd_payload.extend_from_slice(&1000u32.to_be_bytes());
+        mvhd_payload.extend_from_slice(&3000u32.to_be_bytes());
+        let mvhd = mp4_atom(b"mvhd", &mvhd_payload);
+        let moov = mp4_atom(b"moov", &mvhd);
+
+        let dir = temp_dir("m4a");
+        let path = dir.join("t.m4a");
+        fs::write(&path, &moov).unwrap();
+
+        let tech = read_m4a_technical(&path).expect("m4a parse");
+        assert_eq!(tech.duration, Some(3.0));
+    }
+
+    // -- MP3 sync/frame helpers -----------------------------------------------------
+
+    #[test]
+    fn is_valid_mpeg_sync_rejects_short_or_bad_words() {
+        assert!(!is_valid_mpeg_sync(&[0xFF]));
+        assert!(!is_valid_mpeg_sync(&[0x00, 0x00, 0x00, 0x00]));
+    }
+
+    #[test]
+    fn syncsafe_u32_decodes_seven_bit_groups() {
+        // 0x7F, 0x7F, 0x7F, 0x7F -> all 28 bits set
+        assert_eq!(syncsafe_u32(&[0x7F, 0x7F, 0x7F, 0x7F]), 0x0FFF_FFFF);
+        assert_eq!(syncsafe_u32(&[0, 0, 0, 1]), 1);
+    }
+
+    #[test]
+    fn read_audio_technical_returns_default_for_unsupported_extension() {
+        let dir = temp_dir("unsupported");
+        let path = dir.join("t.xyz");
+        fs::write(&path, b"whatever").unwrap();
+        let tech = read_audio_technical(&path);
+        assert!(tech.duration.is_none());
+        assert!(tech.bitrate.is_none());
+    }
+
+    #[test]
+    fn read_audio_tags_returns_default_for_unsupported_extension() {
+        let dir = temp_dir("unsupported-tags");
+        let path = dir.join("t.xyz");
+        fs::write(&path, b"whatever").unwrap();
+        let tags = read_audio_tags(&path).unwrap();
+        assert!(tags.title.is_none());
+    }
+
+    // -- ID3v2 header rejection paths -------------------------------------------------
+
+    #[test]
+    fn read_id3v2_tags_rejects_missing_or_unsupported_header() {
+        let dir = temp_dir("id3-bad");
+        let no_id3 = dir.join("no_id3.mp3");
+        fs::write(&no_id3, b"NOTID3....").unwrap();
+        let tags = read_id3v2_tags(&no_id3).unwrap();
+        assert!(tags.title.is_none());
+
+        let bad_version = dir.join("bad_version.mp3");
+        let mut header = b"ID3".to_vec();
+        header.push(9); // unsupported major version
+        header.push(0);
+        header.push(0);
+        header.extend_from_slice(&[0, 0, 0, 0]);
+        fs::write(&bad_version, &header).unwrap();
+        let tags = read_id3v2_tags(&bad_version).unwrap();
+        assert!(tags.title.is_none());
+    }
+
+    // -- OGG/Opus tag + technical dispatch --------------------------------------------
+
+    #[test]
+    fn read_ogg_technical_rejects_non_ogg_file() {
+        let dir = temp_dir("ogg-bad");
+        let path = dir.join("bad.ogg");
+        fs::write(&path, b"not an ogg file at all").unwrap();
+        assert!(read_ogg_technical(&path).is_none());
+    }
+
+    #[test]
+    fn read_ogg_tags_rejects_non_ogg_file() {
+        let dir = temp_dir("ogg-tags-bad");
+        let path = dir.join("bad.ogg");
+        fs::write(&path, b"not an ogg file at all").unwrap();
+        let tags = read_ogg_tags(&path).unwrap();
+        assert!(tags.title.is_none());
+    }
+
+    // -- AudioTags::merge --------------------------------------------------------------
+
+    #[test]
+    fn audio_tags_merge_prefers_self_and_fills_gaps() {
+        let mut a = AudioTags {
+            title: Some("A Title".into()),
+            ..Default::default()
+        };
+        let b = AudioTags {
+            title: Some("B Title".into()),
+            artist: Some("B Artist".into()),
+            bpm: Some(120),
+            ..Default::default()
+        };
+        a.merge(b);
+        assert_eq!(a.title.as_deref(), Some("A Title")); // self wins
+        assert_eq!(a.artist.as_deref(), Some("B Artist")); // gap filled
+        assert_eq!(a.bpm, Some(120));
+    }
+
+    // -- End-to-end scan-job orchestration via a real temp SQLite DB -----------------
+
+    fn init_test_db(prefix: &str) -> (Arc<Mutex<rusqlite::Connection>>, PathBuf) {
+        let dir = temp_dir(prefix);
+        let initialized = init_db(&dir).expect("init test db");
+        (Arc::new(Mutex::new(initialized.connection)), dir)
+    }
+
+    #[test]
+    fn scan_music_library_end_to_end_inserts_tracks_and_marks_done() {
+        let (db, dir) = init_test_db("scan-e2e");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(&music_dir).unwrap();
+        fs::write(
+            music_dir.join("song.mp3"),
+            b"fake mp3 bytes, no valid frame",
+        )
+        .unwrap();
+
+        let library = {
+            let conn = db.lock().unwrap();
+            create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("E2E Library".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap()
+        };
+
+        let claimed = {
+            let conn = db.lock().unwrap();
+            enqueue_scan_job(&conn, &library.id.to_string()).unwrap();
+            claim_next_scan_job(&conn).unwrap().expect("job claimable")
+        };
+
+        scan_music_library(&db, &claimed).unwrap();
+
+        let conn = db.lock().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM scan_jobs WHERE id = ?1",
+                [&claimed.job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "done");
+
+        let track_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracks WHERE library_id = ?1",
+                [&library.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(track_count, 1);
+    }
+
+    #[test]
+    fn run_one_pending_scan_blocking_is_a_noop_when_nothing_pending() {
+        let (db, _dir) = init_test_db("scan-noop");
+        // No library, no job enqueued.
+        let result = run_one_pending_scan_blocking(&db, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_one_pending_scan_blocking_returns_ok_for_unknown_target_job() {
+        let (db, _dir) = init_test_db("scan-unknown-target");
+        let missing_job = EntityId::Str("does-not-exist".to_string());
+        let result = run_one_pending_scan_blocking(&db, Some(missing_job));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_one_pending_scan_blocking_runs_claimed_job_end_to_end() {
+        let (db, dir) = init_test_db("scan-blocking-e2e");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(&music_dir).unwrap();
+        fs::write(music_dir.join("a.flac"), b"not a real flac").unwrap();
+
+        {
+            let conn = db.lock().unwrap();
+            let library = create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("Blocking Library".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap();
+            enqueue_scan_job(&conn, &library.id.to_string()).unwrap();
+        }
+
+        let result = run_one_pending_scan_blocking(&db, None);
+        assert!(result.is_ok());
+
+        let conn = db.lock().unwrap();
+        let done_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scan_jobs WHERE status = 'done'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(done_count, 1);
+    }
+
+    #[test]
+    fn scan_music_library_marks_cancelled_when_job_cancelled_mid_scan() {
+        // update_scan_progress checks the job's current status; if something else
+        // (e.g. a user cancel request) flips it away from 'running' mid-scan,
+        // scan_music_library must surface JobError::ScanCancelled rather than a DB error.
+        let (db, dir) = init_test_db("scan-cancelled");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(&music_dir).unwrap();
+        fs::write(music_dir.join("song.mp3"), b"fake mp3 bytes").unwrap();
+
+        let library = {
+            let conn = db.lock().unwrap();
+            create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("Cancelled Library".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap()
+        };
+        let claimed = {
+            let conn = db.lock().unwrap();
+            enqueue_scan_job(&conn, &library.id.to_string()).unwrap();
+            let claimed = claim_next_scan_job(&conn).unwrap().expect("job claimable");
+            conn.execute(
+                "UPDATE scan_jobs SET status='cancelled' WHERE id = ?1",
+                [&claimed.job_id],
+            )
+            .unwrap();
+            claimed
+        };
+
+        let result = scan_music_library(&db, &claimed);
+        assert!(matches!(result, Err(JobError::ScanCancelled)));
+    }
+
+    #[test]
+    fn run_one_pending_scan_blocking_marks_job_failed_on_cancellation() {
+        // Exercises run_one_pending_scan_blocking's error-branch that persists the
+        // failure/cancellation back onto the job row.
+        let (db, dir) = init_test_db("scan-blocking-cancelled");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(&music_dir).unwrap();
+        fs::write(music_dir.join("song.mp3"), b"fake mp3 bytes").unwrap();
+
+        let job_id = {
+            let conn = db.lock().unwrap();
+            let library = create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("Blocking Cancelled Library".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap();
+            let job_id = enqueue_scan_job(&conn, &library.id.to_string()).unwrap();
+            // Claim it ourselves and immediately flip to cancelled, mirroring a
+            // cancel request that lands between claim and the first progress write.
+            claim_next_scan_job(&conn).unwrap();
+            conn.execute(
+                "UPDATE scan_jobs SET status='cancelled' WHERE id = ?1",
+                [&job_id],
+            )
+            .unwrap();
+            job_id
+        };
+
+        let result = run_one_pending_scan_blocking(&db, Some(job_id.clone()));
+        // The job is no longer 'pending' so claim_scan_job(target_job_id) returns None,
+        // and run_one_pending_scan_blocking is a no-op Ok(()) rather than re-running it.
+        assert!(result.is_ok());
+
+        let conn = db.lock().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM scan_jobs WHERE id = ?1",
+                [&job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+    }
+
+    // -- MP3 valid frame parsing (CBR estimation path) --------------------------------
+
+    #[test]
+    fn reads_mp3_technical_from_a_valid_cbr_frame() {
+        // FF FB 90 00: MPEG1 Layer III, bitrate idx 9 (128kbps), sr idx 0 (44100), stereo.
+        let dir = temp_dir("mp3-cbr");
+        let path = dir.join("t.mp3");
+        let mut bytes = vec![0xFFu8, 0xFB, 0x90, 0x00];
+        bytes.extend(std::iter::repeat_n(0u8, 128_000 / 8)); // ~1 second of audio at 128kbps
+        fs::write(&path, &bytes).unwrap();
+
+        let tech = read_mp3_technical(&path).expect("mp3 parse");
+        assert_eq!(tech.bitrate, Some(128));
+        assert_eq!(tech.sample_rate, Some(44100));
+        assert_eq!(tech.channels, Some(2));
+        assert!(tech.duration.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn reads_mp3_technical_skips_leading_id3v2_tag() {
+        let dir = temp_dir("mp3-id3-skip");
+        let path = dir.join("t.mp3");
+        let mut bytes = b"ID3\x03\x00\x00".to_vec();
+        bytes.extend_from_slice(&syncsafe_encode(20));
+        bytes.extend(std::iter::repeat_n(0u8, 20));
+        bytes.extend_from_slice(&[0xFFu8, 0xFB, 0x90, 0x00]);
+        bytes.extend(std::iter::repeat_n(0u8, 16_000));
+        fs::write(&path, &bytes).unwrap();
+
+        let tech = read_mp3_technical(&path).expect("mp3 parse with id3 header");
+        assert_eq!(tech.sample_rate, Some(44100));
+    }
+
+    #[test]
+    fn read_mp3_technical_returns_none_for_no_sync() {
+        let dir = temp_dir("mp3-no-sync");
+        let path = dir.join("t.mp3");
+        fs::write(&path, vec![0u8; 100]).unwrap();
+        assert!(read_mp3_technical(&path).is_none());
+    }
+
+    // -- FLAC technical (STREAMINFO) ----------------------------------------------------
+
+    #[test]
+    fn reads_flac_technical_streaminfo() {
+        let dir = temp_dir("flac-tech");
+        let path = dir.join("t.flac");
+
+        // STREAMINFO block: 18 bytes minimum; sample_rate (20 bits) + channels (3 bits)
+        // packed starting at byte 10, plus 36-bit total_samples.
+        let sample_rate: u32 = 44100;
+        let channels: u8 = 2; // encoded as channels-1 = 1
+        let total_samples: u64 = 44100; // 1 second
+
+        let mut block = vec![0u8; 18];
+        block[10] = (sample_rate >> 12) as u8;
+        block[11] = (sample_rate >> 4) as u8;
+        block[12] = (((sample_rate & 0xF) << 4) as u8) | (((channels - 1) & 0x07) << 1);
+        block[13] = ((total_samples >> 32) & 0x0F) as u8;
+        block[14] = ((total_samples >> 24) & 0xFF) as u8;
+        block[15] = ((total_samples >> 16) & 0xFF) as u8;
+        block[16] = ((total_samples >> 8) & 0xFF) as u8;
+        block[17] = (total_samples & 0xFF) as u8;
+
+        let mut bytes = b"fLaC".to_vec();
+        let mut header = [0x80u8, 0, 0, 0]; // last block, type 0 (STREAMINFO)
+        let len = block.len();
+        header[1] = (len >> 16) as u8;
+        header[2] = (len >> 8) as u8;
+        header[3] = len as u8;
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&block);
+        fs::write(&path, &bytes).unwrap();
+
+        let tech = read_flac_technical(&path).expect("flac tech parse");
+        assert_eq!(tech.sample_rate, Some(44100));
+        assert_eq!(tech.channels, Some(2));
+        assert_eq!(tech.bitrate, None);
+        assert!((tech.duration.unwrap() - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn read_flac_technical_rejects_non_flac_magic() {
+        let dir = temp_dir("flac-tech-bad");
+        let path = dir.join("bad.flac");
+        fs::write(&path, b"NOTFLAC!").unwrap();
+        assert!(read_flac_technical(&path).is_none());
+    }
+
+    // -- OGG/Opus and Vorbis technical + tags -------------------------------------------
+
+    fn build_opus_ogg_bytes(channels: u8) -> Vec<u8> {
+        let mut page = b"OggS".to_vec();
+        page.extend_from_slice(&[0u8; 22]); // rest of the fixed OGG page header (unused by parser)
+        let mut opus_head = b"OpusHead".to_vec();
+        opus_head.push(1); // version
+        opus_head.push(channels);
+        opus_head.extend_from_slice(&0u16.to_le_bytes()); // pre-skip
+        opus_head.extend_from_slice(&48000u32.to_le_bytes()); // input sample rate
+        page.extend_from_slice(&opus_head);
+        page
+    }
+
+    #[test]
+    fn reads_ogg_opus_technical_metadata() {
+        let dir = temp_dir("ogg-opus");
+        let path = dir.join("t.ogg");
+        fs::write(&path, build_opus_ogg_bytes(2)).unwrap();
+
+        let tech = read_ogg_technical(&path).expect("opus tech parse");
+        assert_eq!(tech.sample_rate, Some(48000));
+        assert_eq!(tech.channels, Some(2));
+        assert!(tech.bitrate.is_none());
+    }
+
+    fn build_vorbis_ogg_bytes(channels: u8, sample_rate: u32, nominal_bitrate: u32) -> Vec<u8> {
+        let mut page = b"OggS".to_vec();
+        page.extend_from_slice(&[0u8; 22]);
+        let mut ident = vec![1u8]; // packet type
+        ident.extend_from_slice(b"vorbis");
+        ident.extend_from_slice(&0u32.to_le_bytes()); // version
+        ident.push(channels);
+        ident.extend_from_slice(&sample_rate.to_le_bytes());
+        ident.extend_from_slice(&0u32.to_le_bytes()); // max bitrate
+        ident.extend_from_slice(&nominal_bitrate.to_le_bytes()); // nominal bitrate
+        page.extend_from_slice(&ident);
+        page
+    }
+
+    #[test]
+    fn reads_ogg_vorbis_technical_metadata() {
+        let dir = temp_dir("ogg-vorbis");
+        let path = dir.join("t.ogg");
+        fs::write(&path, build_vorbis_ogg_bytes(2, 44100, 192_000)).unwrap();
+
+        let tech = read_ogg_technical(&path).expect("vorbis tech parse");
+        assert_eq!(tech.sample_rate, Some(44100));
+        assert_eq!(tech.channels, Some(2));
+        assert_eq!(tech.bitrate, Some(192));
+    }
+
+    #[test]
+    fn reads_ogg_opus_tags_from_opustags_comment_block() {
+        let dir = temp_dir("ogg-opus-tags");
+        let path = dir.join("t.ogg");
+        let mut page = b"OggS".to_vec();
+        page.extend_from_slice(&[0u8; 22]);
+        let mut opus_tags = b"OpusTags".to_vec();
+        let mut vorbis_block = Vec::new();
+        vorbis_block.extend_from_slice(&0_u32.to_le_bytes());
+        vorbis_block.extend_from_slice(&1_u32.to_le_bytes());
+        let comment = "TITLE=Opus Song";
+        vorbis_block.extend_from_slice(&(comment.len() as u32).to_le_bytes());
+        vorbis_block.extend_from_slice(comment.as_bytes());
+        opus_tags.extend_from_slice(&vorbis_block);
+        page.extend_from_slice(&opus_tags);
+        fs::write(&path, &page).unwrap();
+
+        let tags = read_ogg_tags(&path).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("Opus Song"));
+    }
+
+    // -- Full ID3v2 tag parsing (multi-frame, v2.3) --------------------------------------
+
+    fn id3v23_frame(id: &[u8; 4], encoding: u8, text: &str) -> Vec<u8> {
+        let mut payload = vec![encoding];
+        payload.extend_from_slice(text.as_bytes());
+        let mut frame = id.to_vec();
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]); // flags
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    #[test]
+    fn reads_full_id3v2_3_tag_with_multiple_frames() {
+        let mut frames = Vec::new();
+        frames.extend_from_slice(&id3v23_frame(b"TIT2", 3, "My Title"));
+        frames.extend_from_slice(&id3v23_frame(b"TPE1", 3, "My Artist"));
+        frames.extend_from_slice(&id3v23_frame(b"TALB", 3, "My Album"));
+        frames.extend_from_slice(&id3v23_frame(b"TPE2", 3, "My Album Artist"));
+        frames.extend_from_slice(&id3v23_frame(b"TCON", 3, "Trance"));
+        frames.extend_from_slice(&id3v23_frame(b"TCOM", 3, "Some Composer"));
+        frames.extend_from_slice(&id3v23_frame(b"TRCK", 3, "4/12"));
+        frames.extend_from_slice(&id3v23_frame(b"TPOS", 3, "1/2"));
+        frames.extend_from_slice(&id3v23_frame(b"TDRC", 3, "2021"));
+        frames.extend_from_slice(&id3v23_frame(b"TBPM", 3, "128"));
+
+        let mut header = b"ID3\x03\x00\x00".to_vec();
+        header.extend_from_slice(&syncsafe_encode(frames.len() as u32));
+
+        let dir = temp_dir("id3-full");
+        let path = dir.join("t.mp3");
+        let mut bytes = header;
+        bytes.extend_from_slice(&frames);
+        fs::write(&path, &bytes).unwrap();
+
+        let tags = read_id3v2_tags(&path).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("My Title"));
+        assert_eq!(tags.artist.as_deref(), Some("My Artist"));
+        assert_eq!(tags.album.as_deref(), Some("My Album"));
+        assert_eq!(tags.album_artist.as_deref(), Some("My Album Artist"));
+        assert_eq!(tags.genre.as_deref(), Some("Trance"));
+        assert_eq!(tags.composer.as_deref(), Some("Some Composer"));
+        assert_eq!(tags.track_number, Some(4));
+        assert_eq!(tags.disc_number, Some(1));
+        assert_eq!(tags.year, Some(2021));
+        assert_eq!(tags.bpm, Some(128));
+    }
+
+    #[test]
+    fn reads_id3v2_4_tag_with_syncsafe_frame_sizes() {
+        let payload_text = "V4 Title";
+        let mut payload = vec![3u8];
+        payload.extend_from_slice(payload_text.as_bytes());
+        let mut frame = b"TIT2".to_vec();
+        frame.extend_from_slice(&syncsafe_encode(payload.len() as u32));
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&payload);
+
+        let mut header = b"ID3\x04\x00\x00".to_vec();
+        header.extend_from_slice(&syncsafe_encode(frame.len() as u32));
+
+        let dir = temp_dir("id3v24");
+        let path = dir.join("t.mp3");
+        let mut bytes = header;
+        bytes.extend_from_slice(&frame);
+        fs::write(&path, &bytes).unwrap();
+
+        let tags = read_id3v2_tags(&path).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("V4 Title"));
+    }
+
+    // -- decode_utf16 / decode_id3_text_payload -----------------------------------------
+
+    #[test]
+    fn decodes_utf16_le_with_bom() {
+        let text = "Hi";
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        assert_eq!(decode_utf16(&bytes, true), "Hi");
+    }
+
+    #[test]
+    fn decodes_utf16_be_with_bom() {
+        let text = "Hi";
+        let mut bytes = vec![0xFE, 0xFF];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        assert_eq!(decode_utf16(&bytes, true), "Hi");
+    }
+
+    #[test]
+    fn decode_id3_text_payload_handles_unknown_encoding() {
+        assert_eq!(decode_id3_text_payload(9, b"whatever"), None);
+    }
+
+    // -- MP4 tag parsing (read_mp4_tags via a nested moov/udta/meta/ilst tree) -----------
+
+    #[test]
+    fn reads_mp4_tags_through_moov_udta_meta_ilst_tree() {
+        let nam = mp4_atom(b"\xa9nam", &mp4_data_atom(b"MP4 Song"));
+        let art = mp4_atom(b"\xa9ART", &mp4_data_atom(b"MP4 Artist"));
+        let tmpo = mp4_atom(b"tmpo", &mp4_data_atom(&130u16.to_be_bytes()));
+        let mut ilst_payload = Vec::new();
+        ilst_payload.extend_from_slice(&nam);
+        ilst_payload.extend_from_slice(&art);
+        ilst_payload.extend_from_slice(&tmpo);
+        let ilst = mp4_atom(b"ilst", &ilst_payload);
+
+        let mut meta_payload = vec![0u8, 0, 0, 0]; // fullbox version+flags
+        meta_payload.extend_from_slice(&ilst);
+        let meta = mp4_atom(b"meta", &meta_payload);
+
+        let udta = mp4_atom(b"udta", &meta);
+        let moov = mp4_atom(b"moov", &udta);
+
+        let dir = temp_dir("mp4-tags");
+        let path = dir.join("t.m4a");
+        fs::write(&path, &moov).unwrap();
+
+        let tags = read_mp4_tags(&path).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("MP4 Song"));
+        assert_eq!(tags.artist.as_deref(), Some("MP4 Artist"));
+        assert_eq!(tags.bpm, Some(130));
+    }
+
+    #[test]
+    fn find_mp4_data_payload_returns_none_when_absent() {
+        let other = mp4_atom(b"xxxx", b"nope");
+        assert!(find_mp4_data_payload(&other).is_none());
+    }
+
+    #[test]
+    fn parse_mp4_pair_atom_returns_none_for_zero_current() {
+        let payload = mp4_data_atom(&[0, 0, 0, 0, 0, 0]);
+        assert_eq!(parse_mp4_pair_atom(&payload), None);
+    }
+
+    // -- Scheduler tick ----------------------------------------------------------------
+
+    fn build_post_scan_state(
+        db: Arc<Mutex<rusqlite::Connection>>,
+    ) -> crate::post_scan::PostScanState {
+        crate::post_scan::PostScanState {
+            db,
+            http_client: reqwest::Client::new(),
+            db_folder: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_scheduler_tick_is_noop_with_no_due_schedules() {
+        let (db, _dir) = init_test_db("scheduler-noop");
+        let state = build_post_scan_state(db.clone());
+        run_scheduler_tick(&state).await;
+
+        let conn = db.lock().unwrap();
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scan_jobs WHERE status='pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[tokio::test]
+    async fn run_one_pending_scan_end_to_end_via_async_wrapper() {
+        let (db, dir) = init_test_db("run-one-pending-async");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(&music_dir).unwrap();
+        fs::write(music_dir.join("song.mp3"), b"fake mp3").unwrap();
+
+        {
+            let conn = db.lock().unwrap();
+            let library = create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("Async Library".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap();
+            enqueue_scan_job(&conn, &library.id.to_string()).unwrap();
+        }
+
+        let state = build_post_scan_state(db.clone());
+        run_one_pending_scan(state).await;
+
+        let conn = db.lock().unwrap();
+        let done_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scan_jobs WHERE status='done'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(done_count, 1);
+    }
+
+    #[tokio::test]
+    async fn run_scan_job_targets_specific_job_via_async_wrapper() {
+        let (db, dir) = init_test_db("run-scan-job-async");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(&music_dir).unwrap();
+        fs::write(music_dir.join("song.mp3"), b"fake mp3").unwrap();
+
+        let job_id = {
+            let conn = db.lock().unwrap();
+            let library = create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("Target Library".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap();
+            enqueue_scan_job(&conn, &library.id.to_string()).unwrap()
+        };
+
+        let state = build_post_scan_state(db.clone());
+        run_scan_job(state, job_id.clone()).await;
+
+        let conn = db.lock().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM scan_jobs WHERE id = ?1",
+                [&job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "done");
     }
 }

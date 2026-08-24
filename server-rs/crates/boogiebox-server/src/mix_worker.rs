@@ -3509,7 +3509,7 @@ fn get_mix_output_dir_fn(db: &DbPool, db_folder: Option<&PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boogiebox_db::boogiemix::{StemSummary, StemWindow, TrackSection};
+    use boogiebox_db::boogiemix::{KeyNeural, StemSummary, StemWindow, TrackSection};
 
     fn analysis(id: &str, bpm: f64) -> TrackMixAnalysis {
         TrackMixAnalysis {
@@ -4748,5 +4748,625 @@ mod tests {
             &mut debug,
         );
         assert!(debug.is_empty());
+    }
+
+    // -- Phase 5 additions: pure-logic helpers, AI-plan parsing, job/db plumbing --
+
+    #[test]
+    fn camelot_parsing_and_compat() {
+        assert_eq!(parse_camelot("11A"), Some((11, false)));
+        assert_eq!(parse_camelot("3B"), Some((3, true)));
+        assert_eq!(parse_camelot("13A"), None);
+        assert_eq!(parse_camelot("A"), None);
+        assert_eq!(parse_camelot("x"), None);
+
+        assert_eq!(camelot_compat("8A", "8A"), 1.0);
+        assert_eq!(camelot_compat("8A", "8B"), 0.75);
+        assert_eq!(camelot_compat("8A", "9A"), 0.8);
+        assert_eq!(camelot_compat("8A", "10A"), 0.5);
+        assert_eq!(camelot_compat("8A", "1A"), 0.2);
+        assert_eq!(camelot_compat("8A", "9B"), 0.6);
+        assert_eq!(camelot_compat("??", "8A"), 0.5);
+    }
+
+    #[test]
+    fn key_string_to_camelot_covers_all_roots() {
+        assert_eq!(key_string_to_camelot("Am"), Some("8A".into()));
+        assert_eq!(key_string_to_camelot("C"), Some("8B".into()));
+        assert_eq!(key_string_to_camelot("F#"), Some("2B".into()));
+        assert_eq!(key_string_to_camelot("Gbm"), Some("11A".into()));
+        assert_eq!(key_string_to_camelot("Zz"), None);
+        assert_eq!(key_string_to_camelot("Zzm"), None);
+    }
+
+    #[test]
+    fn harmonic_compat_legacy_and_deep_paths() {
+        let a = analysis("a", 120.0);
+        let mut b = analysis("b", 120.0);
+        assert_eq!(harmonic_compat(&a, &b), 1.0);
+        b.key_estimate = Some("A".into());
+        assert_eq!(harmonic_compat(&a, &b), 0.7); // "Am" vs "A" -> same root text
+        b.key_estimate = Some("C#".into());
+        assert_eq!(harmonic_compat(&a, &b), 0.35);
+        b.key_estimate = None;
+        assert_eq!(harmonic_compat(&a, &b), 0.5);
+
+        // deep path: neural key with high confidence overrides key_estimate.
+        let mut deep_a = deep_for("a", 0.1, 0.5, 0.2);
+        let mut deep_b = deep_for("b", 0.1, 0.5, 0.2);
+        deep_a.key_neural = Some(KeyNeural {
+            key: "F#".into(),
+            mode: "minor".into(),
+            confidence: 0.9,
+            camelot: Some("11A".into()),
+        });
+        deep_b.key_neural = Some(KeyNeural {
+            key: "F#".into(),
+            mode: "minor".into(),
+            confidence: 0.9,
+            camelot: Some("11A".into()),
+        });
+        let a2 = analysis("a", 120.0);
+        let b2 = analysis("b", 120.0);
+        assert_eq!(
+            harmonic_compat_deep(&a2, &b2, Some(&deep_a), Some(&deep_b)),
+            1.0
+        );
+
+        // low-confidence neural key falls back to legacy key_estimate string compare.
+        deep_a.key_neural.as_mut().unwrap().confidence = 0.2;
+        deep_b.key_neural.as_mut().unwrap().confidence = 0.2;
+        assert_eq!(
+            harmonic_compat_deep(&a2, &b2, Some(&deep_a), Some(&deep_b)),
+            harmonic_compat(&a2, &b2)
+        );
+
+        // no deep features at all -> legacy path.
+        assert_eq!(
+            harmonic_compat_deep(&a2, &b2, None, None),
+            harmonic_compat(&a2, &b2)
+        );
+    }
+
+    #[test]
+    fn phase_progression_and_target_energy() {
+        assert_eq!(phase_at(0, 1), "groove");
+        assert_eq!(phase_at(0, 10), "warmup");
+        assert_eq!(phase_at(2, 10), "groove");
+        assert_eq!(phase_at(4, 10), "lift");
+        assert_eq!(phase_at(6, 10), "peak");
+        assert_eq!(phase_at(7, 10), "anthem");
+        assert_eq!(phase_at(9, 10), "cooldown");
+
+        assert_eq!(phase_target_energy("warmup"), 0.22);
+        assert_eq!(phase_target_energy("anthem"), 0.92);
+        assert_eq!(phase_target_energy("unknown"), 0.5);
+    }
+
+    #[test]
+    fn energy_estimation_prefers_neural_then_refined_then_base() {
+        let a = analysis("a", 120.0);
+        let base = estimate_energy(&a);
+        assert!((0.0..=1.0).contains(&base));
+
+        // No deep features -> effective_energy == base estimate.
+        assert_eq!(effective_energy(&a, None), base);
+
+        // Deep with only energy_refined blends toward it.
+        let mut deep = deep_for("a", 0.1, 0.5, 0.2);
+        deep.energy_refined = 0.9;
+        deep.confidence = 1.0;
+        let blended = effective_energy(&a, Some(&deep));
+        assert!(blended > base);
+
+        // Neural embedding energy takes priority over energy_refined when > 0.
+        deep.neural_embedding = Some(boogiebox_db::boogiemix::NeuralEmbedding {
+            energy_neural: 0.33,
+            danceability: 0.5,
+            valence: None,
+            embedding_16d: vec![0.0; 16],
+            model_version: "v1".into(),
+        });
+        assert_eq!(effective_energy(&a, Some(&deep)), 0.33);
+    }
+
+    #[test]
+    fn rounding_and_boundary_helpers() {
+        assert_eq!(round2(1.23456), 1.23);
+        assert_eq!(round3(1.23456), 1.235);
+        assert!(near_end(230.0, 240.0));
+        assert!(!near_end(100.0, 240.0));
+        assert!(near_end(10.0, 0.0)); // duration<=0 -> always "near end"
+        assert!(near_start(50.0));
+        assert!(!near_start(120.0));
+
+        let boundaries = [0.0, 8.0, 16.0, 24.0];
+        assert_eq!(nearest_phrase_boundary(&boundaries, 17.0, 2.0), Some(16.0));
+        assert_eq!(nearest_phrase_boundary(&boundaries, 50.0, 2.0), None);
+
+        assert_eq!(overlap_duration(0.0, 10.0, 5.0, 15.0), 5.0);
+        assert!(overlap_duration(0.0, 10.0, 20.0, 30.0) < 0.0);
+    }
+
+    #[test]
+    fn rhythmic_timing_evidence_and_drum_scoring() {
+        assert!(!has_rhythmic_timing_evidence(None));
+        let mut deep = deep_for("a", 0.1, 0.5, 0.2);
+        deep.drum_windows.clear();
+        deep.beat_grid = None;
+        for w in &mut deep.transition_windows {
+            w.drums_rms = None;
+            w.vocals_rms = None;
+            w.bass_rms = None;
+        }
+        assert!(!has_rhythmic_timing_evidence(Some(&deep)));
+
+        deep.drum_windows = vec![stem_window(0.0, 10.0, 0.8)];
+        assert!(has_rhythmic_timing_evidence(Some(&deep)));
+
+        assert_eq!(drum_score_for_span(None, 0.0, 10.0), None);
+        assert_eq!(drum_score_for_span(Some(&deep), 10.0, 5.0), None); // end <= start
+        let score = drum_score_for_span(Some(&deep), 0.0, 10.0).expect("overlap");
+        assert!(score > 0.0);
+        assert_eq!(drum_score_for_span(Some(&deep), 100.0, 110.0), None);
+    }
+
+    #[test]
+    fn section_role_lookup() {
+        let deep = deep_for("a", 0.1, 0.5, 0.2);
+        assert_eq!(section_role(Some(&deep), 5.0), Some("intro"));
+        assert_eq!(section_role(Some(&deep), 220.0), Some("outro"));
+        assert_eq!(section_role(Some(&deep), 100.0), None);
+        assert_eq!(section_role(None, 5.0), None);
+    }
+
+    #[test]
+    fn bpm_selection_helpers() {
+        let a = analysis("a", 120.0);
+        // best_bpm falls back to analysis estimate without deep features.
+        assert_eq!(best_bpm(&a, None), Some(120.0));
+
+        let mut deep = deep_for("a", 0.1, 0.5, 0.2);
+        deep.bpm_refined = Some(121.0);
+        assert_eq!(beat_grid_bpm(Some(&deep)), None); // no beat_grid set
+        assert_eq!(best_bpm(&a, Some(&deep)), Some(120.0)); // analysis wins over bpm_refined
+
+        let beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.5).collect();
+        assert_eq!(snap_to_beat(&beats, 4.05, 0.1), Some(4.0));
+        assert_eq!(snap_to_beat(&beats, 4.4, 0.1), Some(4.5));
+        assert_eq!(snap_to_beat(&beats, 4.65, 0.1), None);
+    }
+
+    #[test]
+    fn cosine_similarity_edge_cases() {
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]), 1.0);
+        assert!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-9);
+        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+        assert_eq!(cosine_similarity(&[1.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn reorder_for_curve_places_highest_energy_track_near_anthem_slot() {
+        let tracks: Vec<MixTrackInput> = (0..5).map(|i| input_track(&i.to_string())).collect();
+        let mut analyses: Vec<TrackMixAnalysis> =
+            (0..5).map(|i| analysis(&i.to_string(), 120.0)).collect();
+        // Track "3" is the loudest/highest-energy.
+        analyses[3].loudness_lufs = Some(-4.0);
+        let deep_features: HashMap<String, DeepTrackFeatures> = HashMap::new();
+        let preset = style_preset("long_build");
+        let (order, anthem_pos) = reorder_for_curve(&tracks, &analyses, &deep_features, &preset);
+        assert_eq!(order.len(), 5);
+        assert_eq!(order[anthem_pos], 3);
+    }
+
+    #[test]
+    fn derive_ordered_ids_follows_chain_and_appends_leftovers() {
+        let tracks = vec![input_track("a"), input_track("b"), input_track("c")];
+        // Empty transitions -> identity order.
+        assert_eq!(
+            derive_ordered_ids(&[], &tracks),
+            tracks
+                .iter()
+                .map(|t| t.track_id.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let t1 = render_transition("a", "b", 12.0, 0.0, false, 0.0);
+        let t2 = render_transition("b", "c", 12.0, 0.0, false, 0.0);
+        let ordered = derive_ordered_ids(&[t1, t2], &tracks);
+        assert_eq!(
+            ordered,
+            vec![
+                EntityId::Str("a".into()),
+                EntityId::Str("b".into()),
+                EntityId::Str("c".into())
+            ]
+        );
+
+        // A track not referenced by any transition is appended at the end.
+        let tracks4 = vec![
+            input_track("a"),
+            input_track("b"),
+            input_track("c"),
+            input_track("d"),
+        ];
+        let ordered4 = derive_ordered_ids(&[t1_clone(), t2_clone()], &tracks4);
+        assert_eq!(ordered4.last(), Some(&EntityId::Str("d".into())));
+    }
+
+    fn t1_clone() -> MixTransition {
+        render_transition("a", "b", 12.0, 0.0, false, 0.0)
+    }
+    fn t2_clone() -> MixTransition {
+        render_transition("b", "c", 12.0, 0.0, false, 0.0)
+    }
+
+    #[test]
+    fn select_transition_legacy_path_picks_kind_by_phase_and_compat() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let preset = style_preset("club_blend");
+        let warmup = select_transition(
+            &from_a,
+            &input_track("a"),
+            &to_a,
+            &input_track("b"),
+            "warmup",
+            &preset,
+            12.0,
+        );
+        assert_eq!(warmup.kind, "blend");
+        assert!(!warmup.deep_used);
+
+        let mut far_to = analysis("c", 160.0);
+        far_to.key_estimate = Some("C#".into()); // low harmonic compat vs "Am"
+        let low_compat = select_transition(
+            &from_a,
+            &input_track("a"),
+            &far_to,
+            &input_track("c"),
+            "peak",
+            &preset,
+            12.0,
+        );
+        assert_eq!(low_compat.kind, "echo_out");
+        assert!(low_compat.echo_tail_sec > 0.0);
+    }
+
+    #[test]
+    fn build_ai_prompt_includes_style_and_track_ids() {
+        let tracks = vec![input_track("a"), input_track("b")];
+        let analyses = vec![analysis("a", 120.0), analysis("b", 120.0)];
+        let prompt = build_ai_prompt(&tracks, &analyses, 12.0, "club_blend");
+        assert!(prompt.contains("club_blend"));
+        assert!(prompt.contains("\"a\""));
+        assert!(prompt.contains("\"b\""));
+    }
+
+    #[test]
+    fn parse_ai_plan_response_happy_path_and_rejections() {
+        let tracks = vec![input_track("a"), input_track("b")];
+        let analyses = vec![analysis("a", 120.0), analysis("b", 120.0)];
+        let playlist_id = EntityId::Str("p1".into());
+
+        let good = r#"{"transitions":[{"fromTrackId":"a","toTrackId":"b","startA":200,"endA":230,"startB":8,"type":"blend","confidence":0.8}]}"#;
+        let plan =
+            parse_ai_plan_response(good, &playlist_id, &tracks, &analyses, 12.0, "club_blend")
+                .expect("should parse");
+        assert_eq!(plan.transitions.len(), 1);
+        assert_eq!(plan.transitions[0].kind, "blend");
+        assert_eq!(plan.transitions[0].reason, "ai:blend");
+
+        // Wrapped in prose text (extracts the {...} substring).
+        let wrapped = format!("Sure, here you go:\n{good}\nHope that helps!");
+        assert!(parse_ai_plan_response(
+            &wrapped,
+            &playlist_id,
+            &tracks,
+            &analyses,
+            12.0,
+            "club_blend"
+        )
+        .is_some());
+
+        // No transitions array -> None.
+        assert!(parse_ai_plan_response(
+            r#"{"foo":"bar"}"#,
+            &playlist_id,
+            &tracks,
+            &analyses,
+            12.0,
+            "club_blend"
+        )
+        .is_none());
+
+        // Empty transitions array -> None.
+        assert!(parse_ai_plan_response(
+            r#"{"transitions":[]}"#,
+            &playlist_id,
+            &tracks,
+            &analyses,
+            12.0,
+            "club_blend"
+        )
+        .is_none());
+
+        // Unparseable garbage -> None.
+        assert!(parse_ai_plan_response(
+            "not json at all",
+            &playlist_id,
+            &tracks,
+            &analyses,
+            12.0,
+            "club_blend"
+        )
+        .is_none());
+
+        // References an unknown track id -> None (whole response rejected).
+        assert!(parse_ai_plan_response(
+            r#"{"transitions":[{"fromTrackId":"a","toTrackId":"zzz","type":"blend"}]}"#,
+            &playlist_id,
+            &tracks,
+            &analyses,
+            12.0,
+            "club_blend"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn parse_ai_plan_response_echo_out_gets_tail_and_unknown_type_falls_back_to_blend() {
+        let tracks = vec![input_track("a"), input_track("b")];
+        let analyses = vec![analysis("a", 120.0), analysis("b", 120.0)];
+        let playlist_id = EntityId::Str("p1".into());
+
+        let echo = r#"{"transitions":[{"fromTrackId":"a","toTrackId":"b","type":"echo_out"}]}"#;
+        let plan =
+            parse_ai_plan_response(echo, &playlist_id, &tracks, &analyses, 12.0, "club_blend")
+                .expect("should parse");
+        assert_eq!(plan.transitions[0].kind, "echo_out");
+        assert!(plan.transitions[0].echo_tail_sec > 0.0);
+
+        let weird = r#"{"transitions":[{"fromTrackId":"a","toTrackId":"b","type":"teleport"}]}"#;
+        let plan2 =
+            parse_ai_plan_response(weird, &playlist_id, &tracks, &analyses, 12.0, "club_blend")
+                .expect("should parse");
+        assert_eq!(plan2.transitions[0].kind, "blend");
+    }
+
+    // -- DB/job plumbing ------------------------------------------------------
+
+    struct MixFixture {
+        state: PostScanState,
+        dir: PathBuf,
+    }
+
+    fn mix_fixture(prefix: &str) -> MixFixture {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mix-worker-test-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = boogiebox_db::init_db(&dir).unwrap().connection;
+        let db: DbPool = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        MixFixture {
+            state: PostScanState {
+                db,
+                http_client: reqwest::Client::new(),
+                db_folder: Some(dir.clone()),
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+            dir,
+        }
+    }
+
+    #[test]
+    fn lock_db_returns_a_usable_connection() {
+        let fixture = mix_fixture("lock-db");
+        let guard = lock_db(&fixture.state.db).expect("lock succeeds");
+        let count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM libraries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn mix_output_dir_defaults_to_db_folder_subdir_when_unconfigured() {
+        let fixture = mix_fixture("output-dir-default");
+        let dir = get_mix_output_dir_fn(&fixture.state.db, fixture.state.db_folder.as_ref());
+        assert_eq!(dir, fixture.dir.join("mix-outputs"));
+
+        // No db_folder at all -> relative default.
+        let dir_no_base = get_mix_output_dir_fn(&fixture.state.db, None);
+        assert_eq!(dir_no_base, PathBuf::from("mix-outputs"));
+    }
+
+    #[test]
+    fn mix_output_dir_honors_absolute_configured_override() {
+        let fixture = mix_fixture("output-dir-absolute");
+        {
+            let conn = fixture.state.db.lock().unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES ('boogiemixOutputFolder', ?)",
+                rusqlite::params!["D:\\CustomMixOutputs"],
+            )
+            .unwrap();
+        }
+        let dir = get_mix_output_dir_fn(&fixture.state.db, fixture.state.db_folder.as_ref());
+        assert_eq!(dir, PathBuf::from("D:\\CustomMixOutputs"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_deep_analysis_times_out_when_features_never_arrive() {
+        let fixture = mix_fixture("wait-deep");
+        let tracks = vec![input_track("missing-track")];
+        let ready =
+            wait_for_deep_analysis(&fixture.state, &tracks, Duration::from_millis(50)).await;
+        assert_eq!(ready, Ok(0));
+    }
+
+    #[tokio::test]
+    async fn try_process_next_is_a_noop_on_an_empty_job_queue() {
+        let fixture = mix_fixture("try-process-next-empty");
+        // No mix jobs queued at all -> Ok(()) without touching anything else.
+        let result = try_process_next(&fixture.state).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deep_with_debug_collects_ranked_candidates_and_marks_the_chosen_one() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let from_deep = deep_for("a", 0.1, 0.8, 0.2);
+        let to_deep = deep_for("b", 0.1, 0.8, 0.2);
+        let preset = style_preset("club_blend");
+        let mut sink: Vec<TransitionCandidateLocal> = Vec::new();
+
+        let trans = select_transition_deep_with_debug(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "club_blend",
+            &preset,
+            8.0,
+            Some(&mut sink),
+        );
+
+        assert!(trans.deep_used);
+        assert!(!sink.is_empty());
+        assert!(sink.iter().any(|c| c.chosen));
+        assert!(sink.len() <= TRANSITION_DEBUG_TOP_N);
+    }
+
+    #[test]
+    fn deep_transition_falls_back_to_synthetic_windows_when_none_match_role_filters() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let mut from_deep = deep_for("a", 0.1, 0.8, 0.2);
+        let mut to_deep = deep_for("b", 0.1, 0.8, 0.2);
+        // Re-role every transition window so neither the outro nor intro
+        // filters in select_transition_deep_with_debug match anything,
+        // forcing the synthetic single-window fallback for both sides.
+        for w in &mut from_deep.transition_windows {
+            w.role = "verse".into();
+        }
+        for w in &mut to_deep.transition_windows {
+            w.role = "verse".into();
+        }
+
+        let preset = style_preset("club_blend");
+        let trans = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "club_blend",
+            &preset,
+            8.0,
+        );
+
+        // Synthetic fallback windows still carry deep=true since from_deep/
+        // to_deep are Some and pass the rhythmic-evidence gate.
+        assert!(trans.deep_used);
+    }
+
+    #[test]
+    fn safe_mix_deep_transition_uses_safe_crossfade_kind() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        let from_deep = deep_for("a", 0.1, 0.8, 0.2);
+        let to_deep = deep_for("b", 0.1, 0.8, 0.2);
+        let preset = style_preset("safe_mix");
+        let trans = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "safe_mix",
+            &preset,
+            8.0,
+        );
+        assert_eq!(trans.kind, "safe_crossfade");
+    }
+
+    #[test]
+    fn long_build_deep_transition_gets_an_echo_tail_when_vocal_overlap_is_low() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        // Low vocal_risk on both windows -> vocal_overlap < 0.25 -> echo tail applies.
+        let from_deep = deep_for("a", 0.05, 0.8, 0.2);
+        let to_deep = deep_for("b", 0.05, 0.8, 0.2);
+        let preset = style_preset("long_build");
+        let trans = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "long_build",
+            &preset,
+            30.0,
+        );
+        assert_eq!(trans.kind, "long_build");
+        assert!(trans.echo_tail_sec > 0.0);
+    }
+
+    #[test]
+    fn deep_transition_bass_duck_prefers_measured_bass_rms_over_overlap_heuristic() {
+        let from_a = analysis("a", 120.0);
+        let to_a = analysis("b", 120.0);
+        // bass_risk (also used as bass_rms in the fixture) > 0.3 -> measured branch.
+        let from_deep = deep_for("a", 0.1, 0.8, 0.5);
+        let to_deep = deep_for("b", 0.1, 0.8, 0.5);
+        let preset = style_preset("club_blend");
+        let trans = select_transition_deep(
+            &from_a,
+            &input_track("a"),
+            Some(&from_deep),
+            &to_a,
+            &input_track("b"),
+            Some(&to_deep),
+            "groove",
+            "club_blend",
+            &preset,
+            8.0,
+        );
+        assert!((trans.bass_duck - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reorder_for_curve_handles_small_playlists_and_appends_leftovers_in_score_order() {
+        let tracks: Vec<MixTrackInput> = (0..5).map(|i| input_track(&format!("t{i}"))).collect();
+        let mut analyses: Vec<TrackMixAnalysis> = (0..5)
+            .map(|i| analysis(&format!("t{i}"), 120.0 + i as f64))
+            .collect();
+        // Vary loudness so energy_of differs across tracks, exercising the
+        // best-match scan inside the slot-filling loop rather than ties.
+        for (i, a) in analyses.iter_mut().enumerate() {
+            a.loudness_lufs = Some(-20.0 + i as f64 * 2.0);
+        }
+        let deep_features: HashMap<String, DeepTrackFeatures> = HashMap::new();
+        let preset = style_preset("club_blend");
+        let (ordered, anthem_pos) = reorder_for_curve(&tracks, &analyses, &deep_features, &preset);
+        assert_eq!(ordered.len(), 5);
+        // Every original index appears exactly once.
+        let mut sorted = ordered.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2, 3, 4]);
+        assert!(anthem_pos < 5);
     }
 }

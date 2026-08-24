@@ -1472,12 +1472,16 @@ mod tests {
 /// otherwise two tests running concurrently (the default) could each point their
 /// providers at the other's mock server.
 #[cfg(test)]
-mod provider_fetch_tests {
+pub(crate) mod provider_fetch_tests {
     use super::*;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    /// `pub(crate)` so other modules' tests (e.g. `post_scan.rs`, which drives
+    /// these same provider-fetch functions through its orchestration lanes) can
+    /// serialize against this module's tests instead of racing on the same
+    /// process-wide `BOOGIEBOX_*_API_BASE` env vars via a second, unrelated lock.
+    pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn search_discogs_album_cover_returns_first_valid_cover() {
