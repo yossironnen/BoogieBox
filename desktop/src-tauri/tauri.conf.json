@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "BoogieBox",
-  "version": "0.8.236",
+  "version": "0.8.238",
   "identifier": "com.boogiebox.desktop",
   "build": {
     "frontendDist": "../dist"

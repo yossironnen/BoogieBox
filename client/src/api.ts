@@ -29,6 +29,7 @@ import type {
   BpmAnalysisStatus,
   BpmBatchResult,
   MetadataSearchResult,
+  ProviderSearchWarning,
   AuthUser,
   LoginUser,
   AdminUser,
@@ -470,7 +471,9 @@ export const api = {
     lyrics: (params: { artist: string; title: string }) =>
       get<{ lyrics: string; sourceUrl: string }>('/integrations/lyrics', params as any),
     metadataSearch: (params: { artist: string; album?: string }) =>
-      get<{ results: MetadataSearchResult[] }>('/integrations/metadata-search', params as any),
+      get<{ results: MetadataSearchResult[]; provider_warnings: ProviderSearchWarning[] }>(
+        '/integrations/metadata-search', params as any,
+      ),
   },
   updateAlbumMetadata: (
     id: ApiEntityId,

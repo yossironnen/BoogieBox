@@ -502,6 +502,25 @@ pub async fn search_spotify_artist_image(
 
 // ── Metadata search (multi-provider) ─────────────────────────────────────────
 
+/// Why a metadata-search provider was skipped in the failover chain (§
+/// "Refresh Metadata rate-limit messaging" — previously a 429 from any
+/// provider silently looked identical to "no matches", with nothing
+/// distinguishing it from a genuine empty result for the user).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSearchFailure {
+    RateLimited,
+    Unavailable,
+}
+
+/// One provider's failure during a metadata search, surfaced to the client
+/// alongside whatever results the rest of the chain did find.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProviderSearchWarning {
+    pub provider: String,
+    pub reason: ProviderSearchFailure,
+}
+
 /// Public Metadata Search Result data shape used by BoogieBox.
 #[derive(Debug, serde::Serialize)]
 pub struct MetadataSearchResult {
@@ -527,8 +546,14 @@ pub struct MetadataSearchResult {
     pub extra: Option<Value>,
 }
 
-/// Documents the Search Metadata public API surface.
-pub async fn search_metadata(
+/// Combines every configured provider's results without stopping early —
+/// used by `post_scan::run_sync_discogs_album_metadata`'s cross-provider
+/// agreement check (label/release-type/year are only applied when every
+/// matched provider agrees), which needs to see all of them, not just
+/// whichever answered first. Deliberately Last.fm-free and behaviorally
+/// identical to the pre-failover `search_metadata`, since that job's
+/// agreement logic wasn't part of this change.
+pub async fn search_metadata_combined(
     client: &Client,
     discogs_token: Option<&str>,
     spotify_client_id: Option<&str>,
@@ -540,7 +565,7 @@ pub async fn search_metadata(
 
     if let Some(token) = discogs_token {
         if let Some(album_title) = album {
-            if let Some(discogs_results) =
+            if let Ok(discogs_results) =
                 search_discogs_metadata(client, token, artist, album_title).await
             {
                 results.extend(discogs_results);
@@ -549,7 +574,7 @@ pub async fn search_metadata(
     }
 
     if let (Some(id), Some(secret)) = (spotify_client_id, spotify_client_secret) {
-        if let Some(spotify_results) =
+        if let Ok(spotify_results) =
             search_spotify_metadata(client, id, secret, artist, album).await
         {
             results.extend(spotify_results);
@@ -559,12 +584,192 @@ pub async fn search_metadata(
     results
 }
 
+/// Searches for artist/album metadata as a failover chain — Last.fm first,
+/// then Discogs (album searches only; Discogs has no artist-only search
+/// wired up here), then Spotify as the last resort — stopping at the first
+/// provider that returns at least one match. A provider that errors (rate
+/// limit or otherwise) doesn't stop the chain, but its failure is recorded
+/// and returned alongside whatever the rest of the chain found, so the
+/// client can tell "genuinely no matches" apart from "a provider failed" —
+/// previously indistinguishable (a Spotify 429 looked exactly like an empty
+/// result).
+pub async fn search_metadata(
+    client: &Client,
+    lastfm_key: Option<&str>,
+    discogs_token: Option<&str>,
+    spotify_client_id: Option<&str>,
+    spotify_client_secret: Option<&str>,
+    artist: &str,
+    album: Option<&str>,
+) -> (Vec<MetadataSearchResult>, Vec<ProviderSearchWarning>) {
+    let mut warnings = Vec::new();
+
+    if let Some(key) = lastfm_key {
+        match search_lastfm_metadata(client, key, artist, album).await {
+            Ok(results) if !results.is_empty() => return (results, warnings),
+            Ok(_) => {}
+            Err(reason) => warnings.push(ProviderSearchWarning {
+                provider: "lastfm".to_owned(),
+                reason,
+            }),
+        }
+    }
+
+    if let Some(token) = discogs_token {
+        if let Some(album_title) = album {
+            match search_discogs_metadata(client, token, artist, album_title).await {
+                Ok(results) if !results.is_empty() => return (results, warnings),
+                Ok(_) => {}
+                Err(reason) => warnings.push(ProviderSearchWarning {
+                    provider: "discogs".to_owned(),
+                    reason,
+                }),
+            }
+        }
+    }
+
+    if let (Some(id), Some(secret)) = (spotify_client_id, spotify_client_secret) {
+        match search_spotify_metadata(client, id, secret, artist, album).await {
+            Ok(results) => (results, warnings),
+            Err(reason) => {
+                warnings.push(ProviderSearchWarning {
+                    provider: "spotify".to_owned(),
+                    reason,
+                });
+                (Vec::new(), warnings)
+            }
+        }
+    } else {
+        (Vec::new(), warnings)
+    }
+}
+
+/// One-result-or-none Last.fm lookup (`artist.getinfo`/`album.getinfo` are
+/// direct-lookup APIs, not a fuzzy multi-candidate search like Discogs/
+/// Spotify) mapped onto the shared `MetadataSearchResult` shape so it can
+/// slot into the same failover chain and the same "pick a result" UI.
+async fn search_lastfm_metadata(
+    client: &Client,
+    api_key: &str,
+    artist: &str,
+    album: Option<&str>,
+) -> Result<Vec<MetadataSearchResult>, ProviderSearchFailure> {
+    let lastfm_api_root = lastfm_api_base();
+    let (url, log_kind, log_subject) = if let Some(album_name) = album {
+        (
+            format!(
+                "{lastfm_api_root}?method=album.getinfo&artist={}&album={}&api_key={}&format=json",
+                urlencoding::encode(artist),
+                urlencoding::encode(album_name),
+                api_key
+            ),
+            "album_metadata_search",
+            format!("{artist} — {album_name}"),
+        )
+    } else {
+        (
+            format!(
+                "{lastfm_api_root}?method=artist.getinfo&artist={}&api_key={}&format=json&autocorrect=1",
+                urlencoding::encode(artist),
+                api_key
+            ),
+            "artist_metadata_search",
+            artist.to_owned(),
+        )
+    };
+
+    let t0 = log_request("lastfm", log_kind, &log_subject);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
+    log_response("lastfm", log_kind, t0, resp.status());
+
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ProviderSearchFailure::RateLimited);
+    }
+    if !resp.status().is_success() {
+        return Err(ProviderSearchFailure::Unavailable);
+    }
+
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
+
+    if let Some(album_name) = album {
+        let node = &data["album"];
+        if node.is_null() {
+            return Ok(Vec::new());
+        }
+        let summary = node["wiki"]["summary"].as_str().unwrap_or("");
+        let image = node["image"].as_array().and_then(|imgs| {
+            imgs.iter()
+                .rev()
+                .find_map(|i| optional_nonempty_json_string(&i["#text"]))
+        });
+        let genre = node["tags"]["tag"]
+            .as_array()
+            .and_then(|tags| tags.first())
+            .and_then(|tag| optional_nonempty_json_string(&tag["name"]));
+        Ok(vec![MetadataSearchResult {
+            provider: "lastfm".to_owned(),
+            title: Some(album_name.to_owned()),
+            artist: optional_nonempty_json_string(&node["artist"])
+                .or_else(|| Some(artist.to_owned())),
+            year: None,
+            release_type: None,
+            genre,
+            cover_url: image,
+            tracklist: None,
+            description: if summary.is_empty() {
+                None
+            } else {
+                Some(summary.to_owned())
+            },
+            extra: None,
+        }])
+    } else {
+        let node = &data["artist"];
+        if node.is_null() || node["name"].as_str().is_none() {
+            return Ok(Vec::new());
+        }
+        let summary = node["bio"]["summary"].as_str().unwrap_or("");
+        let image = node["image"].as_array().and_then(|imgs| {
+            imgs.iter()
+                .rev()
+                .find_map(|i| optional_nonempty_json_string(&i["#text"]))
+        });
+        let genre = node["tags"]["tag"]
+            .as_array()
+            .and_then(|tags| tags.first())
+            .and_then(|tag| optional_nonempty_json_string(&tag["name"]));
+        Ok(vec![MetadataSearchResult {
+            provider: "lastfm".to_owned(),
+            title: optional_nonempty_json_string(&node["name"]).or_else(|| Some(artist.to_owned())),
+            artist: Some(artist.to_owned()),
+            year: None,
+            release_type: None,
+            genre,
+            cover_url: image,
+            tracklist: None,
+            description: if summary.is_empty() {
+                None
+            } else {
+                Some(summary.to_owned())
+            },
+            extra: None,
+        }])
+    }
+}
+
 async fn search_discogs_metadata(
     client: &Client,
     token: &str,
     artist: &str,
     album: &str,
-) -> Option<Vec<MetadataSearchResult>> {
+) -> Result<Vec<MetadataSearchResult>, ProviderSearchFailure> {
     let q = format!("{} {}", artist, album);
     let url = format!(
         "{}/database/search?type=release&q={}&per_page=5&page=1",
@@ -579,15 +784,23 @@ async fn search_discogs_metadata(
         .header("User-Agent", USER_AGENT)
         .send()
         .await
-        .ok()?;
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
     log_response("discogs", "metadata_search", t0, resp.status());
 
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ProviderSearchFailure::RateLimited);
+    }
     if !resp.status().is_success() {
-        return None;
+        return Err(ProviderSearchFailure::Unavailable);
     }
 
-    let data: Value = resp.json().await.ok()?;
-    let items = data["results"].as_array()?;
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
+    let items = data["results"]
+        .as_array()
+        .ok_or(ProviderSearchFailure::Unavailable)?;
     tracing::debug!(
         "provider result discogs metadata_search query={q:?} hits={}",
         items.len()
@@ -637,7 +850,7 @@ async fn search_discogs_metadata(
         })
         .collect();
 
-    Some(results)
+    Ok(results)
 }
 
 async fn search_spotify_metadata(
@@ -646,8 +859,10 @@ async fn search_spotify_metadata(
     client_secret: &str,
     artist: &str,
     album: Option<&str>,
-) -> Option<Vec<MetadataSearchResult>> {
-    let token = get_spotify_access_token(client, client_id, client_secret).await?;
+) -> Result<Vec<MetadataSearchResult>, ProviderSearchFailure> {
+    let token = get_spotify_access_token(client, client_id, client_secret)
+        .await
+        .ok_or(ProviderSearchFailure::Unavailable)?;
 
     let q = if let Some(al) = album {
         format!("artist:{} album:{}", artist, al)
@@ -669,17 +884,25 @@ async fn search_spotify_metadata(
         .header("User-Agent", USER_AGENT)
         .send()
         .await
-        .ok()?;
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
     log_response("spotify", "metadata_search", t0, resp.status());
 
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ProviderSearchFailure::RateLimited);
+    }
     if !resp.status().is_success() {
-        return None;
+        return Err(ProviderSearchFailure::Unavailable);
     }
 
-    let data: Value = resp.json().await.ok()?;
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
 
     if album.is_some() {
-        let items = data["albums"]["items"].as_array()?;
+        let items = data["albums"]["items"]
+            .as_array()
+            .ok_or(ProviderSearchFailure::Unavailable)?;
         let results = items
             .iter()
             .map(|item| {
@@ -709,9 +932,11 @@ async fn search_spotify_metadata(
                 }
             })
             .collect();
-        Some(results)
+        Ok(results)
     } else {
-        let items = data["artists"]["items"].as_array()?;
+        let items = data["artists"]["items"]
+            .as_array()
+            .ok_or(ProviderSearchFailure::Unavailable)?;
         let results = items
             .iter()
             .map(|item| {
@@ -739,7 +964,7 @@ async fn search_spotify_metadata(
                 }
             })
             .collect();
-        Some(results)
+        Ok(results)
     }
 }
 
@@ -1607,7 +1832,7 @@ pub(crate) mod provider_fetch_tests {
             .await;
 
         let client = Client::new();
-        let results = search_metadata(
+        let results = search_metadata_combined(
             &client,
             Some("discogs-tok"),
             Some("spotify-id"),
@@ -1623,6 +1848,255 @@ pub(crate) mod provider_fetch_tests {
         std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
+    }
+
+    // -- search_metadata failover chain (Last.fm -> Discogs -> Spotify) ----------
+
+    #[tokio::test]
+    async fn search_metadata_stops_at_lastfm_when_it_has_a_match() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(query_param("method", "artist.getinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artist": { "name": "Madonna", "bio": { "summary": "Pop icon." } }
+            })))
+            .mount(&server)
+            .await;
+        // No Discogs/Spotify mocks mounted at all — if the chain called them,
+        // the request would fail/hang, proving it stopped at Last.fm.
+
+        let client = Client::new();
+        let (results, warnings) = search_metadata(
+            &client,
+            Some("lastfm-key"),
+            None,
+            None,
+            None,
+            "Madonna",
+            None,
+        )
+        .await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].provider, "lastfm");
+        assert_eq!(results[0].title.as_deref(), Some("Madonna"));
+        assert!(warnings.is_empty());
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_metadata_falls_through_to_the_next_provider_when_lastfm_has_nothing() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(query_param("method", "artist.getinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artist": {}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "tok123" })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": { "items": [{ "name": "Madonna", "images": [] }] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (results, warnings) = search_metadata(
+            &client,
+            Some("lastfm-key"),
+            None,
+            Some("spotify-id"),
+            Some("spotify-secret"),
+            "Madonna",
+            None,
+        )
+        .await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].provider, "spotify");
+        assert!(
+            warnings.is_empty(),
+            "an empty (not erroring) Last.fm lookup isn't a warning"
+        );
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_metadata_records_a_rate_limit_warning_and_keeps_failing_over() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(query_param("method", "artist.getinfo"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "tok123" })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": { "items": [] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (results, warnings) = search_metadata(
+            &client,
+            Some("lastfm-key"),
+            None,
+            Some("spotify-id"),
+            Some("spotify-secret"),
+            "Madonna",
+            None,
+        )
+        .await;
+        assert!(results.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].provider, "lastfm");
+        assert_eq!(warnings[0].reason, ProviderSearchFailure::RateLimited);
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_metadata_maps_a_spotify_429_to_a_rate_limited_warning() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/api/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "tok123" })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/search"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        // No Last.fm key, no Discogs token — Spotify is the only provider in
+        // the chain, matching the real regression this was found from.
+        let (results, warnings) = search_metadata(
+            &client,
+            None,
+            None,
+            Some("spotify-id"),
+            Some("spotify-secret"),
+            "Madonna",
+            None,
+        )
+        .await;
+        assert!(results.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].provider, "spotify");
+        assert_eq!(warnings[0].reason, ProviderSearchFailure::RateLimited);
+
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_lastfm_metadata_maps_album_lookup_fields() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(query_param("method", "album.getinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "album": {
+                    "artist": "Madonna",
+                    "wiki": { "summary": "A classic." },
+                    "image": [{ "#text": "https://img/cover.jpg" }],
+                    "tags": { "tag": [{ "name": "pop" }] }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let results = search_lastfm_metadata(&client, "lastfm-key", "Madonna", Some("Erotica"))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].provider, "lastfm");
+        assert_eq!(results[0].title.as_deref(), Some("Erotica"));
+        assert_eq!(results[0].artist.as_deref(), Some("Madonna"));
+        assert_eq!(results[0].genre.as_deref(), Some("pop"));
+        assert_eq!(
+            results[0].cover_url.as_deref(),
+            Some("https://img/cover.jpg")
+        );
+        assert_eq!(results[0].description.as_deref(), Some("A classic."));
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_lastfm_metadata_returns_empty_not_an_error_when_unknown() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .and(query_param("method", "artist.getinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artist": null
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let results = search_lastfm_metadata(&client, "lastfm-key", "Unknown Artist", None)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
     }
 
     #[tokio::test]

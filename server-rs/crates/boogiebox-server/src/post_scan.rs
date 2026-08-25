@@ -11,7 +11,7 @@ use crate::{
         download_image, fetch_lastfm_album_info, fetch_lastfm_artist_info,
         fetch_lastfm_artist_top_tags, fetch_lrclib_lyrics, fetch_lyricsovh,
         get_spotify_access_token, search_deezer_artist_match, search_discogs_album_cover,
-        search_discogs_artist_match, search_metadata, search_spotify_artist_match,
+        search_discogs_artist_match, search_metadata_combined, search_spotify_artist_match,
         search_spotify_artist_match_with_token, ArtistProviderMatch, LastFmInfoPayload,
         MetadataSearchResult,
     },
@@ -45,6 +45,30 @@ const ALBUM_THUMB_SIZES: &[u32] = &[300, 800];
 const LASTFM_CACHE_DAYS: i64 = 7;
 const MIN_LASTFM_TAG_COUNT: u64 = 20;
 const MAX_ARTIST_STYLE_AGE_HOURS: i64 = 24 * 7;
+
+/// Default between-item delay shared by the post-scan lanes that call an
+/// external provider once (or a couple of times) per artist/album/track — a
+/// full-library sweep otherwise fires requests back-to-back with no
+/// throttling at all, which can trip a provider's own rate limit on a big
+/// library. A rate-limited miss isn't a dead end (these lanes only stamp
+/// their "last checked" timestamp on an actual persisted match, so a miss
+/// stays eligible for the next scan/sweep) but it's still wasted requests
+/// and a needless wall of "not found" results. `run_sync_discogs_album_metadata`
+/// uses its own slower `discogs_album_metadata_sync_delay` instead, since it
+/// can call up to two providers per album. Overridable (mirrors the
+/// `BOOGIEBOX_*_API_BASE` pattern) so tests don't eat real wall-clock time —
+/// see `fixture()`, which sets it to 0.
+fn provider_sweep_delay() -> Duration {
+    delay_from_env_or("BOOGIEBOX_PROVIDER_SWEEP_DELAY_MS", 1000)
+}
+
+fn delay_from_env_or(var: &str, default_ms: u64) -> Duration {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(default_ms))
+}
 const STYLE_TAG_BLACKLIST: &[&str] = &[
     "seen live",
     "favorites",
@@ -441,6 +465,12 @@ async fn run_cache_artist_images(
             }
         }
 
+        // Conservative against provider rate limits during a full-library
+        // sweep — see provider_sweep_delay(). Only applied once at least one
+        // provider call was actually attempted this iteration (cache-hit/
+        // locked/missing-artist `continue`s above never reach here).
+        tokio::time::sleep(provider_sweep_delay()).await;
+
         let Some(url) = image_url else { continue };
 
         if let Some((bytes, content_type)) = download_image(&state.http_client, &url).await {
@@ -576,6 +606,10 @@ async fn run_cache_album_images(
             None
         };
 
+        if discogs_token.is_some() {
+            tokio::time::sleep(provider_sweep_delay()).await;
+        }
+
         let Some(url) = image_url else { continue };
         if let Some((bytes, content_type)) = download_image(&state.http_client, &url).await {
             let ext = ext_from_content_type(&content_type);
@@ -662,10 +696,9 @@ async fn run_warm_lastfm_artist_info(
             }
         }
 
-        let Some(info) = fetch_lastfm_artist_info(&state.http_client, &api_key, &artist.name).await
-        else {
-            continue;
-        };
+        let info = fetch_lastfm_artist_info(&state.http_client, &api_key, &artist.name).await;
+        tokio::time::sleep(provider_sweep_delay()).await;
+        let Some(info) = info else { continue };
         persist_lastfm_identity(&state.db, artist_id, &info).await;
 
         let data = serde_json::to_string(&info).unwrap_or_default();
@@ -783,6 +816,11 @@ async fn run_enrich_artist_external_ids(
             }
         }
 
+        // This lane can call up to four providers per artist (Last.fm,
+        // Deezer, Discogs, Spotify) — one pause per artist iteration still
+        // bounds how fast any single one of them gets hit across the sweep.
+        tokio::time::sleep(provider_sweep_delay()).await;
+
         finalize_pending_identity_lock(&state.db, &artist.artist_id).await;
 
         let db = state.db.clone();
@@ -869,12 +907,11 @@ async fn run_warm_lastfm_album_info(
             continue;
         }
 
-        let Some(info) =
+        let info =
             fetch_lastfm_album_info(&state.http_client, &api_key, &album.artist, &album.title)
-                .await
-        else {
-            continue;
-        };
+                .await;
+        tokio::time::sleep(provider_sweep_delay()).await;
+        let Some(info) = info else { continue };
 
         let data = serde_json::to_string(&info).unwrap_or_default();
         if !data.is_empty() {
@@ -953,6 +990,7 @@ async fn run_warm_track_lyrics(
         } else {
             lr
         };
+        tokio::time::sleep(provider_sweep_delay()).await;
         let Some(lr) = lr else { continue };
 
         let synced_json = lr
@@ -1025,6 +1063,7 @@ async fn run_sync_artist_styles(
 
     for (artist_id, artist_name) in &artist_rows {
         let tags = fetch_lastfm_artist_top_tags(&state.http_client, &api_key, artist_name).await;
+        tokio::time::sleep(provider_sweep_delay()).await;
 
         let valid_styles: Vec<String> = tags
             .iter()
@@ -1072,7 +1111,10 @@ async fn run_sync_artist_styles(
 /// Between-album delay for this lane. Deliberately slower than other post-scan
 /// lanes since it can call both Discogs and Spotify per album and needs to stay
 /// conservative against provider rate limits during a full-library backfill.
-const DISCOGS_ALBUM_METADATA_SYNC_DELAY: Duration = Duration::from_millis(1500);
+/// Overridable — see `provider_sweep_delay()`.
+fn discogs_album_metadata_sync_delay() -> Duration {
+    delay_from_env_or("BOOGIEBOX_DISCOGS_ALBUM_SYNC_DELAY_MS", 1500)
+}
 
 /// Discogs' search results list the label credit inline (no release-detail
 /// fetch needed) but mix in pressing/distribution/mastering credits after the
@@ -1187,7 +1229,7 @@ async fn run_sync_discogs_album_metadata(
             continue;
         }
 
-        let results = search_metadata(
+        let results = search_metadata_combined(
             &state.http_client,
             discogs_token.as_deref(),
             spotify_client_id.as_deref(),
@@ -1281,7 +1323,7 @@ async fn run_sync_discogs_album_metadata(
             }
         }
 
-        tokio::time::sleep(DISCOGS_ALBUM_METADATA_SYNC_DELAY).await;
+        tokio::time::sleep(discogs_album_metadata_sync_delay()).await;
     }
     Ok(())
 }
@@ -1363,6 +1405,68 @@ mod tests {
 
     // -- offline pure-logic tests ------------------------------------------------
 
+    // These two mutate process-global env vars that `fixture()` also sets
+    // (to "0", for every other test in this module) — guarded by the same
+    // ENV_LOCK the provider-API-base overrides use, since cargo test runs
+    // tests in parallel within one process.
+
+    #[tokio::test]
+    async fn delay_from_env_or_parses_overrides_and_falls_back_on_absence_or_junk() {
+        use super::delay_from_env_or;
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        std::env::remove_var("BOOGIEBOX_TEST_DELAY_MS");
+        assert_eq!(
+            delay_from_env_or("BOOGIEBOX_TEST_DELAY_MS", 1000),
+            std::time::Duration::from_millis(1000)
+        );
+
+        std::env::set_var("BOOGIEBOX_TEST_DELAY_MS", "42");
+        assert_eq!(
+            delay_from_env_or("BOOGIEBOX_TEST_DELAY_MS", 1000),
+            std::time::Duration::from_millis(42)
+        );
+
+        std::env::set_var("BOOGIEBOX_TEST_DELAY_MS", "not-a-number");
+        assert_eq!(
+            delay_from_env_or("BOOGIEBOX_TEST_DELAY_MS", 1000),
+            std::time::Duration::from_millis(1000)
+        );
+
+        std::env::remove_var("BOOGIEBOX_TEST_DELAY_MS");
+    }
+
+    #[tokio::test]
+    async fn provider_sweep_delay_and_discogs_delay_default_and_override_independently() {
+        use super::{discogs_album_metadata_sync_delay, provider_sweep_delay};
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        std::env::remove_var("BOOGIEBOX_PROVIDER_SWEEP_DELAY_MS");
+        std::env::remove_var("BOOGIEBOX_DISCOGS_ALBUM_SYNC_DELAY_MS");
+        assert_eq!(
+            provider_sweep_delay(),
+            std::time::Duration::from_millis(1000)
+        );
+        assert_eq!(
+            discogs_album_metadata_sync_delay(),
+            std::time::Duration::from_millis(1500)
+        );
+
+        std::env::set_var("BOOGIEBOX_PROVIDER_SWEEP_DELAY_MS", "25");
+        std::env::set_var("BOOGIEBOX_DISCOGS_ALBUM_SYNC_DELAY_MS", "35");
+        assert_eq!(provider_sweep_delay(), std::time::Duration::from_millis(25));
+        assert_eq!(
+            discogs_album_metadata_sync_delay(),
+            std::time::Duration::from_millis(35)
+        );
+
+        // Restore the "always instant in tests" default every other test relies on.
+        std::env::set_var("BOOGIEBOX_PROVIDER_SWEEP_DELAY_MS", "0");
+        std::env::set_var("BOOGIEBOX_DISCOGS_ALBUM_SYNC_DELAY_MS", "0");
+    }
+
     #[test]
     fn parse_entity_ids_from_payload_handles_all_shapes() {
         use super::parse_entity_ids_from_payload;
@@ -1430,6 +1534,13 @@ mod tests {
     }
 
     fn fixture(prefix: &str) -> Fixture {
+        // Tests always want the real between-item throttling (see
+        // provider_sweep_delay()/discogs_album_metadata_sync_delay()) turned
+        // off — same value for every test, so no ENV_LOCK-style guard is
+        // needed the way the provider-API-base overrides need one.
+        std::env::set_var("BOOGIEBOX_PROVIDER_SWEEP_DELAY_MS", "0");
+        std::env::set_var("BOOGIEBOX_DISCOGS_ALBUM_SYNC_DELAY_MS", "0");
+
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap()

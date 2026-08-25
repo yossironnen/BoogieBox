@@ -258,24 +258,27 @@ async fn metadata_search_handler(
         None => return setup_required_response(),
     };
 
-    let (discogs_token, spotify_id, spotify_secret) = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        (
-            boogiebox_db::artwork::get_setting(&conn, "discogsToken"),
-            boogiebox_db::artwork::get_setting(&conn, "spotifyClientId"),
-            boogiebox_db::artwork::get_setting(&conn, "spotifyClientSecret"),
-        )
-    })
-    .await
-    .unwrap_or((None, None, None));
+    let (lastfm_key, discogs_token, spotify_id, spotify_secret) =
+        tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            (
+                boogiebox_db::artwork::get_setting(&conn, "lastfmKey"),
+                boogiebox_db::artwork::get_setting(&conn, "discogsToken"),
+                boogiebox_db::artwork::get_setting(&conn, "spotifyClientId"),
+                boogiebox_db::artwork::get_setting(&conn, "spotifyClientSecret"),
+            )
+        })
+        .await
+        .unwrap_or((None, None, None, None));
 
     let http_client = state
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .http_client
         .clone();
-    let results = search_metadata(
+    let (results, provider_warnings) = search_metadata(
         &http_client,
+        lastfm_key.as_deref(),
         discogs_token.as_deref(),
         spotify_id.as_deref(),
         spotify_secret.as_deref(),
@@ -316,7 +319,7 @@ async fn metadata_search_handler(
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({ "results": results })),
+        Json(serde_json::json!({ "results": results, "provider_warnings": provider_warnings })),
     )
         .into_response()
 }
@@ -664,6 +667,63 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn metadata_search_surfaces_provider_warnings_alongside_results() {
+        // Regression coverage: a rate-limited provider used to look
+        // identical to "no matches" — see conversation / providers.rs's
+        // search_metadata failover tests for the underlying logic. This
+        // confirms the route actually threads the warning through.
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/token"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "access_token": "tok123" })),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/search"))
+            .respond_with(wiremock::ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let (app, pool) = new_test_app_with_pool("provider-metadata-warnings");
+        let cookie = seed_user_session(&pool, "u1");
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES ('spotifyClientId', 'id'), ('spotifyClientSecret', 'secret')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )
+            .unwrap();
+        }
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/integrations/metadata-search?artist=Madonna")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["results"].as_array().unwrap().len(), 0);
+        let warnings = json_body(&body)["provider_warnings"].clone();
+        assert_eq!(warnings[0]["provider"], "spotify");
+        assert_eq!(warnings[0]["reason"], "rate_limited");
+
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
+        std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
     }
 
     #[tokio::test]

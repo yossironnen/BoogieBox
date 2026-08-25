@@ -137,4 +137,41 @@ describe('MetadataRefreshModal', () => {
       year: undefined,
     }), true);
   });
+
+  it('shows a rate-limit message when a provider was rate limited', async () => {
+    apiMock.integrations.metadataSearch.mockResolvedValue({
+      results: [],
+      provider_warnings: [{ provider: 'spotify', reason: 'rate_limited' }],
+    });
+    render(
+      <MetadataRefreshModal
+        mode="artist"
+        entityId="artist-1"
+        initialArtist="Madonna"
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText(/Metadata provider rate limit reached/)).toBeInTheDocument();
+    expect(screen.getByText('No results found.')).toBeInTheDocument();
+  });
+
+  it('does not show the rate-limit message for a plain empty result', async () => {
+    apiMock.integrations.metadataSearch.mockResolvedValue({ results: [], provider_warnings: [] });
+    render(
+      <MetadataRefreshModal
+        mode="artist"
+        entityId="artist-1"
+        initialArtist="Madonna"
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('No results found.')).toBeInTheDocument();
+    expect(screen.queryByText(/Metadata provider rate limit reached/)).not.toBeInTheDocument();
+  });
 });

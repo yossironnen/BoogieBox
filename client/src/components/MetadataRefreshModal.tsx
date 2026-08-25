@@ -4,7 +4,7 @@
 
 import React, { useState } from 'react';
 import { api } from '../api';
-import type { ClientEntityId, MetadataSearchResult } from '../types';
+import type { ClientEntityId, MetadataSearchResult, ProviderSearchWarning } from '../types';
 
 interface Props {
   mode: 'artist' | 'album';
@@ -43,6 +43,7 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
   const [artist, setArtist] = useState(initialArtist);
   const [album, setAlbum] = useState(initialAlbum ?? '');
   const [results, setResults] = useState<MetadataSearchResult[] | null>(null);
+  const [providerWarnings, setProviderWarnings] = useState<ProviderSearchWarning[]>([]);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,12 +60,14 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
     setLoading(true);
     setError(null);
     setResults(null);
+    setProviderWarnings([]);
     try {
       const resp = await api.integrations.metadataSearch({
         artist: artist.trim(),
         album: mode === 'album' && album.trim() ? album.trim() : undefined,
       });
       setResults(resp.results);
+      setProviderWarnings(resp.provider_warnings ?? []);
     } catch (err: any) {
       setError(err.message || 'Search failed');
     } finally {
@@ -190,6 +193,18 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
           {results === null && !loading && (
             <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', paddingTop: 24 }}>
               Enter search terms above and click Search.
+            </div>
+          )}
+          {providerWarnings.some(w => w.reason === 'rate_limited') && (
+            <div style={{
+              display: 'flex', alignItems: 'flex-start', gap: 8,
+              background: 'color-mix(in srgb, #f59e0b 12%, transparent)',
+              border: '1px solid color-mix(in srgb, #f59e0b 40%, var(--border))',
+              borderRadius: 8, padding: '10px 12px', marginBottom: 14,
+              fontSize: 12, color: 'var(--text)', lineHeight: 1.5,
+            }}>
+              <span aria-hidden="true">⚠️</span>
+              <span>Metadata provider rate limit reached. This is common on free API tiers — please try again in a few minutes.</span>
             </div>
           )}
           {results !== null && results.length === 0 && (

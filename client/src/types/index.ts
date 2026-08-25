@@ -792,3 +792,11 @@ export interface MetadataSearchResult {
   url?: string;
   releaseType?: 'album' | 'single' | 'compilation';
 }
+
+/** One metadata-search provider that failed instead of contributing results
+ * (rate limit or otherwise) — surfaced so the popup can tell that apart
+ * from a genuine "no matches". */
+export interface ProviderSearchWarning {
+  provider: string;
+  reason: 'rate_limited' | 'unavailable';
+}
