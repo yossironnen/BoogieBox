@@ -3282,7 +3282,10 @@ fn build_filter_complex(
     // volume, gradual fade-in, or hold-then-fade-out), so tracks only need to
     // be delayed into their output-timeline position and summed.
     if n == 1 {
-        parts.push("[t0]alimiter=limit=0.95:level=0:attack=8:release=180,aresample=44100:resampler=soxr[mixout]".to_string());
+        parts.push(
+            "[t0]alimiter=limit=0.95:level=0:attack=8:release=180,aresample=44100[mixout]"
+                .to_string(),
+        );
     } else {
         let mut mix_inputs = String::from("[t0]");
         for (i, &output_start) in output_starts.iter().enumerate().skip(1) {
@@ -3292,7 +3295,7 @@ fn build_filter_complex(
         }
         parts.push(format!(
             "{mix_inputs}amix=inputs={n}:duration=longest:normalize=0,\
-             alimiter=limit=0.95:level=0:attack=8:release=180,aresample=44100:resampler=soxr[mixout]"
+             alimiter=limit=0.95:level=0:attack=8:release=180,aresample=44100[mixout]"
         ));
     }
 
@@ -3444,10 +3447,13 @@ async fn render_mix(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let _ = tokio::fs::remove_file(out_path).await;
-        return Err(format!(
-            "FFmpeg render failed: {}",
-            stderr.chars().take(600).collect::<String>()
-        ));
+        // ffmpeg prints input/metadata info first and the actual error last,
+        // so tail-truncate rather than head-truncate or the real reason never
+        // survives into last_message.
+        let chars: Vec<char> = stderr.chars().collect();
+        let tail_start = chars.len().saturating_sub(600);
+        let tail: String = chars[tail_start..].iter().collect();
+        return Err(format!("FFmpeg render failed: {tail}"));
     }
 
     let meta = std::fs::metadata(out_path).map_err(|e| format!("Output file not found: {e}"))?;
