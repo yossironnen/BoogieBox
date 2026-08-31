@@ -1062,9 +1062,14 @@ async fn list_albums_handler(
         .through_album_rowid
         .map(|value| value.min(i64::MAX as u64) as i64);
     let user_id = user.id;
-    match tokio::task::spawn_blocking(move || {
-        list_albums(
-            &db.lock().expect("db"),
+    let requested_at = std::time::Instant::now();
+    let result = tokio::task::spawn_blocking(move || {
+        let lock_wait_start = std::time::Instant::now();
+        let conn = db.lock().expect("db");
+        let mutex_wait = lock_wait_start.elapsed();
+        let query_start = std::time::Instant::now();
+        let rows = list_albums(
+            &conn,
             ListAlbumsParams {
                 user_id: &user_id,
                 library_ids: &library_ids,
@@ -1074,11 +1079,33 @@ async fn list_albums_handler(
                 after_album_rowid,
                 through_album_rowid,
             },
-        )
+        );
+        (rows, mutex_wait, query_start.elapsed())
     })
-    .await
-    {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
+    .await;
+    match result {
+        Ok((Ok(rows), mutex_wait, sql_time)) => {
+            let serialize_start = std::time::Instant::now();
+            let body = match serde_json::to_vec(&rows) {
+                Ok(b) => b,
+                Err(_) => return internal_error(),
+            };
+            tracing::debug!(
+                route = "list_albums",
+                row_count = rows.len(),
+                mutex_wait_ms = mutex_wait.as_secs_f64() * 1000.0,
+                sql_ms = sql_time.as_secs_f64() * 1000.0,
+                serialize_ms = serialize_start.elapsed().as_secs_f64() * 1000.0,
+                total_ms = requested_at.elapsed().as_secs_f64() * 1000.0,
+                "album route timing"
+            );
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response()
+        }
         _ => internal_error(),
     }
 }
@@ -1112,12 +1139,39 @@ async fn albums_latest_handler(
     };
     let limit = parse_limit(q.limit.as_deref(), 60, 200);
     let user_id = user.id;
-    match tokio::task::spawn_blocking(move || {
-        list_albums_latest(&db.lock().expect("db"), &user_id, limit)
+    let requested_at = std::time::Instant::now();
+    let result = tokio::task::spawn_blocking(move || {
+        let lock_wait_start = std::time::Instant::now();
+        let conn = db.lock().expect("db");
+        let mutex_wait = lock_wait_start.elapsed();
+        let query_start = std::time::Instant::now();
+        let rows = list_albums_latest(&conn, &user_id, limit);
+        (rows, mutex_wait, query_start.elapsed())
     })
-    .await
-    {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
+    .await;
+    match result {
+        Ok((Ok(rows), mutex_wait, sql_time)) => {
+            let serialize_start = std::time::Instant::now();
+            let body = match serde_json::to_vec(&rows) {
+                Ok(b) => b,
+                Err(_) => return internal_error(),
+            };
+            tracing::debug!(
+                route = "albums_latest",
+                row_count = rows.len(),
+                mutex_wait_ms = mutex_wait.as_secs_f64() * 1000.0,
+                sql_ms = sql_time.as_secs_f64() * 1000.0,
+                serialize_ms = serialize_start.elapsed().as_secs_f64() * 1000.0,
+                total_ms = requested_at.elapsed().as_secs_f64() * 1000.0,
+                "albums latest route timing"
+            );
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response()
+        }
         _ => internal_error(),
     }
 }

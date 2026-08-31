@@ -15,6 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use crate::{
+    artwork_cache::http_date_secs,
     auth::AuthenticatedUser,
     bpm_analysis, ffmpeg,
     providers::{fetch_lrclib_lyrics, fetch_lyricsovh},
@@ -969,44 +970,6 @@ fn internal_error() -> axum::response::Response {
         }),
     )
         .into_response()
-}
-
-fn http_date_secs(secs: u64) -> String {
-    use time::{Month, OffsetDateTime, Weekday};
-    let dt = OffsetDateTime::from_unix_timestamp(secs as i64).unwrap_or(OffsetDateTime::UNIX_EPOCH);
-    let wd = match dt.weekday() {
-        Weekday::Monday => "Mon",
-        Weekday::Tuesday => "Tue",
-        Weekday::Wednesday => "Wed",
-        Weekday::Thursday => "Thu",
-        Weekday::Friday => "Fri",
-        Weekday::Saturday => "Sat",
-        Weekday::Sunday => "Sun",
-    };
-    let mo = match dt.month() {
-        Month::January => "Jan",
-        Month::February => "Feb",
-        Month::March => "Mar",
-        Month::April => "Apr",
-        Month::May => "May",
-        Month::June => "Jun",
-        Month::July => "Jul",
-        Month::August => "Aug",
-        Month::September => "Sep",
-        Month::October => "Oct",
-        Month::November => "Nov",
-        Month::December => "Dec",
-    };
-    format!(
-        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
-        wd,
-        dt.day(),
-        mo,
-        dt.year(),
-        dt.hour(),
-        dt.minute(),
-        dt.second()
-    )
 }
 
 #[cfg(test)]

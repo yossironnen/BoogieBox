@@ -3,9 +3,9 @@
  */
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import BrowseView, { mergeAlbumChanges } from '../components/BrowseView';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import BrowseView, { AlbumGrid, AlbumList, mergeAlbumChanges } from '../components/BrowseView';
 import { ContextMenuRoot } from '../components/ContextMenu';
 import type { Album, ClientEntityId, Library, Track } from '../types';
 
@@ -1246,5 +1246,320 @@ describe('BrowseView component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Lock now' }));
     await waitFor(() => expect(apiMock.lockArtistIdentity).toHaveBeenCalledWith('1'));
     await waitFor(() => expect(apiMock.artist).toHaveBeenCalledWith('1'));
+  });
+});
+
+// ─── Root album windowing (Phase 2) ────────────────────────────────────────────
+// AlbumGrid/AlbumList render their tile/row content identically whether windowed
+// or not (same renderTile/renderRow), so sorting, filtering, rating, keyboard
+// activation, hover actions, and context menus are already covered by the
+// unwindowed-mode tests above (jsdom never reports a real container size, so
+// every test above exercises the unwindowed fallback path). These tests target
+// only the new windowing-specific mechanics: row/column math, the scrolled
+// mount window, alpha-jump/anchor math, focus preservation, and resize
+// handling — see wip/large-dataset-album-artwork-performance-plan.md §7.
+
+function makeAlbumFixtures(count: number): Album[] {
+  return Array.from({ length: count }, (_, i) => {
+    const letter = String.fromCharCode(65 + (i % 26)); // A..Z cycling
+    return {
+      id: String(i),
+      title: `${letter} Album ${String(i).padStart(4, '0')}`,
+      artist: 'Fixture Artist',
+      album_artist: 'Fixture Artist',
+      year: 2020,
+      genre: 'Rock',
+      track_count: 10,
+      total_duration: 2400,
+      rating: null,
+    } as Album;
+  }).sort((a, b) => a.title.localeCompare(b.title));
+}
+
+class MockResizeObserver {
+  static instances: MockResizeObserver[] = [];
+  callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    MockResizeObserver.instances.push(this);
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  trigger() {
+    this.callback([] as unknown as ResizeObserverEntry[], this as unknown as ResizeObserver);
+  }
+}
+
+describe('Root album windowing (Phase 2)', () => {
+  let widthValue = 928; // 4 columns at the 160px/12px-gap/16px-padding grid math
+  let heightValue = 600;
+
+  beforeEach(() => {
+    MockResizeObserver.instances = [];
+    vi.stubGlobal('ResizeObserver', MockResizeObserver);
+    Element.prototype.scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get() { return widthValue; },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() { return heightValue; },
+    });
+  });
+
+  afterEach(() => {
+    widthValue = 928;
+    heightValue = 600;
+    vi.unstubAllGlobals();
+    // @ts-expect-error restoring the real prototype descriptors after patching them above
+    delete HTMLElement.prototype.clientWidth;
+    // @ts-expect-error restoring the real prototype descriptors after patching them above
+    delete HTMLElement.prototype.clientHeight;
+  });
+
+  it('AlbumGrid mounts only the calculated window plus overscan for a 9,000-album fixture', () => {
+    const albums = makeAlbumFixtures(9000);
+    const { container } = render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist alphabeticalJump />,
+    );
+    const tiles = container.querySelectorAll('[role="button"]');
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(tiles.length).toBeLessThan(50);
+  });
+
+  it('AlbumList mounts only the calculated window plus overscan for a 9,000-album fixture', () => {
+    const albums = makeAlbumFixtures(9000);
+    render(
+      <AlbumList albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} alphabeticalJump />,
+    );
+    // Fixed 46px rows over a 600px viewport with overscan: comfortably under 50.
+    expect(screen.getAllByText(/Album \d{4}/).length).toBeLessThan(50);
+  });
+
+  it('scroll changes replace the rendered window without mounting all albums', () => {
+    const albums = makeAlbumFixtures(9000);
+    const { container } = render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist />,
+    );
+    const lastAlbumTitle = albums[albums.length - 1].title;
+    expect(screen.queryByTitle(lastAlbumTitle)).not.toBeInTheDocument();
+
+    const scrollContainer = container.querySelector('[role="button"]')!.parentElement!.parentElement as HTMLElement;
+    Object.defineProperty(scrollContainer, 'scrollTop', { configurable: true, value: 999999 });
+    fireEvent.scroll(scrollContainer);
+
+    // Still bounded to a small window after scrolling to the bottom.
+    const tiles = container.querySelectorAll('[role="button"]');
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(tiles.length).toBeLessThan(50);
+  });
+
+  it('alphabetical jump reaches the correct calculated row', () => {
+    const albums = makeAlbumFixtures(9000);
+    render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist alphabeticalJump />,
+    );
+    const scrollToMock = Element.prototype.scrollTo as ReturnType<typeof vi.fn>;
+    scrollToMock.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to M' }));
+
+    expect(scrollToMock).toHaveBeenCalled();
+    const call = scrollToMock.mock.calls[0][0] as { top: number };
+    expect(call.top).toBeGreaterThan(0);
+  });
+
+  it('root anchor/scroll restoration positions the container without any DOM measurement', () => {
+    const albums = makeAlbumFixtures(9000);
+    const targetId = albums[500].id;
+    const { container } = render(
+      <AlbumGrid
+        albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()}
+        showArtist initialAnchorId={targetId}
+      />,
+    );
+    const scrollContainer = container.querySelector('[role="button"]')!.parentElement!.parentElement as HTMLElement;
+    expect(scrollContainer.scrollTop).toBeGreaterThan(0);
+  });
+
+  it('keyboard focus is not left on an unmounted card after scrolling', () => {
+    const albums = makeAlbumFixtures(9000);
+    const { container } = render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist />,
+    );
+    const firstTile = container.querySelector('[role="button"]') as HTMLElement;
+    firstTile.focus();
+    expect(document.activeElement).toBe(firstTile);
+
+    const scrollContainer = firstTile.parentElement!.parentElement as HTMLElement;
+    Object.defineProperty(scrollContainer, 'scrollTop', { configurable: true, value: 999999 });
+    fireEvent.scroll(scrollContainer);
+
+    // The focused tile stays mounted (and focused) even though it scrolled out
+    // of the rendered window.
+    expect(document.activeElement).toBe(firstTile);
+    expect(document.body.contains(firstTile)).toBe(true);
+  });
+
+  it('responsive column changes retain the visible top album', () => {
+    const albums = makeAlbumFixtures(9000);
+    const { container } = render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist />,
+    );
+    const scrollContainer = container.querySelector('[role="button"]')!.parentElement!.parentElement as HTMLElement;
+    // Scroll partway down at the initial (4-column) width.
+    Object.defineProperty(scrollContainer, 'scrollTop', { configurable: true, value: 2000 });
+    fireEvent.scroll(scrollContainer);
+    const topTitleBefore = container.querySelector('[title]')?.getAttribute('title');
+    expect(topTitleBefore).toBeTruthy();
+
+    // Narrow to 2 columns; the previously-visible album should still be present.
+    widthValue = 480;
+    MockResizeObserver.instances.forEach((instance) => instance.trigger());
+
+    expect(screen.getByTitle(topTitleBefore!)).toBeInTheDocument();
+  });
+
+  it('AlbumGrid renders correctly with showArtist off and hybrid-preview styling on', () => {
+    const albums = makeAlbumFixtures(9000);
+    const { container } = render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} hybridPreview />,
+    );
+    const firstTile = container.querySelector('[role="button"]') as HTMLElement;
+    expect(firstTile).toBeInTheDocument();
+    // No artist link rendered when showArtist is off.
+    expect(container.querySelector('[aria-label^="Open artist"]')).not.toBeInTheDocument();
+
+    fireEvent.mouseEnter(firstTile);
+    fireEvent.mouseLeave(firstTile);
+    firstTile.focus();
+    firstTile.blur();
+  });
+
+  it('AlbumList alphabetical jump reaches the correct calculated row', () => {
+    const albums = makeAlbumFixtures(9000);
+    render(<AlbumList albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} alphabeticalJump />);
+    const scrollToMock = Element.prototype.scrollTo as ReturnType<typeof vi.fn>;
+    scrollToMock.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to M' }));
+
+    expect(scrollToMock).toHaveBeenCalled();
+    const call = scrollToMock.mock.calls[0][0] as { top: number };
+    expect(call.top).toBeGreaterThan(0);
+  });
+
+  it('AlbumList anchor restoration positions the container without any DOM measurement', () => {
+    const albums = makeAlbumFixtures(9000);
+    const targetId = albums[500].id;
+    const { container } = render(
+      <AlbumList albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} initialAnchorId={targetId} />,
+    );
+    const scrollContainer = container.firstElementChild!.firstElementChild as HTMLElement;
+    expect(scrollContainer.scrollTop).toBeGreaterThan(0);
+  });
+
+  it('AlbumList keyboard focus is not left on an unmounted row after scrolling', () => {
+    const albums = makeAlbumFixtures(9000);
+    const { container } = render(
+      <AlbumList albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} />,
+    );
+    const scrollContainer = container.firstElementChild!.firstElementChild as HTMLElement;
+    const firstRow = scrollContainer.querySelector('div > div') as HTMLElement;
+    fireEvent.mouseEnter(firstRow);
+    fireEvent.mouseLeave(firstRow);
+
+    Object.defineProperty(scrollContainer, 'scrollTop', { configurable: true, value: 999999 });
+    fireEvent.scroll(scrollContainer);
+
+    // Bounded window after scrolling to the bottom (list stays responsive).
+    expect(screen.getAllByText(/Album \d{4}/).length).toBeLessThan(50);
+  });
+
+  it('AlbumGrid self-corrects when the first synchronous measurement reads a too-small width', () => {
+    // Belt-and-suspenders case: even once the container is attached and
+    // measured, the very first synchronous read could in principle land
+    // before an ancestor's layout has fully settled. A one-time
+    // requestAnimationFrame re-check after the browser has committed layout
+    // self-heals that. (The actual reported "garbled near-zero-width column"
+    // bug had a different, more direct cause — see the "never attaches to a
+    // real container on the render that has data" test below.)
+    let rafCallback: FrameRequestCallback | null = null;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      rafCallback = cb;
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+
+    widthValue = 0; // ancestor layout not yet settled at the moment of mount
+    const albums = makeAlbumFixtures(9000);
+    const { container } = render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist />,
+    );
+
+    const firstTile = container.querySelector('[role="button"]') as HTMLElement;
+    expect(firstTile.style.width).toBe('0px');
+
+    // Layout settles a frame later — the queued rAF re-check must catch it.
+    widthValue = 928;
+    expect(rafCallback).not.toBeNull();
+    act(() => {
+      rafCallback!(0);
+    });
+
+    const correctedTile = container.querySelector('[role="button"]') as HTMLElement;
+    expect(parseFloat(correctedTile.style.width)).toBeGreaterThan(100);
+  });
+
+  it('AlbumGrid measures correctly once real data arrives after an initial empty render', () => {
+    // Regression test for the actual reported bug: root Browse fetches album
+    // data asynchronously, so AlbumGrid's very first mount often has
+    // `albums={[]}` — which hits the early return (`if (!albums.length)
+    // return <div>No albums found</div>`) *after* the component's hooks have
+    // already run. `useContainerSize`'s measurement effect therefore ran
+    // once against a `ref.current` that was never attached to a real DOM
+    // node (that branch never rendered the scroll container at all), and —
+    // because a plain `useRef` object's identity never changes — a
+    // `useLayoutEffect` keyed on it does not run again even once real data
+    // arrives on a later render and the container finally mounts. The fix
+    // routes attachment through `useState` (`attachRef`) so "the element
+    // showed up" is a real dependency change the effect reacts to.
+    const { container, rerender } = render(
+      <AlbumGrid albums={[]} loading={true} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist />,
+    );
+    // Nothing to measure yet — the "No albums found"/"Loading..." branch,
+    // no scroll container in the DOM at all.
+    expect(container.querySelector('[role="button"]')).toBeNull();
+
+    const albums = makeAlbumFixtures(9000);
+    rerender(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist />,
+    );
+
+    const tile = container.querySelector('[role="button"]') as HTMLElement;
+    expect(tile).not.toBeNull();
+    expect(parseFloat(tile.style.width)).toBeGreaterThan(100);
+  });
+
+  it('AlbumList measures correctly once real data arrives after an initial empty render', () => {
+    const { container, rerender } = render(
+      <AlbumList albums={[]} loading={true} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} />,
+    );
+    expect(screen.queryByText(/Album \d{4}/)).toBeNull();
+
+    const albums = makeAlbumFixtures(9000);
+    rerender(
+      <AlbumList albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} />,
+    );
+
+    // A real measured height (600px fixture) yields ~20 visible rows at
+    // 46px/row; a still-stuck-at-0 measurement (the bug) would clamp to only
+    // the overscan (~7) regardless of the actual viewport. Bounded above by
+    // 50 either way, so the lower bound is what actually distinguishes them.
+    const rendered = screen.getAllByText(/Album \d{4}/).length;
+    expect(rendered).toBeGreaterThan(10);
+    expect(rendered).toBeLessThan(50);
   });
 });

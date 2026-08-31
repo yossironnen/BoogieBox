@@ -305,7 +305,6 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
         CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
           track_id UNINDEXED,
           title, artist, album, genre, composer, file_path,
-          content='',
           tokenize='unicode61'
         );
 
@@ -696,6 +695,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
         Migration {
             id: "2026-08-24-artist-merge-schema",
             apply: ensure_artist_merge_schema,
+        },
+        Migration {
+            id: "2026-08-31-rebuild-tracks-fts-non-contentless",
+            apply: rebuild_tracks_fts_as_non_contentless,
         },
     ];
 
@@ -1140,6 +1143,61 @@ fn ensure_artist_merge_schema(connection: &Connection) -> Result<(), rusqlite::E
         CREATE INDEX IF NOT EXISTS idx_artist_name_aliases_artist_id
           ON artist_name_aliases(artist_id);
         "#,
+    )?;
+    Ok(())
+}
+
+/// One-time repair for a real production bug: `tracks_fts` was created as a
+/// *contentless* FTS5 table (`content=''`), which means SQLite never stores
+/// any column value — not even the `UNINDEXED` `track_id` column used to keep
+/// the index in sync. Every scan's `DELETE FROM tracks_fts WHERE track_id=?`
+/// therefore silently matched nothing, so re-scanning a library never removed
+/// a track's previous FTS row: the index only ever grew. On the database this
+/// was diagnosed against it held ~17.6x as many rows as real tracks (1.1M for
+/// 63k tracks). Worse, `search_music`'s rowid-based fallback join (used
+/// whenever no non-null `track_id` is found, which was always, on this
+/// database) resolves matches by coincidental rowid alignment with
+/// `tracks.rowid` — verified empirically to return wrong search results
+/// (e.g. a "Lord*" search returning an unrelated track with no "Lord" in its
+/// title) once a track has been rescanned even once.
+///
+/// The fix: drop the contentless table and recreate it as a normal
+/// (non-contentless) FTS5 table, so column values — including `track_id` —
+/// are actually stored and comparable, then backfill one row per real track
+/// from current data. This makes both the ongoing per-scan delete-then-insert
+/// (`refresh_track_fts`) and `search_music`'s primary `fts.track_id = t.id`
+/// join correct going forward, and stops the index from growing unboundedly.
+fn rebuild_tracks_fts_as_non_contentless(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "tracks_fts") || !table_exists(connection, "tracks") {
+        return Ok(());
+    }
+    let is_contentless: bool = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='tracks_fts'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|sql| sql.contains("content=''"))
+        .unwrap_or(false);
+    if !is_contentless {
+        return Ok(());
+    }
+
+    connection.execute_batch("DROP TABLE tracks_fts")?;
+    connection.execute_batch(
+        "CREATE VIRTUAL TABLE tracks_fts USING fts5(
+           track_id UNINDEXED,
+           title, artist, album, genre, composer, file_path,
+           tokenize='unicode61'
+         )",
+    )?;
+    connection.execute_batch(
+        "INSERT INTO tracks_fts(rowid, track_id, title, artist, album, genre, composer, file_path)
+         SELECT t.rowid, t.id, t.title, COALESCE(ar.name, t.album_artist, ''), COALESCE(al.title, ''),
+                t.genre, t.composer, t.file_path
+         FROM tracks t
+         LEFT JOIN artists ar ON ar.id = t.artist_id
+         LEFT JOIN albums al ON al.id = t.album_id",
     )?;
     Ok(())
 }
@@ -2931,6 +2989,108 @@ mod tests {
             ),
             "D:\\Movies"
         );
+    }
+
+    #[test]
+    fn tracked_migration_rebuilds_contentless_tracks_fts_and_fixes_search() {
+        let root = temp_dir("rebuild-fts");
+        let InitializedDatabase { connection, .. } = init_db(&root).expect("db init");
+
+        connection
+            .execute_batch(
+                "INSERT INTO libraries (id, path, name) VALUES ('lib-1', 'C:\\Music', 'Music');
+                 INSERT INTO artists (id, name) VALUES ('artist-1', 'Radiohead');
+                 INSERT INTO albums (id, title, album_artist, artist_id)
+                   VALUES ('album-1', 'OK Computer', 'Radiohead', 'artist-1');
+                 INSERT INTO tracks (id, library_id, artist_id, album_id, title, file_path) VALUES
+                   ('track-1', 'lib-1', 'artist-1', 'album-1', 'Paranoid Android', 'C:\\Music\\pa.flac'),
+                   ('track-2', 'lib-1', 'artist-1', 'album-1', 'Karma Police', 'C:\\Music\\kp.flac');",
+            )
+            .unwrap();
+
+        // Simulate the historical bug: a contentless tracks_fts, with a stale
+        // duplicate row left behind for track-1 (exactly what a rescan would
+        // have produced, since the real DELETE never matched anything against
+        // a contentless table's discarded track_id storage).
+        connection
+            .execute_batch(
+                "DROP TABLE tracks_fts;
+                 CREATE VIRTUAL TABLE tracks_fts USING fts5(
+                   track_id UNINDEXED, title, artist, album, genre, composer, file_path,
+                   content='', tokenize='unicode61'
+                 );
+                 INSERT INTO tracks_fts(track_id, title, artist, album, genre, composer, file_path)
+                   VALUES ('track-1', 'Paranoid Android', 'Radiohead', 'OK Computer', '', '', 'C:\\Music\\pa.flac');
+                 INSERT INTO tracks_fts(track_id, title, artist, album, genre, composer, file_path)
+                   VALUES ('track-1', 'Paranoid Android', 'Radiohead', 'OK Computer', '', '', 'C:\\Music\\pa.flac');
+                 INSERT INTO tracks_fts(track_id, title, artist, album, genre, composer, file_path)
+                   VALUES ('track-2', 'Karma Police', 'Radiohead', 'OK Computer', '', '', 'C:\\Music\\kp.flac');",
+            )
+            .unwrap();
+
+        let before_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM tracks_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            before_rows, 3,
+            "3 orphaned rows for 2 real tracks, simulating the bug"
+        );
+        let before_non_null: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tracks_fts WHERE track_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            before_non_null, 0,
+            "a contentless table never actually stores track_id, even though INSERT accepted a value"
+        );
+
+        rebuild_tracks_fts_as_non_contentless(&connection).expect("migration should succeed");
+
+        let after_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM tracks_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            after_rows, 2,
+            "exactly one row per real track after rebuild, bloat gone"
+        );
+
+        let mut stmt = connection
+            .prepare("SELECT track_id FROM tracks_fts ORDER BY track_id")
+            .unwrap();
+        let track_ids: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            track_ids,
+            vec!["track-1".to_string(), "track-2".to_string()],
+            "track_id is now genuinely retrievable"
+        );
+
+        // The bug this fixes was a search-correctness bug, not just bloat:
+        // prove a MATCH query now resolves to the right track via the real
+        // (post-fix) fts.track_id = t.id join, not a coincidental rowid match.
+        let found: String = connection
+            .query_row(
+                "SELECT t.title FROM tracks t
+                 JOIN tracks_fts fts ON fts.track_id = t.id
+                 WHERE tracks_fts MATCH 'Karma*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, "Karma Police");
+
+        // Idempotent: running it again on an already-fixed table is a no-op.
+        rebuild_tracks_fts_as_non_contentless(&connection).expect("second run should be a no-op");
+        let after_second: i64 = connection
+            .query_row("SELECT COUNT(*) FROM tracks_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_second, 2);
     }
 
     #[test]

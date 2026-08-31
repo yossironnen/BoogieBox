@@ -764,17 +764,22 @@ pub fn prune_missing_tracks(
     library_id: &EntityId,
     seen_paths: &std::collections::HashSet<String>,
 ) -> Result<usize, JobError> {
-    let existing: Vec<(EntityId, String)> = {
-        let mut stmt = conn.prepare("SELECT id, file_path FROM tracks WHERE library_id=?1")?;
+    let existing: Vec<(EntityId, String, i64)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, file_path, rowid FROM tracks WHERE library_id=?1")?;
         let rows = stmt
-            .query_map([library_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([library_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         rows
     };
     let mut pruned = 0;
-    for (track_id, file_path) in existing {
+    for (track_id, file_path, track_rowid) in existing {
         if !seen_paths.contains(&file_path.to_ascii_lowercase()) {
-            conn.execute("DELETE FROM tracks_fts WHERE track_id=?1", [&track_id])?;
+            // See `refresh_track_fts`: delete by rowid, not the UNINDEXED
+            // `track_id` column, to avoid a full scan of the FTS table.
+            conn.execute("DELETE FROM tracks_fts WHERE rowid=?1", [track_rowid])?;
             conn.execute("DELETE FROM tracks WHERE id=?1", [&track_id])?;
             pruned += 1;
         }
@@ -1392,11 +1397,23 @@ fn refresh_track_fts(
     _artist_id: &EntityId,
     _album_id: &EntityId,
 ) -> Result<(), JobError> {
-    conn.execute("DELETE FROM tracks_fts WHERE track_id=?1", [track_id])?;
+    // `tracks_fts.track_id` is `UNINDEXED` (no b-tree), so a `WHERE track_id=?`
+    // predicate is a full scan of the FTS table on every rescanned track.
+    // Pinning the FTS row's `rowid` to this track's own `tracks.rowid` turns
+    // the delete-then-reinsert into a direct rowid lookup instead — real
+    // per-track identity, not a coincidental insertion-order alignment (see
+    // the migration that fixed this table's `content=''` misconfiguration in
+    // `lib.rs::rebuild_tracks_fts_as_non_contentless` for the full history).
+    let track_rowid: i64 =
+        conn.query_row("SELECT rowid FROM tracks WHERE id=?1", [track_id], |row| {
+            row.get(0)
+        })?;
+    conn.execute("DELETE FROM tracks_fts WHERE rowid=?1", [track_rowid])?;
     conn.execute(
-        "INSERT INTO tracks_fts(track_id, title, artist, album, genre, composer, file_path)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO tracks_fts(rowid, track_id, title, artist, album, genre, composer, file_path)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
+            track_rowid,
             track_id,
             input.title,
             input.artist,
@@ -1882,6 +1899,74 @@ mod tests {
     }
 
     #[test]
+    fn upsert_scanned_track_rescan_does_not_leak_a_stale_fts_row() {
+        // Regression guard for the contentless-tracks_fts bug: a rescan of the
+        // same file (same file_path) must delete-then-reinsert its FTS row by
+        // rowid (an O(1) lookup pinned to `tracks.rowid`, not a scan of the
+        // UNINDEXED `track_id` column), so the index never grows past one row
+        // per real track no matter how many times a track is rescanned.
+        let f = fixture("upsert-track-fts-no-leak");
+        let path = "/music/rescan.mp3";
+        let track_id = upsert_scanned_track(
+            &f.conn,
+            &scanned_track(&f.library_id, path, "Original Title"),
+        )
+        .unwrap();
+
+        let fts_count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM tracks_fts", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(fts_count(&f.conn), 1);
+
+        // Rescan the same file three more times (as a real periodic rescan
+        // would, whether or not the tags changed).
+        for _ in 0..3 {
+            upsert_scanned_track(
+                &f.conn,
+                &scanned_track(&f.library_id, path, "Updated Title"),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            fts_count(&f.conn),
+            1,
+            "repeated rescans of the same track must not leak duplicate FTS rows"
+        );
+
+        // The single remaining row must reflect the fresh title, not the
+        // first-scan content the old (broken) delete would have left stale.
+        let title: String = f
+            .conn
+            .query_row(
+                "SELECT title FROM tracks_fts WHERE track_id=?1",
+                [&track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Updated Title");
+
+        // The FTS row's rowid is pinned to the track's own rowid, not
+        // whatever SQLite happened to auto-assign.
+        let track_rowid: i64 = f
+            .conn
+            .query_row("SELECT rowid FROM tracks WHERE id=?1", [&track_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let fts_rowid: i64 = f
+            .conn
+            .query_row(
+                "SELECT rowid FROM tracks_fts WHERE track_id=?1",
+                [&track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_rowid, track_rowid);
+    }
+
+    #[test]
     fn prune_missing_tracks_removes_tracks_not_in_seen_paths() {
         let f = fixture("prune-missing");
         let kept_path = "/music/kept.mp3";
@@ -1903,6 +1988,13 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 1);
+
+        // The pruned track's FTS row must go with it, not linger forever.
+        let remaining_fts: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM tracks_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining_fts, 1);
     }
 
     #[test]

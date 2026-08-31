@@ -1,9 +1,9 @@
-﻿//! Defines Rust API routes for Artwork Routes server behavior.
+//! Defines Rust API routes for Artwork Routes server behavior.
 
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -16,8 +16,9 @@ use tokio_util::io::ReaderStream;
 use crate::{
     artwork_cache::{
         build_album_art_cache_key, build_artist_art_cache_key, cache_item_dir,
-        clear_cached_image_files, ext_from_content_type, find_existing_cached_image,
-        find_folder_cover_image, get_assigned_cache_file_path, mime_from_path,
+        cached_copy_is_fresh, clear_cached_image_files, ext_from_content_type, file_etag,
+        find_existing_cached_image, find_folder_cover_image, get_assigned_cache_file_path,
+        http_date_secs, mime_from_path,
     },
     auth::AdminUser,
     image_thumb::generate_thumbnail,
@@ -199,6 +200,7 @@ async fn album_art_handler(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     Query(params): Query<ArtParams>,
+    headers: HeaderMap,
 ) -> Response {
     let size = match params.size.as_deref().and_then(|s| s.parse::<u32>().ok()) {
         Some(s) if ALBUM_THUMB_SIZES.contains(&s) => s,
@@ -219,116 +221,305 @@ async fn album_art_handler(
         None => return setup_required_response(),
     };
 
-    let album_id = id.clone();
-    let row = match tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        boogiebox_db::artwork::get_album_for_art(&conn, &album_id)
-    })
-    .await
-    {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "Album not found".into(),
-                    setup_required: None,
-                }),
-            )
-                .into_response()
-        }
-        _ => return internal_error(),
-    };
-
+    let handler_start = std::time::Instant::now();
     let art_root = album_art_original_root(&state);
     let thumb_root = album_art_thumb_root(&state, size);
     let cache_key = build_album_art_cache_key(&id);
     let thumb_slot = format!("thumb-{size}");
 
-    // Check if thumbnail exists
+    // Fast path (plan Phase 3.1): resolve and serve an existing cached thumbnail
+    // — or an already-cached original, generating just the thumbnail from it —
+    // before ever acquiring the application's single SQLite mutex. Only a true
+    // cold miss (neither cached) needs the album row from the database at all.
+    let disk_cache_start = std::time::Instant::now();
     if let Some(thumb_path) =
         get_assigned_cache_file_path(&thumb_root, &cache_key, &thumb_slot, ".jpg", false)
     {
         if thumb_path.is_file() {
-            return stream_image_file(thumb_path).await;
+            tracing::debug!(
+                route = "album_art",
+                disk_cache_ms = disk_cache_start.elapsed().as_secs_f64() * 1000.0,
+                total_ms = handler_start.elapsed().as_secs_f64() * 1000.0,
+                hit = "thumb",
+                "album art timing"
+            );
+            return stream_image_file_conditional(thumb_path, &headers).await;
         }
     }
 
-    // Ensure original is cached
     let item_dir = cache_item_dir(&art_root, &cache_key);
-    let original_path = if let Some(p) = find_existing_cached_image(&item_dir) {
-        p
-    } else {
-        // Try folder.jpg
-        let folder_img = find_folder_cover_image(std::path::Path::new(&row.file_path));
-        if let Some(fi) = folder_img {
-            if let Some(dest) =
-                get_assigned_cache_file_path(&art_root, &cache_key, "original", ".jpg", true)
-            {
-                let src = fi.clone();
-                let _ = tokio::task::spawn_blocking(move || std::fs::copy(&src, &dest)).await;
-            }
-        }
-        // Try Discogs if still not cached
-        let cached = find_existing_cached_image(&item_dir);
-        if cached.is_none() {
-            let token = {
-                let db2 = match get_db(&state) {
-                    Some(d) => d,
-                    None => return internal_error(),
-                };
-                tokio::task::spawn_blocking(move || {
-                    let conn = db2.lock().unwrap_or_else(|p| p.into_inner());
-                    boogiebox_db::artwork::get_setting(&conn, "discogsToken")
-                })
-                .await
-                .ok()
-                .flatten()
+    let disk_cache_ms = disk_cache_start.elapsed().as_secs_f64() * 1000.0;
+
+    if let Some(original_path) = find_existing_cached_image(&item_dir) {
+        let thumb_path = match get_assigned_cache_file_path(
+            &thumb_root,
+            &cache_key,
+            &thumb_slot,
+            ".jpg",
+            true,
+        ) {
+            Some(p) => p,
+            None => return internal_error(),
+        };
+        let src = original_path.clone();
+        let dst = thumb_path.clone();
+        let result =
+            match tokio::task::spawn_blocking(move || generate_thumbnail(&src, &dst, size)).await {
+                Ok(Ok(())) => stream_image_file_conditional(thumb_path, &headers).await,
+                _ => stream_image_file_conditional(original_path, &headers).await,
             };
-            if let Some(tok) = token {
-                if let Some(url) =
-                    search_discogs_album_cover(&http_client, &tok, &row.artist, &row.title).await
-                {
-                    if let Some((bytes, ext)) = download_image(&http_client, &url).await {
-                        if let Some(dest) = get_assigned_cache_file_path(
-                            &art_root, &cache_key, "original", &ext, true,
-                        ) {
-                            let _ =
-                                tokio::task::spawn_blocking(move || std::fs::write(&dest, &bytes))
-                                    .await;
-                        }
+        tracing::debug!(
+            route = "album_art",
+            disk_cache_ms,
+            total_ms = handler_start.elapsed().as_secs_f64() * 1000.0,
+            hit = "original",
+            "album art timing"
+        );
+        return result;
+    }
+
+    // Cold miss (plan Phase 3.2): neither the album row lookup nor folder/
+    // provider discovery ever runs on the request's critical path. Check the
+    // durable negative cache first (near-zero cost for an album that keeps
+    // coming up empty); otherwise hand the fill off to a single-flight
+    // background task — bounded by a small worker semaphore, deduplicated by
+    // (cache_key, size) so concurrent misses for the same art never repeat the
+    // work — and return promptly with a non-cacheable "not yet available"
+    // response. The client's bounded retry (`ArtImage.tsx`) picks up the
+    // result once the background fill completes.
+    let fill_key = format!("{cache_key}:{size}");
+    if art_negative_cache_is_fresh(&db, &fill_key).await {
+        tracing::debug!(
+            route = "album_art",
+            disk_cache_ms,
+            total_ms = handler_start.elapsed().as_secs_f64() * 1000.0,
+            hit = "negative-cached",
+            "album art timing"
+        );
+        return art_pending_response();
+    }
+
+    if claim_art_fill_slot(&fill_key) {
+        tokio::spawn(fill_album_art_in_background(
+            db.clone(),
+            http_client.clone(),
+            art_root.clone(),
+            thumb_root.clone(),
+            cache_key.clone(),
+            thumb_slot.clone(),
+            id.clone(),
+            size,
+            fill_key.clone(),
+        ));
+        tracing::debug!(
+            route = "album_art",
+            disk_cache_ms,
+            total_ms = handler_start.elapsed().as_secs_f64() * 1000.0,
+            hit = "miss-fill-scheduled",
+            "album art timing"
+        );
+    } else {
+        tracing::debug!(
+            route = "album_art",
+            disk_cache_ms,
+            total_ms = handler_start.elapsed().as_secs_f64() * 1000.0,
+            hit = "miss-fill-in-flight",
+            "album art timing"
+        );
+    }
+    art_pending_response()
+}
+
+/// True if a durable negative-cache entry says `fill_key` was recently tried
+/// and found unavailable (reused Last.fm/provider cache table, namespaced —
+/// see `art_negative_cache_key`). A fixed TTL, not exponential backoff: a
+/// simplification accepted for this phase (see the performance plan).
+async fn art_negative_cache_is_fresh(db: &DbPool, fill_key: &str) -> bool {
+    let db = db.clone();
+    let key = art_negative_cache_key(fill_key);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::artwork::get_lastfm_cached(&conn, &key).is_some()
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn art_negative_cache_key(fill_key: &str) -> String {
+    format!("art-miss:{fill_key}")
+}
+
+const ART_NEGATIVE_CACHE_TTL_DAYS: i64 = 1;
+const ART_FILL_MAX_CONCURRENT: usize = 4;
+
+fn art_fill_inflight() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static REGISTRY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn art_fill_semaphore() -> &'static tokio::sync::Semaphore {
+    static SEM: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SEM.get_or_init(|| tokio::sync::Semaphore::new(ART_FILL_MAX_CONCURRENT))
+}
+
+/// Claims the single-flight slot for `fill_key`, returning `true` only if this
+/// call is the one that should do the fill (no other request/task is already
+/// filling the same cache key + size).
+fn claim_art_fill_slot(fill_key: &str) -> bool {
+    let mut inflight = art_fill_inflight()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    inflight.insert(fill_key.to_string())
+}
+
+fn release_art_fill_slot(fill_key: &str) {
+    let mut inflight = art_fill_inflight()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    inflight.remove(fill_key);
+}
+
+/// A non-cacheable "not ready yet" response for a cache miss whose fill is
+/// scheduled (or already in flight) in the background.
+fn art_pending_response() -> Response {
+    let mut response = (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: "Album art not yet available; retry shortly".into(),
+            setup_required: None,
+        }),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+/// Runs one album-art fill attempt under a bounded worker permit: album row
+/// lookup, local folder-art discovery, then rate-limited provider fallback —
+/// exactly the sequence the request path used to run inline. Always releases
+/// the single-flight slot; records a negative-cache entry only on total
+/// failure (found no album row, or found no art from any source).
+#[allow(clippy::too_many_arguments)]
+async fn fill_album_art_in_background(
+    db: DbPool,
+    http_client: reqwest::Client,
+    art_root: PathBuf,
+    thumb_root: PathBuf,
+    cache_key: String,
+    thumb_slot: String,
+    album_id: String,
+    size: u32,
+    fill_key: String,
+) {
+    let _permit = art_fill_semaphore().acquire().await;
+    let filled = fill_album_art_once(
+        &db,
+        &http_client,
+        &art_root,
+        &thumb_root,
+        &cache_key,
+        &thumb_slot,
+        &album_id,
+        size,
+    )
+    .await;
+
+    if !filled {
+        let db = db.clone();
+        let key = art_negative_cache_key(&fill_key);
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            boogiebox_db::artwork::save_lastfm_cache(&conn, &key, "1", ART_NEGATIVE_CACHE_TTL_DAYS);
+        })
+        .await;
+    }
+
+    release_art_fill_slot(&fill_key);
+}
+
+/// True once an original is cached from any source (folder art or a
+/// provider) — a thumbnail is then also generated from it, but even if that
+/// sub-step fails, the next request's cache-first path (Phase 3.1) generates
+/// it inline from the now-cached original, so it still counts as a fill.
+#[allow(clippy::too_many_arguments)]
+async fn fill_album_art_once(
+    db: &DbPool,
+    http_client: &reqwest::Client,
+    art_root: &std::path::Path,
+    thumb_root: &std::path::Path,
+    cache_key: &str,
+    thumb_slot: &str,
+    album_id: &str,
+    size: u32,
+) -> bool {
+    let db_row = db.clone();
+    let aid = album_id.to_string();
+    let row = match tokio::task::spawn_blocking(move || {
+        let conn = db_row.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::artwork::get_album_for_art(&conn, &aid)
+    })
+    .await
+    {
+        Ok(Some(r)) => r,
+        _ => return false,
+    };
+
+    let item_dir = cache_item_dir(art_root, cache_key);
+
+    // Local folder-art discovery (highest priority: no network, usually fast —
+    // though plan §3.3 found an unreachable media directory can still be slow,
+    // which is exactly why this whole fill now runs off the request path).
+    if let Some(folder_img) = find_folder_cover_image(std::path::Path::new(&row.file_path)) {
+        if let Some(dest) =
+            get_assigned_cache_file_path(art_root, cache_key, "original", ".jpg", true)
+        {
+            let src = folder_img;
+            let _ = tokio::task::spawn_blocking(move || std::fs::copy(&src, &dest)).await;
+        }
+    }
+
+    // Rate-limited provider fallback, only once local discovery has failed.
+    if find_existing_cached_image(&item_dir).is_none() {
+        let db_tok = db.clone();
+        let token = tokio::task::spawn_blocking(move || {
+            let conn = db_tok.lock().unwrap_or_else(|p| p.into_inner());
+            boogiebox_db::artwork::get_setting(&conn, "discogsToken")
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(tok) = token {
+            if let Some(url) =
+                search_discogs_album_cover(http_client, &tok, &row.artist, &row.title).await
+            {
+                if let Some((bytes, ext)) = download_image(http_client, &url).await {
+                    if let Some(dest) =
+                        get_assigned_cache_file_path(art_root, cache_key, "original", &ext, true)
+                    {
+                        let _ = tokio::task::spawn_blocking(move || std::fs::write(&dest, &bytes))
+                            .await;
                     }
                 }
             }
         }
-        match find_existing_cached_image(&item_dir) {
-            Some(p) => p,
-            None => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse {
-                        error: "No album art available".into(),
-                        setup_required: None,
-                    }),
-                )
-                    .into_response()
-            }
-        }
-    };
-
-    // Generate thumbnail
-    let thumb_path =
-        match get_assigned_cache_file_path(&thumb_root, &cache_key, &thumb_slot, ".jpg", true) {
-            Some(p) => p,
-            None => return internal_error(),
-        };
-
-    let src = original_path.clone();
-    let dst = thumb_path.clone();
-    match tokio::task::spawn_blocking(move || generate_thumbnail(&src, &dst, size)).await {
-        Ok(Ok(())) => stream_image_file(thumb_path).await,
-        _ => stream_image_file(original_path).await,
     }
+
+    let original_path = match find_existing_cached_image(&item_dir) {
+        Some(p) => p,
+        None => return false,
+    };
+    if let Some(thumb_path) =
+        get_assigned_cache_file_path(thumb_root, cache_key, thumb_slot, ".jpg", true)
+    {
+        let src = original_path;
+        let _ =
+            tokio::task::spawn_blocking(move || generate_thumbnail(&src, &thumb_path, size)).await;
+    }
+    true
 }
 
 // -- Artist photo --------------------------------------------------------------
@@ -880,6 +1071,63 @@ async fn stream_image_file(path: PathBuf) -> Response {
         .unwrap_or_else(|_| internal_error())
 }
 
+/// Same as `stream_image_file`, plus `ETag`/`Last-Modified` and `If-None-Match`/
+/// `If-Modified-Since` handling — a `304` short-circuits the body entirely.
+/// Used by the album-art thumbnail route (plan Phase 3.1); other cached-image
+/// routes keep the plain `stream_image_file` until proven there too.
+async fn stream_image_file_conditional(path: PathBuf, req_headers: &header::HeaderMap) -> Response {
+    let metadata = match tokio::fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(_) => return internal_error(),
+    };
+    let modified_secs = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let etag = file_etag(metadata.len(), modified_secs);
+    let last_modified = http_date_secs(modified_secs);
+
+    let if_none_match = req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    let if_modified_since = req_headers
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(|v| v.to_str().ok());
+
+    if cached_copy_is_fresh(if_none_match, &etag, if_modified_since, &last_modified) {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, &etag)
+            .header(header::LAST_MODIFIED, &last_modified)
+            .header(
+                header::CACHE_CONTROL,
+                "public, max-age=86400, stale-while-revalidate=43200",
+            )
+            .body(Body::empty())
+            .unwrap_or_else(|_| internal_error());
+    }
+
+    let mime = mime_from_path(&path).to_owned();
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(f) => f,
+        Err(_) => return internal_error(),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CONTENT_LENGTH, metadata.len().to_string())
+        .header(
+            header::CACHE_CONTROL,
+            "public, max-age=86400, stale-while-revalidate=43200",
+        )
+        .header(header::ETAG, &etag)
+        .header(header::LAST_MODIFIED, &last_modified)
+        .body(Body::from_stream(ReaderStream::new(file)))
+        .unwrap_or_else(|_| internal_error())
+}
+
 fn setup_required_response() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -904,12 +1152,14 @@ fn internal_error() -> Response {
 
 #[cfg(test)]
 mod tests {
+    use super::{claim_art_fill_slot, release_art_fill_slot};
     use crate::test_support::{json_body, new_test_app_with_pool, seed_admin_session, send};
     use crate::DbPool;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use base64::{engine::general_purpose::STANDARD, Engine};
     use rusqlite::params;
+    use tower::ServiceExt;
     use uuid::Uuid;
 
     /// Seeds one library/artist/album/track whose `file_path` lives inside a real temp
@@ -979,6 +1229,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn album_cover_image_response_is_never_compressed() {
+        // Plan Phase 4 item 1: the app-wide compression layer must exclude
+        // image bodies even when the client advertises gzip support.
+        let (app, pool) = new_test_app_with_pool("artwork-cover-no-compress");
+        let (_artist_id, album_id, track_dir) = seed_music(&pool);
+        std::fs::write(track_dir.join("folder.jpg"), tiny_png_bytes()).unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/albums/{album_id}/cover"))
+                    .header(axum::http::header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_ENCODING)
+                .is_none(),
+            "an image response must never be compressed"
+        );
+    }
+
+    #[tokio::test]
     async fn album_cover_finds_folder_jpg_next_to_track_file() {
         let (app, pool) = new_test_app_with_pool("artwork-cover-folder");
         let (_artist_id, album_id, track_dir) = seed_music(&pool);
@@ -1023,10 +1301,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn album_art_generates_thumbnail_from_folder_jpg() {
-        let (app, pool) = new_test_app_with_pool("artwork-art-thumb");
-        let (_artist_id, album_id, track_dir) = seed_music(&pool);
-        std::fs::write(track_dir.join("folder.jpg"), tiny_png_bytes()).unwrap();
+    async fn album_art_thumb_cache_hit_completes_promptly_while_db_mutex_is_held() {
+        // Plan Phase 3.1 regression guard: a cached-thumbnail request must never
+        // wait on the application's single SQLite mutex.
+        let db_path = crate::test_support::temp_db_path("artwork-art-cache-hit-mutex");
+        let db_folder = db_path.parent().unwrap().to_path_buf();
+        let state = crate::test_support::build_test_state(&db_path);
+        let pool = state.db.clone().unwrap();
+        let app = crate::build_app(state, None);
+        let (_artist_id, album_id, _dir) = seed_music(&pool);
+
+        let thumb_root = db_folder
+            .join("art")
+            .join("album")
+            .join("thumb")
+            .join("300");
+        let cache_key = crate::artwork_cache::build_album_art_cache_key(&album_id);
+        let thumb_path = crate::artwork_cache::get_assigned_cache_file_path(
+            &thumb_root,
+            &cache_key,
+            "thumb-300",
+            ".jpg",
+            true,
+        )
+        .unwrap();
+        std::fs::write(&thumb_path, tiny_png_bytes()).unwrap();
+
+        let holder_pool = pool.clone();
+        let holder = std::thread::spawn(move || {
+            let _guard = holder_pool.lock().unwrap_or_else(|p| p.into_inner());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let start = std::time::Instant::now();
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/albums/{album_id}/art?size=300"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        holder.join().unwrap();
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.is_empty());
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "cached-thumb request should not wait on the db mutex, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn album_art_original_cache_hit_generates_thumb_without_touching_the_database() {
+        // A cached original (no thumb yet) must generate the thumbnail and serve
+        // it without ever calling `get_album_for_art` — proven here by using an
+        // album id with no matching row at all; a database lookup would 404.
+        let db_path = crate::test_support::temp_db_path("artwork-art-original-hit-no-db");
+        let db_folder = db_path.parent().unwrap().to_path_buf();
+        let state = crate::test_support::build_test_state(&db_path);
+        let app = crate::build_app(state, None);
+
+        let album_id = "no-such-album-row";
+        let original_root = db_folder.join("art").join("album").join("original");
+        let cache_key = crate::artwork_cache::build_album_art_cache_key(album_id);
+        let original_path = crate::artwork_cache::get_assigned_cache_file_path(
+            &original_root,
+            &cache_key,
+            "original",
+            ".jpg",
+            true,
+        )
+        .unwrap();
+        std::fs::write(&original_path, tiny_png_bytes()).unwrap();
 
         let (status, body) = send(
             app,
@@ -1038,6 +1387,156 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(!body.is_empty());
+    }
+
+    /// Polls the art route until the background fill (Phase 3.2) has produced
+    /// a `200`, or panics after a generous timeout. Cache misses now return a
+    /// non-cacheable "pending" `404` immediately while the fill runs off the
+    /// request path — this is how a test observes the fill actually landing.
+    async fn wait_for_art_ok(app: &axum::Router, uri: &str) -> Vec<u8> {
+        for _ in 0..100 {
+            let (status, body) = send(
+                app.clone(),
+                Request::builder().uri(uri).body(Body::empty()).unwrap(),
+            )
+            .await;
+            if status == StatusCode::OK {
+                return body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("background art fill for {uri} did not complete in time");
+    }
+
+    #[tokio::test]
+    async fn album_art_conditional_request_returns_304_with_empty_body() {
+        let (app, pool) = new_test_app_with_pool("artwork-art-304");
+        let (_artist_id, album_id, track_dir) = seed_music(&pool);
+        std::fs::write(track_dir.join("folder.jpg"), tiny_png_bytes()).unwrap();
+
+        let uri = format!("/api/albums/{album_id}/art?size=300");
+        let body = wait_for_art_ok(&app, &uri).await;
+        assert!(!body.is_empty());
+
+        // Fetch again to read the ETag this server would send.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/albums/{album_id}/art?size=300"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let etag = response
+            .headers()
+            .get(axum::http::header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        let conditional = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/albums/{album_id}/art?size=300"))
+                    .header(axum::http::header::IF_NONE_MATCH, &etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(conditional.status(), StatusCode::NOT_MODIFIED);
+        let conditional_body = axum::body::to_bytes(conditional.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(conditional_body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn album_art_generates_thumbnail_from_folder_jpg() {
+        let (app, pool) = new_test_app_with_pool("artwork-art-thumb");
+        let (_artist_id, album_id, track_dir) = seed_music(&pool);
+        std::fs::write(track_dir.join("folder.jpg"), tiny_png_bytes()).unwrap();
+
+        let uri = format!("/api/albums/{album_id}/art?size=300");
+        let body = wait_for_art_ok(&app, &uri).await;
+        assert!(!body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn album_art_miss_returns_pending_response_then_fills_in_the_background() {
+        let (app, pool) = new_test_app_with_pool("artwork-art-pending");
+        let (_artist_id, album_id, track_dir) = seed_music(&pool);
+        std::fs::write(track_dir.join("folder.jpg"), tiny_png_bytes()).unwrap();
+
+        // The very first request is a cold miss: it must return promptly
+        // (never wait for the fill) with a non-cacheable "pending" response.
+        let (status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/albums/{album_id}/art?size=300"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let uri = format!("/api/albums/{album_id}/art?size=300");
+        let body = wait_for_art_ok(&app, &uri).await;
+        assert!(!body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn album_art_repeated_miss_for_an_unfillable_album_is_negative_cached() {
+        // No folder.jpg and no Discogs token configured: the background fill
+        // can never succeed. After it gives up, repeated requests must stay a
+        // fast miss (served from the negative cache) rather than re-spawning
+        // a fill every time.
+        let (app, pool) = new_test_app_with_pool("artwork-art-negative-cache");
+        let (_artist_id, album_id, _dir) = seed_music(&pool);
+        let uri = format!("/api/albums/{album_id}/art?size=300");
+
+        let (status, _) = send(
+            app.clone(),
+            Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Give the background fill time to fail and negative-cache the key.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let (status, _) = send(
+            app,
+            Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn art_fill_single_flight_slot_is_claimed_exactly_once_until_released() {
+        // Unique key per test run: the registry is process-global (`static`),
+        // so a fixed literal would collide with a concurrently-running test.
+        let key = format!("single-flight-test-{}", Uuid::now_v7());
+
+        assert!(
+            claim_art_fill_slot(&key),
+            "first claim on an unclaimed key must succeed"
+        );
+        assert!(
+            !claim_art_fill_slot(&key),
+            "a second concurrent claim on the same key must be refused"
+        );
+
+        release_art_fill_slot(&key);
+        assert!(
+            claim_art_fill_slot(&key),
+            "after release, the key can be claimed again"
+        );
+        release_art_fill_slot(&key);
     }
 
     #[tokio::test]

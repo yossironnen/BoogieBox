@@ -33,8 +33,39 @@ pub fn generate_thumbnail(
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
     }
 
-    resized.save(dest_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    // Write through a temp file and atomically rename into place (plan §8.3
+    // item 1) so a concurrent reader (the cache-first art route, or another
+    // background fill) never observes a partially-encoded JPEG.
+    let tmp_path = temp_sibling_path(dest_path);
+    let write_result = resized
+        .save(&tmp_path)
+        .map_err(|e| format!("save: {e}"))
+        .and_then(|_| std::fs::rename(&tmp_path, dest_path).map_err(|e| format!("rename: {e}")));
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    write_result
+}
+
+/// A same-directory temp path for `dest_path`, unique enough that concurrent
+/// generations of the same destination never collide — `rename` within the
+/// same directory is atomic on both Windows and Linux. Keeps `dest_path`'s
+/// extension so `image`'s save-format-from-extension guess still resolves.
+fn temp_sibling_path(dest_path: &Path) -> std::path::PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let stem = dest_path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("thumb");
+    let ext = dest_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("jpg");
+    dest_path.with_file_name(format!(".{stem}.tmp-{}-{nanos}.{ext}", std::process::id()))
 }
 
 #[cfg(test)]
@@ -119,5 +150,53 @@ mod tests {
 
         let result = generate_thumbnail(&source, &dest, 100);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn generate_thumbnail_leaves_no_temp_file_behind_on_success() {
+        let dir = temp_dir("no-leftover-tmp-ok");
+        let source = dir.join("source.png");
+        write_test_png(&source, 50, 50);
+        let dest = dir.join("out.jpg");
+
+        generate_thumbnail(&source, &dest, 20).unwrap();
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp file(s) left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn generate_thumbnail_writes_atomically_dest_never_briefly_empty_or_truncated() {
+        // The write-then-rename means a concurrent reader can only ever see
+        // either the previous complete file or the new complete file — proven
+        // here by overwriting an existing valid dest and checking it decodes
+        // correctly afterward (a non-atomic in-place write could leave a
+        // truncated file if interrupted, though we can't inject the interrupt
+        // itself in a unit test — this guards the code path stays temp+rename).
+        let dir = temp_dir("atomic-overwrite");
+        let source = dir.join("source.png");
+        write_test_png(&source, 60, 60);
+        let dest = dir.join("out.jpg");
+
+        generate_thumbnail(&source, &dest, 30).unwrap();
+        let first = std::fs::read(&dest).unwrap();
+        assert!(!first.is_empty());
+
+        // Regenerate from a different-sized source; dest must end up fully
+        // replaced, not appended-to or truncated.
+        write_test_png(&source, 90, 90);
+        generate_thumbnail(&source, &dest, 30).unwrap();
+
+        let out = image::open(&dest).expect("overwritten output image should be readable");
+        assert_eq!(out.width(), 30);
+        assert_eq!(out.height(), 30);
     }
 }

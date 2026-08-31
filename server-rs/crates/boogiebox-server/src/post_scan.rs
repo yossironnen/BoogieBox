@@ -340,19 +340,48 @@ fn art_thumb_root(db_folder: &Path, entity: &str, size: u32) -> PathBuf {
         .join(size.to_string())
 }
 
+/// Freshness-aware thumbnail generation (plan §8.3 item 1): a full reconciliation
+/// sweep over an already-cached library must not decode+resize+re-encode every
+/// original on every run — on the 43k-track library this took 14-17 minutes for
+/// no-op work. Only a missing, empty, or stale (older than its original)
+/// destination is regenerated.
 fn generate_cached_thumbs(
     src: &Path,
     thumb_root_fn: impl Fn(u32) -> PathBuf,
     cache_key: &str,
     sizes: &[u32],
 ) {
+    let src_modified = std::fs::metadata(src).and_then(|m| m.modified()).ok();
     for &size in sizes {
         let root = thumb_root_fn(size);
         if let Some(dest) =
             get_assigned_cache_file_path(&root, cache_key, &format!("thumb-{size}"), ".jpg", true)
         {
+            if thumb_is_fresh(&dest, src_modified) {
+                continue;
+            }
             let _ = generate_thumbnail(src, &dest, size);
         }
+    }
+}
+
+/// True if `dest` already exists, is non-empty, and is at least as new as the
+/// original it would be regenerated from.
+fn thumb_is_fresh(dest: &Path, src_modified: Option<std::time::SystemTime>) -> bool {
+    let dest_meta = match std::fs::metadata(dest) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if dest_meta.len() == 0 {
+        return false;
+    }
+    match (dest_meta.modified(), src_modified) {
+        (Ok(dest_modified), Some(src_modified)) => dest_modified >= src_modified,
+        // Can't compare mtimes (unsupported platform, or the original's mtime
+        // is unavailable) — a non-empty destination is treated as fresh rather
+        // than paying for an unconditional rewrite every sweep.
+        (Ok(_), None) => true,
+        (Err(_), _) => false,
     }
 }
 
@@ -522,9 +551,14 @@ async fn run_cache_album_images(
 
     let album_ids = parse_entity_ids_from_payload(payload, "albumIds");
     let album_ids = if album_ids.is_empty() {
+        // Plan §8.3 item 4: order the full reconciliation sweep by most
+        // recently added first, so albums likely to be visible on Home/Recent
+        // right now get their art warmed soonest, instead of in arbitrary
+        // insertion order across the whole library.
         get_library_entity_ids(
             &state.db,
-            "SELECT DISTINCT album_id FROM tracks WHERE library_id=?1 AND album_id IS NOT NULL",
+            "SELECT DISTINCT al.id FROM albums al JOIN tracks t ON t.album_id = al.id \
+             WHERE t.library_id=?1 ORDER BY al.added_at DESC",
             library_id.clone(),
         )
         .await
@@ -1496,6 +1530,100 @@ mod tests {
         );
     }
 
+    fn thumb_freshness_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("post-scan-thumb-freshness-{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn thumb_is_fresh_requires_non_empty_and_at_least_as_new_as_source() {
+        use super::thumb_is_fresh;
+        let dir = thumb_freshness_temp_dir("basic");
+        let dest = dir.join("dest.jpg");
+
+        assert!(
+            !thumb_is_fresh(&dest, Some(std::time::SystemTime::now())),
+            "a missing destination is never fresh"
+        );
+
+        std::fs::write(&dest, []).unwrap();
+        assert!(
+            !thumb_is_fresh(&dest, Some(std::time::SystemTime::now())),
+            "an empty destination must not be fresh"
+        );
+
+        std::fs::write(&dest, b"not empty").unwrap();
+        let dest_modified = std::fs::metadata(&dest).unwrap().modified().unwrap();
+
+        let older_src = dest_modified - std::time::Duration::from_secs(60);
+        assert!(
+            thumb_is_fresh(&dest, Some(older_src)),
+            "a destination newer than its source is fresh"
+        );
+
+        let newer_src = dest_modified + std::time::Duration::from_secs(60);
+        assert!(
+            !thumb_is_fresh(&dest, Some(newer_src)),
+            "a destination older than its source is not fresh"
+        );
+
+        assert!(
+            thumb_is_fresh(&dest, None),
+            "an existing non-empty destination is fresh when the source mtime is unavailable"
+        );
+    }
+
+    #[test]
+    fn generate_cached_thumbs_skips_a_fresh_destination_and_regenerates_a_stale_one() {
+        use super::{generate_cached_thumbs, get_assigned_cache_file_path};
+        use image::{ImageBuffer, Rgb};
+
+        let dir = thumb_freshness_temp_dir("sweep");
+        let source = dir.join("original.png");
+        let buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_pixel(20, 20, Rgb([1, 2, 3]));
+        buf.save(&source).unwrap();
+
+        let thumb_dir = dir.join("thumb");
+        let cache_key = "freshness-sweep-key";
+        generate_cached_thumbs(&source, |_size| thumb_dir.clone(), cache_key, &[300]);
+
+        let dest = get_assigned_cache_file_path(&thumb_dir, cache_key, "thumb-300", ".jpg", false)
+            .expect("thumb should have been generated");
+        let first_write_time = std::fs::metadata(&dest).unwrap().modified().unwrap();
+
+        // A second sweep over the same, unchanged original must not touch the
+        // destination at all (the 14-17 minute no-op-rewrite bug this fixes).
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        generate_cached_thumbs(&source, |_size| thumb_dir.clone(), cache_key, &[300]);
+        let unchanged_write_time = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        assert_eq!(
+            first_write_time, unchanged_write_time,
+            "a fresh thumbnail must not be rewritten"
+        );
+
+        // Touch the original forward in time past the thumbnail and sweep
+        // again: now it must regenerate.
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .unwrap();
+        file.set_modified(future).unwrap();
+        drop(file);
+
+        generate_cached_thumbs(&source, |_size| thumb_dir.clone(), cache_key, &[300]);
+        let regenerated_write_time = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        assert!(
+            regenerated_write_time > unchanged_write_time,
+            "a stale thumbnail (older than its source) must be regenerated"
+        );
+    }
+
     #[test]
     fn extract_discogs_label_skips_blank_and_not_on_label() {
         use super::extract_discogs_label;
@@ -1827,6 +1955,52 @@ mod tests {
         let result = super::run_cache_album_images(&f.state, &f.library_id_entity(), None).await;
         assert!(result.is_ok());
         assert!(f.dir.join("art").join("album").join("original").exists());
+    }
+
+    #[tokio::test]
+    async fn cache_album_images_sweep_visits_most_recently_added_album_first() {
+        use super::get_library_entity_ids;
+
+        let f = fixture("album-images-order");
+        // `f.album_id` was just inserted with the default `added_at` ('now').
+        // Add an older second album/track in the same library.
+        let older_album_id = uuid::Uuid::now_v7().to_string();
+        let older_track_id = uuid::Uuid::now_v7().to_string();
+        {
+            let conn = f.state.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO albums(id, title, artist_id, added_at) \
+                 VALUES (?, 'Older Album', ?, '2020-01-01T00:00:00Z')",
+                rusqlite::params![older_album_id, f.artist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) \
+                 VALUES (?, ?, ?, ?, 'Older Track', ?)",
+                rusqlite::params![
+                    older_track_id,
+                    f.library_id,
+                    f.artist_id,
+                    older_album_id,
+                    f.dir.join("older.mp3").to_string_lossy()
+                ],
+            )
+            .unwrap();
+        }
+
+        let ids = get_library_entity_ids(
+            &f.state.db,
+            "SELECT DISTINCT al.id FROM albums al JOIN tracks t ON t.album_id = al.id \
+             WHERE t.library_id=?1 ORDER BY al.added_at DESC",
+            f.library_id_entity(),
+        )
+        .await;
+
+        assert_eq!(
+            ids,
+            vec![f.album_id.clone(), older_album_id],
+            "the more recently added album must sort first"
+        );
     }
 
     #[tokio::test]

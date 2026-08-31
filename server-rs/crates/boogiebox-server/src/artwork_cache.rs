@@ -173,6 +173,79 @@ pub fn find_folder_cover_image(track_file_path: &Path) -> Option<PathBuf> {
     None
 }
 
+// -- HTTP conditional-request helpers (ETag / Last-Modified / 304) -------------
+// Shared by every cached-file response (artwork, audio streaming): a single
+// place for the date format and freshness check so the shape of a `304` stays
+// consistent across routes.
+
+/// Formats a Unix timestamp (seconds) as an RFC 7231 HTTP-date, e.g.
+/// `Sun, 06 Nov 1994 08:49:37 GMT` — used for `Last-Modified`/`If-Modified-Since`.
+pub fn http_date_secs(secs: u64) -> String {
+    use time::{Month, OffsetDateTime, Weekday};
+    let dt = OffsetDateTime::from_unix_timestamp(secs as i64).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    let wd = match dt.weekday() {
+        Weekday::Monday => "Mon",
+        Weekday::Tuesday => "Tue",
+        Weekday::Wednesday => "Wed",
+        Weekday::Thursday => "Thu",
+        Weekday::Friday => "Fri",
+        Weekday::Saturday => "Sat",
+        Weekday::Sunday => "Sun",
+    };
+    let mo = match dt.month() {
+        Month::January => "Jan",
+        Month::February => "Feb",
+        Month::March => "Mar",
+        Month::April => "Apr",
+        Month::May => "May",
+        Month::June => "Jun",
+        Month::July => "Jul",
+        Month::August => "Aug",
+        Month::September => "Sep",
+        Month::October => "Oct",
+        Month::November => "Nov",
+        Month::December => "Dec",
+    };
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+        wd,
+        dt.day(),
+        mo,
+        dt.year(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
+    )
+}
+
+/// Builds a strong ETag from a cached file's size and modified-time (seconds).
+pub fn file_etag(len: u64, modified_secs: u64) -> String {
+    format!("\"{len}-{modified_secs}\"")
+}
+
+/// True if the request's conditional headers indicate the client's cached copy
+/// is still fresh and a `304 Not Modified` should be returned instead of the
+/// body. `If-None-Match` takes priority over `If-Modified-Since` per RFC 7232
+/// §6; `If-Modified-Since` is compared as an exact string match against the
+/// value this server would send as `Last-Modified` (both are formatted by
+/// `http_date_secs`), which is always fresh-or-stale-correct — it just does not
+/// treat a client-supplied date newer than the file's actual mtime as fresh,
+/// which no real client sends in practice for this header's normal use.
+pub fn cached_copy_is_fresh(
+    if_none_match: Option<&str>,
+    etag: &str,
+    if_modified_since: Option<&str>,
+    last_modified: &str,
+) -> bool {
+    if let Some(inm) = if_none_match {
+        return inm == etag || inm == "*";
+    }
+    if let Some(ims) = if_modified_since {
+        return ims == last_modified;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +416,47 @@ mod tests {
         // without relying on filesystem state.
         let bare = PathBuf::from("track.mp3");
         assert!(find_folder_cover_image(&bare).is_none());
+    }
+
+    #[test]
+    fn http_date_secs_formats_known_timestamp() {
+        // 1994-11-06T08:49:37Z, the canonical RFC 7231 example.
+        assert_eq!(http_date_secs(784_111_777), "Sun, 06 Nov 1994 08:49:37 GMT");
+    }
+
+    #[test]
+    fn file_etag_is_a_strong_etag_of_size_and_mtime() {
+        let etag = file_etag(12345, 784_111_777);
+        assert_eq!(etag, "\"12345-784111777\"");
+        // Different size or mtime must produce a different tag.
+        assert_ne!(etag, file_etag(12346, 784_111_777));
+        assert_ne!(etag, file_etag(12345, 784_111_778));
+    }
+
+    #[test]
+    fn cached_copy_is_fresh_prefers_if_none_match_over_if_modified_since() {
+        let etag = "\"1-2\"";
+        let last_modified = "Sun, 06 Nov 1994 08:49:37 GMT";
+
+        assert!(cached_copy_is_fresh(Some(etag), etag, None, last_modified));
+        assert!(cached_copy_is_fresh(Some("*"), etag, None, last_modified));
+        assert!(
+            !cached_copy_is_fresh(Some("\"stale\""), etag, Some(last_modified), last_modified),
+            "a mismatched If-None-Match must not fall back to If-Modified-Since"
+        );
+
+        assert!(cached_copy_is_fresh(
+            None,
+            etag,
+            Some(last_modified),
+            last_modified
+        ));
+        assert!(!cached_copy_is_fresh(
+            None,
+            etag,
+            Some("Mon, 01 Jan 1990 00:00:00 GMT"),
+            last_modified
+        ));
+        assert!(!cached_copy_is_fresh(None, etag, None, last_modified));
     }
 }

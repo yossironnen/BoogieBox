@@ -21,6 +21,10 @@ use std::{
 use thiserror::Error;
 use tokio::{process::Command, time::timeout};
 use tower_http::{
+    compression::{
+        predicate::{DefaultPredicate, NotForContentType, Predicate},
+        CompressionLayer,
+    },
     cors::{AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
 };
@@ -452,6 +456,15 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         ])
         .allow_headers([header::CONTENT_TYPE, header::COOKIE, header::AUTHORIZATION]);
 
+    // Plan Phase 4 item 1: negotiated response compression for JSON/text API
+    // responses. `DefaultPredicate` already excludes images and small bodies;
+    // audio isn't image-prefixed so it needs its own exclusion — transcoded/
+    // streamed audio is large and already compressed, so gzip/br would waste
+    // CPU for no size benefit. `image_thumb`/artwork JPEGs are excluded by
+    // the default's `image/` rule.
+    let compression_predicate = DefaultPredicate::new().and(NotForContentType::new("audio/"));
+    let compression_layer = CompressionLayer::new().compress_when(compression_predicate);
+
     // State-erase the core system routes first, then merge the sub-routers
     // (which are also state-erased via .with_state inside their builder fn).
     let api = Router::new()
@@ -487,7 +500,8 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         ))
         .merge(routes::dlna_routes::dlna_router(shared_state))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
-        .layer(cors_layer);
+        .layer(cors_layer)
+        .layer(compression_layer);
 
     if let Some(client_dir) = client_build_dir {
         let index = client_dir.join("index.html");
@@ -1151,6 +1165,62 @@ mod tests {
     use tower::ServiceExt;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn json_api_response_is_compressed_when_the_client_accepts_it() {
+        // Plan Phase 4 item 1: negotiated compression for JSON/text responses.
+        let app = build_app(
+            AppState {
+                setup_required: true,
+                ..AppState::default()
+            },
+            None,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/status")
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip"),
+            "a JSON response should be compressed when the client accepts gzip"
+        );
+    }
+
+    #[tokio::test]
+    async fn json_api_response_is_not_compressed_without_an_accept_encoding_header() {
+        let app = build_app(
+            AppState {
+                setup_required: true,
+                ..AppState::default()
+            },
+            None,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().get(header::CONTENT_ENCODING).is_none(),
+            "must not compress when the client declared no Accept-Encoding support"
+        );
+    }
 
     #[tokio::test]
     async fn status_endpoint_matches_boogiebox_discovery_contract() {

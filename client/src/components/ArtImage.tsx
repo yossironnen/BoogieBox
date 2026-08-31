@@ -19,6 +19,22 @@ type ArtImageProps = {
   onImageReady?: (img: HTMLImageElement | null) => void;
 };
 
+// Bounded retry for a cache miss whose fill is running in the background
+// (plan Phase 3.2 §8.2 item 4): the server returns a fast, non-cacheable
+// "not yet available" response while it fills the art off the request path,
+// so a plain `<img>` (no visibility into response status/headers) just
+// retries blindly a small fixed number of times with backoff, appending a
+// cache-busting param each time so the browser/proxy never serves a cached
+// miss back. A genuinely absent image (no folder art, no provider result)
+// fails the same way every retry — negative-cached server-side, so those
+// retries stay cheap — and falls back once attempts are exhausted.
+const ART_RETRY_DELAYS_MS = [400, 800, 1600, 3200];
+
+function withCacheBust(src: string, attempt: number): string {
+  const sep = src.includes('?') ? '&' : '?';
+  return `${src}${sep}_retry=${attempt}`;
+}
+
 /**
  * Art Image is part of this module's public API.
  *
@@ -43,10 +59,25 @@ export default function ArtImage({
 }: ArtImageProps) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [loadState, setLoadState] = useState<ArtImageLoadState>(src ? 'loading' : 'error');
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPendingRetry = () => {
+    if (retryTimerRef.current != null) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     setLoadState(src ? 'loading' : 'error');
+    setRetryAttempt(0);
+    clearPendingRetry();
+    // Deliberately keyed on `src` alone: this must reset only on a genuine
+    // source change, not on our own retry re-renders.
   }, [src]);
+
+  useEffect(() => clearPendingRetry, []);
 
   useEffect(() => {
     onLoadStateChange?.(loadState);
@@ -56,12 +87,14 @@ export default function ArtImage({
     onImageReady?.(imgRef.current);
   }, [loadState, onImageReady]);
 
+  const resolvedSrc = src && retryAttempt > 0 ? withCacheBust(src, retryAttempt) : src;
+
   return (
     <span style={{ display: 'block', ...wrapperStyle }}>
       {src ? (
         <img
           ref={imgRef}
-          src={src}
+          src={resolvedSrc ?? undefined}
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"
@@ -70,7 +103,16 @@ export default function ArtImage({
           onLoad={() => setLoadState('loaded')}
           onError={() => {
             onImageReady?.(null);
-            setLoadState('error');
+            if (retryAttempt < ART_RETRY_DELAYS_MS.length) {
+              const delay = ART_RETRY_DELAYS_MS[retryAttempt];
+              clearPendingRetry();
+              retryTimerRef.current = setTimeout(() => {
+                retryTimerRef.current = null;
+                setRetryAttempt((n) => n + 1);
+              }, delay);
+            } else {
+              setLoadState('error');
+            }
           }}
         />
       ) : null}

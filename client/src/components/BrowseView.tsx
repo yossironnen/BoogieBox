@@ -2,7 +2,7 @@
  * Defines the Browse View React component and related UI helpers.
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../api';
 import type { Artist, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
 import type { EntityId } from '../entityId';
@@ -49,6 +49,123 @@ export function buildLetterFirstIndexMap<T>(
     }
   });
   return map;
+}
+
+// ─── Row virtualization (root Browse windowing, plan Phase 2) ─────────────────
+// True windowing for the root album grid/list: only rows near the viewport are
+// mounted, so React tree size stays proportional to viewport size rather than
+// collection size. See wip/large-dataset-album-artwork-performance-plan.md §7.
+//
+// If the scroll container's measured width is 0 (not yet laid out — e.g. jsdom
+// tests without a ResizeObserver-driven layout, or a container hidden at mount),
+// callers must render the full unwindowed list instead of guessing a window from
+// unknown dimensions. This keeps existing non-visual tests unaffected and only
+// activates windowing once a container has been really measured.
+
+const GRID_OVERSCAN_ROWS = 3;
+const LIST_OVERSCAN_ROWS = 6;
+// Below this size, always use the plain unwindowed render — small libraries
+// don't have a DOM-size problem, and it keeps the (still DOM-measurement-based)
+// fallback path simple. At or above it, ALWAYS use the windowed algorithm, even
+// before the container's real size has been measured (using degenerate
+// defaults — 1 column, 0 viewport height — until useLayoutEffect corrects
+// them). This is what actually matters: a purely props-driven `windowed` flag
+// (not one that waits on state from an effect) guarantees a large collection
+// is never rendered in full, not even for the transient first render pass
+// before measurement lands — which a measurement-only gate cannot guarantee,
+// since React's very first render always runs before any effect has fired.
+const WINDOWING_SIZE_THRESHOLD = 200;
+
+/** Number of grid columns for a given scroll-container width, replicating the
+ * `repeat(auto-fill, minmax(minTile, 1fr))` CSS grid track algorithm so the
+ * windowed layout matches what CSS auto-fill would have produced. */
+export function computeGridColumns(containerWidth: number, minTile: number, gap: number, paddingX: number): number {
+  const available = containerWidth - paddingX * 2;
+  if (available <= 0) return 1;
+  const cols = Math.floor((available + gap) / (minTile + gap));
+  return Math.max(1, cols);
+}
+
+/** Pixel width of one column once `columns` is known, matching the `1fr` track
+ * sizing CSS grid would compute for the same container. */
+export function computeGridTileWidth(containerWidth: number, columns: number, gap: number, paddingX: number): number {
+  const available = containerWidth - paddingX * 2;
+  const width = (available - gap * (columns - 1)) / columns;
+  return Math.max(0, width);
+}
+
+/** Inclusive [startRow, endRow] of rows to mount for a scrolled window, with overscan. */
+export function computeVisibleRowRange(
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  totalRows: number,
+  overscanRows: number,
+): [number, number] {
+  if (totalRows <= 0 || rowHeight <= 0) return [0, -1];
+  const first = Math.max(0, Math.floor(scrollTop / rowHeight) - overscanRows);
+  const last = Math.min(totalRows - 1, Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscanRows);
+  return [first, last];
+}
+
+/** Measures a scroll container's `clientWidth`/`clientHeight` (padding-box,
+ * matching the CSS `padding` on the same element), synchronously as soon as
+ * the element is attached (before paint, so real layouts never flash a full
+ * unwindowed render first) and on every resize thereafter. Returns `{0, 0}`
+ * until a real measurement is available.
+ *
+ * Takes an existing stable ref object (kept for every other imperative use
+ * already in this file — scroll manipulation, event listeners, etc.) and
+ * returns an `attachRef` callback to place on the JSX element *instead of*
+ * that ref directly. This is not cosmetic: `AlbumGrid`/`AlbumList` both have
+ * an early return (`if (!albums.length) return <div>No albums found</div>`)
+ * *after* their hooks — so on first mount, before the root Browse fetch has
+ * resolved, `albums` is still `[]` and the real scroll container never
+ * renders at all that pass. A plain `useLayoutEffect(..., [ref])` already
+ * ran once against `ref.current === null` on that pass and, since a `useRef`
+ * object's identity never changes, never runs again — so once the container
+ * *does* mount (album data arrives, a later render takes the other branch),
+ * nothing ever measures it and windowing is stuck computing from `{0, 0}`
+ * forever. Routing attachment through `useState` instead makes "the element
+ * showed up" a real dependency change the effect below reacts to. */
+function useContainerSize(stableRef: React.RefObject<HTMLElement | null>): {
+  size: { width: number; height: number };
+  attachRef: (el: HTMLElement | null) => void;
+} {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [node, setNode] = useState<HTMLElement | null>(null);
+
+  const attachRef = useCallback((el: HTMLElement | null) => {
+    stableRef.current = el;
+    setNode(el);
+  }, [stableRef]);
+
+  useLayoutEffect(() => {
+    if (!node) return;
+    const measure = () => {
+      setSize((prev) => {
+        const width = node.clientWidth;
+        const height = node.clientHeight;
+        return prev.width === width && prev.height === height ? prev : { width, height };
+      });
+    };
+    measure();
+    // Belt-and-suspenders: the synchronous measurement above can still
+    // occasionally run before an ancestor's layout has fully settled. A
+    // one-time re-check on the next animation frame self-heals that.
+    const raf = requestAnimationFrame(measure);
+    if (typeof ResizeObserver === 'undefined') {
+      return () => cancelAnimationFrame(raf);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  }, [node]);
+
+  return { size, attachRef };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -560,7 +677,13 @@ function ArtistList({
     </div>
   );
 }
-function AlbumList({
+// Root album list row height (must track `L.row`'s padding + content, see the
+// `containIntrinsicSize: 'auto 46px'` size hint on that style — the row is a
+// single fixed-height flex row, so this is exact, not an estimate).
+const LIST_ROW_HEIGHT = 46;
+
+/** Exported for direct windowing tests only (root Browse renders it internally). */
+export function AlbumList({
   albums, loading, onSelect, onPlay, onQueue, showArtist = false, showThumbnail = false, groupBy = 'artist', fill = true, alphabeticalJump = false, initialScrollTop = 0, initialAnchorId, onScrollTopChange, onAnchorChange,
 }: {
   albums: Album[]; loading: boolean;
@@ -581,16 +704,33 @@ function AlbumList({
   const anchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [activeLetter, setActiveLetter] = useState('#');
   const [hoveredAlbumId, setHoveredAlbumId] = useState<ClientEntityId | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const letterFirstIndexMap = useMemo(() => buildLetterFirstIndexMap(albums, (album) => album.title), [albums]);
   const availableLetters = useMemo(() => new Set(Object.keys(letterFirstIndexMap)), [letterFirstIndexMap]);
+
+  // Only the root ("fill") usage is windowed — the embedded artist-detail
+  // sections render a handful of albums in normal document flow (`fill=false`)
+  // and are left exactly as before. Like AlbumGrid, windowing further requires
+  // a real measured height (see useContainerSize); unmeasured environments
+  // (tests, a hidden container at mount) fall back to the original unwindowed
+  // render below.
+  const { size: containerSize, attachRef: attachListRef } = useContainerSize(listRef);
+  const windowed = fill && (containerSize.height > 0 || albums.length >= WINDOWING_SIZE_THRESHOLD);
+  const totalRows = windowed ? albums.length : 0;
+  const canvasHeight = windowed ? totalRows * LIST_ROW_HEIGHT : 0;
 
   useEffect(() => {
     const container = listRef.current;
     if (!container) return;
-    if (initialScrollTop > 0) container.scrollTop = initialScrollTop;
+    if (initialScrollTop > 0) {
+      container.scrollTop = initialScrollTop;
+      setScrollTop(initialScrollTop);
+    }
   }, [initialScrollTop, albums.length]);
+
   useEffect(() => {
-    if (!initialAnchorId) return;
+    if (!initialAnchorId || windowed) return;
     const container = listRef.current;
     if (!container) return;
     const node = container.querySelector<HTMLElement>(`[data-root-anchor-id="${initialAnchorId}"]`);
@@ -598,7 +738,18 @@ function AlbumList({
     if (typeof node.scrollIntoView === 'function') {
       node.scrollIntoView({ block: 'nearest' });
     }
-  }, [initialAnchorId, albums.length]);
+  }, [initialAnchorId, albums.length, windowed]);
+
+  useEffect(() => {
+    if (!initialAnchorId || !windowed) return;
+    const container = listRef.current;
+    if (!container) return;
+    const idx = albums.findIndex((a) => a.id === initialAnchorId);
+    if (idx < 0) return;
+    const top = idx * LIST_ROW_HEIGHT;
+    container.scrollTop = top;
+    setScrollTop(top);
+  }, [initialAnchorId, albums, windowed]);
 
   useEffect(() => {
     const container = listRef.current;
@@ -612,7 +763,26 @@ function AlbumList({
   }, [onScrollTopChange]);
 
   useEffect(() => {
-    if (!alphabeticalJump || !fill) return;
+    if (!windowed) return;
+    const container = listRef.current;
+    if (!container) return;
+    let rafId = 0;
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        setScrollTop(container.scrollTop);
+      });
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', onScroll);
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [windowed]);
+
+  useEffect(() => {
+    if (!alphabeticalJump || !fill || windowed) return;
     const container = listRef.current;
     if (!container) return;
     let rafId = 0;
@@ -644,81 +814,130 @@ function AlbumList({
       container.removeEventListener('scroll', onScroll);
       if (rafId) window.cancelAnimationFrame(rafId);
     };
-  }, [alphabeticalJump, fill, albums, onScrollTopChange]);
+  }, [alphabeticalJump, fill, albums, onScrollTopChange, windowed]);
+
+  useEffect(() => {
+    if (!alphabeticalJump || !windowed) return;
+    const currentRow = Math.floor(scrollTop / LIST_ROW_HEIGHT);
+    let nextActive: string | null = null;
+    for (const letter of ALPHA_RAIL_LETTERS) {
+      const idx = letterFirstIndexMap[letter];
+      if (idx === undefined) continue;
+      if (idx <= currentRow) nextActive = letter;
+      else break;
+    }
+    if (!nextActive) {
+      nextActive = ALPHA_RAIL_LETTERS.find((letter) => letterFirstIndexMap[letter] !== undefined) ?? '#';
+    }
+    setActiveLetter((prev) => (prev === nextActive ? prev : nextActive!));
+  }, [alphabeticalJump, windowed, scrollTop, letterFirstIndexMap]);
 
   const jumpToLetter = useCallback((letter: string) => {
     const container = listRef.current;
+    if (!container) return;
+    if (windowed) {
+      const idx = letterFirstIndexMap[letter];
+      if (idx === undefined) return;
+      container.scrollTo({ top: idx * LIST_ROW_HEIGHT, behavior: 'smooth' });
+      return;
+    }
     const anchor = anchorRefs.current[letter];
-    if (!container || !anchor) return;
+    if (!anchor) return;
     container.scrollTo({ top: anchor.offsetTop, behavior: 'smooth' });
-  }, []);
+  }, [windowed, letterFirstIndexMap]);
 
   if (loading && !albums.length) return <div style={L.empty}>Loading...</div>;
   if (!albums.length) return <div style={L.empty}>No albums found.</div>;
 
+  const renderRow = (album: Album, i: number, extraStyle: React.CSSProperties | undefined, attachAnchorRef: boolean) => {
+    const displayArtist = groupBy === 'album_artist'
+      ? (album.album_artist || album.artist)
+      : album.artist;
+
+    return (
+      <div
+        key={album.id}
+        ref={attachAnchorRef && fill && letterFirstIndexMap[toAlphaBucket(album.title)] === i
+          ? (el: HTMLDivElement | null) => { anchorRefs.current[toAlphaBucket(album.title)] = el; }
+          : undefined}
+        data-root-anchor-id={attachAnchorRef ? album.id : undefined}
+        style={{
+          ...L.row,
+          ...extraStyle,
+          backgroundColor: hoveredAlbumId === album.id
+            ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
+            : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.018)',
+        }}
+        onClick={() => {
+          const container = listRef.current;
+          if (container) onScrollTopChange?.(container.scrollTop);
+          onAnchorChange?.(album.id);
+          onSelect(album);
+        }}
+        onMouseEnter={() => setHoveredAlbumId(album.id)}
+        onMouseLeave={() => setHoveredAlbumId((prev) => (prev === album.id ? null : prev))}
+        onFocus={() => setFocusedIndex(i)}
+        onBlur={() => setFocusedIndex((prev) => (prev === i ? null : prev))}
+      >
+        <div style={L.rowIcon}>
+          {showThumbnail
+            ? (
+              <div style={L.rowThumb}>
+                <AlbumTileImage albumId={album.id} title={album.title} />
+              </div>
+            )
+            : <AlbumIcon />}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={L.primaryText}>{album.title}</div>
+          {showArtist && displayArtist && (
+            <div style={L.secondaryText}>{displayArtist}</div>
+          )}
+        </div>
+        {album.year && <div style={L.meta}>{album.year}</div>}
+        <div style={L.meta}>{album.track_count} tracks{album.total_duration ? ` · ${fmtDur(album.total_duration)}` : ''}</div>
+        <button
+          style={L.playBtn}
+          title="Play album"
+          onClick={e => { e.stopPropagation(); onPlay(album); }}
+        >
+          <PlayIcon /> Play
+        </button>
+        <KebabButton
+          target={{ kind: 'album', albumId: album.id, title: album.title }}
+          callbacks={{ onPlay: () => onPlay(album), onQueue: () => onQueue(album) }}
+          visible={hoveredAlbumId === album.id}
+        />
+        <div style={L.chevron}><ChevronRight /></div>
+      </div>
+    );
+  };
+
+  let listBody: React.ReactNode;
+  if (windowed) {
+    let [startRow, endRow] = computeVisibleRowRange(scrollTop, containerSize.height, LIST_ROW_HEIGHT, totalRows, LIST_OVERSCAN_ROWS);
+    if (focusedIndex != null) {
+      if (focusedIndex < startRow) startRow = focusedIndex;
+      if (focusedIndex > endRow) endRow = focusedIndex;
+    }
+    const items: React.ReactNode[] = [];
+    for (let i = startRow; i <= endRow; i++) {
+      items.push(renderRow(albums[i], i, { position: 'absolute', top: i * LIST_ROW_HEIGHT, left: 0, right: 0 }, false));
+    }
+    listBody = <div style={{ position: 'relative', height: canvasHeight }}>{items}</div>;
+  } else {
+    listBody = albums.map((album, i) => renderRow(album, i, undefined, true));
+  }
+
   return (
     <div style={fill ? L.alphaShellFill : L.alphaShellStatic}>
-      <div ref={listRef} style={fill ? { ...L.list, ...(alphabeticalJump ? L.alphaScrollable : {}) } : L.listStack}>
-        {albums.map((album, i) => {
-          const displayArtist = groupBy === 'album_artist'
-            ? (album.album_artist || album.artist)
-            : album.artist;
-
-          return (
-            <div
-              key={album.id}
-              ref={fill && letterFirstIndexMap[toAlphaBucket(album.title)] === i
-                ? (el) => { anchorRefs.current[toAlphaBucket(album.title)] = el; }
-                : undefined}
-              data-root-anchor-id={album.id}
-              style={{
-                ...L.row,
-                backgroundColor: hoveredAlbumId === album.id
-                  ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
-                  : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.018)',
-              }}
-              onClick={() => {
-                const container = listRef.current;
-                if (container) onScrollTopChange?.(container.scrollTop);
-                onAnchorChange?.(album.id);
-                onSelect(album);
-              }}
-              onMouseEnter={() => setHoveredAlbumId(album.id)}
-              onMouseLeave={() => setHoveredAlbumId((prev) => (prev === album.id ? null : prev))}
-            >
-              <div style={L.rowIcon}>
-                {showThumbnail
-                  ? (
-                    <div style={L.rowThumb}>
-                      <AlbumTileImage albumId={album.id} title={album.title} />
-                    </div>
-                  )
-                  : <AlbumIcon />}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={L.primaryText}>{album.title}</div>
-                {showArtist && displayArtist && (
-                  <div style={L.secondaryText}>{displayArtist}</div>
-                )}
-              </div>
-              {album.year && <div style={L.meta}>{album.year}</div>}
-              <div style={L.meta}>{album.track_count} tracks{album.total_duration ? ` · ${fmtDur(album.total_duration)}` : ''}</div>
-              <button
-                style={L.playBtn}
-                title="Play album"
-                onClick={e => { e.stopPropagation(); onPlay(album); }}
-              >
-                <PlayIcon /> Play
-              </button>
-              <KebabButton
-                target={{ kind: 'album', albumId: album.id, title: album.title }}
-                callbacks={{ onPlay: () => onPlay(album), onQueue: () => onQueue(album) }}
-                visible={hoveredAlbumId === album.id}
-              />
-              <div style={L.chevron}><ChevronRight /></div>
-            </div>
-          );
-        })}
+      <div
+        ref={attachListRef}
+        style={fill
+          ? { ...L.list, ...(alphabeticalJump ? L.alphaScrollable : {}), ...(windowed ? { position: 'relative' } : {}) }
+          : L.listStack}
+      >
+        {listBody}
       </div>
       {alphabeticalJump && fill && (
         <QuickJumpRail availableLetters={availableLetters} activeLetter={activeLetter} onJump={jumpToLetter} />
@@ -1316,7 +1535,20 @@ function ArtistGrid({
     </div>
   );
 }
-function AlbumGrid({
+// Root album grid layout constants (must track `L.gridWrap`/`L.gridTileBtn`
+// below): minmax(160px,1fr) columns, 12px gap, 16px container padding on every
+// side. Metadata height is the non-art part of a tile (padding + border +
+// title + optional artist link + rating row), rounded up from the styled
+// line-heights for safety headroom against font-rendering variance across
+// platforms — see Phase 2 manual verification in the performance plan.
+const GRID_MIN_TILE = 160;
+const GRID_GAP = 12;
+const GRID_PADDING_X = 16;
+const GRID_METADATA_HEIGHT_WITH_ARTIST = 92;
+const GRID_METADATA_HEIGHT_NO_ARTIST = 72;
+
+/** Exported for direct windowing tests only (root Browse renders it internally). */
+export function AlbumGrid({
   albums, loading, onSelect, onPlay, onQueue, onArtistSelect, showArtist = false, groupBy = 'artist', alphabeticalJump = false, initialScrollTop = 0, initialAnchorId, onScrollTopChange, onAnchorChange, hybridPreview = false,
 }: {
   albums: Album[]; loading: boolean; onSelect: (a: Album) => void;
@@ -1337,16 +1569,38 @@ function AlbumGrid({
   const [activeLetter, setActiveLetter] = useState('#');
   const [hoveredAlbumId, setHoveredAlbumId] = useState<ClientEntityId | null>(null);
   const [hoveredArtistLinkId, setHoveredArtistLinkId] = useState<ClientEntityId | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const letterFirstIndexMap = useMemo(() => buildLetterFirstIndexMap(albums, (album) => album.title), [albums]);
   const availableLetters = useMemo(() => new Set(Object.keys(letterFirstIndexMap)), [letterFirstIndexMap]);
 
+  // Windowing only activates once the container has a real measured width (see
+  // useContainerSize) — unmeasured environments (tests, a hidden container at
+  // mount) fall back to the original unwindowed render below.
+  const { size: containerSize, attachRef: attachGridRef } = useContainerSize(gridRef);
+  const windowed = containerSize.width > 0 || albums.length >= WINDOWING_SIZE_THRESHOLD;
+  const metadataHeight = showArtist ? GRID_METADATA_HEIGHT_WITH_ARTIST : GRID_METADATA_HEIGHT_NO_ARTIST;
+  const columns = windowed ? computeGridColumns(containerSize.width, GRID_MIN_TILE, GRID_GAP, GRID_PADDING_X) : 0;
+  const tileWidth = windowed ? computeGridTileWidth(containerSize.width, columns, GRID_GAP, GRID_PADDING_X) : 0;
+  const rowHeight = windowed ? tileWidth + metadataHeight + GRID_GAP : 0;
+  const totalRows = windowed ? Math.ceil(albums.length / Math.max(1, columns)) : 0;
+  const canvasHeight = windowed && totalRows > 0 ? totalRows * rowHeight - GRID_GAP : 0;
+
+  // Initial scroll position restore — same DOM assignment either way; also
+  // syncs the windowed-mode scrollTop state so the first windowed render
+  // already reflects the restored position instead of waiting for a scroll event.
   useEffect(() => {
     const container = gridRef.current;
     if (!container) return;
-    if (initialScrollTop > 0) container.scrollTop = initialScrollTop;
+    if (initialScrollTop > 0) {
+      container.scrollTop = initialScrollTop;
+      setScrollTop(initialScrollTop);
+    }
   }, [initialScrollTop, albums.length]);
+
+  // Initial anchor restore — unwindowed: DOM measurement (existing behavior).
   useEffect(() => {
-    if (!initialAnchorId) return;
+    if (!initialAnchorId || windowed) return;
     const container = gridRef.current;
     if (!container) return;
     const node = container.querySelector<HTMLElement>(`[data-root-anchor-id="${initialAnchorId}"]`);
@@ -1354,7 +1608,20 @@ function AlbumGrid({
     if (typeof node.scrollIntoView === 'function') {
       node.scrollIntoView({ block: 'nearest' });
     }
-  }, [initialAnchorId, albums.length]);
+  }, [initialAnchorId, albums.length, windowed]);
+
+  // Initial anchor restore — windowed: maps the album id to its current sorted
+  // index, then to a row offset, with no DOM dependency (plan §7 item 3).
+  useEffect(() => {
+    if (!initialAnchorId || !windowed || columns <= 0 || rowHeight <= 0) return;
+    const container = gridRef.current;
+    if (!container) return;
+    const idx = albums.findIndex((a) => a.id === initialAnchorId);
+    if (idx < 0) return;
+    const top = Math.floor(idx / columns) * rowHeight;
+    container.scrollTop = top;
+    setScrollTop(top);
+  }, [initialAnchorId, albums, windowed, columns, rowHeight]);
 
   useEffect(() => {
     const container = gridRef.current;
@@ -1366,8 +1633,32 @@ function AlbumGrid({
     };
   }, [onScrollTopChange]);
 
+  // Windowed-mode scroll tracking: keeps `scrollTop` state (which drives the
+  // rendered row window below) in sync, rAF-throttled like the alpha-jump
+  // active-letter tracker below.
   useEffect(() => {
-    if (!alphabeticalJump) return;
+    if (!windowed) return;
+    const container = gridRef.current;
+    if (!container) return;
+    let rafId = 0;
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        setScrollTop(container.scrollTop);
+      });
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', onScroll);
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [windowed]);
+
+  // Alpha-rail active-letter tracking — unwindowed: DOM offsetTop measurement
+  // (existing behavior).
+  useEffect(() => {
+    if (!alphabeticalJump || windowed) return;
     const container = gridRef.current;
     if (!container) return;
     let rafId = 0;
@@ -1399,141 +1690,209 @@ function AlbumGrid({
       container.removeEventListener('scroll', onScroll);
       if (rafId) window.cancelAnimationFrame(rafId);
     };
-  }, [alphabeticalJump, albums, onScrollTopChange]);
+  }, [alphabeticalJump, albums, onScrollTopChange, windowed]);
+
+  // Alpha-rail active-letter tracking — windowed: derived from the row index
+  // math instead of measuring DOM anchors that may not be mounted.
+  useEffect(() => {
+    if (!alphabeticalJump || !windowed || columns <= 0 || rowHeight <= 0) return;
+    const currentRow = Math.floor(scrollTop / rowHeight);
+    let nextActive: string | null = null;
+    for (const letter of ALPHA_RAIL_LETTERS) {
+      const idx = letterFirstIndexMap[letter];
+      if (idx === undefined) continue;
+      const row = Math.floor(idx / columns);
+      if (row <= currentRow) nextActive = letter;
+      else break;
+    }
+    if (!nextActive) {
+      nextActive = ALPHA_RAIL_LETTERS.find((letter) => letterFirstIndexMap[letter] !== undefined) ?? '#';
+    }
+    setActiveLetter((prev) => (prev === nextActive ? prev : nextActive!));
+  }, [alphabeticalJump, windowed, scrollTop, columns, rowHeight, letterFirstIndexMap]);
 
   const jumpToLetter = useCallback((letter: string) => {
     const container = gridRef.current;
+    if (!container) return;
+    if (windowed && columns > 0 && rowHeight > 0) {
+      const idx = letterFirstIndexMap[letter];
+      if (idx === undefined) return;
+      const top = Math.floor(idx / columns) * rowHeight;
+      container.scrollTo({ top, behavior: 'smooth' });
+      return;
+    }
     const anchor = anchorRefs.current[letter];
-    if (!container || !anchor) return;
+    if (!anchor) return;
     container.scrollTo({ top: anchor.offsetTop, behavior: 'smooth' });
-  }, []);
+  }, [windowed, columns, rowHeight, letterFirstIndexMap]);
 
   if (loading && !albums.length) return <div style={L.empty}>Loading...</div>;
   if (!albums.length) return <div style={L.empty}>No albums found.</div>;
 
+  const renderTile = (album: Album, index: number, extraStyle: React.CSSProperties | undefined, attachAnchorRef: boolean) => {
+    const displayArtist = getAlbumDisplayArtist(album, groupBy);
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        key={album.id}
+        ref={attachAnchorRef && letterFirstIndexMap[toAlphaBucket(album.title)] === index
+          ? (el: HTMLDivElement | null) => { anchorRefs.current[toAlphaBucket(album.title)] = el; }
+          : undefined}
+        data-root-anchor-id={attachAnchorRef ? album.id : undefined}
+        style={{
+          ...L.gridTileBtn,
+          ...extraStyle,
+          ...(hybridPreview
+            ? {
+                backgroundColor: 'transparent',
+                borderColor: 'transparent',
+                boxShadow: 'none',
+              }
+            : {
+                backgroundColor: hoveredAlbumId === album.id
+                  ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
+                  : 'var(--surface)',
+                borderColor: hoveredAlbumId === album.id
+                  ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
+                  : 'var(--border)',
+              }),
+        }}
+        onClick={() => {
+          const container = gridRef.current;
+          if (container) onScrollTopChange?.(container.scrollTop);
+          onAnchorChange?.(album.id);
+          onSelect(album);
+        }}
+        onMouseEnter={() => setHoveredAlbumId(album.id)}
+        onMouseLeave={() => setHoveredAlbumId((prev) => (prev === album.id ? null : prev))}
+        onFocus={() => setFocusedIndex(index)}
+        onBlur={() => setFocusedIndex((prev) => (prev === index ? null : prev))}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            const container = gridRef.current;
+            if (container) onScrollTopChange?.(container.scrollTop);
+            onAnchorChange?.(album.id);
+            onSelect(album);
+          }
+        }}
+        title={album.title}
+      >
+        <div style={{
+          ...L.gridArt,
+          ...(hybridPreview && hoveredAlbumId === album.id ? L.gridArtHovered : {}),
+        }}>
+          <AlbumTileImage albumId={album.id} title={album.title} />
+          {hybridPreview && (
+            <div
+              data-hybrid-art-hover-overlay="album"
+              aria-hidden="true"
+              style={{
+                ...L.gridArtHoverOverlay,
+                opacity: hoveredAlbumId === album.id ? 1 : 0,
+              }}
+            />
+          )}
+          <KebabButton
+            target={{ kind: 'album', albumId: album.id, title: album.title }}
+            callbacks={{ onPlay: () => onPlay(album), onQueue: () => onQueue(album) }}
+            visible={hoveredAlbumId === album.id}
+            style={L.gridArtKebabBtn}
+          />
+          <button
+            type="button"
+            style={{
+              ...L.gridArtPlayBtn,
+              opacity: hoveredAlbumId === album.id ? 1 : 0,
+              pointerEvents: hoveredAlbumId === album.id ? 'auto' : 'none',
+            }}
+            title="Play album"
+            aria-label={`Play album ${album.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPlay(album);
+            }}
+          >
+            <PlayIcon size={14} />
+          </button>
+        </div>
+        <div style={L.gridTitle}>{album.title}</div>
+        {showArtist && displayArtist && (
+          <button
+            type="button"
+            style={{
+              ...L.gridArtistLink,
+              color: hoveredArtistLinkId === album.id ? 'var(--accent)' : 'var(--text-muted)',
+              textDecoration: hoveredArtistLinkId === album.id ? 'underline' : 'none',
+              textUnderlineOffset: hoveredArtistLinkId === album.id ? 2 : undefined,
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onArtistSelect?.(displayArtist, album);
+            }}
+            onMouseEnter={() => setHoveredArtistLinkId(album.id)}
+            onMouseLeave={() => setHoveredArtistLinkId((prev) => (prev === album.id ? null : prev))}
+            onFocus={() => setHoveredArtistLinkId(album.id)}
+            onBlur={() => setHoveredArtistLinkId((prev) => (prev === album.id ? null : prev))}
+            title={`Open artist ${displayArtist}`}
+            aria-label={`Open artist ${displayArtist}`}
+          >
+            {displayArtist}
+          </button>
+        )}
+        <div style={L.gridRatingWrap}>
+          <StarRating
+            value={album.rating ?? null}
+            ariaLabel={`${album.title} album rating`}
+            size="compact"
+            subdued={true}
+            showValue={true}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  let gridBody: React.ReactNode;
+  if (windowed) {
+    let [startRow, endRow] = computeVisibleRowRange(scrollTop, containerSize.height, rowHeight, totalRows, GRID_OVERSCAN_ROWS);
+    // Keep the focused tile mounted even if scrolled outside the window, so
+    // tab/keyboard focus is never dropped onto an unmounted card.
+    if (focusedIndex != null && columns > 0) {
+      const focusedRow = Math.floor(focusedIndex / columns);
+      if (focusedRow < startRow) startRow = focusedRow;
+      if (focusedRow > endRow) endRow = focusedRow;
+    }
+    const startIndex = Math.max(0, startRow * columns);
+    const endIndex = Math.min(albums.length, (endRow + 1) * columns);
+    const items: React.ReactNode[] = [];
+    for (let i = startIndex; i < endIndex; i++) {
+      const row = Math.floor(i / columns);
+      const col = i % columns;
+      items.push(renderTile(albums[i], i, {
+        position: 'absolute',
+        top: row * rowHeight,
+        left: col * (tileWidth + GRID_GAP),
+        width: tileWidth,
+      }, false));
+    }
+    gridBody = <div style={{ position: 'relative', height: canvasHeight }}>{items}</div>;
+  } else {
+    gridBody = albums.map((album, i) => renderTile(album, i, undefined, true));
+  }
+
   return (
     <div style={L.alphaShellFill}>
-      <div ref={gridRef} style={{ ...L.gridWrap, ...(alphabeticalJump ? L.alphaScrollable : {}) }}>
-        {albums.map((album, i) => {
-          const displayArtist = getAlbumDisplayArtist(album, groupBy);
-          return (
-          <div
-            role="button"
-            tabIndex={0}
-            key={album.id}
-            ref={letterFirstIndexMap[toAlphaBucket(album.title)] === i
-              ? (el) => { anchorRefs.current[toAlphaBucket(album.title)] = el; }
-              : undefined}
-            data-root-anchor-id={album.id}
-            style={{
-              ...L.gridTileBtn,
-              ...(hybridPreview
-                ? {
-                    backgroundColor: 'transparent',
-                    borderColor: 'transparent',
-                    boxShadow: 'none',
-                  }
-                : {
-                    backgroundColor: hoveredAlbumId === album.id
-                      ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
-                      : 'var(--surface)',
-                    borderColor: hoveredAlbumId === album.id
-                      ? 'color-mix(in srgb, var(--accent) 34%, var(--border))'
-                      : 'var(--border)',
-                  }),
-            }}
-            onClick={() => {
-              const container = gridRef.current;
-              if (container) onScrollTopChange?.(container.scrollTop);
-              onAnchorChange?.(album.id);
-              onSelect(album);
-            }}
-            onMouseEnter={() => setHoveredAlbumId(album.id)}
-            onMouseLeave={() => setHoveredAlbumId((prev) => (prev === album.id ? null : prev))}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                const container = gridRef.current;
-                if (container) onScrollTopChange?.(container.scrollTop);
-                onAnchorChange?.(album.id);
-                onSelect(album);
-              }
-            }}
-            title={album.title}
-          >
-            <div style={{
-              ...L.gridArt,
-              ...(hybridPreview && hoveredAlbumId === album.id ? L.gridArtHovered : {}),
-            }}>
-              <AlbumTileImage albumId={album.id} title={album.title} />
-              {hybridPreview && (
-                <div
-                  data-hybrid-art-hover-overlay="album"
-                  aria-hidden="true"
-                  style={{
-                    ...L.gridArtHoverOverlay,
-                    opacity: hoveredAlbumId === album.id ? 1 : 0,
-                  }}
-                />
-              )}
-              <KebabButton
-                target={{ kind: 'album', albumId: album.id, title: album.title }}
-                callbacks={{ onPlay: () => onPlay(album), onQueue: () => onQueue(album) }}
-                visible={hoveredAlbumId === album.id}
-                style={L.gridArtKebabBtn}
-              />
-              <button
-                type="button"
-                style={{
-                  ...L.gridArtPlayBtn,
-                  opacity: hoveredAlbumId === album.id ? 1 : 0,
-                  pointerEvents: hoveredAlbumId === album.id ? 'auto' : 'none',
-                }}
-                title="Play album"
-                aria-label={`Play album ${album.title}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onPlay(album);
-                }}
-              >
-                <PlayIcon size={14} />
-              </button>
-            </div>
-            <div style={L.gridTitle}>{album.title}</div>
-            {showArtist && displayArtist && (
-              <button
-                type="button"
-                style={{
-                  ...L.gridArtistLink,
-                  color: hoveredArtistLinkId === album.id ? 'var(--accent)' : 'var(--text-muted)',
-                  textDecoration: hoveredArtistLinkId === album.id ? 'underline' : 'none',
-                  textUnderlineOffset: hoveredArtistLinkId === album.id ? 2 : undefined,
-                }}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onArtistSelect?.(displayArtist, album);
-                }}
-                onMouseEnter={() => setHoveredArtistLinkId(album.id)}
-                onMouseLeave={() => setHoveredArtistLinkId((prev) => (prev === album.id ? null : prev))}
-                onFocus={() => setHoveredArtistLinkId(album.id)}
-                onBlur={() => setHoveredArtistLinkId((prev) => (prev === album.id ? null : prev))}
-                title={`Open artist ${displayArtist}`}
-                aria-label={`Open artist ${displayArtist}`}
-              >
-                {displayArtist}
-              </button>
-            )}
-            <div style={L.gridRatingWrap}>
-              <StarRating
-                value={album.rating ?? null}
-                ariaLabel={`${album.title} album rating`}
-                size="compact"
-                subdued={true}
-                showValue={true}
-              />
-            </div>
-          </div>
-        )})}
+      <div
+        ref={attachGridRef}
+        style={{
+          ...L.gridWrap,
+          ...(alphabeticalJump ? L.alphaScrollable : {}),
+          ...(windowed ? { display: 'block' } : {}),
+        }}
+      >
+        {gridBody}
       </div>
       {alphabeticalJump && (
         <QuickJumpRail availableLetters={availableLetters} activeLetter={activeLetter} onJump={jumpToLetter} />

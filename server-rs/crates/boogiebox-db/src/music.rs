@@ -1851,6 +1851,16 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
 }
 
 /// Documents the List Albums Latest public API surface.
+///
+/// Runs as three bounded stages instead of aggregating the entire `tracks`/`albums`
+/// set before applying `LIMIT`:
+/// 1. Find the latest `limit` grouped `(title, album_artist)` identities from a
+///    lightweight group-by (no `tracks` join at all when `added_at` is present).
+/// 2. Resolve every album row id belonging to those groups (duplicate album rows
+///    sharing the same title/album_artist collapse into one group, same as before).
+/// 3. Aggregate `tracks` only for that bounded id set to produce the final rows,
+///    preserving the original representative id, rating, counts, duration, label,
+///    `added_at`/`latest_scanned_at`, and tie-break ordering.
 pub fn list_albums_latest(
     conn: &Connection,
     user_id: &str,
@@ -1862,12 +1872,65 @@ pub fn list_albums_latest(
     } else {
         "MIN(t.scanned_at)"
     };
-    let added_at_select = if has_added_at {
-        "MIN(al.added_at)"
-    } else {
-        "MIN(t.scanned_at)"
-    };
+    let added_at_select = sort_col;
 
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+
+    // Stage 1: bounded group identities, latest first.
+    let group_sql = if has_added_at {
+        "SELECT al.title, COALESCE(al.album_artist,''), MIN(al.added_at) AS sort_val
+         FROM albums al
+         GROUP BY al.title, COALESCE(al.album_artist,'')
+         ORDER BY sort_val DESC, LOWER(COALESCE(al.album_artist,'')), al.title
+         LIMIT ?"
+    } else {
+        "SELECT al.title, COALESCE(al.album_artist,''), MIN(t.scanned_at) AS sort_val
+         FROM albums al JOIN tracks t ON t.album_id = al.id
+         GROUP BY al.title, COALESCE(al.album_artist,'')
+         ORDER BY sort_val DESC, LOWER(COALESCE(al.album_artist,'')), al.title
+         LIMIT ?"
+    };
+    let groups: Vec<(String, String)> = conn
+        .prepare(group_sql)?
+        .query_map(rusqlite::params![limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Stage 2: resolve every album row id belonging to those bounded groups.
+    let group_placeholders = groups
+        .iter()
+        .map(|_| "(?, ?)")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ids_sql = format!(
+        "SELECT al.id FROM albums al
+         WHERE (al.title, COALESCE(al.album_artist,'')) IN (VALUES {group_placeholders})"
+    );
+    let mut group_params: Vec<Value> = Vec::with_capacity(groups.len() * 2);
+    for (title, album_artist) in &groups {
+        group_params.push(Value::Text(title.clone()));
+        group_params.push(Value::Text(album_artist.clone()));
+    }
+    let album_ids: Vec<String> = conn
+        .prepare(&ids_sql)?
+        .query_map(params_from_iter(group_params), |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    if album_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Stage 3: aggregate tracks only for the resolved, bounded id set.
+    let id_placeholders = album_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let sql = format!(
         "SELECT MIN(al.id), al.title, al.album_artist, al.album_artist AS artist,
                 MIN(al.year), al.genre, MAX(alr.rating), MIN(al.release_type),
@@ -1875,13 +1938,16 @@ pub fn list_albums_latest(
                 MIN(al.label)
          FROM albums al JOIN tracks t ON t.album_id = al.id
          LEFT JOIN album_ratings alr ON alr.album_id = al.id AND alr.user_id = ?
+         WHERE al.id IN ({id_placeholders})
          GROUP BY al.title, COALESCE(al.album_artist,'')
-         ORDER BY {sort_col} DESC, LOWER(COALESCE(al.album_artist,'')), al.title
-         LIMIT ?"
+         ORDER BY {sort_col} DESC, LOWER(COALESCE(al.album_artist,'')), al.title"
     );
+    let mut final_params: Vec<Value> = Vec::with_capacity(1 + album_ids.len());
+    final_params.push(Value::Text(user_id.to_owned()));
+    final_params.extend(album_ids.into_iter().map(Value::Text));
 
     conn.prepare(&sql)?
-        .query_map(rusqlite::params![user_id, limit], |row| {
+        .query_map(params_from_iter(final_params), |row| {
             Ok(AlbumRow {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -3268,6 +3334,60 @@ mod tests {
         .unwrap();
     }
 
+    /// Same shape as `create_search_schema` but omits `albums.added_at`, exercising
+    /// `list_albums_latest`'s pre-`added_at` fallback (older, unmigrated schemas).
+    fn create_search_schema_without_added_at(conn: &Connection) {
+        conn.execute_batch(
+            "
+            CREATE TABLE artists (id TEXT PRIMARY KEY, name TEXT, metadata_locked INTEGER, description TEXT, play_count INTEGER);
+            CREATE TABLE albums (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                album_artist TEXT,
+                artist_id TEXT,
+                year INTEGER,
+                genre TEXT,
+                release_type TEXT,
+                metadata_locked INTEGER,
+                description TEXT,
+                label TEXT
+            );
+            CREATE TABLE libraries (id TEXT PRIMARY KEY, name TEXT);
+            CREATE TABLE tracks (
+                id TEXT PRIMARY KEY,
+                library_id TEXT,
+                artist_id TEXT,
+                album_id TEXT,
+                title TEXT,
+                file_name TEXT,
+                album_artist TEXT,
+                genre TEXT,
+                composer TEXT,
+                duration REAL,
+                format TEXT,
+                bitrate INTEGER,
+                sample_rate INTEGER,
+                channels INTEGER,
+                file_path TEXT,
+                file_size INTEGER,
+                track_number INTEGER,
+                disc_number INTEGER,
+                year INTEGER,
+                comment TEXT,
+                bpm REAL,
+                bpm_detected REAL,
+                bpm_source TEXT,
+                bpm_confidence REAL,
+                scanned_at TEXT,
+                last_played_at TEXT,
+                play_count INTEGER
+            );
+            CREATE TABLE album_ratings (album_id TEXT, user_id TEXT, rating REAL);
+            ",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn search_music_uses_rowid_when_fts_track_id_column_is_empty() {
         let conn = Connection::open_in_memory().unwrap();
@@ -3557,6 +3677,199 @@ mod tests {
         assert!(
             details.iter().any(|d| d.contains("SEARCH t")),
             "expected tracks to be joined via an index seek, got: {details:?}"
+        );
+    }
+
+    #[test]
+    fn list_albums_latest_bounded_groups_aggregate_duplicates_rate_per_user_and_break_ties() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch("CREATE INDEX idx_tracks_album ON tracks(album_id)")
+            .unwrap();
+        conn.execute_batch(
+            "
+            INSERT INTO libraries (id, name) VALUES ('library-1', 'Home Library');
+            INSERT INTO artists (id, name) VALUES ('artist-1', 'Artist One');
+
+            -- Duplicate album rows sharing the same (title, album_artist) group must
+            -- aggregate into a single row, with the lexicographically-smallest id
+            -- as the representative and MIN(added_at) across the group's rows as
+            -- its sort value (existing behavior, preserved).
+            INSERT INTO albums (id, title, album_artist, artist_id, added_at) VALUES
+                ('album-1a', 'Shared Album', 'Artist One', 'artist-1', '2026-08-20T00:00:00Z'),
+                ('album-1b', 'Shared Album', 'Artist One', 'artist-1', '2026-08-19T00:00:00Z');
+            INSERT INTO tracks (id, library_id, artist_id, album_id, title, file_name, duration, scanned_at) VALUES
+                ('track-1a', 'library-1', 'artist-1', 'album-1a', 'Track A', 'a.flac', 180, '2026-08-20'),
+                ('track-1b', 'library-1', 'artist-1', 'album-1b', 'Track B', 'b.flac', 200, '2026-08-19');
+
+            -- Two groups with an identical sort value exercise the deterministic
+            -- album_artist/title tie-break.
+            INSERT INTO albums (id, title, album_artist, artist_id, added_at) VALUES
+                ('album-2', 'Zeta Album', 'Zed Artist', 'artist-1', '2026-08-21T00:00:00Z'),
+                ('album-3', 'Alpha Album', 'Zed Artist', 'artist-1', '2026-08-21T00:00:00Z');
+            INSERT INTO tracks (id, library_id, artist_id, album_id, title, file_name, duration, scanned_at) VALUES
+                ('track-2', 'library-1', 'artist-1', 'album-2', 'Track Z', 'z.flac', 210, '2026-08-21'),
+                ('track-3', 'library-1', 'artist-1', 'album-3', 'Track Al', 'al.flac', 190, '2026-08-21');
+
+            -- Null album_artist must still group/sort deterministically via COALESCE.
+            INSERT INTO albums (id, title, album_artist, artist_id, added_at) VALUES
+                ('album-4', 'No Artist Album', NULL, 'artist-1', '2026-08-18T00:00:00Z');
+            INSERT INTO tracks (id, library_id, artist_id, album_id, title, file_name, duration, scanned_at) VALUES
+                ('track-4', 'library-1', 'artist-1', 'album-4', 'Track N', 'n.flac', 150, '2026-08-18');
+
+            -- Oldest group, excluded once the limit trims the bounded group stage.
+            INSERT INTO albums (id, title, album_artist, artist_id, added_at) VALUES
+                ('album-5', 'Oldest Album', 'Artist One', 'artist-1', '2026-08-01T00:00:00Z');
+            INSERT INTO tracks (id, library_id, artist_id, album_id, title, file_name, duration, scanned_at) VALUES
+                ('track-5', 'library-1', 'artist-1', 'album-5', 'Track O', 'o.flac', 300, '2026-08-01');
+
+            INSERT INTO album_ratings (album_id, user_id, rating) VALUES
+                ('album-1a', 'user-1', 4.5),
+                ('album-1a', 'user-2', 1.0);
+            ",
+        )
+        .unwrap();
+
+        let rows = list_albums_latest(&conn, "user-1", 4).unwrap();
+
+        assert_eq!(
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            vec![
+                "Alpha Album",
+                "Zeta Album",
+                "Shared Album",
+                "No Artist Album"
+            ],
+            "expected added_at-desc order with album_artist/title tie-break, bounded to the limit"
+        );
+
+        let shared = rows.iter().find(|r| r.title == "Shared Album").unwrap();
+        assert_eq!(shared.id, EntityId::Str("album-1a".to_string()));
+        assert_eq!(shared.track_count, 2);
+        assert_eq!(shared.total_duration, Some(380.0));
+        // Rating is scoped to the requesting user, not just any rating on the album.
+        assert_eq!(shared.rating, Some(4.5));
+
+        assert!(
+            rows.iter().all(|r| r.title != "Oldest Album"),
+            "oldest group must be excluded by the limit"
+        );
+
+        let other_user_rows = list_albums_latest(&conn, "user-2", 4).unwrap();
+        let shared_for_other = other_user_rows
+            .iter()
+            .find(|r| r.title == "Shared Album")
+            .unwrap();
+        assert_eq!(shared_for_other.rating, Some(1.0));
+    }
+
+    #[test]
+    fn list_albums_latest_falls_back_to_track_scanned_at_when_added_at_column_is_absent() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema_without_added_at(&conn);
+        conn.execute_batch("CREATE INDEX idx_tracks_album ON tracks(album_id)")
+            .unwrap();
+        conn.execute_batch(
+            "
+            INSERT INTO libraries (id, name) VALUES ('library-1', 'Home Library');
+            INSERT INTO artists (id, name) VALUES ('artist-1', 'Artist One');
+            INSERT INTO albums (id, title, album_artist, artist_id) VALUES
+                ('album-1', 'Older Album', 'Artist One', 'artist-1'),
+                ('album-2', 'Newer Album', 'Artist One', 'artist-1');
+            INSERT INTO tracks (id, library_id, artist_id, album_id, title, file_name, duration, scanned_at) VALUES
+                ('track-1', 'library-1', 'artist-1', 'album-1', 'Track One', 'one.flac', 200, '2026-08-01'),
+                ('track-2', 'library-1', 'artist-1', 'album-2', 'Track Two', 'two.flac', 210, '2026-08-20');
+            ",
+        )
+        .unwrap();
+
+        let rows = list_albums_latest(&conn, "user-1", 10).unwrap();
+
+        assert_eq!(
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            vec!["Newer Album", "Older Album"]
+        );
+        assert_eq!(rows[0].added_at.as_deref(), Some("2026-08-20"));
+    }
+
+    #[test]
+    fn list_albums_latest_group_stage_never_touches_tracks_when_added_at_present() {
+        // Regression guard for the original bug: finding the latest bounded group
+        // identities must not reference `tracks` at all when `added_at` is present,
+        // so `LIMIT` is applied before any track-level work happens (previously the
+        // whole library's tracks/albums were aggregated first).
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch(
+            "CREATE INDEX idx_tracks_album ON tracks(album_id);
+             CREATE INDEX idx_albums_added_at ON albums(added_at DESC)",
+        )
+        .unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN \
+                 SELECT al.title, COALESCE(al.album_artist,''), MIN(al.added_at) AS sort_val \
+                 FROM albums al \
+                 GROUP BY al.title, COALESCE(al.album_artist,'') \
+                 ORDER BY sort_val DESC, LOWER(COALESCE(al.album_artist,'')), al.title \
+                 LIMIT ?",
+            )
+            .unwrap();
+        let details: Vec<String> = stmt
+            .query_map(rusqlite::params![60], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert!(
+            details.iter().all(|d| !d.to_uppercase().contains("TRACKS")),
+            "expected the bounded group-identity stage to never reference tracks, got: {details:?}"
+        );
+    }
+
+    #[test]
+    fn list_albums_latest_track_aggregation_uses_indexed_album_id_lookup() {
+        // Regression guard: once the bounded group's album ids are known, aggregating
+        // their tracks must go through an indexed `album_id` seek, not a full `tracks`
+        // scan — this is the step that previously touched every track in the library.
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch("CREATE INDEX idx_tracks_album ON tracks(album_id)")
+            .unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN \
+                 SELECT MIN(al.id), al.title, al.album_artist, al.album_artist AS artist, \
+                        MIN(al.year), al.genre, MAX(alr.rating), MIN(al.release_type), \
+                        COUNT(t.id), ROUND(SUM(t.duration),0), MIN(al.added_at) AS added_at, \
+                        MAX(t.scanned_at) AS latest_scanned_at, MIN(al.label) \
+                 FROM albums al JOIN tracks t ON t.album_id = al.id \
+                 LEFT JOIN album_ratings alr ON alr.album_id = al.id AND alr.user_id = ? \
+                 WHERE al.id IN (?, ?, ?) \
+                 GROUP BY al.title, COALESCE(al.album_artist,'') \
+                 ORDER BY MIN(al.added_at) DESC, LOWER(COALESCE(al.album_artist,'')), al.title",
+            )
+            .unwrap();
+        let details: Vec<String> = stmt
+            .query_map(
+                rusqlite::params!["user-1", "album-1", "album-2", "album-3"],
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert!(
+            details
+                .iter()
+                .any(|d| d.contains("SEARCH t") && d.contains("idx_tracks_album")),
+            "expected tracks to be joined via idx_tracks_album, not a full scan, got: {details:?}"
+        );
+        assert!(
+            details.iter().all(|d| !d.contains("SCAN t ")),
+            "expected no full scan of tracks, got: {details:?}"
         );
     }
 
