@@ -2,6 +2,7 @@
 
 pub mod artwork;
 pub mod jobs;
+pub mod maintenance;
 pub mod music;
 pub mod playback;
 pub mod playlists;
@@ -10,6 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     collections::HashMap,
     fs, io,
+    io::Write as _,
     path::{Path, PathBuf},
 };
 use thiserror::Error;
@@ -591,8 +593,64 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
     seed_default_settings(connection)?;
     seed_admin_user(connection)?;
     run_tracked_migrations(connection)?;
+    ensure_incremental_autovacuum(connection)?;
     refresh_denormalized_counts(connection)?;
     refresh_stats_cache(connection)?;
+    Ok(())
+}
+
+/// Settings/schema_migrations id marking the one-time conversion to `auto_vacuum = INCREMENTAL`.
+const INCREMENTAL_AUTOVACUUM_MIGRATION_ID: &str = "2026-09-01-enable-incremental-autovacuum";
+
+/// One-time conversion to `auto_vacuum = INCREMENTAL` so weekly `PRAGMA incremental_vacuum`
+/// sweeps (see `maintenance::run_incremental_vacuum`) can reclaim freed pages without a full
+/// `VACUUM`. Tracked via `schema_migrations` like the migrations in [`run_tracked_migrations`],
+/// but run separately here because `VACUUM` cannot execute inside an explicit transaction and
+/// every migration in that list is wrapped in `BEGIN IMMEDIATE`/`COMMIT` by
+/// [`apply_tracked_migration`]. Blocks startup — deliberately, since it only ever runs once per
+/// database and is logged to both the server log and the terminal as an explicit exception to
+/// the normal quiet-startup convention.
+fn ensure_incremental_autovacuum(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let already_applied = connection
+        .query_row(
+            "SELECT id FROM schema_migrations WHERE id = ?1",
+            [INCREMENTAL_AUTOVACUUM_MIGRATION_ID],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some();
+    if already_applied {
+        return Ok(());
+    }
+
+    let page_count: i64 = connection.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+    let page_size: i64 = connection.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+    let approx_mb = (page_count * page_size) as f64 / 1_000_000.0;
+    // tracing's server-log layer mirrors INFO+ to both `boogiebox-server.log` and stdout (see
+    // `logging::init`'s `CappedFileWriter`), so this single call satisfies "log it and show it
+    // on the terminal" without a separate `println!`. Tools that open a DB without initializing
+    // a tracing subscriber (e.g. `probe-init`) simply won't see this line, which is fine — this
+    // migration only runs once per database, on the real server's startup path.
+    //
+    // The `VACUUM` below can run long on a large existing database, and this is the very first
+    // line of output a fresh startup produces — nothing has logged anything to stdout yet at
+    // this point. Force an explicit OS-level flush right after logging it: without this, the
+    // notice can sit in a buffer for the whole VACUUM and the terminal reads as blank/hung until
+    // it (and whatever logs next) all lands at once when something else finally triggers a flush.
+    tracing::info!(
+        "Optimizing database (one-time, may take a while)... rebuilding ~{approx_mb:.0} MB to enable incremental auto-vacuum"
+    );
+    let _ = std::io::stdout().flush();
+
+    connection.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+    connection.execute_batch("VACUUM")?;
+    connection.execute(
+        "INSERT INTO schema_migrations(id, applied_at) VALUES(?1, datetime('now'))",
+        [INCREMENTAL_AUTOVACUUM_MIGRATION_ID],
+    )?;
+
+    tracing::info!("Database optimization complete");
+    let _ = std::io::stdout().flush();
     Ok(())
 }
 
@@ -2859,6 +2917,80 @@ mod tests {
             query_single_i64(
                 &connection,
                 "SELECT COUNT(*) FROM schema_migrations WHERE id = '2026-05-25-remove-video-support'"
+            ),
+            1
+        );
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                &format!(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE id = '{INCREMENTAL_AUTOVACUUM_MIGRATION_ID}'"
+                )
+            ),
+            1
+        );
+        assert_eq!(query_single_i64(&connection, "PRAGMA auto_vacuum"), 2);
+    }
+
+    #[test]
+    fn ensure_incremental_autovacuum_converts_an_existing_none_mode_database() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_migrations (
+                  id TEXT PRIMARY KEY,
+                  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE some_table (id INTEGER PRIMARY KEY, value TEXT);
+                INSERT INTO some_table(value) VALUES ('a'), ('b'), ('c');
+                "#,
+            )
+            .expect("seed pre-existing schema");
+        assert_eq!(query_single_i64(&connection, "PRAGMA auto_vacuum"), 0);
+
+        ensure_incremental_autovacuum(&connection).expect("migrate");
+
+        assert_eq!(query_single_i64(&connection, "PRAGMA auto_vacuum"), 2);
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                &format!(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE id = '{INCREMENTAL_AUTOVACUUM_MIGRATION_ID}'"
+                )
+            ),
+            1
+        );
+        // Data survives the VACUUM rebuild.
+        assert_eq!(
+            query_single_i64(&connection, "SELECT COUNT(*) FROM some_table"),
+            3
+        );
+    }
+
+    #[test]
+    fn ensure_incremental_autovacuum_is_idempotent() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_migrations (
+                  id TEXT PRIMARY KEY,
+                  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                "#,
+            )
+            .expect("seed pre-existing schema");
+
+        ensure_incremental_autovacuum(&connection).expect("first run");
+        ensure_incremental_autovacuum(&connection).expect("second run is a no-op");
+
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                &format!(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE id = '{INCREMENTAL_AUTOVACUUM_MIGRATION_ID}'"
+                )
             ),
             1
         );

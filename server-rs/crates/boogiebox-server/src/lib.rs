@@ -32,6 +32,7 @@ pub mod artwork_cache;
 pub mod auth;
 pub mod bpm_analysis;
 pub mod cors;
+pub mod db_maintenance;
 pub mod deep_analysis;
 pub mod dlna;
 pub mod event_log;
@@ -322,6 +323,7 @@ pub async fn run_from_env() -> Result<(), ServerError> {
         post_scan::start_post_scan_scheduler(ps_state.clone());
         waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
         bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
+        db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
         deep_analysis::start_deep_analysis_worker(ps_state.clone());
         mix_worker::start_mix_worker(ps_state);
         let dlna_mgr = state.dlna_manager.clone();
@@ -720,6 +722,7 @@ async fn setup_handler(
                 post_scan::start_post_scan_scheduler(ps_state.clone());
                 waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
                 bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
+                db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
@@ -814,6 +817,7 @@ async fn switch_db_handler(
                 post_scan::start_post_scan_scheduler(ps_state.clone());
                 waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
                 bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
+                db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
