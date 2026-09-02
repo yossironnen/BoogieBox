@@ -1681,7 +1681,11 @@ mod route_tests {
         assert_eq!(range_status, StatusCode::PARTIAL_CONTENT);
         assert_eq!(range_body.len(), 100);
         assert_eq!(
-            range_headers.get("content-range").unwrap().to_str().unwrap(),
+            range_headers
+                .get("content-range")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "bytes 0-99/1000"
         );
 
