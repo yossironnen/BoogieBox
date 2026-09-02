@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api';
-import type { Playlist, PlaylistTrack, Track, CrossfadeMode, BoogieMixDeepAnalysisStatus, BoogieMixJob, ClientEntityId, PlaylistDeepAnalysisProgress } from '../types';
+import type { Playlist, PlaylistTrack, Track, CrossfadeMode, BoogieMixDeepAnalysisStatus, BoogieMixJob, BoogieMixOutput, ClientEntityId, PlaylistDeepAnalysisProgress } from '../types';
 import type { EntityId } from '../entityId';
 import { parseServerDate } from '../utils';
 import { phase2 } from '../uiPhase2';
@@ -83,6 +83,39 @@ const BookmarkIcon   = () => <svg width="12" height="12" viewBox="0 0 24 24" fil
 const MixIcon        = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 3h4v4"/><path d="M3 21l18-18"/><path d="M21 17v4h-4"/><path d="M3 3l6 6"/><path d="M15 15l6 6"/></svg>;
 
 // ─── New / Edit Playlist Dialog ───────────────────────────────────────────────
+
+/** Synthesizes a `Track`-shaped object for a finished BoogieMix output so it
+ * can be played through the normal Player queue/now-playing flow instead of
+ * only being downloadable. The `boogiemix:`-prefixed id keeps it from
+ * colliding with real library track ids anywhere `track.id` is used as a DB
+ * lookup key; `stream_url_override` is what `getPreferredTrackStreamUrl`
+ * picks up in Player.tsx. Title format must stay in sync with the ID3 title
+ * `render_mix` stamps into the file itself (mix_worker.rs). */
+function mixOutputToTrack(output: BoogieMixOutput, playlistName: string): Track {
+  return {
+    id: `boogiemix:${output.id}`,
+    file_name: output.file_name,
+    file_size: output.file_size_bytes ?? null,
+    format: output.format,
+    duration: output.duration_sec,
+    bitrate: null,
+    sample_rate: null,
+    channels: null,
+    title: `${playlistName} — BoogieMix`,
+    artist: 'BoogieBox BoogieMix',
+    album: playlistName,
+    library_name: null,
+    track_number: null,
+    disc_number: null,
+    year: null,
+    genre: null,
+    composer: null,
+    comment: null,
+    bpm: null,
+    scanned_at: output.created_at,
+    stream_url_override: api.boogiemix.playUrl(output.id),
+  };
+}
 
 function PlaylistDialog({
   initial, onSave, onCancel, error,
@@ -858,6 +891,15 @@ function PlaylistDetail({
               {mixOutputs[0] && (
                 <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text)' }}>
                   Latest mix: {mixOutputs[0].file_name}
+                  <button
+                    style={{ ...PD.btnSecondary, marginLeft: 8, padding: '2px 8px', fontSize: 11 }}
+                    onClick={() => {
+                      const mixTrack = mixOutputToTrack(mixOutputs[0], playlist.name);
+                      playTrack(mixTrack, [mixTrack]);
+                    }}
+                  >
+                    Play
+                  </button>
                   <a href={api.boogiemix ? api.boogiemix.outputDownloadUrl(mixOutputs[0].id) : '#'} style={{ marginLeft: 8, color: 'var(--accent)', textDecoration: 'none' }}>
                     Download
                   </a>

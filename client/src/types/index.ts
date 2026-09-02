@@ -63,6 +63,11 @@ export interface Track {
   play_count?: number | null;
   rating?: number | null;
   has_deep_analysis?: boolean;
+  /** When set, `getPreferredTrackStreamUrl` uses this instead of deriving a
+   * library-track stream URL from `id` — lets a non-library playable (e.g. a
+   * rendered BoogieMix output) be queued/played through the normal Player
+   * flow. See `mixOutputToTrack` in PlaylistsView.tsx. */
+  stream_url_override?: string;
 }
 
 /** Artist is part of this module's public API. */

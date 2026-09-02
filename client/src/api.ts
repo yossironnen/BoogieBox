@@ -562,6 +562,8 @@ export const api = {
       get<BoogieMixOutput[]>(`/playlists/${playlistId}/boogiemix/outputs`),
     outputDownloadUrl: (outputId: ApiEntityId) =>
       `${BASE}/api/boogiemix/outputs/${outputId}/file`,
+    playUrl: (outputId: ApiEntityId) =>
+      `${BASE}/api/boogiemix/outputs/${outputId}/play`,
   },
   dlna: {
     status:  () => get<{ running: boolean; port: number | null; friendlyName: string | null }>('/dlna/status'),

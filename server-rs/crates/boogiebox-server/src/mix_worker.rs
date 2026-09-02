@@ -161,6 +161,19 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
     let user_id = coerce_entity_id(&user_id_str);
     let crossfade = crossfade_sec.clamp(4, 60) as f64;
 
+    // Playlist name for the rendered output's ID3 tags (title/album) — see
+    // render_mix's -metadata args. Falls back to a generic label if somehow
+    // missing (e.g. playlist deleted mid-render).
+    let playlist_name = {
+        let conn = lock_db(&state.db)?;
+        conn.query_row(
+            "SELECT name FROM playlists WHERE id=?1",
+            rusqlite::params![playlist_id],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "Playlist".to_string())
+    };
+
     // ── Load tracks ───────────────────────────────────────────────────────────
     let tracks = {
         let conn = lock_db(&state.db)?;
@@ -519,6 +532,8 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
         }
     }
 
+    let rendered_date = unix_millis_to_ymd(ts as u64);
+
     let file_size = render_mix(
         state,
         job_id,
@@ -528,6 +543,8 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
         &deep_features,
         &plan,
         &output_path,
+        &playlist_name,
+        &rendered_date,
     )
     .await
     .map_err(|e| format!("Render failed: {e}"))?;
@@ -3303,6 +3320,24 @@ fn build_filter_complex(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Formats a Unix-epoch millisecond timestamp as `YYYY-MM-DD` (UTC) without
+/// pulling in a date/time crate — Howard Hinnant's civil_from_days algorithm.
+fn unix_millis_to_ymd(millis: u64) -> String {
+    let days = (millis / 86_400_000) as i64;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn render_mix(
     state: &PostScanState,
     job_id: &EntityId,
@@ -3312,6 +3347,8 @@ async fn render_mix(
     deep_features: &HashMap<String, DeepTrackFeatures>,
     plan: &MixPlan,
     out_path: &Path,
+    playlist_name: &str,
+    rendered_date: &str,
 ) -> Result<u64, String> {
     let n = tracks.len();
     let transitions = &plan.transitions;
@@ -3395,11 +3432,25 @@ async fn render_mix(
     for arg in &input_args {
         cmd.arg(arg);
     }
+    let mix_title = format!("{playlist_name} — BoogieMix");
+    let title_meta = format!("title={mix_title}");
+    let album_meta = format!("album={playlist_name}");
+    let date_meta = format!("date={rendered_date}");
     cmd.args([
         "-filter_complex",
-        &filter_complex,
+        filter_complex.as_str(),
         "-map",
         "[mixout]",
+        "-map_metadata",
+        "-1",
+        "-metadata",
+        title_meta.as_str(),
+        "-metadata",
+        album_meta.as_str(),
+        "-metadata",
+        "artist=BoogieBox BoogieMix",
+        "-metadata",
+        date_meta.as_str(),
         "-c:a",
         "libmp3lame",
         "-b:a",
@@ -3516,6 +3567,15 @@ fn get_mix_output_dir_fn(db: &DbPool, db_folder: Option<&PathBuf>) -> PathBuf {
 mod tests {
     use super::*;
     use boogiebox_db::boogiemix::{KeyNeural, StemSummary, StemWindow, TrackSection};
+
+    #[test]
+    fn unix_millis_to_ymd_formats_known_dates() {
+        assert_eq!(unix_millis_to_ymd(0), "1970-01-01");
+        // 2026-09-02T00:00:00Z
+        assert_eq!(unix_millis_to_ymd(1_788_307_200_000), "2026-09-02");
+        // 2000-02-29T12:00:00Z (leap day)
+        assert_eq!(unix_millis_to_ymd(951_825_600_000), "2000-02-29");
+    }
 
     fn analysis(id: &str, bpm: f64) -> TrackMixAnalysis {
         TrackMixAnalysis {

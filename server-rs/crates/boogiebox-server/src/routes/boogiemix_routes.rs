@@ -30,7 +30,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::{
     auth::{AdminUser, AuthenticatedUser},
-    ffmpeg::resolve_ffmpeg,
+    ffmpeg::{parse_byte_range, resolve_ffmpeg},
     DbPool, ErrorResponse, OkResponse, SharedState,
 };
 
@@ -118,6 +118,10 @@ pub fn boogiemix_router(state: SharedState) -> Router {
         .route(
             "/api/boogiemix/outputs/{outputId}/file",
             get(download_output_handler),
+        )
+        .route(
+            "/api/boogiemix/outputs/{outputId}/play",
+            get(play_output_handler),
         )
         .route(
             "/api/boogiemix/deep-analysis/status",
@@ -433,58 +437,72 @@ async fn list_outputs_handler(
     result
 }
 
-async fn download_output_handler(
-    State(state): State<SharedState>,
-    user: AuthenticatedUser,
-    Path(output_id_raw): Path<String>,
-) -> Response {
-    let (db, db_folder) = {
+/// Looks up a mix output's file path + name for `user_id`, and verifies the
+/// resolved path lives inside the configured mix-output folder. Shared by the
+/// download and inline-play handlers so both enforce the same ownership and
+/// containment checks.
+async fn resolve_output_for_serving(
+    state: &SharedState,
+    db: &DbPool,
+    output_id_raw: &str,
+    user_id_raw: &str,
+) -> Result<(PathBuf, String), Response> {
+    let db_folder = {
         let s = state.read().unwrap_or_else(|p| p.into_inner());
-        (s.db.clone(), s.db_folder.clone())
-    };
-    let Some(db) = db else {
-        return db_not_configured();
+        s.db_folder.clone()
     };
 
-    let output_id = coerce_entity_id(&output_id_raw);
-    let user_id = coerce_entity_id(&user.id);
+    let output_id = coerce_entity_id(output_id_raw);
+    let user_id = coerce_entity_id(user_id_raw);
 
-    let row = {
-        let result = match db.lock() {
-            Ok(conn) => get_mix_output_file(&conn, &output_id, &user_id),
-            Err(_) => return internal_error("DB lock failed"),
-        };
-        result
+    let row = match db.lock() {
+        Ok(conn) => get_mix_output_file(&conn, &output_id, &user_id),
+        Err(_) => return Err(internal_error("DB lock failed")),
     };
 
     let (file_path, file_name) = match row {
         Ok(Some(r)) => r,
-        Ok(None) => return not_found("Output not found"),
-        Err(e) => return internal_error(&e.to_string()),
+        Ok(None) => return Err(not_found("Output not found")),
+        Err(e) => return Err(internal_error(&e.to_string())),
     };
 
     // Security: output must be inside the known mix-output folder
-    let configured = {
-        let c = match db.lock() {
-            Ok(conn) => boogiebox_db::boogiemix::get_mix_output_dir_from_db(&conn),
-            Err(_) => None,
-        };
-        c
+    let configured = match db.lock() {
+        Ok(conn) => boogiebox_db::boogiemix::get_mix_output_dir_from_db(&conn),
+        Err(_) => None,
     };
     let out_dir = resolve_output_dir(configured, db_folder.as_ref());
     let canonical_out = std::fs::canonicalize(&out_dir).unwrap_or(out_dir);
     let canonical_file =
-        std::fs::canonicalize(&file_path).unwrap_or_else(|_| std::path::PathBuf::from(&file_path));
+        std::fs::canonicalize(&file_path).unwrap_or_else(|_| PathBuf::from(&file_path));
     if !canonical_file.starts_with(&canonical_out) {
-        return (
+        return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: "Output file is outside the BoogieMix output folder".into(),
                 setup_required: None,
             }),
         )
-            .into_response();
+            .into_response());
     }
+
+    Ok((PathBuf::from(file_path), file_name))
+}
+
+async fn download_output_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(output_id_raw): Path<String>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+
+    let (file_path, file_name) =
+        match resolve_output_for_serving(&state, &db, &output_id_raw, &user.id).await {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
 
     let file = match File::open(&file_path).await {
         Ok(f) => f,
@@ -504,6 +522,85 @@ async fn download_output_handler(
         )
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Streams a finished BoogieMix render inline (no forced download), with
+/// `Range` support so the client's `<audio>` element can seek/scrub exactly
+/// as it does for library tracks (`playback_routes.rs::stream_track_handler`).
+async fn play_output_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(output_id_raw): Path<String>,
+    req_headers: axum::http::HeaderMap,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+
+    let (file_path, _file_name) =
+        match resolve_output_for_serving(&state, &db, &output_id_raw, &user.id).await {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+
+    let meta = match tokio::fs::metadata(&file_path).await {
+        Ok(m) => m,
+        Err(_) => return not_found("Output file missing on disk"),
+    };
+    let file_size = meta.len();
+
+    let range_header = req_headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    if let Some(rh) = range_header {
+        return match parse_byte_range(&rh, file_size) {
+            None => Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{file_size}"))
+                .header(header::ACCEPT_RANGES, "bytes")
+                .body(Body::empty())
+                .unwrap_or_else(|_| internal_error("range build failed")),
+            Some((start, end)) => {
+                let mut file = match File::open(&file_path).await {
+                    Ok(f) => f,
+                    Err(_) => return internal_error("Failed to open output file"),
+                };
+                if tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(start))
+                    .await
+                    .is_err()
+                {
+                    return internal_error("Failed to seek output file");
+                }
+                let len = end - start + 1;
+                let reader = tokio::io::AsyncReadExt::take(file, len);
+                Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(
+                        header::CONTENT_RANGE,
+                        format!("bytes {start}-{end}/{file_size}"),
+                    )
+                    .header(header::ACCEPT_RANGES, "bytes")
+                    .header(header::CONTENT_LENGTH, len.to_string())
+                    .header(header::CONTENT_TYPE, "audio/mpeg")
+                    .body(Body::from_stream(ReaderStream::new(reader)))
+                    .unwrap_or_else(|_| internal_error("range build failed"))
+            }
+        };
+    }
+
+    let file = match File::open(&file_path).await {
+        Ok(f) => f,
+        Err(_) => return not_found("Output file missing on disk"),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/mpeg")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, file_size.to_string())
+        .body(Body::from_stream(ReaderStream::new(file)))
+        .unwrap_or_else(|_| internal_error("response build failed"))
 }
 
 async fn deep_analysis_status_handler(
@@ -1500,6 +1597,95 @@ mod route_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn play_output_404s_for_unknown_output_id() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-play");
+        let cookie = seed_user_session(&pool, "u1");
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri("/api/boogiemix/outputs/does-not-exist/play")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn play_output_serves_inline_and_supports_range() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-play-range");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        // Write a fake mix output file under a temp out-dir and register a DB row.
+        let out_dir = std::env::temp_dir().join(format!("boogiemix-play-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let file_path = out_dir.join("mix.mp3");
+        std::fs::write(&file_path, vec![0u8; 1000]).unwrap();
+
+        let output_id = Uuid::now_v7().to_string();
+        let job_id = Uuid::now_v7().to_string();
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mix_jobs(id, playlist_id, user_id, status, default_crossfade_sec, mix_style, mix_quality) \
+                 VALUES (?, ?, 'u1', 'done', 8, 'club_blend', 'standard')",
+                params![job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, duration_sec, file_size_bytes) \
+                 VALUES (?, ?, ?, 'u1', ?, 'mix.mp3', 60.0, 1000)",
+                params![
+                    output_id,
+                    job_id,
+                    playlist_id,
+                    file_path.to_string_lossy().to_string()
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES ('boogiemixOutputFolder', ?)",
+                params![out_dir.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        }
+
+        let (status, headers, body) = crate::test_support::send_full(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/play"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.get("content-disposition").is_none());
+        assert_eq!(body.len(), 1000);
+
+        let (range_status, range_headers, range_body) = crate::test_support::send_full(
+            app,
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/play"))
+                .header("cookie", cookie)
+                .header("range", "bytes=0-99")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(range_status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(range_body.len(), 100);
+        assert_eq!(
+            range_headers.get("content-range").unwrap().to_str().unwrap(),
+            "bytes 0-99/1000"
+        );
+
+        std::fs::remove_dir_all(&out_dir).ok();
     }
 
     #[tokio::test]

@@ -159,7 +159,18 @@ export function buildPlaybackDebugInfo(track: Track | null, url: string): {
 }
 
 /** Get Preferred Track Stream Url is part of this module's public API. */
+/** Synthetic tracks made from a rendered BoogieMix output (see
+ * `mixOutputToTrack` in PlaylistsView.tsx) use a `boogiemix:`-prefixed id
+ * with no matching `tracks` row — per-track fetches (waveform, sonic
+ * fingerprint, lyrics, EQ profile) must skip these rather than 404. */
+export function isBoogieMixSyntheticTrackId(id: string | number | null | undefined): boolean {
+  return typeof id === 'string' && id.startsWith('boogiemix:');
+}
+
 export function getPreferredTrackStreamUrl(track: Track): string {
+  if (track.stream_url_override) {
+    return track.stream_url_override;
+  }
   const url = api.trackStreamUrl(track.id);
   const ext = getTrackExtension(track);
   const fallbackUrl = getTranscodeFallbackUrl(url);
@@ -1820,6 +1831,7 @@ export default function Player({
 
   useEffect(() => {
     if (!currentTrack?.id) return;
+    if (isBoogieMixSyntheticTrackId(currentTrack.id)) return;
     if (!autoEqEnabled) return;
     if (typeof (api as any).trackEqProfile !== 'function') return;
     let cancelled = false;
@@ -2201,7 +2213,7 @@ export default function Player({
   useEffect(() => {
     stopWaveformPoll();
     setWaveform(null);
-    if (!currentTrack) {
+    if (!currentTrack || isBoogieMixSyntheticTrackId(currentTrack.id)) {
       setWaveformStatus('missing');
       return;
     }
@@ -2266,7 +2278,7 @@ export default function Player({
     setSonicFingerprint(null);
     setSonicFingerprintChecked(false);
     setShowSonicFingerprint(false);
-    if (!currentTrack) return;
+    if (!currentTrack || isBoogieMixSyntheticTrackId(currentTrack.id)) return;
     let cancelled = false;
     api.trackSonicFingerprint(currentTrack.id).then(fp => {
       if (!cancelled) { setSonicFingerprint(fp); setSonicFingerprintChecked(true); }
@@ -2588,6 +2600,7 @@ export default function Player({
 
   useEffect(() => {
     if (!lyricsOpen || !currentTrack?.id) return;
+    if (isBoogieMixSyntheticTrackId(currentTrack.id)) return;
     if (lyricsTrackId === currentTrack.id && (lyricsText || lyricsError)) return;
     let cancelled = false;
     setLyricsLoading(true);

@@ -8,6 +8,7 @@ import {
   getTranscodeWarning,
   getTranscodeFallbackUrl,
   getPreferredTrackStreamUrl,
+  isBoogieMixSyntheticTrackId,
   buildPlaybackDebugInfo,
   beginRoundedRect,
   getSyntheticVuLevel,
@@ -159,6 +160,23 @@ describe('getPreferredTrackStreamUrl', () => {
       file_name: 'song.mp3',
     } as any)).toBe('/api/tracks/43/stream?noTranscode=1');
     setStreamDirect(false);
+  });
+
+  it('prefers stream_url_override when present (BoogieMix output synthetic track)', () => {
+    expect(getPreferredTrackStreamUrl({
+      id: 'boogiemix:output-1',
+      file_name: 'mix.mp3',
+      stream_url_override: '/api/boogiemix/outputs/output-1/play',
+    } as any)).toBe('/api/boogiemix/outputs/output-1/play');
+  });
+});
+
+describe('isBoogieMixSyntheticTrackId', () => {
+  it('flags boogiemix:-prefixed ids and passes through real track ids', () => {
+    expect(isBoogieMixSyntheticTrackId('boogiemix:output-1')).toBe(true);
+    expect(isBoogieMixSyntheticTrackId('42')).toBe(false);
+    expect(isBoogieMixSyntheticTrackId(undefined)).toBe(false);
+    expect(isBoogieMixSyntheticTrackId(null)).toBe(false);
   });
 });
 

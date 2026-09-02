@@ -134,6 +134,21 @@ pub async fn send(app: Router, req: Request<Body>) -> (StatusCode, Vec<u8>) {
     (status, body.to_vec())
 }
 
+/// Like `send`, but also returns the response headers — for tests that need to
+/// assert on `Content-Range`/`Content-Disposition`/etc. rather than just body+status.
+pub async fn send_full(
+    app: Router,
+    req: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let resp: Response<Body> = app.oneshot(req).await.expect("router did not respond");
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+    (status, headers, body.to_vec())
+}
+
 /// Parses a `send()` body as JSON, panicking with the raw body text on failure (much more
 /// useful for debugging a failing assertion than serde's default error).
 pub fn json_body(body: &[u8]) -> serde_json::Value {
