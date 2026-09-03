@@ -236,6 +236,17 @@ select option { background-color: var(--surface); color: var(--text); }
   transform-origin: center;
 }
 
+/* Inline text link used for compact "go to album / go to artist" affordances
+   (e.g. the playlist track list) — underline only appears on hover so it
+   doesn't compete with the row's own hover highlight. */
+.inline-text-link {
+  text-decoration: none;
+}
+.inline-text-link:hover,
+.inline-text-link:focus-visible {
+  text-decoration: underline;
+}
+
 @media (max-width: 1060px) {
   .boogie-metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

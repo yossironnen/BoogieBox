@@ -12,8 +12,8 @@ use boogiebox_db::{
     boogiemix::{
         cancel_mix_job, clear_deep_analysis_cache, count_playlist_deep_analysis_ready,
         enqueue_mix_job, get_deep_analysis_cache_status, get_deep_analysis_queue_status,
-        get_mix_job, get_mix_job_logs, get_mix_output_file, get_mix_transitions,
-        get_playlist_deep_analysis_progress, get_setting, list_mix_outputs,
+        get_latest_mix_job_for_playlist, get_mix_job, get_mix_job_logs, get_mix_output_file,
+        get_mix_transitions, get_playlist_deep_analysis_progress, get_setting, list_mix_outputs,
         queue_library_deep_analysis, queue_playlist_deep_analysis, DeepAnalysisCacheStatus,
         DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow, MixTransitionRow,
     },
@@ -114,6 +114,10 @@ pub fn boogiemix_router(state: SharedState) -> Router {
         .route(
             "/api/playlists/{id}/boogiemix/outputs",
             get(list_outputs_handler),
+        )
+        .route(
+            "/api/playlists/{id}/boogiemix/latest-job",
+            get(latest_job_for_playlist_handler),
         )
         .route(
             "/api/boogiemix/outputs/{outputId}/file",
@@ -317,6 +321,44 @@ async fn create_handler(
     result
 }
 
+/// Builds the full job response (transitions, logs, plan summary, deep-analysis
+/// counts) shared by the by-id and latest-for-playlist lookups.
+fn full_job_response(conn: &rusqlite::Connection, job: MixJobRow) -> Response {
+    let deep_counts = count_playlist_deep_analysis_ready(conn, &job.playlist_id).unwrap_or((0, 0));
+    let transitions = get_mix_transitions(conn, &job.id).unwrap_or_default();
+    let logs = get_mix_job_logs(conn, &job.id).unwrap_or_default();
+    let plan_summary: Option<serde_json::Value> = conn
+        .query_row(
+            "SELECT normalized_plan FROM boogiemix_plans \
+             WHERE playlist_id=?1 ORDER BY id DESC LIMIT 1",
+            rusqlite::params![job.playlist_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|raw| {
+            let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            let plan = &parsed["plan"];
+            Some(serde_json::json!({
+                "style": plan["style"],
+                "energyCurvePhases": plan.get("energyCurvePhases").unwrap_or(&plan["energy_curve_phases"]),
+                "orderedTrackIds": plan.get("orderedTrackIds").unwrap_or(&plan["ordered_track_ids"]),
+                "anthemTrackId": plan.get("anthemTrackId").unwrap_or(&plan["anthem_track_id"]),
+            }))
+        });
+
+    (
+        StatusCode::OK,
+        Json(job_response(
+            job,
+            transitions,
+            logs,
+            plan_summary,
+            deep_counts,
+        )),
+    )
+        .into_response()
+}
+
 async fn get_job_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
@@ -330,43 +372,34 @@ async fn get_job_handler(
 
     let result = match db.lock() {
         Ok(conn) => match get_mix_job(&conn, &job_id, &user_id) {
-            Ok(Some(job)) => {
-                let deep_counts =
-                    count_playlist_deep_analysis_ready(&conn, &job.playlist_id).unwrap_or((0, 0));
-                let transitions = get_mix_transitions(&conn, &job_id).unwrap_or_default();
-                let logs = get_mix_job_logs(&conn, &job_id).unwrap_or_default();
-                let plan_summary: Option<serde_json::Value> = conn
-                    .query_row(
-                        "SELECT normalized_plan FROM boogiemix_plans \
-                         WHERE playlist_id=?1 ORDER BY id DESC LIMIT 1",
-                        rusqlite::params![job.playlist_id],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .ok()
-                    .and_then(|raw| {
-                        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-                        let plan = &parsed["plan"];
-                        Some(serde_json::json!({
-                            "style": plan["style"],
-                            "energyCurvePhases": plan.get("energyCurvePhases").unwrap_or(&plan["energy_curve_phases"]),
-                            "orderedTrackIds": plan.get("orderedTrackIds").unwrap_or(&plan["ordered_track_ids"]),
-                            "anthemTrackId": plan.get("anthemTrackId").unwrap_or(&plan["anthem_track_id"]),
-                        }))
-                    });
-
-                (
-                    StatusCode::OK,
-                    Json(job_response(
-                        job,
-                        transitions,
-                        logs,
-                        plan_summary,
-                        deep_counts,
-                    )),
-                )
-                    .into_response()
-            }
+            Ok(Some(job)) => full_job_response(&conn, job),
             Ok(None) => not_found("Job not found"),
+            Err(e) => internal_error(&e.to_string()),
+        },
+        Err(_) => internal_error("DB lock failed"),
+    };
+    result
+}
+
+/// Returns the most recently created/updated BoogieMix job for a playlist, if
+/// any — lets the client panel reattach to an in-progress (or just-finished)
+/// job after a remount (switching playlists, or leaving and returning to the
+/// page) without the client having to remember the job id itself.
+async fn latest_job_for_playlist_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(playlist_id_raw): Path<String>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let playlist_id = coerce_entity_id(&playlist_id_raw);
+    let user_id = coerce_entity_id(&user.id);
+
+    let result = match db.lock() {
+        Ok(conn) => match get_latest_mix_job_for_playlist(&conn, &playlist_id, &user_id) {
+            Ok(Some(job)) => full_job_response(&conn, job),
+            Ok(None) => (StatusCode::OK, Json(serde_json::json!(null))).into_response(),
             Err(e) => internal_error(&e.to_string()),
         },
         Err(_) => internal_error("DB lock failed"),
@@ -1581,6 +1614,62 @@ mod route_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(json_body(&body).as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn latest_job_for_playlist_returns_null_then_the_most_recent_job() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-latest-job");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        // No jobs yet: 200 with a null body, not a 404 — an empty playlist
+        // history isn't an error the client's reattach-on-mount check needs to catch.
+        let (empty_status, empty_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/playlists/{playlist_id}/boogiemix/latest-job"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(empty_status, StatusCode::OK);
+        assert!(json_body(&empty_body).is_null());
+
+        let create_job = || {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            let playlist_id = playlist_id.clone();
+            async move {
+                let (_, body) = send(
+                    app,
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/playlists/{playlist_id}/boogiemix/jobs"))
+                        .header("cookie", cookie)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{}"#))
+                        .unwrap(),
+                )
+                .await;
+                json_body(&body)["jobId"].as_str().unwrap().to_owned()
+            }
+        };
+        let _first_job_id = create_job().await;
+        let second_job_id = create_job().await;
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/playlists/{playlist_id}/boogiemix/latest-job"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["id"], second_job_id);
+        assert_eq!(json_body(&body)["status"], "pending");
     }
 
     #[tokio::test]

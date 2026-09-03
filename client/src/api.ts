@@ -542,6 +542,8 @@ export const api = {
       }),
     getJob: (jobId: ApiEntityId) =>
       get<BoogieMixJob>(`/boogiemix/jobs/${jobId}`),
+    latestJobForPlaylist: (playlistId: EntityId) =>
+      get<BoogieMixJob | null>(`/playlists/${playlistId}/boogiemix/latest-job`),
     cancelJob: (jobId: ApiEntityId) =>
       post<{ ok: boolean }>(`/boogiemix/jobs/${jobId}/cancel`),
     deepAnalysisStatus: () =>

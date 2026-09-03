@@ -406,6 +406,11 @@ export interface PlaylistTrack extends Track {
   position: number;
   playlist_track_id: ClientEntityId | null;
   progress_seconds?: number;
+  /** The album's own owning artist — distinct from `artist` (this track's
+   * performer) for a compilation, where the album is "Various Artists" but
+   * each track has its own real artist. */
+  album_artist_id?: ClientEntityId | null;
+  album_artist_name?: string | null;
 }
 
 /** Boogie Mix Transition is part of this module's public API. */

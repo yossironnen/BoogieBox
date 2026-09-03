@@ -1727,6 +1727,8 @@ export default function App() {
               playTrack={playTrack}
               addToQueue={addToQueue}
               initialPlaylistId={openPlaylistRequest?.playlistId ?? null}
+              onOpenArtist={artist => { setBrowseOpenArtistRequest({ artist, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
+              onOpenAlbum={album   => { setBrowseOpenAlbumRequest({ album, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
             />
           )}
           {view === 'settings'  && (

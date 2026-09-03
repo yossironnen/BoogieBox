@@ -10,6 +10,7 @@ import PlaylistsView, {
   createPlaylistFallbackTiles,
   fmtDur,
   fmtTrackDur,
+  mixOutputToTrack,
   normalizePlaylistName,
 } from '../components/PlaylistsView';
 
@@ -29,6 +30,10 @@ const { apiMock } = vi.hoisted(() => ({
       overrides: vi.fn(),
       upsertOverride: vi.fn(),
       removeOverride: vi.fn(),
+    },
+    boogiemix: {
+      listOutputs: vi.fn(),
+      playUrl: vi.fn((outputId: string) => `/api/boogiemix/outputs/${outputId}/play`),
     },
   },
 }));
@@ -58,6 +63,7 @@ describe('PlaylistsView', () => {
     apiMock.playlists.remove.mockResolvedValue({ ok: true });
     apiMock.playlists.removeTrack.mockResolvedValue({ ok: true });
     apiMock.crossfade.config.mockResolvedValue({ mode: 'off', duration: 2, source: 'global' });
+    apiMock.boogiemix.listOutputs.mockResolvedValue([]);
   });
 
   it('prevents creating duplicate playlist names in the Playlists view', async () => {
@@ -120,6 +126,60 @@ describe('PlaylistsView', () => {
       { id: '7', album_id: 'e' },
     ] as any;
     expect(buildPlaylistCollageAlbumIds(rows)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('synthesizes a playable Track from a finished BoogieMix output', () => {
+    const track = mixOutputToTrack(
+      {
+        id: 'out1',
+        job_id: 'job1',
+        playlist_id: '1',
+        file_name: 'road-trip-mix.mp3',
+        duration_sec: 245,
+        file_size_bytes: 4_200_000,
+        format: 'mp3',
+        created_at: '2026-03-01T00:00:00Z',
+      },
+      'Road Trip',
+    );
+
+    expect(track).toEqual(expect.objectContaining({
+      id: 'boogiemix:out1',
+      title: 'Road Trip — BoogieMix',
+      artist: 'BoogieBox BoogieMix',
+      album: 'Road Trip',
+      duration: 245,
+      file_name: 'road-trip-mix.mp3',
+      file_size: 4_200_000,
+      format: 'mp3',
+      scanned_at: '2026-03-01T00:00:00Z',
+      stream_url_override: '/api/boogiemix/outputs/out1/play',
+    }));
+    expect(apiMock.boogiemix.playUrl).toHaveBeenCalledWith('out1');
+    // Library-only fields are absent so Player's guarded fetches (ratings/lyrics/
+    // waveform/EQ) have nothing to key off for a synthetic track.
+    expect(track.bpm).toBeNull();
+    expect(track.year).toBeNull();
+  });
+
+  it('falls back to null when a BoogieMix output has no known size/duration', () => {
+    const track = mixOutputToTrack(
+      {
+        id: 'out2',
+        job_id: 'job2',
+        playlist_id: '1',
+        file_name: 'mystery-mix.mp3',
+        duration_sec: null,
+        file_size_bytes: null,
+        format: 'mp3',
+        created_at: '2026-03-02T00:00:00Z',
+      },
+      'Unnamed',
+    );
+
+    expect(track.id).toBe('boogiemix:out2');
+    expect(track.duration).toBeNull();
+    expect(track.file_size).toBeNull();
   });
 });
 

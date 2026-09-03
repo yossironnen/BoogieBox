@@ -637,6 +637,56 @@ pub fn get_mix_job(
     .map_err(JobError::Db)
 }
 
+/// Returns the most recently created job for a playlist (regardless of
+/// status), so a client that lost track of a job id — e.g. after remounting
+/// its BoogieMix panel — can reattach to it.
+pub fn get_latest_mix_job_for_playlist(
+    conn: &Connection,
+    playlist_id: &EntityId,
+    user_id: &EntityId,
+) -> Result<Option<MixJobRow>, JobError> {
+    conn.query_row(
+        "SELECT id, playlist_id, user_id, status, progress_percent, current_step, last_message,
+                default_crossfade_sec, mix_style, mix_quality, mix_strategy, planner_provider,
+                used_deep_analysis, deep_analysis_status, cancel_requested, output_id,
+                started_at, finished_at, created_at, updated_at
+         FROM mix_jobs WHERE playlist_id=?1 AND user_id=?2
+         -- rowid, not created_at: two jobs enqueued within the same second (or
+         -- even the same UUIDv7 millisecond, whose low bits aren't guaranteed
+         -- monotonic) still insert in a strict, gap-free rowid order.
+         ORDER BY rowid DESC LIMIT 1",
+        params![playlist_id, user_id],
+        |r| {
+            Ok(MixJobRow {
+                id: coerce_entity_id(&r.get::<_, String>(0)?),
+                playlist_id: coerce_entity_id(&r.get::<_, String>(1)?),
+                user_id: coerce_entity_id(&r.get::<_, String>(2)?),
+                status: r.get(3)?,
+                progress_percent: r.get(4)?,
+                current_step: r.get(5)?,
+                last_message: r.get(6)?,
+                default_crossfade_sec: r.get(7)?,
+                mix_style: r.get(8)?,
+                mix_quality: r.get(9)?,
+                mix_strategy: r.get(10)?,
+                planner_provider: r.get(11)?,
+                used_deep_analysis: r.get::<_, i64>(12)? != 0,
+                deep_analysis_status: r.get(13)?,
+                cancel_requested: r.get::<_, i64>(14)? != 0,
+                output_id: r
+                    .get::<_, Option<String>>(15)?
+                    .map(|s| coerce_entity_id(&s)),
+                started_at: r.get(16)?,
+                finished_at: r.get(17)?,
+                created_at: r.get(18)?,
+                updated_at: r.get(19)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(JobError::Db)
+}
+
 /// Documents the Update Mix Job Progress public API surface.
 pub fn update_mix_job_progress(
     conn: &Connection,

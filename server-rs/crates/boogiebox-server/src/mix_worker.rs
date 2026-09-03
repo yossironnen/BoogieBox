@@ -3337,6 +3337,29 @@ fn unix_millis_to_ymd(millis: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// Builds the `ffmpeg` `-map_metadata`/`-metadata` argument pairs that stamp a
+/// rendered BoogieMix's own title/album/artist/date onto the output container
+/// instead of inheriting the first input track's ID3 tags (ffmpeg's default
+/// when `-map_metadata` is omitted is `-map_metadata 0`). Pure/no-ffmpeg so it
+/// can be unit-tested directly; `render_mix` passes the result straight to
+/// `Command::args`. Title/album format must stay in sync with the client's
+/// `mixOutputToTrack` (PlaylistsView.tsx) so the in-app now-playing title and
+/// the file's own ID3 title never disagree.
+fn render_metadata_args(playlist_name: &str, rendered_date: &str) -> Vec<String> {
+    vec![
+        "-map_metadata".into(),
+        "-1".into(),
+        "-metadata".into(),
+        format!("title={playlist_name} — BoogieMix"),
+        "-metadata".into(),
+        format!("album={playlist_name}"),
+        "-metadata".into(),
+        "artist=BoogieBox BoogieMix".into(),
+        "-metadata".into(),
+        format!("date={rendered_date}"),
+    ]
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn render_mix(
     state: &PostScanState,
@@ -3432,30 +3455,15 @@ async fn render_mix(
     for arg in &input_args {
         cmd.arg(arg);
     }
-    let mix_title = format!("{playlist_name} — BoogieMix");
-    let title_meta = format!("title={mix_title}");
-    let album_meta = format!("album={playlist_name}");
-    let date_meta = format!("date={rendered_date}");
+    let metadata_args = render_metadata_args(playlist_name, rendered_date);
     cmd.args([
         "-filter_complex",
         filter_complex.as_str(),
         "-map",
         "[mixout]",
-        "-map_metadata",
-        "-1",
-        "-metadata",
-        title_meta.as_str(),
-        "-metadata",
-        album_meta.as_str(),
-        "-metadata",
-        "artist=BoogieBox BoogieMix",
-        "-metadata",
-        date_meta.as_str(),
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        "320k",
     ]);
+    cmd.args(metadata_args.iter().map(String::as_str));
+    cmd.args(["-c:a", "libmp3lame", "-b:a", "320k"]);
     cmd.arg(out_path);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -3575,6 +3583,154 @@ mod tests {
         assert_eq!(unix_millis_to_ymd(1_788_307_200_000), "2026-09-02");
         // 2000-02-29T12:00:00Z (leap day)
         assert_eq!(unix_millis_to_ymd(951_825_600_000), "2000-02-29");
+    }
+
+    #[test]
+    fn render_metadata_args_strip_inherited_tags_and_stamp_playlist_derived_values() {
+        let args = render_metadata_args("Road Trip", "2026-09-02");
+        assert_eq!(
+            args,
+            vec![
+                "-map_metadata".to_string(),
+                "-1".to_string(),
+                "-metadata".to_string(),
+                "title=Road Trip — BoogieMix".to_string(),
+                "-metadata".to_string(),
+                "album=Road Trip".to_string(),
+                "-metadata".to_string(),
+                "artist=BoogieBox BoogieMix".to_string(),
+                "-metadata".to_string(),
+                "date=2026-09-02".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn render_metadata_args_falls_back_playlist_name() {
+        // do_process_mix_job falls back to "Playlist" when the name lookup
+        // fails (e.g. playlist deleted mid-render) — confirm that value
+        // flows through into both the title and album tags unmodified.
+        let args = render_metadata_args("Playlist", "2026-01-01");
+        assert!(args.contains(&"title=Playlist — BoogieMix".to_string()));
+        assert!(args.contains(&"album=Playlist".to_string()));
+    }
+
+    /// Integration check for the concern flagged in the play-on-the-fly plan
+    /// (§7.1): confirm real `ffmpeg`/`ffprobe` actually write/read these
+    /// `-metadata` args as expected on an mp3 container, and — the actual bug
+    /// being fixed — that `-map_metadata -1` stops the first input's tags
+    /// (e.g. artist) from leaking onto the output the way ffmpeg's implicit
+    /// `-map_metadata 0` default otherwise would. Renders a tiny synthetic
+    /// silence clip rather than exercising the full `render_mix` filter graph
+    /// (which needs a `MixPlan`/`TrackMixAnalysis`/deep-features fixture well
+    /// beyond what this metadata concern needs) — self-skips when ffmpeg
+    /// isn't on the machine running the tests, matching how this codebase has
+    /// no other real-ffmpeg-invocation test to model an `#[ignore]` gate on.
+    #[tokio::test]
+    async fn render_metadata_args_survive_a_real_ffmpeg_encode() {
+        let ffmpeg = crate::ffmpeg::resolve_ffmpeg();
+        let ffprobe = crate::ffmpeg::resolve_ffprobe();
+        if !crate::ffmpeg::ffmpeg_available() {
+            eprintln!("skipping: ffmpeg not available on this machine");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "boogiebox-render-metadata-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let input_path = dir.join("input.mp3");
+        let output_path = dir.join("output.mp3");
+
+        // Stand-in "first source track" carrying tags that must NOT survive
+        // onto the mix output — this is the exact regression render_mix's
+        // `-map_metadata -1` fixes (ffmpeg's default `-map_metadata 0` would
+        // otherwise copy these straight through).
+        let gen = tokio::process::Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-metadata",
+                "title=Wrong Track Title",
+                "-metadata",
+                "artist=Wrong Source Artist",
+                "-c:a",
+                "libmp3lame",
+            ])
+            .arg(&input_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .expect("spawn ffmpeg (generate input)");
+        assert!(
+            gen.status.success(),
+            "ffmpeg failed generating test input: {}",
+            String::from_utf8_lossy(&gen.stderr)
+        );
+
+        let metadata_args = render_metadata_args("Road Trip", "2026-09-02");
+        let mut cmd = tokio::process::Command::new(&ffmpeg);
+        cmd.args(["-hide_banner", "-y", "-i"]).arg(&input_path);
+        cmd.args(metadata_args.iter().map(String::as_str));
+        cmd.args(["-c:a", "libmp3lame"]).arg(&output_path);
+        let render = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .expect("spawn ffmpeg (render with metadata args)");
+        assert!(
+            render.status.success(),
+            "ffmpeg failed rendering with metadata args: {}",
+            String::from_utf8_lossy(&render.stderr)
+        );
+
+        let probe = tokio::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format_tags=title,album,artist,date",
+                "-of",
+                "default=noprint_wrappers=1",
+            ])
+            .arg(&output_path)
+            .output()
+            .await
+            .expect("spawn ffprobe");
+        assert!(probe.status.success(), "ffprobe failed reading output tags");
+        let tags = String::from_utf8_lossy(&probe.stdout).to_lowercase();
+
+        assert!(
+            tags.contains("title=road trip — boogiemix") || tags.contains("title=road trip"),
+            "expected mix title tag, got: {tags}"
+        );
+        assert!(
+            tags.contains("album=road trip"),
+            "expected album tag, got: {tags}"
+        );
+        assert!(
+            tags.contains("artist=boogiebox boogiemix"),
+            "expected fixed BoogieMix artist tag, got: {tags}"
+        );
+        assert!(
+            tags.contains("date=2026-09-02"),
+            "expected date tag, got: {tags}"
+        );
+        assert!(
+            !tags.contains("wrong track title") && !tags.contains("wrong source artist"),
+            "input track's tags leaked onto the mix output despite -map_metadata -1: {tags}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn analysis(id: &str, bpm: f64) -> TrackMixAnalysis {

@@ -6,7 +6,7 @@
 
 import React from 'react';
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PlaylistsView from '../components/PlaylistsView';
 
@@ -24,6 +24,8 @@ const { apiMock } = vi.hoisted(() => ({
     },
     search: vi.fn(),
     albumArtUrl: vi.fn(),
+    album: vi.fn(),
+    artist: vi.fn(),
     crossfade: {
       config: vi.fn(),
       overrides: vi.fn(),
@@ -35,8 +37,10 @@ const { apiMock } = vi.hoisted(() => ({
       listOutputs: vi.fn(),
       createJob: vi.fn(),
       getJob: vi.fn(),
+      latestJobForPlaylist: vi.fn(),
       cancelJob: vi.fn(),
       outputDownloadUrl: vi.fn(),
+      playUrl: vi.fn(),
       queuePlaylistDeepAnalysis: vi.fn(),
       playlistDeepAnalysisProgress: vi.fn(),
     },
@@ -115,7 +119,9 @@ describe('PlaylistsView integration flows', () => {
       cache: { analyzedTracks: 0, estimatedBytes: 0, oldestCreatedAt: null, newestCreatedAt: null },
     });
     apiMock.boogiemix.listOutputs.mockResolvedValue([]);
+    apiMock.boogiemix.latestJobForPlaylist.mockResolvedValue(null);
     apiMock.boogiemix.outputDownloadUrl.mockImplementation((id: string) => `/api/boogiemix/outputs/${id}/file`);
+    apiMock.boogiemix.playUrl.mockImplementation((id: string) => `/api/boogiemix/outputs/${id}/play`);
     apiMock.boogiemix.createJob.mockResolvedValue({ jobId: 'mix-1' });
     apiMock.boogiemix.getJob.mockResolvedValue({
       id: 'mix-1', status: 'pending', progress_percent: 10, current_step: 'Planning',
@@ -165,6 +171,11 @@ describe('PlaylistsView integration flows', () => {
     expect(screen.getAllByText('Road Trip').length).toBeGreaterThan(0);
     expect(screen.getByText('Alpha One')).toBeInTheDocument();
     expect(screen.getByText('Alpha Two')).toBeInTheDocument();
+    // Each track row shows its album artwork thumbnail.
+    const rowAArt = screen.getByText('Alpha One').closest('[draggable="true"]')!.querySelector('img')!;
+    expect(rowAArt).toHaveAttribute('src', '/api/albums/301/art?size=300');
+    const rowBArt = screen.getByText('Alpha Two').closest('[draggable="true"]')!.querySelector('img')!;
+    expect(rowBArt).toHaveAttribute('src', '/api/albums/302/art?size=300');
 
     fireEvent.click(screen.getByRole('button', { name: /Play All/i }));
     expect(playTrack).toHaveBeenCalledWith(expect.objectContaining({ id: '101' }), expect.arrayContaining([expect.objectContaining({ id: '101' }), expect.objectContaining({ id: '102' })]), expect.objectContaining({ type: 'playlist', id: '1' }));
@@ -183,6 +194,68 @@ describe('PlaylistsView integration flows', () => {
 
     fireEvent.click(screen.getAllByTitle('Remove from playlist')[0]);
     await waitFor(() => expect(apiMock.playlists.removeTrack).toHaveBeenCalledWith('1', '102'));
+  });
+
+  it('falls back to a note icon in a track row when the track has no album_id', async () => {
+    apiMock.playlists.tracks.mockResolvedValue([{ ...trackA, album_id: null }]);
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" />);
+
+    await screen.findByText('Alpha One');
+    const row = screen.getByText('Alpha One').closest('[draggable="true"]')!;
+    expect(row.querySelector('img')).not.toBeInTheDocument();
+    expect(row.querySelector('svg')).toBeInTheDocument();
+  });
+
+  it('links the album name in a track row to that album via a resolved lookup', async () => {
+    const onOpenAlbum = vi.fn();
+    const album = { id: '301', title: 'Album A', artist: 'Artist A', album_artist: 'Artist A', year: 2020, genre: null, track_count: 5 };
+    apiMock.album.mockResolvedValue(album);
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" onOpenAlbum={onOpenAlbum} />);
+
+    await screen.findByText('Alpha One');
+    const row = screen.getByText('Alpha One').closest('[draggable="true"]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Album A' }));
+
+    await waitFor(() => expect(apiMock.album).toHaveBeenCalledWith('301'));
+    await waitFor(() => expect(onOpenAlbum).toHaveBeenCalledWith(album));
+  });
+
+  it('makes the artist name itself the clickable link when it matches the album artist, instead of a redundant second link', async () => {
+    const onOpenArtist = vi.fn();
+    apiMock.playlists.tracks.mockResolvedValue([
+      { ...trackA, album_artist_id: '901', album_artist_name: 'Artist A' },
+    ]);
+    const artist = { id: '901', name: 'Artist A' };
+    apiMock.artist.mockResolvedValue(artist);
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" onOpenArtist={onOpenArtist} />);
+
+    await screen.findByText('Alpha One');
+    const row = screen.getByText('Alpha One').closest('[draggable="true"]') as HTMLElement;
+    // Exactly one "Artist A" control — the artist name itself, not a separate redundant link.
+    const artistLinks = within(row).getAllByRole('button', { name: 'Artist A' });
+    expect(artistLinks).toHaveLength(1);
+    fireEvent.click(artistLinks[0]);
+
+    await waitFor(() => expect(apiMock.artist).toHaveBeenCalledWith('901'));
+    await waitFor(() => expect(onOpenArtist).toHaveBeenCalledWith(artist));
+  });
+
+  it('links a compilation track\'s distinct album artist to that artist via a resolved lookup', async () => {
+    const onOpenArtist = vi.fn();
+    apiMock.playlists.tracks.mockResolvedValue([
+      { ...trackA, artist: 'Featured Performer', album_artist_id: '901', album_artist_name: 'Various Artists' },
+    ]);
+    const artist = { id: '901', name: 'Various Artists' };
+    apiMock.artist.mockResolvedValue(artist);
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" onOpenArtist={onOpenArtist} />);
+
+    await screen.findByText('Alpha One');
+    const row = screen.getByText('Alpha One').closest('[draggable="true"]') as HTMLElement;
+    expect(row).toHaveTextContent('Featured Performer');
+    fireEvent.click(within(row).getByRole('button', { name: 'Various Artists' }));
+
+    await waitFor(() => expect(apiMock.artist).toHaveBeenCalledWith('901'));
+    await waitFor(() => expect(onOpenArtist).toHaveBeenCalledWith(artist));
   });
 
   it('renders collage artwork beside the playlist title from album art', async () => {
@@ -228,6 +301,7 @@ describe('PlaylistsView integration flows', () => {
     fireEvent.change(screen.getByTitle('BoogieMix quality'), { target: { value: 'high_quality' } });
 
     expect(screen.getByText(/High Quality needs deep analysis\. Missing: torch, demucs/i)).toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByTestId('boogiemix-status'));
     expect(screen.getByText(/Deep analysis runtime:/i)).toHaveTextContent('Missing: torch, demucs.');
   });
 
@@ -318,36 +392,90 @@ describe('PlaylistsView integration flows', () => {
   });
 
   it('starts and cancels BoogieMix, runs deep analysis, and renders output and plan details', async () => {
-    apiMock.boogiemix.listOutputs.mockResolvedValue([{ id: 'out1', file_name: 'mix.flac' }]);
-    apiMock.boogiemix.getJob
-      .mockResolvedValueOnce({
-        id: 'mix-1', status: 'planning', progress_percent: 50, current_step: 'AI plan',
-        mix_quality: 'high_quality', used_deep_analysis: true,
-        mix_strategy: 'Build slowly', last_message: 'Almost there',
-        deep_analysis_total_count: 2, deep_analysis_ready_count: 1,
-        plan_summary: { energyCurvePhases: ['warmup', 'peak'], anthemTrackId: '101' },
-      })
-      .mockResolvedValueOnce({
-        id: 'mix-1', status: 'canceled', progress_percent: 50,
-        mix_quality: 'high_quality', used_deep_analysis: true,
-      });
-    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    const playTrack = vi.fn();
+    apiMock.boogiemix.listOutputs.mockResolvedValue([{ id: 'out1', file_name: 'mix.flac', duration_sec: 200, file_size_bytes: 1000, format: 'mp3' }]);
+    apiMock.boogiemix.getJob.mockResolvedValueOnce({
+      id: 'mix-1', status: 'planning', progress_percent: 50, current_step: 'AI plan',
+      mix_quality: 'high_quality', used_deep_analysis: true,
+      mix_strategy: 'Build slowly', last_message: 'Almost there',
+      deep_analysis_total_count: 2, deep_analysis_ready_count: 1,
+      plan_summary: { energyCurvePhases: ['warmup', 'peak'], anthemTrackId: '101' },
+    });
+    render(<PlaylistsView playTrack={playTrack} addToQueue={vi.fn()} initialPlaylistId="1" />);
     await screen.findByText('Alpha One');
     fireEvent.change(screen.getByTitle('BoogieMix style'), { target: { value: 'chill_blend' } });
     fireEvent.change(screen.getByTitle('BoogieMix quality'), { target: { value: 'high_quality' } });
     fireEvent.change(screen.getByTitle('Transition length'), { target: { value: '45' } });
     fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
     await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'chill_blend', 'high_quality', 45));
-    expect(await screen.findByText(/AI Mix Strategy: Build slowly/)).toBeInTheDocument();
+    // The compact status line shows just the step; strategy/energy-curve/anthem detail is hover-only.
+    expect(await screen.findByText('BoogieMix — AI plan 50%')).toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByTestId('boogiemix-status'));
+    expect(screen.getByText(/AI Mix Strategy: Build slowly/)).toBeInTheDocument();
     expect(screen.getByText('warmup → peak')).toBeInTheDocument();
     expect(screen.getByText(/Anthem Track ID: 101/)).toBeInTheDocument();
+    // While the new mix is still rendering, Play/Download for the old output sit on their
+    // own labeled "Previous mix" line so they can't be mistaken for the in-progress job's output.
+    expect(screen.getByText('Previous mix — mix.flac')).toBeInTheDocument();
+    // Play button plays the rendered output in-app; Download stays untouched alongside it.
     expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute('href', '/api/boogiemix/outputs/out1/file');
+    fireEvent.click(screen.getByRole('button', { name: 'Play' }));
+    expect(apiMock.boogiemix.playUrl).toHaveBeenCalledWith('out1');
+    expect(playTrack).toHaveBeenCalledTimes(1);
+    const [playedTrack, playedQueue] = playTrack.mock.calls[0];
+    expect(playedTrack).toEqual(expect.objectContaining({
+      id: 'boogiemix:out1',
+      title: 'Road Trip — BoogieMix',
+      stream_url_override: '/api/boogiemix/outputs/out1/play',
+    }));
+    expect(playedQueue).toEqual([playedTrack]);
+    // Persistent (not "once") so it also covers the concurrent progress-poll
+    // tick racing the cancel handler's own getJob refresh.
+    apiMock.boogiemix.getJob.mockResolvedValue({
+      id: 'mix-1', status: 'canceled', progress_percent: 50,
+      mix_quality: 'high_quality', used_deep_analysis: true,
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(apiMock.boogiemix.cancelJob).toHaveBeenCalledWith('mix-1'));
+    await waitFor(() => expect(screen.getByTestId('boogiemix-status')).toHaveTextContent('BoogieMix canceled'));
 
     fireEvent.click(screen.getByTitle(/Run Demucs deep analysis/i));
     await waitFor(() => expect(apiMock.boogiemix.queuePlaylistDeepAnalysis).toHaveBeenCalledWith('1'));
-    expect(await screen.findByText(/Deep analysis/)).toBeInTheDocument();
+    expect(await screen.findByText('Deep analysis — 2/2 tracks')).toBeInTheDocument();
+  });
+
+  it('keeps Play/Download on the main status line (no separate "Previous mix" line) once the mix is ready', async () => {
+    apiMock.boogiemix.listOutputs.mockResolvedValue([{ id: 'out1', file_name: 'mix.flac', duration_sec: 200, file_size_bytes: 1000, format: 'mp3' }]);
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" />);
+
+    await waitFor(() => expect(apiMock.boogiemix.listOutputs).toHaveBeenCalledWith('1'));
+    expect(await screen.findByText('BoogieMix ready — mix.flac')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download' })).toBeInTheDocument();
+    expect(screen.queryByText(/Previous mix —/)).not.toBeInTheDocument();
+  });
+
+  it('reattaches to a still-running BoogieMix job on mount', async () => {
+    apiMock.boogiemix.latestJobForPlaylist.mockResolvedValue({
+      id: 'mix-9', status: 'rendering', progress_percent: 70, current_step: 'Rendering',
+      mix_quality: 'standard', used_deep_analysis: false,
+    });
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" />);
+
+    await waitFor(() => expect(apiMock.boogiemix.latestJobForPlaylist).toHaveBeenCalledWith('1'));
+    expect(await screen.findByText('BoogieMix — Rendering 70%')).toBeInTheDocument();
+    // The BoogieMix trigger button stays disabled while a reattached job is still active.
+    expect(screen.getByTitle('BoogieMix is experimental')).toBeDisabled();
+  });
+
+  it('ignores a finished BoogieMix job on mount so stale failures/cancellations do not resurface', async () => {
+    apiMock.boogiemix.latestJobForPlaylist.mockResolvedValue({
+      id: 'mix-8', status: 'failed', progress_percent: 40, mix_quality: 'standard', used_deep_analysis: false,
+    });
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" />);
+
+    await waitFor(() => expect(apiMock.boogiemix.latestJobForPlaylist).toHaveBeenCalledWith('1'));
+    expect(screen.queryByTestId('boogiemix-status')).not.toBeInTheDocument();
   });
 
   it('reports BoogieMix and deep-analysis startup failures', async () => {
@@ -359,6 +487,7 @@ describe('PlaylistsView integration flows', () => {
     expect(await screen.findByText('Mix failed')).toBeInTheDocument();
     fireEvent.click(screen.getByTitle(/Run Demucs deep analysis/i));
     expect(await screen.findByText('Deep failed')).toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByTestId('boogiemix-status'));
     fireEvent.click(screen.getByTitle('Dismiss'));
     expect(screen.queryByText('Deep failed')).not.toBeInTheDocument();
   });

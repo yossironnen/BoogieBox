@@ -82,6 +82,13 @@ pub struct PlaylistTrackRow {
     pub artist: Option<String>,
     /// Documents the Album public API surface.
     pub album: Option<String>,
+    /// The album's owning artist (its `artist_id`, distinct from this track's own
+    /// `artist`) — lets the client link straight to the *album's* artist instead of
+    /// this track's performer, which matters for compilations ("Various Artists")
+    /// where the two differ.
+    pub album_artist_id: Option<EntityId>,
+    /// Documents the Album Artist Name public API surface.
+    pub album_artist_name: Option<String>,
     /// Documents the Library Name public API surface.
     pub library_name: Option<String>,
     /// True when real Demucs stem analysis exists for this track.
@@ -400,11 +407,13 @@ pub fn list_playlist_tracks(
                     t.album_id, ar.name AS artist, al.title AS album, l.name AS library_name,
                     (EXISTS (SELECT 1 FROM track_deep_analysis da
                              WHERE da.track_id=t.id AND da.confidence>0.25)) AS has_deep_analysis,
-                    pt.position, pt.id AS playlist_track_id, pt.progress_seconds
+                    pt.position, pt.id AS playlist_track_id, pt.progress_seconds,
+                    al.artist_id AS album_artist_id, alar.name AS album_artist_name
              FROM playlist_tracks pt
              JOIN tracks t ON t.id = pt.track_id
              LEFT JOIN artists ar ON ar.id = t.artist_id
              LEFT JOIN albums al ON al.id = t.album_id
+             LEFT JOIN artists alar ON alar.id = al.artist_id
              LEFT JOIN libraries l ON l.id = t.library_id
              WHERE pt.playlist_id=?
              ORDER BY pt.position ASC, pt.id ASC",
@@ -439,6 +448,8 @@ pub fn list_playlist_tracks(
                 position: row.get(25)?,
                 playlist_track_id: row.get(26)?,
                 progress_seconds: row.get(27)?,
+                album_artist_id: row.get(28)?,
+                album_artist_name: row.get(29)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1235,6 +1246,43 @@ mod tests {
             .expect("playlist exists");
 
         assert_eq!(tracks[0].bpm_detected, Some(118.25));
+    }
+
+    #[test]
+    fn list_playlist_tracks_resolves_the_albums_own_artist_separately_from_the_tracks_artist() {
+        let conn = fixture_db();
+        // A compilation: the album is owned by "Various Artists", but this
+        // particular track's own performer is "Artist" (artist-1) — the client
+        // needs both, distinctly, to link to the right entity for each.
+        conn.execute_batch(
+            "INSERT INTO artists(id, name) VALUES ('artist-va', 'Various Artists');
+             INSERT INTO albums(id, title, album_artist, artist_id) VALUES
+               ('album-va', 'Best Of', 'Various Artists', 'artist-va');
+             UPDATE tracks SET album_id = 'album-va' WHERE id = 'track-1';",
+        )
+        .expect("seed compilation");
+        let playlist = create_playlist(&conn, "Compilation", "", "user-1").expect("playlist");
+        add_track_to_playlist(
+            &conn,
+            &playlist.id,
+            &EntityId::Str("track-1".to_owned()),
+            "user-1",
+        )
+        .expect("add track");
+
+        let tracks = list_playlist_tracks(&conn, &playlist.id, "user-1")
+            .expect("tracks")
+            .expect("playlist exists");
+
+        assert_eq!(tracks[0].artist.as_deref(), Some("Artist"));
+        assert_eq!(
+            tracks[0].album_artist_id,
+            Some(EntityId::Str("artist-va".to_owned()))
+        );
+        assert_eq!(
+            tracks[0].album_artist_name.as_deref(),
+            Some("Various Artists")
+        );
     }
 
     #[test]
