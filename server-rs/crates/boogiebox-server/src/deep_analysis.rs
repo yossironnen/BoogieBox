@@ -445,10 +445,22 @@ async fn process_job(
         "[boogiemix:deep] job {} — MODEL: {demucs_model} ({model_reason})",
         job.id
     );
-    // Madmom RNNBeatProcessor is an RNN that processes the full audio file on CPU —
-    // on a slow CPU machine a 6-min track can take 10+ min, causing apparent hangs.
-    // Disable madmom when running HPSS (CPU-only) mode.
-    let use_madmom = settings.use_madmom && demucs_model != MODEL_HPSS;
+    // Beat tracking is deliberately NOT tied to the model/GPU decision above.
+    //
+    // It used to be (`use_madmom && demucs_model != MODEL_HPSS`), which meant a
+    // machine without a GPU — forced to HPSS just above — silently got no beat
+    // grid at all: no downbeats, no tempo, so no phrase snapping and no
+    // beat-matched transitions, with no way for the user to opt back in. That
+    // coupling never held technically either: madmom has no GPU backend, so the
+    // GPU was never what made it affordable.
+    //
+    // The cost is real but bounded and now parallelised over the model
+    // ensemble in the worker (~11-14s for a 9-minute track here, ~3x faster
+    // than before). `run_python_worker_with_debug` is already given a budget of
+    // `max(duration * 5s, base)`, so a machine slow enough to matter fails
+    // cleanly on that timeout rather than hanging, and `boogiemixUseMadmom`
+    // stays as the honest switch for anyone who still wants it off.
+    let use_madmom = settings.use_madmom;
     dlog!(
         dbg,
         "[boogiemix:deep] job {} — use_madmom={use_madmom} (settings={} model={demucs_model})",

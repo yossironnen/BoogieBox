@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -725,17 +725,33 @@ async fn playlist_deep_analysis_progress_handler(
     result
 }
 
+/// Query string for the library deep-analysis queue: `?force=true` re-analyses
+/// tracks that already hold a current analysis.
+///
+/// Forcing is opt-in because a whole-library re-analysis is hours of GPU work,
+/// and because the default (queue what is missing) is what the Settings button
+/// is for. Before this flag existed the handler asked to force unconditionally,
+/// but the track query filtered analysed tracks out first, so the request
+/// reached an empty list and queued nothing at all on a fully analysed library.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeepAnalysisQueueQuery {
+    #[serde(default)]
+    force: bool,
+}
+
 async fn queue_library_deep_analysis_handler(
     State(state): State<SharedState>,
     AdminUser(_user): AdminUser,
     Path(library_id_raw): Path<String>,
+    Query(query): Query<DeepAnalysisQueueQuery>,
 ) -> Response {
     let Some(db) = get_db(&state) else {
         return db_not_configured();
     };
     let library_id = coerce_entity_id(&library_id_raw);
     let result = match db.lock() {
-        Ok(conn) => match queue_library_deep_analysis(&conn, &library_id, true) {
+        Ok(conn) => match queue_library_deep_analysis(&conn, &library_id, query.force) {
             Ok(queued) => (
                 StatusCode::OK,
                 Json(serde_json::json!({ "queued": queued })),

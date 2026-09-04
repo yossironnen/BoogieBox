@@ -17,6 +17,7 @@ import { parseServerDate } from '../utils';
 import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
 import FolderPickerModal from './FolderPickerModal';
+import ConfirmModal from './ConfirmModal';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -579,6 +580,15 @@ export default function SettingsPage({
   const [boogiemixDeepActionBusy, setBoogiemixDeepActionBusy] = useState<string | null>(null);
   const [boogiemixDeepActionResult, setBoogiemixDeepActionResult] = useState<string | null>(null);
   const [boogiemixDeepSelectedLibrary, setBoogiemixDeepSelectedLibrary] = useState<ClientEntityId | ''>('');
+  // A single slot for "the confirm dialog currently open" — only one of this
+  // page's several destructive actions can be mid-confirmation at a time.
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    tone?: 'default' | 'danger';
+    onConfirm: () => void;
+  } | null>(null);
   const showGeniusIntegration = false;
   const [currentDbFolder, setCurrentDbFolder] = useState<string>('');
   const [logFilePaths, setLogFilePaths] = useState<{ server?: string; scan?: string; deep?: string }>({});
@@ -1908,6 +1918,24 @@ export default function SettingsPage({
                       Analyze Library
                     </button>
                     <button
+                      disabled={!boogiemixDeepSelectedLibrary || boogiemixDeepActionBusy === 'reanalyze-library'}
+                      onClick={() => setPendingConfirm({
+                        title: 'Re-analyze every track in this library?',
+                        message: 'Including ones already analyzed.\n\n'
+                          + 'This discards nothing, but deep analysis takes around a minute per track, '
+                          + 'so a large library can run for many hours.',
+                        confirmLabel: 'Re-analyze All',
+                        onConfirm: () => runBoogieMixDeepAction('reanalyze-library', async () => {
+                          const result = await api.boogiemix.queueLibraryDeepAnalysis(boogiemixDeepSelectedLibrary, true);
+                          return `Queued ${result.queued} tracks`;
+                        }),
+                      })}
+                      title="Queue every track, not just the ones missing an analysis"
+                      style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: boogiemixDeepSelectedLibrary ? 'pointer' : 'not-allowed', opacity: !boogiemixDeepSelectedLibrary ? 0.55 : 1 }}
+                    >
+                      Re-analyze All
+                    </button>
+                    <button
                       onClick={() => runBoogieMixDeepAction('pause', async () => {
                         if (boogiemixDeepPauseBackground) {
                           await api.boogiemix.resumeDeepAnalysisBackground();
@@ -1924,13 +1952,16 @@ export default function SettingsPage({
                       {boogiemixDeepPauseBackground ? 'Resume Background' : 'Pause Background'}
                     </button>
                     <button
-                      onClick={() => {
-                        if (!window.confirm('Clear stored BoogieMix deep-analysis cache?')) return;
-                        runBoogieMixDeepAction('clear-cache', async () => {
+                      onClick={() => setPendingConfirm({
+                        title: 'Clear stored BoogieMix deep-analysis cache?',
+                        message: 'Every track will need to be re-analyzed before its next BoogieMix.',
+                        confirmLabel: 'Clear Cache',
+                        tone: 'danger',
+                        onConfirm: () => runBoogieMixDeepAction('clear-cache', async () => {
                           const result = await api.boogiemix.clearDeepAnalysisCache();
                           return `Cleared ${result.deletedCacheRows} cached rows`;
-                        });
-                      }}
+                        }),
+                      })}
                       disabled={boogiemixDeepActionBusy === 'clear-cache'}
                       style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
                     >
@@ -2617,19 +2648,23 @@ export default function SettingsPage({
                   </button>
                   <button
                     disabled={switchDbSaving || !switchDbFolder.trim()}
-                    onClick={async () => {
-                      if (!window.confirm(`Switch to database at:\n\n${switchDbFolder.trim()}\n\nThe page will reload after switching.`)) return;
-                      setSwitchDbSaving(true);
-                      setSwitchDbResult(null);
-                      try {
-                        await api.systemSwitchDb(switchDbFolder.trim());
-                        setSwitchDbResult('Switched — reloading...');
-                        setTimeout(() => window.location.reload(), 800);
-                      } catch (e: any) {
-                        setSwitchDbResult(`Error: ${e.message}`);
-                        setSwitchDbSaving(false);
-                      }
-                    }}
+                    onClick={() => setPendingConfirm({
+                      title: 'Switch to a different database?',
+                      message: `${switchDbFolder.trim()}\n\nThe page will reload after switching.`,
+                      confirmLabel: 'Switch Database',
+                      onConfirm: async () => {
+                        setSwitchDbSaving(true);
+                        setSwitchDbResult(null);
+                        try {
+                          await api.systemSwitchDb(switchDbFolder.trim());
+                          setSwitchDbResult('Switched — reloading...');
+                          setTimeout(() => window.location.reload(), 800);
+                        } catch (e: any) {
+                          setSwitchDbResult(`Error: ${e.message}`);
+                          setSwitchDbSaving(false);
+                        }
+                      },
+                    })}
                     style={{
                       padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
                       background: 'var(--accent)', color: '#fff', fontSize: 12, cursor: 'pointer',
@@ -3011,6 +3046,17 @@ export default function SettingsPage({
         <div style={P.section}>
           <UserManagement currentUser={currentUser} />
         </div>
+      )}
+
+      {pendingConfirm && (
+        <ConfirmModal
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          confirmLabel={pendingConfirm.confirmLabel}
+          tone={pendingConfirm.tone}
+          onConfirm={() => { const { onConfirm } = pendingConfirm; setPendingConfirm(null); onConfirm(); }}
+          onCancel={() => setPendingConfirm(null)}
+        />
       )}
     </div>
   );

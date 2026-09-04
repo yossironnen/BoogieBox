@@ -78,7 +78,6 @@ describe('BrowseView component flows', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', vi.fn());
-    vi.stubGlobal('alert', vi.fn());
 
     const album: Album = {
       id: '10',
@@ -413,11 +412,16 @@ describe('BrowseView component flows', () => {
     await waitFor(() => expect(apiMock.resolveArtistReleaseTypes).toHaveBeenCalledWith('1'));
 
     fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/i }));
-    await waitFor(() => expect(alert).toHaveBeenCalledWith(expect.stringContaining('No radio tracks')));
+    expect(await screen.findByText(/No radio tracks/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
     fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/i }));
-    await waitFor(() => expect(alert).toHaveBeenCalledWith('radio offline'));
+    expect(await screen.findByText('radio offline')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
     fireEvent.click(screen.getByRole('button', { name: /Play Top 5/i }));
-    await waitFor(() => expect(alert).toHaveBeenCalledWith('search offline'));
+    expect(await screen.findByText('search offline')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }));
 
     fireEvent.click(screen.getByText('Single One'));
     await waitFor(() => expect(apiMock.albumTracks).toHaveBeenCalledWith('11'));

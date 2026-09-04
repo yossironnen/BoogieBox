@@ -11,6 +11,7 @@ import MetadataRefreshModal from './MetadataRefreshModal';
 import MetadataEditModal from './MetadataEditModal';
 import MergeArtistsModal from './MergeArtistsModal';
 import UnmergeModal from './UnmergeModal';
+import ConfirmModal from './ConfirmModal';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
 import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
 import { groupArtistDiscographyByReleaseType } from '../releaseTypes';
@@ -2395,6 +2396,7 @@ export default function BrowseView({
   const [currentArtist, setCurrentArtist] = useState<Artist | null>(null);
   const [artistRadioLoading, setArtistRadioLoading] = useState(false);
   const [topTracksPlayLoading, setTopTracksPlayLoading] = useState(false);
+  const [infoAlert, setInfoAlert] = useState<string | null>(null);
   const isLibraryScopeForced = Boolean(forcedLibraryIds && forcedLibraryIds.length > 0);
   const forcedLibraryScopeKey = (forcedLibraryIds ?? []).join(',');
   const activeLibraryIds = useMemo(
@@ -2781,12 +2783,12 @@ export default function BrowseView({
     try {
       const result = await api.artistRadio(artist.id, 120);
       if (!result.tracks.length) {
-        window.alert(`No radio tracks found for "${artist.name}".`);
+        setInfoAlert(`No radio tracks found for "${artist.name}".`);
         return;
       }
       playTrack(result.tracks[0], result.tracks);
     } catch (e: any) {
-      window.alert(e.message || 'Failed to build artist radio.');
+      setInfoAlert(e.message || 'Failed to build artist radio.');
     } finally {
       setArtistRadioLoading(false);
     }
@@ -2809,13 +2811,13 @@ export default function BrowseView({
         .filter((track, idx, arr) => arr.findIndex((t) => t.id === track.id) === idx);
 
       if (!resolved.length) {
-        window.alert(`No matching tracks found in your library for "${artist.name}" top songs.`);
+        setInfoAlert(`No matching tracks found in your library for "${artist.name}" top songs.`);
         return;
       }
 
       playTrack(resolved[0], resolved);
     } catch (e: any) {
-      window.alert(e.message || 'Failed to build Top 5 playback queue.');
+      setInfoAlert(e.message || 'Failed to build Top 5 playback queue.');
     } finally {
       setTopTracksPlayLoading(false);
     }
@@ -3488,6 +3490,16 @@ export default function BrowseView({
               .then(setArtists)
               .catch(() => {});
           }}
+        />
+      )}
+      {infoAlert && (
+        <ConfirmModal
+          title="Playback"
+          message={infoAlert}
+          confirmLabel="OK"
+          cancelLabel={null}
+          onConfirm={() => setInfoAlert(null)}
+          onCancel={() => setInfoAlert(null)}
         />
       )}
     </div>

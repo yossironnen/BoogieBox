@@ -48,8 +48,6 @@ describe('UserManagement', () => {
     usersApi.remove.mockResolvedValue({});
     usersApi.setPermissions.mockResolvedValue({});
     usersApi.setPin.mockResolvedValue({});
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    vi.spyOn(window, 'alert').mockImplementation(() => {});
   });
 
   it('loads users, validates input, and creates a permission-scoped user', async () => {
@@ -117,15 +115,18 @@ describe('UserManagement', () => {
 
     usersApi.setPermissions.mockRejectedValueOnce(new Error('permission failed'));
     fireEvent.click(within(row).getByTitle('Toggle metadata edit permission'));
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('permission failed'));
+    expect(await screen.findByText('permission failed')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'OK' }));
 
-    vi.mocked(window.confirm).mockReturnValueOnce(false);
     fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+    expect(screen.getByText('Delete user "listener"?')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
     expect(usersApi.remove).not.toHaveBeenCalled();
 
     usersApi.remove.mockRejectedValueOnce(new Error('delete failed'));
     fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('delete failed'));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    expect(await screen.findByText('delete failed')).toBeInTheDocument();
   });
 
   it('validates, saves, clears, and cancels PIN changes', async () => {

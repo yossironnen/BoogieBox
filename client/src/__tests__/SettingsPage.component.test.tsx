@@ -51,7 +51,6 @@ describe('SettingsPage component flows', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', vi.fn());
-    vi.stubGlobal('confirm', vi.fn(() => true));
 
     getStreamDirectMock.mockReturnValue(false);
     apiMock.systemStatus.mockResolvedValue({ setupRequired: false, ffmpegAvailable: true, dbFolder: 'D:\\BoogieData' });
@@ -360,12 +359,14 @@ describe('SettingsPage component flows', () => {
     await waitFor(() => expect(apiMock.libraries.addFolder).toHaveBeenCalledWith('1', 'D:\\Third'));
 
     fireEvent.click(screen.getAllByTitle('Remove folder')[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Folder' }));
     await waitFor(() => expect(apiMock.libraries.removeFolder).toHaveBeenCalledWith('1', 'f1'));
 
     fireEvent.click(screen.getByRole('button', { name: /^Scan$/i }));
     await waitFor(() => expect(apiMock.libraries.scan).toHaveBeenCalledWith('1'));
 
     fireEvent.click(screen.getByTitle('Remove library'));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Library' }));
     await waitFor(() => expect(apiMock.libraries.remove).toHaveBeenCalledWith('1'));
   }, 15000);
 
@@ -466,6 +467,7 @@ describe('SettingsPage component flows', () => {
     await waitFor(() => expect(apiMock.boogiemix.pauseDeepAnalysisBackground).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear Cache' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Clear Cache' }));
     await waitFor(() => expect(apiMock.boogiemix.clearDeepAnalysisCache).toHaveBeenCalledTimes(1));
 
     const streamToggle = screen.getByTitle(/Transcoding enabled/i);
@@ -818,7 +820,6 @@ describe('SettingsPage component flows', () => {
     apiMock.boogiemix.queueLibraryDeepAnalysis.mockRejectedValue(new Error('queue denied'));
     apiMock.boogiemix.pauseDeepAnalysisBackground.mockRejectedValue(new Error('pause denied'));
     apiMock.boogiemix.clearDeepAnalysisCache.mockRejectedValue(new Error('clear denied'));
-    const confirmMock = vi.mocked(confirm);
 
     render(
       <SettingsPage
@@ -849,11 +850,11 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pause Background' }));
     expect(await screen.findByText(/Error: pause denied/i)).toBeInTheDocument();
 
-    confirmMock.mockReturnValueOnce(false);
     fireEvent.click(screen.getByRole('button', { name: 'Clear Cache' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
     expect(apiMock.boogiemix.clearDeepAnalysisCache).not.toHaveBeenCalled();
-    confirmMock.mockReturnValueOnce(true);
     fireEvent.click(screen.getByRole('button', { name: 'Clear Cache' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Clear Cache' }));
     expect(await screen.findByText(/Error: clear denied/i)).toBeInTheDocument();
   });
 

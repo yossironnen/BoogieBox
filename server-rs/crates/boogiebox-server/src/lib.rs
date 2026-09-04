@@ -30,6 +30,7 @@ use tower_http::{
 };
 pub mod artwork_cache;
 pub mod auth;
+pub mod beat_grid;
 pub mod bpm_analysis;
 pub mod cors;
 pub mod db_maintenance;

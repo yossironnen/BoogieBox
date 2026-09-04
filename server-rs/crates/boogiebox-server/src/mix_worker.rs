@@ -1,6 +1,7 @@
 //! Defines Rust server support logic for Mix Worker.
 
 use crate::{
+    beat_grid::{bar_offset, fit_local_grid, fold_bpm_octave, LocalGrid},
     ffmpeg::{resolve_ffmpeg, resolve_ffprobe},
     post_scan::PostScanState,
     DbPool,
@@ -303,6 +304,26 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
                 }
             }
         }
+    }
+
+    // ── Adopt the neural tempo for planning, not just for rendering ──────────
+    // `build_analysis` can only see the ID3 tag and the local flux detector.
+    // On the reference playlist that detector clustered at 118/120 BPM for
+    // tracks actually running anywhere from 120 to 133, and read two tracks at
+    // half time. The planner ordered and scored tracks on those numbers, which
+    // is how a run of neighbours ended up 7-9% apart in tempo; the beat grid is
+    // the accurate source and it is already loaded by this point.
+    for analysis in &mut analyses {
+        let tid = analysis.track_id.to_string();
+        let Some(bpm) = beat_grid_bpm(deep_features.get(&tid)) else {
+            continue;
+        };
+        if !(60.0..=220.0).contains(&bpm) {
+            continue;
+        }
+        analysis.bpm_estimate = Some(bpm);
+        analysis.beat_grid_sec = Some(60.0 / bpm);
+        analysis.confidence = analysis.confidence.max(0.85);
     }
 
     // ── Merge vocal cue points into analyses (Phase 2) ───────────────────────
@@ -2218,22 +2239,21 @@ fn reorder_for_curve(
                 let eb = energy_of(b);
                 let energy_a = (ea - target_e).abs();
                 let energy_b = (eb - target_e).abs();
-                let bpm_a = prev_a
-                    .and_then(|p| p.bpm_estimate)
-                    .and_then(|pb| {
-                        analyses[a]
-                            .bpm_estimate
-                            .map(|b| (pb - b).abs().min(30.0) / 30.0)
+                // Scored against what the renderer can actually close (about
+                // 6%, +-3% from each side) rather than a flat 30 BPM ramp: on a
+                // 125 BPM track the old scale barely distinguished a 1 BPM
+                // neighbour from a 7 BPM one, and 7 BPM is the difference
+                // between a locked blend and an unmatched one.
+                let bpm_gap = |i: usize| {
+                    prev_a.and_then(|p| p.bpm_estimate).and_then(|pb| {
+                        analyses[i].bpm_estimate.map(|b| {
+                            let folded = fold_bpm_octave(pb, b);
+                            ((folded - pb).abs() / pb.max(1.0) / (2.0 * TEMPO_MATCH_LIMIT)).min(1.0)
+                        })
                     })
-                    .unwrap_or(0.2);
-                let bpm_b = prev_a
-                    .and_then(|p| p.bpm_estimate)
-                    .and_then(|pb| {
-                        analyses[b]
-                            .bpm_estimate
-                            .map(|b| (pb - b).abs().min(30.0) / 30.0)
-                    })
-                    .unwrap_or(0.2);
+                };
+                let bpm_a = bpm_gap(a).unwrap_or(0.5);
+                let bpm_b = bpm_gap(b).unwrap_or(0.5);
                 let harm_a = prev_a.map_or(0.0, |p| 1.0 - harmonic_compat(p, &analyses[a]));
                 let harm_b = prev_a.map_or(0.0, |p| 1.0 - harmonic_compat(p, &analyses[b]));
                 // Phase 4d: cosine similarity boost for embedding-similar adjacent tracks
@@ -2263,9 +2283,9 @@ fn reorder_for_curve(
                     }
                 });
                 let score_a =
-                    energy_a * 0.50 + bpm_a * 0.22 + harm_a * 0.18 - cosine_bonus_a * 0.10;
+                    energy_a * 0.34 + bpm_a * 0.42 + harm_a * 0.14 - cosine_bonus_a * 0.10;
                 let score_b =
-                    energy_b * 0.50 + bpm_b * 0.22 + harm_b * 0.18 - cosine_bonus_b * 0.10;
+                    energy_b * 0.34 + bpm_b * 0.42 + harm_b * 0.14 - cosine_bonus_b * 0.10;
                 score_a.partial_cmp(&score_b).unwrap()
             })
             .map(|(idx, _)| idx);
@@ -2774,11 +2794,16 @@ fn derive_ordered_ids(transitions: &[MixTransition], tracks: &[MixTrackInput]) -
 
 // ── FFmpeg renderer ───────────────────────────────────────────────────────────
 
-/// Maximum pitch-preserving tempo adjustment (as a fraction, e.g. 0.10 = 10%)
-/// applied to beat-match an incoming track's BPM to the outgoing track's
-/// effective BPM during a crossfade. Tweak this to allow more/less aggressive
-/// beat-matching before the mix falls back to an unmatched blend.
-const MAX_BPM_MATCH_ADJUST: f64 = 0.10;
+/// Largest pitch-preserving tempo change applied to any audio that actually
+/// sounds, as a fraction (0.03 = ±3%). This is classic DJ pitch-fader
+/// territory: a 125 BPM track plays between 121.3 and 128.8 and nobody hears a
+/// tempo change.
+///
+/// It bounds *every* factor the renderer emits, so a pair of neighbours can be
+/// closed from both sides — the outgoing track pushes up to +3% and the
+/// incoming pulls down to -3% — giving a reachable gap of about 6%. Wider gaps
+/// are left unmatched rather than stretched into sounding wrong.
+const TEMPO_MATCH_LIMIT: f64 = 0.03;
 
 /// Fraction of a crossfade window during which the outgoing track holds at its
 /// regular volume before it starts fading out (e.g. 0.7 = the outgoing track
@@ -2792,161 +2817,390 @@ const MAX_BPM_MATCH_ADJUST: f64 = 0.10;
 /// the combined loudness is kept constant. Tweak this to hold longer/shorter.
 const OUTGOING_HOLD_FRACTION: f64 = 0.7;
 
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+/// Largest tempo change taken in a single step of a mid-track tempo move.
+/// 1.2% is below the threshold where a step reads as a tempo change rather
+/// than as the track simply continuing.
+const MAX_SINGLE_TEMPO_STEP: f64 = 0.012;
+
+/// Cap on the intermediate steps in one mid-track tempo move. Every extra step
+/// is another `concat` boundary, and each boundary costs a little timing
+/// accuracy (see `CONCAT_BOUNDARY_SEC`), so the move stays coarse on purpose.
+const MAX_TEMPO_STEPS: usize = 4;
+
+/// Seconds of source audio each intermediate tempo step lasts.
+const TEMPO_STEP_SEC: f64 = 4.0;
+
+/// Seconds of margin kept between a blend and a mid-track tempo move, so the
+/// tempo is provably constant for the whole of every overlap.
+const TEMPO_MOVE_GUARD_SEC: f64 = 4.0;
+
+/// Extra audio ffmpeg emits at each `concat` boundary between independently
+/// `atempo`-ed segments, measured at ~1.7 ms per boundary and stable from 2 to
+/// 20 segments. Small, but it lands directly on the blend that follows, so the
+/// timeline model accounts for it rather than letting it drift the alignment.
+const CONCAT_BOUNDARY_SEC: f64 = 0.0017;
+
+/// Seconds either side of a mix point used to fit that point's beat grid.
+/// Wide enough for ~60 beats of evidence, narrow enough that a slipped section
+/// elsewhere in the track cannot pull the fit off the music.
+const GRID_FIT_HALF_WINDOW_SEC: f64 = 30.0;
+
+/// Sample rate every track is resampled to before `atempo`.
+///
+/// `atempo` swallows a fixed prefix of its input, and the size of that prefix
+/// is set by the frame size, so tracks arriving at different sample rates come
+/// out shifted by different amounts. Pinning the rate — and emitting `atempo`
+/// on *every* track, even at factor 1.0 — makes the offset identical
+/// everywhere, where before a track that happened to need no tempo change sat
+/// ~21 ms away from its neighbours.
+const RENDER_SAMPLE_RATE: u32 = 48000;
+
+/// Residual effective-BPM error below which a blend is treated as beat-locked
+/// for its whole length (0.002 = 0.2%).
+const TEMPO_DRIFT_TOLERANCE: f64 = 0.002;
+
+/// Piecewise-constant tempo map for one rendered track stream.
+///
+/// A track is beat-matched to a different neighbour at each end, so its tempo
+/// generally has to change somewhere in the middle. Each segment is rendered as
+/// its own `atrim`+`atempo` chain and the chain is `concat`ed back together, so
+/// the mapping from source time to output time is exactly this arithmetic.
+#[derive(Debug, Clone, PartialEq)]
+struct TempoMap {
+    /// `(source-seconds, tempo factor)` in playback order.
+    segments: Vec<(f64, f64)>,
+}
+
+impl TempoMap {
+    fn constant(src_dur: f64, factor: f64) -> Self {
+        TempoMap {
+            segments: vec![(src_dur.max(0.0), factor.max(1e-6))],
+        }
+    }
+
+    fn is_constant(&self) -> bool {
+        self.segments.len() <= 1
+    }
+
+    /// Tempo factor applied to the very start of the stream.
+    fn head_factor(&self) -> f64 {
+        self.segments.first().map(|s| s.1).unwrap_or(1.0)
+    }
+
+    /// Tempo factor applied to the very end of the stream — the one in force
+    /// through the outgoing blend.
+    fn tail_factor(&self) -> f64 {
+        self.segments.last().map(|s| s.1).unwrap_or(1.0)
+    }
+
+    fn src_duration(&self) -> f64 {
+        self.segments.iter().map(|(d, _)| *d).sum()
+    }
+
+    fn out_duration(&self) -> f64 {
+        self.to_output(self.src_duration())
+    }
+
+    /// Maps an offset in source seconds (from the trim-in point) to the
+    /// corresponding offset in the rendered stream.
+    fn to_output(&self, src_offset: f64) -> f64 {
+        let mut remaining = src_offset.max(0.0);
+        let mut out = 0.0;
+        for (idx, (dur, factor)) in self.segments.iter().enumerate() {
+            if idx > 0 {
+                out += CONCAT_BOUNDARY_SEC;
+            }
+            if remaining <= *dur {
+                return out + remaining / factor.max(1e-6);
+            }
+            out += dur / factor.max(1e-6);
+            remaining -= dur;
+        }
+        out + remaining / self.tail_factor().max(1e-6)
+    }
+}
+
+/// Everything the renderer knows about one track's rhythm, fitted at the two
+/// points that matter: where the track is mixed in and where it is mixed out.
+///
+/// The raw neural beat list is never used directly. It carries half-beat slips
+/// and dropped beats that would put a blend a full half beat out, so each end
+/// of the track gets its own locally-fitted uniform grid instead.
+#[derive(Debug, Clone, Default)]
+struct TrackRhythm {
+    /// Grid fitted around the track's mix-in point.
+    in_grid: Option<LocalGrid>,
+    /// Grid fitted around the track's mix-out point.
+    out_grid: Option<LocalGrid>,
+    /// Bar phase at the mix-in point, when real downbeats back it.
+    in_bar_offset: Option<i64>,
+    /// Bar phase at the mix-out point, when real downbeats back it.
+    out_bar_offset: Option<i64>,
+    /// Whole-track tempo, used only when no local fit succeeds.
+    fallback_bpm: Option<f64>,
+}
+
+impl TrackRhythm {
+    fn in_bpm(&self) -> Option<f64> {
+        self.in_grid.map(|g| g.bpm()).or(self.fallback_bpm)
+    }
+
+    fn out_bpm(&self) -> Option<f64> {
+        self.out_grid.map(|g| g.bpm()).or(self.fallback_bpm)
+    }
+}
+
+/// Fits a track's mix-in and mix-out grids.
+///
+/// `mix_in_sec`/`mix_out_sec` are the planner's entry and exit points in the
+/// track's own seconds; the fit is centred on each so the grid is right exactly
+/// where the two tracks have to line up.
+fn build_track_rhythm(
+    deep: Option<&DeepTrackFeatures>,
+    fallback_bpm: Option<f64>,
+    mix_in_sec: f64,
+    mix_out_sec: f64,
+) -> TrackRhythm {
+    let Some(bg) = deep.and_then(|d| d.beat_grid.as_ref()) else {
+        return TrackRhythm {
+            fallback_bpm,
+            ..Default::default()
+        };
+    };
+    let real_downbeats = bg.downbeats_real.then_some(bg.downbeats.as_slice());
+    let fit = |center: f64| {
+        let grid = fit_local_grid(&bg.beats, center, GRID_FIT_HALF_WINDOW_SEC)?;
+        let bars =
+            real_downbeats.and_then(|d| bar_offset(&grid, d, center, GRID_FIT_HALF_WINDOW_SEC));
+        Some((grid, bars))
+    };
+    let mix_in = fit(mix_in_sec);
+    let mix_out = fit(mix_out_sec);
+    TrackRhythm {
+        in_grid: mix_in.map(|(g, _)| g),
+        out_grid: mix_out.map(|(g, _)| g),
+        in_bar_offset: mix_in.and_then(|(_, b)| b),
+        out_bar_offset: mix_out.and_then(|(_, b)| b),
+        fallback_bpm,
+    }
+}
+
+/// The stretch of source audio each track contributes, before any tempo change.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SourceSpan {
+    start: f64,
+    dur: f64,
+}
+
+/// Picks each track's trim-in and trim-out points and snaps the trim-in onto a
+/// real beat (a real bar one, when downbeat evidence allows) so the incoming
+/// stream never opens mid-beat.
+fn compute_source_spans(
+    analyses: &[&TrackMixAnalysis],
+    transitions: &[MixTransition],
+    rhythms: &[TrackRhythm],
+) -> Vec<SourceSpan> {
+    let n = analyses.len();
+    (0..n)
+        .map(|i| {
+            let a = analyses[i];
+            let incoming = if i > 0 { transitions.get(i - 1) } else { None };
+            let outgoing = transitions.get(i);
+
+            let raw_start = incoming.map(|t| t.to_intro_start_sec).unwrap_or(0.0);
+            let start = match (incoming, rhythms.get(i).and_then(|r| r.in_grid)) {
+                (Some(_), Some(grid)) => {
+                    let snapped = match rhythms[i].in_bar_offset {
+                        // With real downbeats the entry lands on bar one.
+                        Some(bars) => {
+                            let bar_len = grid.bar_sec();
+                            let base = grid.anchor + bars as f64 * grid.period;
+                            base + ((raw_start - base) / bar_len).round() * bar_len
+                        }
+                        None => grid.nearest_beat(raw_start),
+                    };
+                    if snapped >= 0.0 && (snapped - raw_start).abs() <= grid.bar_sec() {
+                        snapped
+                    } else {
+                        raw_start
+                    }
+                }
+                _ => raw_start,
+            };
+
+            // Trim track A to end at from_outro_start_sec so the crossfade region
+            // covers the energetic body (just before the quiet outro), not the
+            // silent tail. The quiet outro is discarded — a DJ never plays it.
+            let end = outgoing
+                .map(|t| t.from_outro_start_sec.min(a.duration_sec))
+                .unwrap_or(a.duration_sec);
+            let loop_build = outgoing.map(|t| t.loop_build_sec).unwrap_or(0.0);
+            SourceSpan {
+                start,
+                dur: (end - start + loop_build).max(8.0),
+            }
+        })
+        .collect()
+}
+
+/// Tempo factors for one track: what it plays at through its incoming blend and
+/// what it plays at through its outgoing blend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TrackTempo {
+    head: f64,
+    tail: f64,
+}
+
+/// Chooses the tempo every blend runs at, and from that each track's head and
+/// tail tempo factors.
+///
+/// Unlike a chained match, this is decided per *boundary* and nothing
+/// propagates: transition `i` only has to satisfy the two tracks it joins, so
+/// the mix's tempo is free to travel across a set (120 to 134 BPM in the
+/// reference playlist) while no individual track is ever bent more than
+/// `TEMPO_MATCH_LIMIT` from its own tempo. Chaining every track to the first
+/// one, which is what a single constant factor per track mathematically forces,
+/// pinned that same playlist's 134 BPM closer at 8.7% slow.
+///
+/// A boundary whose two tempos cannot meet inside the limit from both sides is
+/// reported unmatched: the renderer then blends it without claiming a beat lock
+/// rather than stretching a track until it sounds wrong.
+fn plan_blend_tempos(
+    in_bpms: &[Option<f64>],
+    out_bpms: &[Option<f64>],
+) -> (Vec<TrackTempo>, Vec<bool>) {
+    let n = in_bpms.len();
+    let mut tempos = vec![
+        TrackTempo {
+            head: 1.0,
+            tail: 1.0
+        };
+        n
+    ];
+    let mut matched = vec![false; n.saturating_sub(1)];
+    if n == 0 {
+        return (tempos, matched);
+    }
+
+    for i in 0..n.saturating_sub(1) {
+        let out_bpm = out_bpms[i].filter(|b| *b > 0.0);
+        let in_bpm = in_bpms[i + 1].filter(|b| *b > 0.0);
+        let (Some(a), Some(raw_b)) = (out_bpm, in_bpm) else {
+            tempos[i].tail = tempos[i].head;
+            tempos[i + 1].head = 1.0;
+            continue;
+        };
+        let b = fold_bpm_octave(a, raw_b);
+        let lo = (1.0 - TEMPO_MATCH_LIMIT) * a.max(b);
+        let hi = (1.0 + TEMPO_MATCH_LIMIT) * a.min(b);
+        if lo > hi {
+            tempos[i].tail = tempos[i].head;
+            tempos[i + 1].head = 1.0;
+            continue;
+        }
+        // Meet in the middle so neither track carries the whole adjustment.
+        let blend_bpm = (a * b).sqrt().clamp(lo, hi);
+        tempos[i].tail = blend_bpm / a;
+        tempos[i + 1].head = blend_bpm / b;
+        matched[i] = true;
+    }
+    if let Some(last) = tempos.last_mut() {
+        last.tail = last.head;
+    }
+    (tempos, matched)
+}
+
+/// Builds a track's tempo map from its head and tail factors, placing any
+/// mid-track tempo move clear of both blends.
+///
+/// The move is stepped rather than continuous. ffmpeg's runtime `atempo`
+/// commands were measured accumulating 780 ms of timing error over a 30 s ramp,
+/// which would put the following blend badly out; stepped `concat` segments
+/// cost ~1.7 ms per boundary and nothing else, and at ≤1.2% per step the move
+/// is inaudible anyway.
+fn build_tempo_map(
+    span: SourceSpan,
+    tempo: TrackTempo,
+    head_guard_sec: f64,
+    tail_guard_sec: f64,
+) -> TempoMap {
+    let change = tempo.tail / tempo.head.max(1e-6) - 1.0;
+    if !change.is_finite() || change.abs() < 1e-6 {
+        return TempoMap::constant(span.dur, tempo.head);
+    }
+
+    let steps = ((change.abs() / MAX_SINGLE_TEMPO_STEP).ceil() as usize)
+        .saturating_sub(1)
+        .min(MAX_TEMPO_STEPS);
+    let head_guard = head_guard_sec.max(0.0);
+    let tail_guard = tail_guard_sec.max(0.0);
+    let move_dur = steps as f64 * TEMPO_STEP_SEC;
+    if head_guard + move_dur + tail_guard >= span.dur {
+        // No room between the two blends to change tempo at all: keep the
+        // incoming blend locked and let the caller drop the outgoing lock.
+        return TempoMap::constant(span.dur, tempo.head);
+    }
+
+    let mut segments = Vec::with_capacity(steps + 2);
+    segments.push((head_guard, tempo.head));
+    for k in 0..steps {
+        let t = (k + 1) as f64 / (steps + 1) as f64;
+        segments.push((TEMPO_STEP_SEC, tempo.head + (tempo.tail - tempo.head) * t));
+    }
+    segments.push((span.dur - head_guard - move_dur, tempo.tail));
+    TempoMap { segments }
+}
+
+#[derive(Debug, Clone)]
 struct RenderTiming {
     start: f64,
     trim_dur: f64,
+    tempo: TempoMap,
     effective_dur: f64,
-    fade_in_sec: f64,
-    fade_out_sec: f64,
     gain_db: f64,
-    bpm_adjust_pct: f64,
 }
 
-/// Folds `bpm` by whole octaves (halving/doubling) until it sits closest to
-/// `target`. A track tagged or detected at half/double time describes the same
-/// groove, so 66 against a 128 BPM chain should be treated as 132 — one hop
-/// inside the match clamp — rather than an impossible 94% stretch that clamps
-/// out and leaves the drums fighting each other.
-fn fold_bpm_octave(target: f64, bpm: f64) -> f64 {
-    if !(target.is_finite() && bpm.is_finite()) || target <= 0.0 || bpm <= 0.0 {
-        return bpm;
-    }
-    let mut folded = bpm;
-    // sqrt(2) is the break-even point: past it, the other octave is closer.
-    while folded / target > std::f64::consts::SQRT_2 {
-        folded /= 2.0;
-    }
-    while target / folded > std::f64::consts::SQRT_2 {
-        folded *= 2.0;
-    }
-    folded
-}
-
-/// Chains per-track pitch-preserving tempo factors so each track's *effective*
-/// BPM (its own BPM times its accumulated factor) is beat-matched toward the
-/// previous track's effective BPM, clamped to ±`MAX_BPM_MATCH_ADJUST` per hop
-/// so large BPM gaps fall back to an unmatched blend instead of an extreme
-/// tempo stretch. Octave-equivalent tempos are folded first so half/double-time
-/// readings match instead of clamping out.
-fn compute_bpm_factors(bpms: &[Option<f64>]) -> Vec<f64> {
-    let n = bpms.len();
-    let mut bpm_factors = vec![1.0f64; n];
-    for i in 1..n {
-        if let (Some(prev_bpm), Some(curr_bpm)) = (bpms[i - 1], bpms[i]) {
-            if prev_bpm > 0.0 && curr_bpm > 0.0 {
-                let prev_eff = prev_bpm * bpm_factors[i - 1];
-                let folded = fold_bpm_octave(prev_eff, curr_bpm);
-                bpm_factors[i] = (prev_eff / folded)
-                    .clamp(1.0 - MAX_BPM_MATCH_ADJUST, 1.0 + MAX_BPM_MATCH_ADJUST);
-            }
-        }
-    }
-    bpm_factors
-}
-
-/// Per-track rhythmic grid the renderer uses to lock transitions to real
-/// downbeats. All times are in the track's own pre-tempo-adjust seconds.
-#[derive(Debug, Clone, Default)]
-struct TrackGrid {
-    downbeats: Vec<f64>,
-    beat_sec: f64,
-}
-
-impl TrackGrid {
-    fn bar_sec(&self) -> f64 {
-        self.beat_sec * 4.0
-    }
-
-    /// True when there is enough real (not synthesised) timing to align against.
-    fn has_grid(&self) -> bool {
-        self.beat_sec > 0.0 && self.downbeats.len() >= 2
-    }
-
-    fn nearest_downbeat(&self, target: f64, tolerance: f64) -> Option<f64> {
-        snap_to_beat(&self.downbeats, target, tolerance)
-    }
-
-    fn downbeat_at_or_after(&self, target: f64) -> Option<f64> {
-        self.downbeats.iter().copied().find(|&d| d >= target - 1e-6)
-    }
-}
-
-/// Builds a track's downbeat grid from neural beat-tracking output. Falls back
-/// to every 4th detected beat when explicit downbeats are missing, and to no
-/// grid at all when there is no neural analysis — a grid synthesised from BPM
-/// alone is anchored at file t=0 and so carries no real phase information.
-fn build_track_grid(deep: Option<&DeepTrackFeatures>, bpm: Option<f64>) -> TrackGrid {
-    let beat_sec = bpm.filter(|b| *b > 20.0).map_or(0.0, |b| 60.0 / b);
-    let downbeats = deep
-        .and_then(|d| d.beat_grid.as_ref())
-        .map(|bg| {
-            if bg.downbeats.len() >= 2 {
-                bg.downbeats.clone()
-            } else {
-                bg.beats.iter().copied().step_by(4).collect()
-            }
-        })
-        .unwrap_or_default();
-    TrackGrid {
-        downbeats,
-        beat_sec,
-    }
-}
-
-/// Snaps a trim-in point to the nearest real downbeat so a track's stream starts
-/// on beat 1 of a bar rather than mid-bar.
-fn snap_start_to_downbeat(start: f64, grid: &TrackGrid) -> f64 {
-    if !grid.has_grid() {
-        return start;
-    }
-    match grid.nearest_downbeat(start, grid.bar_sec()) {
-        Some(d) if d >= 0.0 => d,
-        _ => start,
-    }
-}
-
+/// Resolves every track's source span, tempo map and fade lengths.
+///
+/// Returns the timings alongside a per-transition flag saying whether that
+/// boundary really is beat-matched — a boundary can lose its match here when a
+/// track turns out to have no room to change tempo between its two blends.
 fn compute_render_timings(
     analyses: &[&TrackMixAnalysis],
     transitions: &[MixTransition],
-    bpm_factors: &[f64],
-    grids: &[TrackGrid],
-) -> Vec<RenderTiming> {
+    rhythms: &[TrackRhythm],
+    tempos: &[TrackTempo],
+    matched: &[bool],
+) -> (Vec<RenderTiming>, Vec<bool>) {
     let n = analyses.len();
+    let spans = compute_source_spans(analyses, transitions, rhythms);
+    let mut matched = matched.to_vec();
     let mut out = Vec::with_capacity(n);
+
     for i in 0..n {
-        let a = analyses[i];
         let incoming = if i > 0 { transitions.get(i - 1) } else { None };
         let outgoing = transitions.get(i);
+        let tempo = tempos[i];
+        let head_guard = incoming
+            .map(|t| t.crossfade_sec * tempo.head + TEMPO_MOVE_GUARD_SEC)
+            .unwrap_or(TEMPO_MOVE_GUARD_SEC);
+        let tail_guard = outgoing
+            .map(|t| t.crossfade_sec * tempo.tail + TEMPO_MOVE_GUARD_SEC)
+            .unwrap_or(TEMPO_MOVE_GUARD_SEC);
+        let map = build_tempo_map(spans[i], tempo, head_guard, tail_guard);
 
-        // Snap the trim-in to a real downbeat so the incoming stream opens on
-        // beat 1 of a bar; planner entry points land wherever the window scoring
-        // put them (0.0/0.2/0.5s in practice), which starts the track mid-bar.
-        let start = incoming.map(|t| t.to_intro_start_sec).unwrap_or(0.0);
-        let start = match grids.get(i) {
-            Some(g) if incoming.is_some() => snap_start_to_downbeat(start, g),
-            _ => start,
-        };
-        // Trim track A to end at from_outro_start_sec so the acrossfade crossfade
-        // region covers the energetic body (just before the quiet outro), not the
-        // silent tail.  The quiet outro is discarded — a DJ never plays it.
-        let end = outgoing
-            .map(|t| t.from_outro_start_sec.min(a.duration_sec))
-            .unwrap_or(a.duration_sec);
-        let loop_build = outgoing.map(|t| t.loop_build_sec).unwrap_or(0.0);
-        let trim_dur = (end - start + loop_build).max(8.0);
-        let bpm_factor = bpm_factors[i];
-        let effective_dur = trim_dur / bpm_factor;
-        let fade_in_sec = incoming
-            .map(|t| t.crossfade_sec)
-            .unwrap_or(0.0)
-            .clamp(0.0, effective_dur.max(1.0));
-        let fade_out_sec = outgoing
-            .map(|t| t.crossfade_sec)
-            .unwrap_or(0.0)
-            .clamp(0.0, effective_dur.max(1.0));
-        let loudness = a.loudness_lufs.unwrap_or(-14.0);
+        // `build_tempo_map` falls back to a constant head tempo when the track
+        // is too short to change tempo clear of both blends. When that happens
+        // the outgoing blend is no longer tempo-matched, so say so instead of
+        // phase-locking against a tempo the track is not actually playing.
+        if map.is_constant() && (tempo.tail - tempo.head).abs() > 1e-6 {
+            if let Some(flag) = matched.get_mut(i) {
+                *flag = false;
+            }
+        }
+
+        let effective_dur = map.out_duration();
+        let loudness = analyses[i].loudness_lufs.unwrap_or(-14.0);
         // Allow up to -12 dB reduction for very hot modern masters (e.g. -8 LUFS),
         // but cap gain boost at +6 dB to avoid clipping quiet tracks.
         //
@@ -2957,16 +3211,15 @@ fn compute_render_timings(
         // different volumes. Transition-local shaping lives in the filter graph.
         let base_gain = (-14.0 - loudness).clamp(-12.0, 6.0);
         out.push(RenderTiming {
-            start,
-            trim_dur,
+            start: spans[i].start,
+            trim_dur: spans[i].dur,
+            tempo: map,
             effective_dur,
-            fade_in_sec,
-            fade_out_sec,
             gain_db: base_gain,
-            bpm_adjust_pct: (bpm_factor - 1.0) * 100.0,
         });
     }
-    out
+
+    (out, matched)
 }
 
 /// Longest overlap over which two not-quite-matched tempos stay usably in sync.
@@ -2991,9 +3244,23 @@ fn max_cross_for_tempo_drift(out_bpm: Option<f64>, in_bpm: Option<f64>) -> f64 {
     (0.5 * beat_sec / rel_err).max(6.0)
 }
 
-/// Residual effective-BPM error below which a blend is treated as beat-locked
-/// for its whole length (0.002 = 0.2%).
-const TEMPO_DRIFT_TOLERANCE: f64 = 0.002;
+/// Effective tempo each track plays at through its incoming and outgoing blend.
+fn blend_bpms(
+    rhythms: &[TrackRhythm],
+    timings: &[RenderTiming],
+) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+    let head = rhythms
+        .iter()
+        .zip(timings.iter())
+        .map(|(r, t)| r.in_bpm().map(|b| b * t.tempo.head_factor()))
+        .collect();
+    let tail = rhythms
+        .iter()
+        .zip(timings.iter())
+        .map(|(r, t)| r.out_bpm().map(|b| b * t.tempo.tail_factor()))
+        .collect();
+    (head, tail)
+}
 
 /// Crossfade duration actually usable for transition `i` (between track `i`
 /// and `i+1`), clamped to both tracks' available (post-tempo) duration and to
@@ -3002,15 +3269,19 @@ fn resolve_cross_durs(
     plan: &MixPlan,
     timings: &[RenderTiming],
     n: usize,
-    effective_bpms: &[Option<f64>],
+    rhythms: &[TrackRhythm],
 ) -> Vec<f64> {
+    // Compare the tempos the two tracks *play at*, not their native ones: a
+    // matched boundary has no residual to cap, and passing native tempos here
+    // would shorten exactly the blends that were successfully matched.
+    let (in_bpms, out_bpms) = blend_bpms(rhythms, timings);
     (0..n.saturating_sub(1))
         .map(|i| {
             let max_a = timings.get(i).map(|t| t.effective_dur).unwrap_or(59.0);
             let max_b = timings.get(i + 1).map(|t| t.effective_dur).unwrap_or(59.0);
             let drift_cap = max_cross_for_tempo_drift(
-                effective_bpms.get(i).copied().flatten(),
-                effective_bpms.get(i + 1).copied().flatten(),
+                out_bpms.get(i).copied().flatten(),
+                in_bpms.get(i + 1).copied().flatten(),
             );
             plan.transitions
                 .get(i)
@@ -3025,27 +3296,26 @@ fn resolve_cross_durs(
 }
 
 /// Output-timeline placement for every track, with each overlap locked to a
-/// shared downbeat.
+/// shared beat.
 struct AlignedTimeline {
     output_starts: Vec<f64>,
     cross_durs: Vec<f64>,
 }
 
-/// Places each track on the output timeline so the incoming track's first
-/// downbeat lands on an outgoing-track downbeat.
+/// Places each track on the output timeline so its first beat lands on a beat
+/// of the track it is mixing into — on a *bar one* of it when both tracks carry
+/// real downbeat evidence.
 ///
 /// Matching tempo is not enough for the drums to sit on top of each other. The
 /// overlap otherwise starts at an arbitrary offset, so the two grids meet at a
 /// random phase and stay there: measured on a real 45 s blend whose tempos were
 /// matched to 125.00 vs 125.00 BPM, the incoming downbeats sat a persistent
-/// ~870 ms — nearly half a bar — away from the outgoing ones. Because
-/// `compute_bpm_factors` has already matched the effective tempos, locking the
-/// phase once at the overlap start keeps both grids locked for the whole blend.
+/// ~870 ms — nearly half a bar — away from the outgoing ones.
 fn resolve_aligned_timeline(
     timings: &[RenderTiming],
     cross_durs: &[f64],
-    grids: &[TrackGrid],
-    bpm_factors: &[f64],
+    rhythms: &[TrackRhythm],
+    matched: &[bool],
 ) -> AlignedTimeline {
     let n = timings.len();
     let mut output_starts = vec![0.0f64; n];
@@ -3056,38 +3326,44 @@ fn resolve_aligned_timeline(
         let Some(&nominal_cross) = crosses.get(prev) else {
             continue;
         };
-        let out_grid = &grids[prev];
-        let in_grid = &grids[i];
-        let out_factor = bpm_factors[prev].max(1e-6);
+        let lock = matched.get(prev).copied().unwrap_or(false);
+        let out_grid = rhythms[prev].out_grid;
+        let in_grid = rhythms[i].in_grid;
+        let out_factor = timings[prev].tempo.tail_factor().max(1e-6);
 
-        // Bar length of the outgoing track measured on the output timeline.
-        let bar_out = out_grid.bar_sec() / out_factor;
-        let aligned = out_grid.has_grid() && in_grid.has_grid() && bar_out > 0.25;
+        // A bar is only a meaningful unit when both ends know where bar one is;
+        // otherwise the quantum is a beat, which still lines the kicks up.
+        let bar_locked =
+            rhythms[prev].out_bar_offset.is_some() && rhythms[i].in_bar_offset.is_some();
+        let quantum = match (lock, out_grid) {
+            (true, Some(g)) => {
+                let beats = if bar_locked { 4.0 } else { 1.0 };
+                g.period * beats / out_factor
+            }
+            _ => 0.0,
+        };
 
-        // Quantise the blend to whole bars so it also *ends* on a phrase edge.
+        // Quantise the blend so it also *ends* on a grid edge.
         let mut cross = nominal_cross;
-        if aligned {
-            let bars = (cross / bar_out).round().max(1.0);
-            cross = (bars * bar_out)
+        if quantum > 0.25 {
+            let units = (cross / quantum).round().max(1.0);
+            cross = (units * quantum)
                 .min(timings[prev].effective_dur)
                 .min(timings[i].effective_dur);
         }
 
         let nominal_start = output_starts[prev] + timings[prev].effective_dur - cross;
-        let shift = if aligned {
-            downbeat_phase_shift(
+        let shift = match (lock, out_grid, in_grid) {
+            (true, Some(og), Some(ig)) if quantum > 0.25 => blend_phase_shift(
                 nominal_start,
                 output_starts[prev],
                 &timings[prev],
-                out_factor,
-                out_grid,
+                &og,
                 &timings[i],
-                bpm_factors[i].max(1e-6),
-                in_grid,
-                bar_out,
-            )
-        } else {
-            0.0
+                &ig,
+                quantum,
+            ),
+            _ => 0.0,
         };
 
         output_starts[i] = (nominal_start + shift).max(output_starts[prev] + 1.0);
@@ -3101,39 +3377,35 @@ fn resolve_aligned_timeline(
     }
 }
 
-/// Sub-bar nudge that makes the incoming track's first downbeat coincide with an
-/// outgoing-track downbeat at the start of the overlap. Returns a value in
-/// `[-bar/2, +bar/2]`, or 0.0 when either grid does not cover the mix point.
+/// Sub-quantum nudge that makes the incoming track's first grid beat coincide
+/// with an outgoing-track grid beat at the start of the overlap. Returns a value
+/// in `[-quantum/2, +quantum/2]`.
 #[allow(clippy::too_many_arguments)]
-fn downbeat_phase_shift(
+fn blend_phase_shift(
     nominal_start: f64,
     out_track_start: f64,
     out_timing: &RenderTiming,
-    out_factor: f64,
-    out_grid: &TrackGrid,
+    out_grid: &LocalGrid,
     in_timing: &RenderTiming,
-    in_factor: f64,
-    in_grid: &TrackGrid,
-    bar_out: f64,
+    in_grid: &LocalGrid,
+    quantum: f64,
 ) -> f64 {
-    // Where the incoming stream's first downbeat lands on the output timeline.
-    let in_offset = in_grid
-        .downbeat_at_or_after(in_timing.start)
-        .map(|d| (d - in_timing.start) / in_factor)
-        .unwrap_or(0.0);
-    let incoming_downbeat = nominal_start + in_offset;
+    // Where the incoming stream's first grid beat lands on the output timeline.
+    let in_first = in_grid.beat_at_or_after(in_timing.start);
+    let in_offset = in_timing.tempo.to_output(in_first - in_timing.start);
+    let incoming_beat = nominal_start + in_offset;
 
-    // Any outgoing downbeat near the mix point works as the anchor; the modular
-    // wrap below handles the rest of the grid.
-    let mix_point_local = out_timing.start + (nominal_start - out_track_start) * out_factor;
-    let Some(anchor_local) = out_grid.nearest_downbeat(mix_point_local, out_grid.bar_sec() * 2.0)
-    else {
-        return 0.0;
-    };
-    let anchor = out_track_start + (anchor_local - out_timing.start) / out_factor;
+    // Any outgoing grid beat near the mix point works as the anchor; the modular
+    // wrap below covers the rest of the grid. Both blends run at a constant
+    // tempo by construction, so mapping through the tail factor is exact here.
+    let out_factor = out_timing.tempo.tail_factor().max(1e-6);
+    let mix_point_local = out_timing.start + out_timing.trim_dur
+        - (out_timing.effective_dur - nominal_start + out_track_start) * out_factor;
+    let anchor_local = out_grid.nearest_beat(mix_point_local);
+    let anchor = out_track_start + out_timing.tempo.to_output(anchor_local - out_timing.start);
 
-    let delta = anchor - incoming_downbeat;
-    let shift = delta - bar_out * (delta / bar_out).round();
+    let delta = anchor - incoming_beat;
+    let shift = delta - quantum * (delta / quantum).round();
     if shift.is_finite() {
         shift
     } else {
@@ -3141,23 +3413,54 @@ fn downbeat_phase_shift(
     }
 }
 
+/// Renders one track's `atrim`/`atempo` chain, splitting it into `concat`ed
+/// segments when the track changes tempo mid-way.
+fn tempo_chain_parts(index: usize, timing: &RenderTiming, label: &str) -> Vec<String> {
+    let segments = &timing.tempo.segments;
+    let single = segments.len() <= 1;
+    let mut parts = Vec::with_capacity(segments.len() + 1);
+    let mut labels = Vec::with_capacity(segments.len());
+    let mut src_offset = 0.0;
+    for (seg, (dur, factor)) in segments.iter().enumerate() {
+        let out_label = if single {
+            label.to_string()
+        } else {
+            format!("{label}s{seg}")
+        };
+        parts.push(format!(
+            "[{index}:a]atrim=start={:.4}:duration={:.4},asetpts=PTS-STARTPTS,             aresample={RENDER_SAMPLE_RATE},atempo={:.6}[{out_label}]",
+            timing.start + src_offset,
+            dur,
+            factor.clamp(0.5, 2.0)
+        ));
+        labels.push(format!("[{out_label}]"));
+        src_offset += dur;
+    }
+    if !single {
+        let count = labels.len();
+        parts.push(format!(
+            "{}concat=n={count}:v=0:a=1[{label}]",
+            labels.join("")
+        ));
+    }
+    parts
+}
+
 fn build_filter_complex(
     plan: &MixPlan,
     timings: &[RenderTiming],
     n: usize,
-    grids: &[TrackGrid],
-    bpm_factors: &[f64],
-    effective_bpms: &[Option<f64>],
+    rhythms: &[TrackRhythm],
+    matched: &[bool],
 ) -> String {
     let safe_mode = plan.style == "safe_mix";
     let transitions = &plan.transitions;
-    let nominal_durs = resolve_cross_durs(plan, timings, n, effective_bpms);
-    let aligned = resolve_aligned_timeline(timings, &nominal_durs, grids, bpm_factors);
+    let nominal_durs = resolve_cross_durs(plan, timings, n, rhythms);
+    let aligned = resolve_aligned_timeline(timings, &nominal_durs, rhythms, matched);
     let cross_durs = aligned.cross_durs;
     let output_starts = aligned.output_starts;
 
-    // capacity: N per-track parts + (N-1) adelay parts + 1 mix/limiter
-    let mut parts: Vec<String> = Vec::with_capacity(n * 2);
+    let mut parts: Vec<String> = Vec::with_capacity(n * 3);
 
     // ── Per-track pre-processing ──────────────────────────────────────────────
     for (i, t) in timings.iter().enumerate() {
@@ -3167,18 +3470,10 @@ fn build_filter_complex(
         let crossfade_dur_in = if i > 0 { cross_durs[i - 1] } else { 0.0 };
         let crossfade_dur_out = if !is_last { cross_durs[i] } else { 0.0 };
 
-        // Pitch-preserving tempo adjustment. aresample/asetrate also shifts pitch;
-        // atempo stretches time only, keeping the original pitch.
-        let tempo = if t.bpm_adjust_pct.abs() > 0.01 {
-            let factor = 1.0 + t.bpm_adjust_pct / 100.0;
-            if factor.is_finite() && (0.5..2.0).contains(&factor) {
-                format!(",atempo={factor:.6}")
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
+        // Pitch-preserving tempo, emitted for every track even at factor 1.0 so
+        // `atempo`'s fixed input-prefix cost is identical across the mix.
+        let src = format!("p{i}");
+        parts.extend(tempo_chain_parts(i, t, &src));
 
         // Incoming: the new track fades in gradually across the *entire*
         // crossfade window while the outgoing track is still at full/regular
@@ -3285,10 +3580,9 @@ fn build_filter_complex(
         };
 
         parts.push(format!(
-            "[{i}:a]atrim=start={:.3}:duration={:.3},asetpts=PTS-STARTPTS,\
-             volume={:.3}dB{tempo}{fade_in}{fade_out}{bass_swap_out}{bass_swap_in}\
+            "[{src}]volume={:.3}dB{fade_in}{fade_out}{bass_swap_out}{bass_swap_in}\
              {drum_intro}{pad}[t{i}]",
-            t.start, t.trim_dur, t.gain_db
+            t.gain_db
         ));
     }
 
@@ -3306,8 +3600,11 @@ fn build_filter_complex(
     } else {
         let mut mix_inputs = String::from("[t0]");
         for (i, &output_start) in output_starts.iter().enumerate().skip(1) {
-            let delay_ms = (output_start * 1000.0).round().max(0.0) as i64;
-            parts.push(format!("[t{i}]adelay={delay_ms}:all=1[d{i}]"));
+            // Sample-resolution placement: `adelay`'s default millisecond
+            // rounding is up to 0.5 ms of avoidable phase error on a join whose
+            // whole point is that the drums coincide.
+            let delay_samples = (output_start * RENDER_SAMPLE_RATE as f64).round().max(0.0) as i64;
+            parts.push(format!("[t{i}]adelay={delay_samples}S:all=1[d{i}]"));
             mix_inputs.push_str(&format!("[d{i}]"));
         }
         parts.push(format!(
@@ -3395,19 +3692,44 @@ async fn render_mix(
 
     tracing::debug!(resolved_bpms = ?bpms, "per-track BPM resolution");
 
-    let bpm_factors = compute_bpm_factors(&bpms);
-    let effective_bpms: Vec<Option<f64>> = bpms
+    // Fit each track's grid at the two points it is actually mixed at, rather
+    // than trusting one whole-track tempo: real grids slip half a beat and drop
+    // beats in places, and a single global BPM is typically 0.03-0.06% off,
+    // which walks the grid 200 ms across a track.
+    let rhythms: Vec<TrackRhythm> = tracks
         .iter()
-        .zip(bpm_factors.iter())
-        .map(|(b, f)| b.map(|b| b * f))
-        .collect();
-    let grids: Vec<TrackGrid> = tracks
-        .iter()
+        .zip(analyses.iter())
         .zip(bpms.iter())
-        .map(|(t, bpm)| build_track_grid(deep_features.get(&t.track_id.to_string()), *bpm))
+        .enumerate()
+        .map(|(i, ((t, a), bpm))| {
+            let mix_in = if i > 0 {
+                transitions
+                    .get(i - 1)
+                    .map(|tr| tr.to_intro_start_sec)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let mix_out = transitions
+                .get(i)
+                .map(|tr| tr.from_outro_start_sec.min(a.duration_sec))
+                .unwrap_or(a.duration_sec);
+            build_track_rhythm(
+                deep_features.get(&t.track_id.to_string()),
+                *bpm,
+                mix_in,
+                mix_out,
+            )
+        })
         .collect();
 
-    let mut timings = compute_render_timings(analyses, transitions, &bpm_factors, &grids);
+    let in_bpms: Vec<Option<f64>> = rhythms.iter().map(|r| r.in_bpm()).collect();
+    let out_bpms: Vec<Option<f64>> = rhythms.iter().map(|r| r.out_bpm()).collect();
+    let (tempos, matched) = plan_blend_tempos(&in_bpms, &out_bpms);
+    tracing::debug!(?in_bpms, ?out_bpms, ?tempos, ?matched, "blend tempo plan");
+
+    let (mut timings, matched) =
+        compute_render_timings(analyses, transitions, &rhythms, &tempos, &matched);
 
     // Gain-match the spans the mix actually plays, not the whole files. Whole-file
     // loudness left consecutive tracks up to ~5 dB apart in a measured render,
@@ -3440,8 +3762,7 @@ async fn render_mix(
         );
     }
 
-    let filter_complex =
-        build_filter_complex(plan, &timings, n, &grids, &bpm_factors, &effective_bpms);
+    let filter_complex = build_filter_complex(plan, &timings, n, &rhythms, &matched);
     tracing::debug!(filter_complex = %filter_complex, "render filter graph");
 
     let mut input_args: Vec<String> = Vec::new();
@@ -4260,18 +4581,58 @@ mod tests {
         }
     }
 
-    /// Renders with no rhythmic grid, i.e. the pre-deep-analysis path: timings
-    /// then follow the plan verbatim with no bar quantisation or phase locking.
-    fn no_grids(n: usize) -> Vec<TrackGrid> {
-        vec![TrackGrid::default(); n]
+    /// Renders with no rhythmic evidence, i.e. the pre-deep-analysis path:
+    /// timings follow the plan verbatim with no quantisation or phase locking.
+    fn no_rhythm(n: usize) -> Vec<TrackRhythm> {
+        vec![TrackRhythm::default(); n]
     }
 
-    fn unit_factors(n: usize) -> Vec<f64> {
-        vec![1.0; n]
+    fn unit_tempos(n: usize) -> Vec<TrackTempo> {
+        vec![
+            TrackTempo {
+                head: 1.0,
+                tail: 1.0
+            };
+            n
+        ]
     }
 
-    fn no_bpms(n: usize) -> Vec<Option<f64>> {
-        vec![None; n]
+    /// Perfectly regular grid at `bpm` with its first beat at `phase`, and real
+    /// bar ones every 4 beats from there.
+    fn rhythm_at(bpm: f64, phase: f64, mix_in: f64, mix_out: f64, dur: f64) -> TrackRhythm {
+        let beat = 60.0 / bpm;
+        let beats: Vec<f64> = (0..(dur / beat) as usize)
+            .map(|i| phase + beat * i as f64)
+            .collect();
+        let downbeats: Vec<f64> = beats.iter().copied().step_by(4).collect();
+        let in_grid = fit_local_grid(&beats, mix_in, GRID_FIT_HALF_WINDOW_SEC);
+        let out_grid = fit_local_grid(&beats, mix_out, GRID_FIT_HALF_WINDOW_SEC);
+        TrackRhythm {
+            in_bar_offset: in_grid
+                .and_then(|g| bar_offset(&g, &downbeats, mix_in, GRID_FIT_HALF_WINDOW_SEC)),
+            out_bar_offset: out_grid
+                .and_then(|g| bar_offset(&g, &downbeats, mix_out, GRID_FIT_HALF_WINDOW_SEC)),
+            in_grid,
+            out_grid,
+            fallback_bpm: Some(bpm),
+        }
+    }
+
+    /// `compute_render_timings` with every track left at its own tempo.
+    fn timings_for(
+        refs: &[&TrackMixAnalysis],
+        transitions: &[MixTransition],
+        rhythms: &[TrackRhythm],
+    ) -> Vec<RenderTiming> {
+        let n = refs.len();
+        compute_render_timings(
+            refs,
+            transitions,
+            rhythms,
+            &unit_tempos(n),
+            &vec![true; n.saturating_sub(1)],
+        )
+        .0
     }
 
     fn filter_for(plan: &MixPlan, timings: &[RenderTiming], n: usize) -> String {
@@ -4279,9 +4640,8 @@ mod tests {
             plan,
             timings,
             n,
-            &no_grids(n),
-            &unit_factors(n),
-            &no_bpms(n),
+            &no_rhythm(n),
+            &vec![false; n.saturating_sub(1)],
         )
     }
 
@@ -4291,7 +4651,7 @@ mod tests {
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
         let transition = render_transition("a", "b", 12.0, 0.5, false, 0.0);
         let plan = render_plan("club_blend", transition);
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &no_grids(2));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
         let filter = filter_for(&plan, &timings, 2);
         // Outgoing gives up its low end from the handover; incoming holds its own
         // back until the same instant. Both steps land together so the total low
@@ -4310,7 +4670,7 @@ mod tests {
         // Transition asks for bass duck, filter sweep, and echo. Safe mode must strip them.
         let transition = render_transition("a", "b", 12.0, 0.7, true, 0.5);
         let plan = render_plan("safe_mix", transition);
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &no_grids(2));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
         let filter = filter_for(&plan, &timings, 2);
         assert!(!filter.contains("bass=g=-"));
         assert!(!filter.contains("aecho"));
@@ -4328,7 +4688,7 @@ mod tests {
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
         let transition = render_transition("a", "b", 16.0, 0.0, true, 0.0);
         let plan = render_plan("club_blend", transition);
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &no_grids(2));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
         let filter = filter_for(&plan, &timings, 2);
         // 16s crossfade -> 30% tail = 4.8s fade, holding full volume until 195.2s.
         assert!(filter.contains("afade=t=out:st=195.200:d=4.800:curve=qsin"));
@@ -4347,7 +4707,7 @@ mod tests {
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
         let transition = render_transition("a", "b", 18.0, 0.0, false, 0.0);
         let plan = render_plan("chill_blend", transition);
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &no_grids(2));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
         let filter = filter_for(&plan, &timings, 2);
         // Incoming fades in across the full 18s window; outgoing holds full volume
         // until the last 30% (5.4s) of that window before fading out.
@@ -4371,7 +4731,7 @@ mod tests {
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
         let transition = render_transition("a", "b", 45.0, 0.0, false, 0.0);
         let plan = render_plan("long_build", transition);
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &no_grids(2));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
         let filter = filter_for(&plan, &timings, 2);
         // 45s crossfade -> 30% tail = 13.5s fade, holding full volume until 186.5s.
         assert!(filter.contains("afade=t=out:st=186.500:d=13.500:curve=qsin"));
@@ -4406,27 +4766,16 @@ mod tests {
             per_track_energy: HashMap::new(),
             anthem_track_id: None,
         };
-        let timings =
-            compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0, 1.0], &no_grids(3));
-        let cross_durs = resolve_cross_durs(&plan, &timings, 3, &no_bpms(3));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(3));
+        let cross_durs = resolve_cross_durs(&plan, &timings, 3, &no_rhythm(3));
         let aligned =
-            resolve_aligned_timeline(&timings, &cross_durs, &no_grids(3), &unit_factors(3));
+            resolve_aligned_timeline(&timings, &cross_durs, &no_rhythm(3), &[false, false]);
         let output_starts = aligned.output_starts;
         assert_eq!(output_starts[0], 0.0);
         // track0 effective_dur=200, minus its 20s crossfade with track1.
         assert!((output_starts[1] - 180.0).abs() < 1e-6);
         // track2 starts after track1's own (trimmed) run, minus their crossfade.
         assert!(output_starts[2] > output_starts[1]);
-    }
-
-    /// Grid with downbeats every `bar` seconds starting at `phase`.
-    fn grid_at(bpm: f64, phase: f64, count: usize) -> TrackGrid {
-        let beat_sec = 60.0 / bpm;
-        let bar = beat_sec * 4.0;
-        TrackGrid {
-            downbeats: (0..count).map(|i| phase + bar * i as f64).collect(),
-            beat_sec,
-        }
     }
 
     #[test]
@@ -4439,20 +4788,23 @@ mod tests {
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
         let transition = render_transition("a", "b", 20.0, 0.0, false, 0.0);
         let plan = render_plan("long_build", transition);
-        let grids = vec![grid_at(120.0, 0.0, 200), grid_at(120.0, 0.9, 200)];
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &grids);
-        let cross_durs = resolve_cross_durs(&plan, &timings, 2, &[Some(120.0), Some(120.0)]);
-        let aligned = resolve_aligned_timeline(&timings, &cross_durs, &grids, &unit_factors(2));
+        let rhythms = vec![
+            rhythm_at(120.0, 0.0, 0.0, 200.0, 260.0),
+            rhythm_at(120.0, 0.9, 4.0, 200.0, 260.0),
+        ];
+        let timings = timings_for(&refs, &plan.transitions, &rhythms);
+        let cross_durs = resolve_cross_durs(&plan, &timings, 2, &rhythms);
+        let aligned = resolve_aligned_timeline(&timings, &cross_durs, &rhythms, &[true]);
 
         let bar = 2.0_f64;
         let overlap_start = aligned.output_starts[1];
-        // Track A's downbeats sit on multiples of the bar from its own trim start.
+        // Track A's bar ones sit on multiples of the bar from its own trim start.
         let a_phase = (overlap_start - timings[0].start).rem_euclid(bar);
-        // Track B's stream was snapped to its own downbeat, so its first downbeat
+        // Track B's stream was snapped to its own bar one, so its first bar one
         // is the overlap start itself.
         assert!(
             a_phase < 1e-6 || (bar - a_phase) < 1e-6,
-            "overlap must begin on an outgoing downbeat, phase was {a_phase}"
+            "overlap must begin on an outgoing bar one, phase was {a_phase}"
         );
         // The nudge stays sub-bar: the blend length is preserved to within half a bar.
         assert!((aligned.cross_durs[0] - cross_durs[0]).abs() <= bar / 2.0 + 1e-6);
@@ -4466,10 +4818,13 @@ mod tests {
         // also ends on a phrase edge rather than mid-bar.
         let transition = render_transition("a", "b", 45.0, 0.0, false, 0.0);
         let plan = render_plan("long_build", transition);
-        let grids = vec![grid_at(120.0, 0.0, 200), grid_at(120.0, 0.0, 200)];
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &grids);
-        let cross_durs = resolve_cross_durs(&plan, &timings, 2, &[Some(120.0), Some(120.0)]);
-        let aligned = resolve_aligned_timeline(&timings, &cross_durs, &grids, &unit_factors(2));
+        let rhythms = vec![
+            rhythm_at(120.0, 0.0, 0.0, 200.0, 260.0),
+            rhythm_at(120.0, 0.0, 4.0, 200.0, 260.0),
+        ];
+        let timings = timings_for(&refs, &plan.transitions, &rhythms);
+        let cross_durs = resolve_cross_durs(&plan, &timings, 2, &rhythms);
+        let aligned = resolve_aligned_timeline(&timings, &cross_durs, &rhythms, &[true]);
         let bars = aligned.cross_durs[0] / 2.0;
         assert!(
             (bars - bars.round()).abs() < 1e-6,
@@ -4479,28 +4834,42 @@ mod tests {
     }
 
     #[test]
-    fn trim_start_snaps_to_a_real_downbeat() {
+    fn trim_start_snaps_to_a_real_bar_one() {
         // Planner entry points land wherever window scoring put them (0.0/0.2/0.5s
         // in real data), which opens the incoming track mid-bar.
-        let grid = grid_at(120.0, 0.35, 50);
-        assert!((snap_start_to_downbeat(0.5, &grid) - 0.35).abs() < 1e-9);
-        assert!((snap_start_to_downbeat(2.2, &grid) - 2.35).abs() < 1e-9);
-        // Without a real grid the start is left alone rather than snapped to a
+        let analyses = [analysis("a", 120.0), analysis("b", 120.0)];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transition = render_transition("a", "b", 20.0, 0.0, false, 0.0);
+        // Bar ones every 2s from 0.35s; the plan asks to come in at 4.0s.
+        let rhythms = vec![
+            rhythm_at(120.0, 0.0, 0.0, 200.0, 260.0),
+            rhythm_at(120.0, 0.35, 4.0, 200.0, 260.0),
+        ];
+        let spans = compute_source_spans(&refs, &[transition], &rhythms);
+        assert!(
+            (spans[1].start - 4.35).abs() < 1e-6,
+            "entry snapped to {}",
+            spans[1].start
+        );
+
+        // Without any grid the start is left alone rather than snapped to a
         // synthetic grid anchored at file t=0, which carries no phase information.
-        assert!((snap_start_to_downbeat(0.5, &TrackGrid::default()) - 0.5).abs() < 1e-9);
+        let transition = render_transition("a", "b", 20.0, 0.0, false, 0.0);
+        let spans = compute_source_spans(&refs, &[transition], &no_rhythm(2));
+        assert!((spans[1].start - 4.0).abs() < 1e-9);
     }
 
     #[test]
-    fn octave_equivalent_tempos_match_instead_of_clamping() {
-        // A half-time reading describes the same groove; folding it first keeps
-        // the hop inside the match clamp instead of pinning at the limit.
-        assert!((fold_bpm_octave(128.0, 66.0) - 132.0).abs() < 1e-9);
-        assert!((fold_bpm_octave(128.0, 260.0) - 130.0).abs() < 1e-9);
-        assert!((fold_bpm_octave(128.0, 124.0) - 124.0).abs() < 1e-9);
-
-        let factors = compute_bpm_factors(&[Some(130.0), Some(66.0)]);
-        // 130 / 132 = 0.9848 — a real match, not a clamped ±10% guess.
-        assert!((factors[1] - (130.0 / 132.0)).abs() < 1e-9);
+    fn octave_equivalent_tempos_match_instead_of_going_unmatched() {
+        // A half-time reading describes the same groove, so folding it first
+        // turns an impossible 94% stretch into a 1.5% one.
+        let (tempos, matched) =
+            plan_blend_tempos(&[Some(130.0), Some(66.0)], &[Some(130.0), Some(66.0)]);
+        assert!(matched[0], "a half-time reading must still beat-match");
+        // Both sides meet in the middle of 130 and 132.
+        let blend = 130.0 * tempos[0].tail;
+        assert!((blend - (130.0f64 * 132.0).sqrt()).abs() < 1e-9);
+        assert!((66.0 * 2.0 * tempos[1].head - blend).abs() < 1e-9);
     }
 
     #[test]
@@ -4523,7 +4892,7 @@ mod tests {
         let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
         let transition = render_transition("a", "b", 12.0, 0.5, false, 0.0);
         let plan = render_plan("club_blend", transition);
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &no_grids(2));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
         // Both tracks measure -14 LUFS, so both must land at exactly unity gain.
         assert!(timings[0].gain_db.abs() < 1e-9);
         assert!(timings[1].gain_db.abs() < 1e-9);
@@ -4540,7 +4909,7 @@ mod tests {
         let mut transition = render_transition("a", "b", 45.0, 0.0, false, 0.0);
         transition.echo_tail_sec = 0.4;
         let plan = render_plan("long_build", transition);
-        let timings = compute_render_timings(&refs, &plan.transitions, &[1.0, 1.0], &no_grids(2));
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
         let filter = filter_for(&plan, &timings, 2);
         assert!(!filter.contains("aecho"));
     }
@@ -4583,51 +4952,354 @@ mod tests {
         assert_eq!(parse_ebur128_integrated("    I:  -70.5 LUFS"), None);
     }
 
-    #[test]
-    fn bpm_factors_clamp_large_gaps_to_max_bpm_match_adjust() {
-        // A large BPM gap (100 -> 140, +40%) must clamp to the tunable
-        // MAX_BPM_MATCH_ADJUST fraction rather than fully beat-matching, so
-        // pitch-preserving tempo stretch never exceeds the configured limit.
-        let factors = compute_bpm_factors(&[Some(100.0), Some(140.0)]);
-        assert!((factors[1] - (1.0 - MAX_BPM_MATCH_ADJUST)).abs() < 1e-9);
+    /// Output-timeline positions of a track's grid beats inside `[from, to]`.
+    fn output_beats(
+        rhythm: &TrackRhythm,
+        timing: &RenderTiming,
+        output_start: f64,
+        from: f64,
+        to: f64,
+        use_out_grid: bool,
+    ) -> Vec<f64> {
+        let grid = if use_out_grid {
+            rhythm.out_grid
+        } else {
+            rhythm.in_grid
+        }
+        .expect("grid");
+        let mut beats = Vec::new();
+        let mut t = grid.beat_at_or_after(timing.start);
+        while t <= timing.start + timing.trim_dur {
+            let at = output_start + timing.tempo.to_output(t - timing.start);
+            if at >= from - 1e-9 && at <= to + 1e-9 {
+                beats.push(at);
+            }
+            t += grid.period;
+        }
+        beats
     }
 
     #[test]
-    fn bpm_factors_fully_match_small_gaps_within_limit() {
-        // A small BPM gap (120 -> 123, +2.5%) is within the limit, so track 2
-        // should be stretched to exactly track 1's BPM (factor = 120/123).
-        let factors = compute_bpm_factors(&[Some(120.0), Some(123.0)]);
-        assert!((factors[1] - (120.0 / 123.0)).abs() < 1e-9);
+    fn a_matched_blend_puts_both_tracks_beats_on_top_of_each_other() {
+        // The complaint this whole path exists to answer: two tracks at
+        // different tempos, mixed for 30 s, with their grids at unrelated
+        // phases. After tempo matching and phase locking every incoming beat
+        // must land on an outgoing beat, and stay there for the whole blend.
+        let analyses = [analysis("a", 124.0), analysis("b", 127.0)];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transition = render_transition("a", "b", 30.0, 0.0, false, 0.0);
+        let plan = render_plan("club_blend", transition);
+
+        // Grids deliberately out of phase with each other and with the plan's
+        // entry point, and neither tempo is a round number.
+        let rhythms = vec![
+            rhythm_at(124.3, 0.17, 0.0, 200.0, 280.0),
+            rhythm_at(127.1, 0.61, 4.0, 200.0, 280.0),
+        ];
+        let in_bpms: Vec<Option<f64>> = rhythms.iter().map(|r| r.in_bpm()).collect();
+        let out_bpms: Vec<Option<f64>> = rhythms.iter().map(|r| r.out_bpm()).collect();
+        let (tempos, matched) = plan_blend_tempos(&in_bpms, &out_bpms);
+        assert!(matched[0], "124.3 -> 127.1 is 2.3% apart and must match");
+
+        let (timings, matched) =
+            compute_render_timings(&refs, &plan.transitions, &rhythms, &tempos, &matched);
+        let cross = resolve_cross_durs(&plan, &timings, 2, &rhythms);
+        let aligned = resolve_aligned_timeline(&timings, &cross, &rhythms, &matched);
+
+        let overlap_start = aligned.output_starts[1];
+        let overlap_end = aligned.output_starts[0] + timings[0].effective_dur;
+        assert!(
+            overlap_end - overlap_start > 20.0,
+            "expected a real overlap, got {}",
+            overlap_end - overlap_start
+        );
+
+        let out_beats = output_beats(
+            &rhythms[0],
+            &timings[0],
+            aligned.output_starts[0],
+            overlap_start,
+            overlap_end,
+            true,
+        );
+        let in_beats = output_beats(
+            &rhythms[1],
+            &timings[1],
+            aligned.output_starts[1],
+            overlap_start,
+            overlap_end,
+            false,
+        );
+        assert!(out_beats.len() > 40 && in_beats.len() > 40);
+
+        let mut worst: f64 = 0.0;
+        for b in &in_beats {
+            let nearest = out_beats
+                .iter()
+                .map(|o| (o - b).abs())
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(nearest);
+        }
+        // 5 ms is far below the ~10 ms where a doubled kick starts to sound
+        // like a flam; the pre-fix renderer measured 870 ms on a real blend.
+        assert!(
+            worst < 0.005,
+            "worst beat offset across the blend was {:.1} ms",
+            worst * 1000.0
+        );
     }
 
     #[test]
-    fn bpm_factors_chain_effective_bpm_across_three_tracks() {
-        // Each hop (100->105, +4.8%; 105-eff->110, +9.1%) is within the ±10%
-        // limit, so track 2 beat-matches to track 1's *effective* BPM and
-        // track 3 beat-matches to track 2's *effective* (already-adjusted)
-        // BPM, keeping every adjacent pair beat-matched through the chain.
-        let factors = compute_bpm_factors(&[Some(100.0), Some(105.0), Some(110.0)]);
-        assert_eq!(factors[0], 1.0);
-        let eff1 = 100.0 * factors[0];
-        let eff2 = 105.0 * factors[1];
-        let eff3 = 110.0 * factors[2];
-        assert!((eff1 - eff2).abs() < 1e-6);
-        assert!((eff2 - eff3).abs() < 1e-6);
+    fn an_unmatched_boundary_is_not_phase_locked_and_gets_a_short_blend() {
+        // 120 vs 140 cannot be closed inside the limit. Rather than pretending,
+        // the blend keeps its planned position and the drift cap shortens it.
+        let analyses = [analysis("a", 120.0), analysis("b", 140.0)];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transition = render_transition("a", "b", 45.0, 0.0, false, 0.0);
+        let plan = render_plan("club_blend", transition);
+        let rhythms = vec![
+            rhythm_at(120.0, 0.0, 0.0, 200.0, 280.0),
+            rhythm_at(140.0, 0.0, 4.0, 200.0, 280.0),
+        ];
+        let in_bpms: Vec<Option<f64>> = rhythms.iter().map(|r| r.in_bpm()).collect();
+        let out_bpms: Vec<Option<f64>> = rhythms.iter().map(|r| r.out_bpm()).collect();
+        let (tempos, matched) = plan_blend_tempos(&in_bpms, &out_bpms);
+        assert!(!matched[0]);
+        assert_eq!(tempos[0].tail, 1.0);
+
+        let (timings, matched) =
+            compute_render_timings(&refs, &plan.transitions, &rhythms, &tempos, &matched);
+        let cross = resolve_cross_durs(&plan, &timings, 2, &rhythms);
+        // A 16.7% residual drifts half a beat in well under a second, so the
+        // cap floors at 6 s rather than holding a 45 s overlay that falls apart.
+        assert!((cross[0] - 6.0).abs() < 1e-6, "cross was {}", cross[0]);
+        let aligned = resolve_aligned_timeline(&timings, &cross, &rhythms, &matched);
+        // No phase nudge was applied: the blend sits exactly where planned.
+        let expected = timings[0].effective_dur - cross[0];
+        assert!((aligned.output_starts[1] - expected).abs() < 1e-9);
     }
 
     #[test]
-    fn bpm_factors_clamp_when_chain_gap_exceeds_limit() {
-        // Track 3 is 16% above track 1, but each single hop can only move
-        // ±MAX_BPM_MATCH_ADJUST, so the second hop clamps instead of fully
-        // chasing track 2's effective BPM, and the tracks stay unmatched.
-        let factors = compute_bpm_factors(&[Some(100.0), Some(108.0), Some(116.0)]);
-        assert!((factors[2] - (1.0 - MAX_BPM_MATCH_ADJUST)).abs() < 1e-9);
+    fn wide_tempo_gaps_are_left_unmatched_rather_than_stretched() {
+        // 100 -> 140 is 40% apart. Even pushed from both sides the limit only
+        // closes about 6%, so the boundary must be reported unmatched instead of
+        // stretching a track until it sounds wrong.
+        let (tempos, matched) =
+            plan_blend_tempos(&[Some(100.0), Some(140.0)], &[Some(100.0), Some(140.0)]);
+        assert!(!matched[0]);
+        assert_eq!(tempos[0].tail, 1.0);
+        assert_eq!(tempos[1].head, 1.0);
     }
 
     #[test]
-    fn bpm_factors_default_to_unity_when_bpm_missing() {
-        let factors = compute_bpm_factors(&[Some(120.0), None, Some(120.0)]);
-        assert_eq!(factors, vec![1.0, 1.0, 1.0]);
+    fn neighbouring_tempos_meet_in_the_middle_within_the_limit() {
+        // 120 -> 123 is 2.5% apart: reachable, and the cost is shared rather
+        // than dumped entirely on the incoming track.
+        let (tempos, matched) =
+            plan_blend_tempos(&[Some(120.0), Some(123.0)], &[Some(120.0), Some(123.0)]);
+        assert!(matched[0]);
+        let blend = 120.0 * tempos[0].tail;
+        assert!((blend - (120.0f64 * 123.0).sqrt()).abs() < 1e-9);
+        assert!((123.0 * tempos[1].head - blend).abs() < 1e-9);
+        // Neither track moves more than the limit.
+        assert!((tempos[0].tail - 1.0).abs() <= TEMPO_MATCH_LIMIT + 1e-9);
+        assert!((tempos[1].head - 1.0).abs() <= TEMPO_MATCH_LIMIT + 1e-9);
+    }
+
+    #[test]
+    fn tempo_travels_across_a_set_instead_of_pinning_to_the_first_track() {
+        // The whole point of deciding tempo per boundary: a single constant
+        // factor per track mathematically forces one tempo for the entire mix,
+        // which pinned a real 120-134 BPM playlist at 122.2 and played its
+        // 134 BPM closer 8.7% slow. Here every track stays near its own tempo.
+        let bpms = [
+            Some(120.0),
+            Some(122.0),
+            Some(124.0),
+            Some(126.5),
+            Some(129.0),
+            Some(131.5),
+            Some(134.0),
+        ];
+        let (tempos, matched) = plan_blend_tempos(&bpms, &bpms);
+        assert!(matched.iter().all(|m| *m), "every hop is inside the limit");
+        for (i, t) in tempos.iter().enumerate() {
+            assert!(
+                (t.head - 1.0).abs() <= TEMPO_MATCH_LIMIT + 1e-9
+                    && (t.tail - 1.0).abs() <= TEMPO_MATCH_LIMIT + 1e-9,
+                "track {i} bent past the limit: {t:?}"
+            );
+        }
+        // The last track still plays essentially at its own 134 BPM.
+        let last = bpms[6].unwrap() * tempos[6].head;
+        assert!((last - 134.0).abs() < 134.0 * TEMPO_MATCH_LIMIT);
+    }
+
+    #[test]
+    fn every_matched_boundary_ends_up_at_one_shared_tempo() {
+        let bpms = [Some(124.0), Some(126.0), Some(128.0)];
+        let (tempos, matched) = plan_blend_tempos(&bpms, &bpms);
+        for i in 0..2 {
+            assert!(matched[i]);
+            let out = bpms[i].unwrap() * tempos[i].tail;
+            let inn = bpms[i + 1].unwrap() * tempos[i + 1].head;
+            assert!((out - inn).abs() < 1e-9, "boundary {i}: {out} vs {inn}");
+        }
+    }
+
+    #[test]
+    fn missing_tempo_leaves_a_boundary_unmatched_and_unstretched() {
+        let (tempos, matched) = plan_blend_tempos(
+            &[Some(120.0), None, Some(120.0)],
+            &[Some(120.0), None, Some(120.0)],
+        );
+        assert_eq!(matched, vec![false, false]);
+        assert!(tempos.iter().all(|t| t.head == 1.0 && t.tail == 1.0));
+    }
+
+    #[test]
+    fn a_tempo_map_maps_source_time_through_a_mid_track_tempo_move() {
+        let span = SourceSpan {
+            start: 10.0,
+            dur: 240.0,
+        };
+        let tempo = TrackTempo {
+            head: 0.99,
+            tail: 1.01,
+        };
+        let map = build_tempo_map(span, tempo, 30.0, 30.0);
+        assert!(!map.is_constant(), "a 2% move should be stepped");
+        assert!((map.head_factor() - 0.99).abs() < 1e-9);
+        assert!((map.tail_factor() - 1.01).abs() < 1e-9);
+        assert!((map.src_duration() - 240.0).abs() < 1e-9);
+        // Both blends sit in constant-tempo territory, so their mapping is exact.
+        assert!((map.to_output(20.0) - 20.0 / 0.99).abs() < 1e-9);
+        let from_end = map.out_duration() - map.to_output(240.0 - 20.0);
+        assert!((from_end - 20.0 / 1.01).abs() < 1e-9);
+        // Monotonic, and the total is the sum of the parts.
+        let mut prev = -1.0;
+        for k in 0..=240 {
+            let v = map.to_output(k as f64);
+            assert!(v > prev, "map went backwards at {k}");
+            prev = v;
+        }
+    }
+
+    #[test]
+    fn a_tempo_move_with_no_room_between_blends_falls_back_to_one_tempo() {
+        // A short track whose two blends leave no clear middle: keep the
+        // incoming blend locked rather than changing tempo underneath either.
+        let span = SourceSpan {
+            start: 0.0,
+            dur: 40.0,
+        };
+        let tempo = TrackTempo {
+            head: 0.98,
+            tail: 1.02,
+        };
+        let map = build_tempo_map(span, tempo, 20.0, 20.0);
+        assert!(map.is_constant());
+        assert!((map.head_factor() - 0.98).abs() < 1e-9);
+    }
+
+    #[test]
+    fn losing_the_room_to_change_tempo_also_loses_the_beat_lock_claim() {
+        // If the tempo move cannot be made, the outgoing blend is no longer
+        // running at the tempo the plan assumed, so it must stop claiming a lock
+        // instead of phase-locking against a tempo that was never applied.
+        // The middle track here has two 90 s blends inside a 196 s body, leaving
+        // no clear middle to change tempo in.
+        let analyses = [
+            analysis("a", 120.0),
+            analysis("b", 120.0),
+            analysis("c", 120.0),
+        ];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transitions = vec![
+            render_transition("a", "b", 90.0, 0.0, false, 0.0),
+            render_transition("b", "c", 90.0, 0.0, false, 0.0),
+        ];
+        let tempos = vec![
+            TrackTempo {
+                head: 1.0,
+                tail: 0.98,
+            },
+            TrackTempo {
+                head: 0.98,
+                tail: 1.02,
+            },
+            TrackTempo {
+                head: 1.02,
+                tail: 1.02,
+            },
+        ];
+        let (timings, matched) =
+            compute_render_timings(&refs, &transitions, &no_rhythm(3), &tempos, &[true, true]);
+        assert!(timings[1].tempo.is_constant());
+        assert!((timings[1].tempo.tail_factor() - 0.98).abs() < 1e-9);
+        // The incoming blend keeps its lock; the outgoing one gives it up.
+        assert_eq!(matched, vec![true, false]);
+    }
+
+    #[test]
+    fn every_track_carries_a_tempo_filter_so_the_atempo_offset_is_uniform() {
+        // `atrim`+`atempo` swallows a fixed ~21 ms prefix. A track that happened
+        // to need no tempo change used to skip the filter entirely and so sat
+        // 21 ms away from all of its neighbours - an audible flam on its own.
+        let analyses = [analysis("a", 120.0), analysis("b", 120.0)];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transition = render_transition("a", "b", 12.0, 0.0, false, 0.0);
+        let plan = render_plan("club_blend", transition);
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
+        let filter = filter_for(&plan, &timings, 2);
+        assert_eq!(filter.matches("atempo=").count(), 2);
+        assert_eq!(filter.matches("atempo=1.000000").count(), 2);
+        // And the rate is pinned so that prefix is the same size everywhere.
+        assert_eq!(filter.matches("aresample=48000").count(), 2);
+    }
+
+    #[test]
+    fn tracks_are_placed_at_sample_resolution() {
+        // adelay's default millisecond rounding is up to 0.5 ms of avoidable
+        // phase error on a join whose whole point is that the drums coincide.
+        let analyses = [analysis("a", 120.0), analysis("b", 120.0)];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transition = render_transition("a", "b", 12.0, 0.0, false, 0.0);
+        let plan = render_plan("club_blend", transition);
+        let timings = timings_for(&refs, &plan.transitions, &no_rhythm(2));
+        let filter = filter_for(&plan, &timings, 2);
+        // Track 0 runs 200 s, minus the 12 s overlap, at 48 kHz.
+        assert!(filter.contains("adelay=9024000S:all=1"), "{filter}");
+    }
+
+    #[test]
+    fn a_stepped_tempo_move_renders_as_concatenated_segments() {
+        let analyses = [analysis("a", 120.0), analysis("b", 120.0)];
+        let refs: Vec<&TrackMixAnalysis> = analyses.iter().collect();
+        let transition = render_transition("a", "b", 12.0, 0.0, false, 0.0);
+        let plan = render_plan("club_blend", transition);
+        let tempos = vec![
+            TrackTempo {
+                head: 0.985,
+                tail: 1.015,
+            },
+            TrackTempo {
+                head: 1.0,
+                tail: 1.0,
+            },
+        ];
+        let (timings, _) =
+            compute_render_timings(&refs, &plan.transitions, &no_rhythm(2), &tempos, &[true]);
+        let filter = filter_for(&plan, &timings, 2);
+        assert!(filter.contains("concat=n="), "{filter}");
+        // Steps stay under the audibility threshold for a tempo change.
+        let factors: Vec<f64> = timings[0].tempo.segments.iter().map(|s| s.1).collect();
+        for w in factors.windows(2) {
+            assert!(
+                (w[1] / w[0] - 1.0).abs() <= MAX_SINGLE_TEMPO_STEP + 1e-9,
+                "step {w:?} too large"
+            );
+        }
     }
 
     #[test]

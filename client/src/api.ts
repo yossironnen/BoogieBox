@@ -552,8 +552,13 @@ export const api = {
       post<{ queued: number }>(`/boogiemix/deep-analysis/playlists/${playlistId}/queue`),
     playlistDeepAnalysisProgress: (playlistId: EntityId) =>
       get<import('./types').PlaylistDeepAnalysisProgress>(`/boogiemix/deep-analysis/playlists/${playlistId}/progress`),
-    queueLibraryDeepAnalysis: (libraryId: EntityId) =>
-      post<{ queued: number }>(`/boogiemix/deep-analysis/libraries/${libraryId}/queue`),
+    // `force` re-analyses tracks that already hold a current analysis; without
+    // it only missing/stale tracks are queued, which on a fully analysed
+    // library means nothing at all.
+    queueLibraryDeepAnalysis: (libraryId: EntityId, force = false) =>
+      post<{ queued: number }>(
+        `/boogiemix/deep-analysis/libraries/${libraryId}/queue${force ? '?force=true' : ''}`,
+      ),
     pauseDeepAnalysisBackground: () =>
       post<{ ok: boolean }>('/boogiemix/deep-analysis/pause'),
     resumeDeepAnalysisBackground: () =>

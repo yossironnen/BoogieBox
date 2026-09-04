@@ -6,6 +6,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import type { AdminUser, AuthUser } from '../types';
 import type { EntityId } from '../entityId';
+import ConfirmModal from './ConfirmModal';
 
 interface Props {
   currentUser: AuthUser;
@@ -119,6 +120,23 @@ export default function UserManagement({ currentUser }: Props) {
   const [newCanEditMetadata, setNewCanEditMetadata] = useState(false);
   const [addError, setAddError] = useState('');
   const [pinModalUser, setPinModalUser] = useState<AdminUser | null>(null);
+  // Doubles as the confirm-before-delete prompt and, with cancelLabel: null,
+  // an acknowledged error dialog in place of window.alert.
+  const [dialog, setDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string | null;
+    tone?: 'default' | 'danger';
+    onConfirm: () => void;
+  } | null>(null);
+  const showError = (message: string) => setDialog({
+    title: 'Something went wrong',
+    message,
+    confirmLabel: 'OK',
+    cancelLabel: null,
+    onConfirm: () => {},
+  });
   const mountedRef = useRef(true);
 
   const load = () => {
@@ -152,15 +170,20 @@ export default function UserManagement({ currentUser }: Props) {
     }
   };
 
-  const handleDelete = async (user: AdminUser) => {
-    if (!window.confirm(`Delete user "${user.username}"? This cannot be undone.`)) return;
-    try {
-      await api.admin.users.remove(user.id);
-      load();
-    } catch (e: any) {
-      alert(e.message);
-    }
-  };
+  const handleDelete = (user: AdminUser) => setDialog({
+    title: `Delete user "${user.username}"?`,
+    message: 'This cannot be undone.',
+    confirmLabel: 'Delete',
+    tone: 'danger',
+    onConfirm: async () => {
+      try {
+        await api.admin.users.remove(user.id);
+        load();
+      } catch (e: any) {
+        showError(e.message);
+      }
+    },
+  });
 
   const handleTogglePermission = async (user: AdminUser, perm: 'canManageLibraries' | 'canEditMetadata') => {
     const next = { canManageLibraries: user.canManageLibraries, canEditMetadata: user.canEditMetadata, [perm]: !user[perm] };
@@ -168,7 +191,7 @@ export default function UserManagement({ currentUser }: Props) {
       await api.admin.users.setPermissions(user.id, next);
       load();
     } catch (e: any) {
-      alert(e.message);
+      showError(e.message);
     }
   };
 
@@ -275,6 +298,18 @@ export default function UserManagement({ currentUser }: Props) {
           userId={pinModalUser.id}
           username={pinModalUser.username}
           onClose={() => { setPinModalUser(null); load(); }}
+        />
+      )}
+
+      {dialog && (
+        <ConfirmModal
+          title={dialog.title}
+          message={dialog.message}
+          confirmLabel={dialog.confirmLabel}
+          cancelLabel={dialog.cancelLabel}
+          tone={dialog.tone}
+          onConfirm={() => { const { onConfirm } = dialog; setDialog(null); onConfirm(); }}
+          onCancel={() => setDialog(null)}
         />
       )}
     </div>

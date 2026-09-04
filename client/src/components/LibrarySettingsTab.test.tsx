@@ -118,7 +118,6 @@ describe('LibrarySettingsTab', () => {
 
   it('renames, adds/removes folders and libraries, and reports action errors', async () => {
     const onRefresh = vi.fn().mockResolvedValue(undefined);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true);
     render(<LibrarySettingsTab libraries={[library]} onRefresh={onRefresh} />);
     await waitFor(() => expect(apiMock.scanJobs.active).toHaveBeenCalled());
 
@@ -137,11 +136,14 @@ describe('LibrarySettingsTab', () => {
     await waitFor(() => expect(apiMock.libraries.addFolder).toHaveBeenCalledWith('1', '/third'));
 
     fireEvent.click(screen.getAllByTitle('Remove folder')[0]);
-    expect(confirm).toHaveBeenCalled();
+    expect(screen.getByText('Remove this folder from the library?')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(apiMock.libraries.removeFolder).not.toHaveBeenCalled();
     fireEvent.click(screen.getAllByTitle('Remove folder')[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Folder' }));
     await waitFor(() => expect(apiMock.libraries.removeFolder).toHaveBeenCalledWith('1', 'f1'));
     fireEvent.click(screen.getByTitle('Remove library'));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Library' }));
     await waitFor(() => expect(apiMock.libraries.remove).toHaveBeenCalledWith('1'));
 
     apiMock.libraries.addFolder.mockRejectedValueOnce(new Error('Folder failed'));
@@ -206,7 +208,6 @@ describe('LibrarySettingsTab', () => {
     apiMock.libraries.removeFolder.mockRejectedValue(new Error('Remove folder failed'));
     apiMock.libraries.remove.mockRejectedValue(new Error('Remove library failed'));
     apiMock.libraries.scan.mockRejectedValue(new Error('Scan failed'));
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<LibrarySettingsTab libraries={[library]} />);
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Browse' })[0]);
@@ -219,8 +220,10 @@ describe('LibrarySettingsTab', () => {
     fireEvent.keyDown(screen.getByLabelText(/Library name for/i), { key: 'Escape' });
 
     fireEvent.click(screen.getAllByTitle('Remove folder')[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Folder' }));
     expect(await screen.findByText('Remove folder failed')).toBeInTheDocument();
     fireEvent.click(screen.getByTitle('Remove library'));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Library' }));
     expect(await screen.findByText('Remove library failed')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Scan' }));
     expect(await screen.findByText('Scan failed')).toBeInTheDocument();

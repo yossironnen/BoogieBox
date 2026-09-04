@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import FolderPickerModal from './FolderPickerModal';
+import ConfirmModal from './ConfirmModal';
 import { platform } from '../platform';
 import type { ClientEntityId, Library, LibraryFolder, ScanJob } from '../types';
 import { parseServerDate } from '../utils';
@@ -189,6 +190,12 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
   const [activeJobs, setActiveJobs] = useState<Record<string, ScanJob>>({});
   const jobsPollBusyRef = useRef(false);
   const summaryPollBusyRef = useRef(false);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const getFolders = useCallback((library: Library): LibraryFolder[] => {
     if (library.folders?.length) return library.folders;
@@ -258,7 +265,6 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
   };
 
   const removeLibrary = async (id: ClientEntityId) => {
-    if (!window.confirm('Remove this library and all its scanned data?')) return;
     try {
       await api.libraries.remove(id);
       await refreshLibraries();
@@ -266,6 +272,13 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
       setError(e.message || 'Failed to remove library');
     }
   };
+
+  const confirmRemoveLibrary = (id: ClientEntityId) => setPendingConfirm({
+    title: 'Remove this library?',
+    message: 'This also removes all of its scanned data — tracks, artwork, playlists entries, everything.',
+    confirmLabel: 'Remove Library',
+    onConfirm: () => removeLibrary(id),
+  });
 
   const addFolderToLibrary = async (libraryId: ClientEntityId) => {
     const nextPath = (folderDrafts[String(libraryId)] ?? '').trim();
@@ -281,7 +294,6 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
   };
 
   const removeFolderFromLibrary = async (libraryId: ClientEntityId, folderId: ClientEntityId) => {
-    if (!window.confirm('Remove this folder from the library?')) return;
     try {
       setError('');
       await api.libraries.removeFolder(libraryId, folderId);
@@ -290,6 +302,13 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
       setError(e.message || 'Failed to remove folder');
     }
   };
+
+  const confirmRemoveFolder = (libraryId: ClientEntityId, folderId: ClientEntityId) => setPendingConfirm({
+    title: 'Remove this folder from the library?',
+    message: 'Tracks scanned from it will be removed from the library too.',
+    confirmLabel: 'Remove Folder',
+    onConfirm: () => removeFolderFromLibrary(libraryId, folderId),
+  });
 
   const startRename = (library: Library) => {
     setError('');
@@ -553,7 +572,7 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                             style={L.btnDanger}
                             type="button"
                             title="Remove folder"
-                            onClick={() => removeFolderFromLibrary(library.id, folder.id)}
+                            onClick={() => confirmRemoveFolder(library.id, folder.id)}
                           >
                             <Icon.Trash />
                           </button>
@@ -608,7 +627,7 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                   >
                     <Icon.Scan /> {job?.status === 'running' ? 'Scanning...' : 'Scan'}
                   </button>
-                  <button style={L.btnDanger} onClick={() => removeLibrary(library.id)} type="button" title="Remove library">
+                  <button style={L.btnDanger} onClick={() => confirmRemoveLibrary(library.id)} type="button" title="Remove library">
                     <Icon.Trash />
                   </button>
                 </div>
@@ -658,6 +677,16 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
           pickerResolveRef.current?.(null);
           pickerResolveRef.current = null;
         }}
+      />
+    )}
+    {pendingConfirm && (
+      <ConfirmModal
+        title={pendingConfirm.title}
+        message={pendingConfirm.message}
+        confirmLabel={pendingConfirm.confirmLabel}
+        tone="danger"
+        onConfirm={() => { const { onConfirm } = pendingConfirm; setPendingConfirm(null); onConfirm(); }}
+        onCancel={() => setPendingConfirm(null)}
       />
     )}
     </>

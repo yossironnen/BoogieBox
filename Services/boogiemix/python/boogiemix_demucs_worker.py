@@ -42,6 +42,11 @@ ANALYSIS_VERSION = 1
 ANALYSIS_SCHEMA_VERSION = 3
 DEFAULT_MODEL = "htdemucs"
 
+# Attempts allowed for the beat-grid subprocess before giving up on a track.
+# madmom crashes non-deterministically (0xC0000005) roughly 1 run in 4 under
+# load, so a couple of retries take grid coverage from ~75% to ~98%.
+BEAT_GRID_ATTEMPTS = 3
+
 ENVELOPE_HZ = 1.0
 ONSET_HZ = 10.0
 ENV_TARGET_SR = 8000
@@ -70,27 +75,16 @@ _MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.
 _MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 _NOTE_NAMES    = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
+# madmom is deliberately NOT imported into this process — see beatgrid_runner.py.
+# It and librosa each pull in an OpenMP/BLAS runtime, and two of those in one
+# address space hard-crash Python on Windows with 0xC0000005 (measured ~1 run in
+# 4 with the HPSS/librosa path). `find_spec` answers "is it installed?" without
+# executing the package, so availability can still be reported here while the
+# actual tracking runs in its own process.
 try:
-    # madmom 0.16.1 predates two numpy/Python compatibility removals it still
-    # relies on: `from collections import MutableSequence` (moved to
-    # collections.abc in Python 3.10) and the deprecated `np.float`/`np.int`/
-    # `np.bool` aliases (removed in numpy>=1.24, used across madmom's beat,
-    # tempo, and downbeat feature modules). Shim both back before importing
-    # so madmom works unmodified against this project's pinned toolchain.
-    import collections
-    import collections.abc
-    if not hasattr(collections, 'MutableSequence'):
-        collections.MutableSequence = collections.abc.MutableSequence
-    import numpy as _np_compat
-    if not hasattr(_np_compat, 'float'):
-        _np_compat.float = float
-    if not hasattr(_np_compat, 'int'):
-        _np_compat.int = int
-    if not hasattr(_np_compat, 'bool'):
-        _np_compat.bool = bool
-    import madmom  # noqa: F401
-    MADMOM_AVAILABLE = True
-except ImportError:
+    import importlib.util
+    MADMOM_AVAILABLE = importlib.util.find_spec("madmom") is not None
+except Exception:
     MADMOM_AVAILABLE = False
 
 VOCAL_PRESENT_THRESHOLD = 0.32
@@ -674,36 +668,46 @@ def extract_neural_embedding(file_path, duration_sec):
 
 
 def detect_beat_grid(file_path, use_madmom=True):
-    """Neural beat tracking via madmom DBNBeatTrackingProcessor.
+    """Neural beat and downbeat tracking, run in an isolated subprocess.
 
-    Returns a dict with beats, bpm_neural, downbeats, phrase_boundaries_neural,
-    or None if madmom is unavailable or tracking fails.
+    The tracking itself lives in `beatgrid_runner.py` and must stay in its own
+    process: madmom and librosa each load an OpenMP/BLAS runtime, and two of
+    those in one address space hard-crash Python on Windows with 0xC0000005 —
+    measured at roughly 1 run in 4 once the HPSS (librosa) path and madmom ran
+    together here. This mirrors how Demucs is already isolated via
+    `demucs_runner.py`.
+
+    Returns the beat-grid dict, or None when madmom is unavailable, the run
+    fails, or the subprocess dies.
+
+    The runner is retried on a hard crash. madmom still dies with 0xC0000005
+    now and then even in its own process — measured about 1 run in 4 under load
+    — and because the crash is not deterministic a plain re-run almost always
+    succeeds. Isolation already stopped that from taking the whole analysis
+    down with it; retrying keeps it from quietly costing the track its beat
+    grid, which is the one thing bar-accurate transitions depend on.
     """
     if not use_madmom or not MADMOM_AVAILABLE:
         return None
-    try:
-        import numpy as np
-        import madmom.features.beats as mb
-        act = mb.RNNBeatProcessor()(file_path)
-        proc = mb.DBNBeatTrackingProcessor(fps=100)
-        beats = proc(act)  # numpy array of beat timestamps in seconds
-        if beats is None or len(beats) < 4:
-            return None
-        diffs = np.diff(beats)
-        bpm_neural = round(float(60.0 / np.median(diffs)), 2)
-        # Cap beats at 2000 entries (~26 min at 128 BPM)
-        beats_list = [round(float(b), 3) for b in beats[:2000]]
-        downbeats = [beats_list[i] for i in range(0, len(beats_list), 4)]
-        phrase_boundaries = [beats_list[i] for i in range(0, len(beats_list), 16)]
-        return {
-            'beats': beats_list,
-            'bpm_neural': bpm_neural,
-            'downbeats': downbeats,
-            'phrase_boundaries_neural': phrase_boundaries,
-        }
-    except Exception as exc:
-        print(f"[boogiemix] beat grid detection failed: {exc}", file=sys.stderr)
-        return None
+    runner = Path(__file__).resolve().parent / "beatgrid_runner.py"
+    for attempt in range(1, BEAT_GRID_ATTEMPTS + 1):
+        code, out, err = run_cmd([sys.executable, str(runner), file_path])
+        for line in (err or "").strip().splitlines()[-5:]:
+            if "UserWarning" in line or "pkg_resources" in line:
+                continue
+            print(f"[boogiemix] {line}", file=sys.stderr)
+        if code == 0:
+            try:
+                return json.loads(out) if out.strip() else None
+            except Exception as exc:
+                print(f"[boogiemix] beat grid output unparseable: {exc}", file=sys.stderr)
+                return None
+        print(
+            f"[boogiemix] beat grid runner exited {code} "
+            f"(attempt {attempt}/{BEAT_GRID_ATTEMPTS})",
+            file=sys.stderr,
+        )
+    return None
 
 
 def detect_key_neural(file_path, duration_sec):

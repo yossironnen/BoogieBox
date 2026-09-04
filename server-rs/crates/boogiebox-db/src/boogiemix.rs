@@ -394,8 +394,10 @@ pub struct KeyNeural {
 #[serde(default, rename_all = "camelCase")]
 pub struct VocalCuePoints {
     /// Suggested intro end (first vocal-free gap end), seconds.
+    #[serde(alias = "intro_end_sec")]
     pub intro_end_sec: Option<f64>,
     /// Suggested outro start (last vocal-free gap start), seconds.
+    #[serde(alias = "outro_start_sec")]
     pub outro_start_sec: Option<f64>,
     /// Detection confidence [0..1]; use only when >= 0.6.
     pub confidence: f64,
@@ -406,29 +408,46 @@ pub struct VocalCuePoints {
 #[serde(default, rename_all = "camelCase")]
 pub struct NeuralEmbedding {
     /// Perceptual energy from mel-spectrogram log-power, normalized to [0,1].
+    #[serde(alias = "energy_neural")]
     pub energy_neural: f64,
     /// Onset-regularity danceability proxy, normalized to [0,1].
     pub danceability: f64,
     /// Valence (future model placeholder).
     pub valence: Option<f64>,
     /// 16-dimensional PCA-projected mel embedding.
+    #[serde(alias = "embedding_16d")]
     pub embedding_16d: Vec<f64>,
     /// Model identifier for cache invalidation.
+    #[serde(alias = "model_version")]
     pub model_version: String,
 }
 
-/// Neural beat grid from madmom DBNBeatTrackingProcessor (Phase 3).
+/// Neural beat grid from madmom (Phase 3).
+///
+/// The worker writes this object with snake_case keys, so every multi-word
+/// field needs an explicit `alias`: without them `rename_all = "camelCase"`
+/// silently dropped `bpm_neural` and `phrase_boundaries_neural` on every
+/// analysed track, which is why phrase-aware transition snapping never fired.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BeatGrid {
     /// Beat timestamps in seconds, capped at 2000 entries.
     pub beats: Vec<f64>,
     /// Median-derived BPM from neural beat tracking.
+    #[serde(alias = "bpm_neural")]
     pub bpm_neural: f64,
-    /// Every 4th beat timestamp (approximate downbeats).
+    /// Bar-one timestamps. Real downbeats when `downbeats_real` is set,
+    /// otherwise every 4th beat — an arbitrary bar phase that must not be
+    /// trusted for bar-level alignment.
     pub downbeats: Vec<f64>,
-    /// Every 16th beat timestamp (4-bar phrase boundaries).
+    /// 4-bar phrase boundaries, derived from `downbeats`.
+    #[serde(alias = "phrase_boundaries_neural")]
     pub phrase_boundaries_neural: Vec<f64>,
+    /// True when `downbeats` came from real downbeat tracking rather than
+    /// `beats[::4]`. Absent (false) on analyses cached before downbeat
+    /// tracking was added.
+    #[serde(alias = "downbeats_real")]
+    pub downbeats_real: bool,
 }
 
 /// Public Deep Track Features data shape used by BoogieBox.
@@ -1613,7 +1632,7 @@ pub fn queue_library_deep_analysis(
     library_id: &EntityId,
     force: bool,
 ) -> Result<usize, JobError> {
-    let tracks = load_library_tracks_for_deep_analysis(conn, library_id, None)?;
+    let tracks = load_library_tracks_for_deep_analysis(conn, library_id, None, force)?;
     queue_missing_deep_analysis_for_tracks_with_priority(
         conn,
         &tracks,
@@ -1650,15 +1669,25 @@ pub fn clear_deep_analysis_cache(conn: &Connection) -> Result<(usize, usize), Jo
     Ok((deleted_cache, deleted_jobs))
 }
 
+/// Library tracks eligible for deep analysis.
+///
+/// `force` decides whether tracks that already hold a current analysis are
+/// included. Without it the staleness test lives in this SQL, which means a
+/// caller asking `queue_missing_deep_analysis_for_tracks` to force gets an
+/// already-empty list on a fully analysed library and silently queues nothing —
+/// so the two must be driven from the same flag.
 fn load_library_tracks_for_deep_analysis(
     conn: &Connection,
     library_id: &EntityId,
     limit: Option<usize>,
+    force: bool,
 ) -> Result<Vec<MixTrackInput>, JobError> {
-    let mut sql = base_deep_track_select(
+    let mut sql = base_deep_track_select(if force {
+        "WHERE t.library_id=?1 AND ?2 IS NOT NULL"
+    } else {
         "WHERE t.library_id=?1
-           AND (tda.track_id IS NULL OR tda.analysis_version != ?2 OR tda.file_fingerprint != (t.file_path || '|' || COALESCE(t.file_size, -1) || '|' || COALESCE(t.scanned_at, '')))",
-    );
+           AND (tda.track_id IS NULL OR tda.analysis_version != ?2 OR tda.file_fingerprint != (t.file_path || '|' || COALESCE(t.file_size, -1) || '|' || COALESCE(t.scanned_at, '')))"
+    });
     append_limit(&mut sql, limit);
     query_deep_track_inputs(conn, &sql, params![library_id, DEEP_ANALYSIS_VERSION])
 }
@@ -2075,7 +2104,9 @@ mod tests {
               created_at TEXT
             );
             CREATE TABLE deep_analysis_jobs (
-              id TEXT PRIMARY KEY DEFAULT 'job',
+              -- Matches the real schema's random default. A constant here made
+              -- the fixture silently unable to hold more than one queued job.
+              id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
               track_id TEXT NOT NULL UNIQUE,
               status TEXT NOT NULL DEFAULT 'pending',
               priority INTEGER NOT NULL DEFAULT 50,
@@ -2165,6 +2196,68 @@ mod tests {
         let claimed = claim_next_deep_analysis_job_with_background(&conn, false).unwrap();
 
         assert!(claimed.is_none());
+    }
+
+    /// Marks every track in the fixture library as already analysed with a
+    /// current version and a matching fingerprint.
+    fn mark_library_analysed(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO track_deep_analysis(track_id, analysis_version, file_fingerprint)
+             SELECT t.id, 1,
+                    t.file_path || '|' || COALESCE(t.file_size, -1) || '|' || COALESCE(t.scanned_at, '')
+             FROM tracks t;",
+        )
+        .unwrap();
+    }
+
+    fn pending_job_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM deep_analysis_jobs", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn library_deep_analysis_queues_nothing_when_everything_is_current() {
+        let conn = setup_deep_db();
+        mark_library_analysed(&conn);
+
+        let queued = queue_library_deep_analysis(&conn, &coerce_entity_id("lib1"), false).unwrap();
+
+        assert_eq!(queued, 0);
+        assert_eq!(pending_job_count(&conn), 0);
+    }
+
+    #[test]
+    fn forcing_library_deep_analysis_requeues_already_analysed_tracks() {
+        // Regression: the force flag was passed to the queueing step but the
+        // track query filtered analysed tracks out first, so on a fully
+        // analysed library the request reached an empty list and silently
+        // queued nothing. Both halves have to be driven from the same flag.
+        let conn = setup_deep_db();
+        mark_library_analysed(&conn);
+
+        let queued = queue_library_deep_analysis(&conn, &coerce_entity_id("lib1"), true).unwrap();
+
+        assert_eq!(queued, 3, "every track in the library should be re-queued");
+        assert_eq!(pending_job_count(&conn), 3);
+    }
+
+    #[test]
+    fn library_deep_analysis_still_picks_up_stale_tracks_without_forcing() {
+        let conn = setup_deep_db();
+        mark_library_analysed(&conn);
+        conn.execute(
+            "UPDATE track_deep_analysis SET file_fingerprint='moved' WHERE track_id='t2'",
+            [],
+        )
+        .unwrap();
+
+        let queued = queue_library_deep_analysis(&conn, &coerce_entity_id("lib1"), false).unwrap();
+
+        assert_eq!(queued, 1);
+        let track_id: String = conn
+            .query_row("SELECT track_id FROM deep_analysis_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(track_id, "t2");
     }
 
     #[test]
