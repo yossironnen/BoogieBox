@@ -559,6 +559,12 @@ export const api = {
       post<{ queued: number }>(
         `/boogiemix/deep-analysis/libraries/${libraryId}/queue${force ? '?force=true' : ''}`,
       ),
+    // Collection-wide sibling of queueLibraryDeepAnalysis. Queued at
+    // background priority server-side, so Pause/Resume Background governs it.
+    queueAllDeepAnalysis: (force = false) =>
+      post<{ queued: number }>(
+        `/boogiemix/deep-analysis/all/queue${force ? '?force=true' : ''}`,
+      ),
     pauseDeepAnalysisBackground: () =>
       post<{ ok: boolean }>('/boogiemix/deep-analysis/pause'),
     resumeDeepAnalysisBackground: () =>

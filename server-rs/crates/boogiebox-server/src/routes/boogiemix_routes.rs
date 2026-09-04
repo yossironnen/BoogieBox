@@ -14,8 +14,9 @@ use boogiebox_db::{
         enqueue_mix_job, get_deep_analysis_cache_status, get_deep_analysis_queue_status,
         get_latest_mix_job_for_playlist, get_mix_job, get_mix_job_logs, get_mix_output_file,
         get_mix_transitions, get_playlist_deep_analysis_progress, get_setting, list_mix_outputs,
-        queue_library_deep_analysis, queue_playlist_deep_analysis, DeepAnalysisCacheStatus,
-        DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow, MixTransitionRow,
+        queue_all_deep_analysis, queue_library_deep_analysis, queue_playlist_deep_analysis,
+        DeepAnalysisCacheStatus, DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow,
+        MixTransitionRow,
     },
     jobs::JobError,
     music::coerce_entity_id,
@@ -142,6 +143,10 @@ pub fn boogiemix_router(state: SharedState) -> Router {
         .route(
             "/api/boogiemix/deep-analysis/libraries/{libraryId}/queue",
             post(queue_library_deep_analysis_handler),
+        )
+        .route(
+            "/api/boogiemix/deep-analysis/all/queue",
+            post(queue_all_deep_analysis_handler),
         )
         .route(
             "/api/boogiemix/deep-analysis/pause",
@@ -694,6 +699,35 @@ async fn queue_playlist_deep_analysis_handler(
     let playlist_id = coerce_entity_id(&playlist_id_raw);
     let result = match db.lock() {
         Ok(conn) => match queue_playlist_deep_analysis(&conn, &playlist_id, true) {
+            Ok(queued) => (
+                StatusCode::OK,
+                Json(serde_json::json!({ "queued": queued })),
+            )
+                .into_response(),
+            Err(e) => internal_error(&e.to_string()),
+        },
+        Err(_) => internal_error("DB lock failed"),
+    };
+    result
+}
+
+/// Collection-wide sibling of `queue_library_deep_analysis_handler`. `force`
+/// works the same way — without it this only picks up tracks missing or
+/// stale analysis (equivalent to a manual nudge of the `all_music` background
+/// sweep), and with it every track in the collection is re-queued regardless
+/// of existing analysis. The UI only ever calls this with `force=true`; the
+/// non-force shape is kept for symmetry with the library route and so it has
+/// a sane default if called directly.
+async fn queue_all_deep_analysis_handler(
+    State(state): State<SharedState>,
+    AdminUser(_user): AdminUser,
+    Query(query): Query<DeepAnalysisQueueQuery>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let result = match db.lock() {
+        Ok(conn) => match queue_all_deep_analysis(&conn, query.force) {
             Ok(queued) => (
                 StatusCode::OK,
                 Json(serde_json::json!({ "queued": queued })),

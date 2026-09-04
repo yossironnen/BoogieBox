@@ -1829,6 +1829,43 @@ export default function SettingsPage({
                       Full-library deep analysis can take many hours and cause sustained CPU and disk activity.
                     </div>
                   )}
+                  {(() => {
+                    const totalTracks = libraries.reduce((sum, lib) => sum + (lib.track_count || 0), 0);
+                    const analyzedTracks = boogiemixDeepStatus?.cache.analyzedTracks ?? 0;
+                    return (
+                      <div style={{ display: 'grid', gap: 6, paddingTop: 2 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          {totalTracks.toLocaleString()} tracks in your collection · {analyzedTracks.toLocaleString()} already analyzed
+                        </div>
+                        <button
+                          disabled={totalTracks === 0 || boogiemixDeepActionBusy === 'reanalyze-all'}
+                          onClick={() => setPendingConfirm({
+                            title: 'Re-analyze your entire collection?',
+                            message: `This queues all ${totalTracks.toLocaleString()} tracks, including the ${analyzedTracks.toLocaleString()} `
+                              + 'already analyzed. Nothing is deleted or lost — every one is just re-processed from the audio file.\n\n'
+                              + 'Deep analysis takes around a minute per track, so a collection this size can run for days, using '
+                              + 'sustained CPU/GPU and disk activity the whole time. It runs through the same background queue as '
+                              + 'routine analysis, so Pause Background stops and resumes it.',
+                            confirmLabel: 'Force Re-analyze Entire Collection',
+                            tone: 'danger',
+                            onConfirm: () => runBoogieMixDeepAction('reanalyze-all', async () => {
+                              const result = await api.boogiemix.queueAllDeepAnalysis(true);
+                              return `Queued ${result.queued} tracks`;
+                            }),
+                          })}
+                          title="Queue every track in every library, not just the ones missing an analysis"
+                          style={{
+                            alignSelf: 'flex-start', padding: '7px 12px', borderRadius: 6,
+                            border: '1px solid #ef4444', background: 'transparent', color: '#ef4444',
+                            fontSize: 12, cursor: totalTracks === 0 ? 'not-allowed' : 'pointer',
+                            opacity: totalTracks === 0 ? 0.55 : 1,
+                          }}
+                        >
+                          Force Re-analyze Entire Collection
+                        </button>
+                      </div>
+                    );
+                  })()}
                   <label style={{ display: 'grid', gap: 4 }}>
                     <span style={{ color: 'var(--text)', fontWeight: 600 }}>Max track length</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

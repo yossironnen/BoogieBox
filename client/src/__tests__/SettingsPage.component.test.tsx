@@ -22,6 +22,7 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     boogiemix: {
       deepAnalysisStatus: vi.fn(),
       queueLibraryDeepAnalysis: vi.fn(),
+      queueAllDeepAnalysis: vi.fn(),
       pauseDeepAnalysisBackground: vi.fn(),
       resumeDeepAnalysisBackground: vi.fn(),
       clearDeepAnalysisCache: vi.fn(),
@@ -818,6 +819,7 @@ describe('SettingsPage component flows', () => {
     apiMock.settings.update.mockRejectedValue(new Error('settings denied'));
     apiMock.waveforms.runMap.mockRejectedValue(new Error('mapping denied'));
     apiMock.boogiemix.queueLibraryDeepAnalysis.mockRejectedValue(new Error('queue denied'));
+    apiMock.boogiemix.queueAllDeepAnalysis.mockRejectedValue(new Error('queue all denied'));
     apiMock.boogiemix.pauseDeepAnalysisBackground.mockRejectedValue(new Error('pause denied'));
     apiMock.boogiemix.clearDeepAnalysisCache.mockRejectedValue(new Error('clear denied'));
 
@@ -850,12 +852,46 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pause Background' }));
     expect(await screen.findByText(/Error: pause denied/i)).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Force Re-analyze Entire Collection' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Force Re-analyze Entire Collection' }));
+    expect(await screen.findByText(/Error: queue all denied/i)).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole('button', { name: 'Clear Cache' }));
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
     expect(apiMock.boogiemix.clearDeepAnalysisCache).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Clear Cache' }));
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Clear Cache' }));
     expect(await screen.findByText(/Error: clear denied/i)).toBeInTheDocument();
+  });
+
+  it('force re-analyzes the entire collection through a themed confirm dialog, gated by cancel', async () => {
+    apiMock.boogiemix.queueAllDeepAnalysis.mockResolvedValue({ queued: 12 });
+
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
+    await screen.findByRole('button', { name: 'Run Mapping Now' });
+
+    // Real counts (12 tracks total from the one fixture library, 12 already
+    // analyzed) are shown before the button is ever clicked.
+    expect(screen.getByText('12 tracks in your collection · 12 already analyzed')).toBeInTheDocument();
+
+    const trigger = () => screen.getByRole('button', { name: 'Force Re-analyze Entire Collection' });
+    fireEvent.click(trigger());
+    expect(screen.getByText('Re-analyze your entire collection?')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
+    expect(apiMock.boogiemix.queueAllDeepAnalysis).not.toHaveBeenCalled();
+
+    fireEvent.click(trigger());
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Force Re-analyze Entire Collection' }));
+    await waitFor(() => expect(apiMock.boogiemix.queueAllDeepAnalysis).toHaveBeenCalledWith(true));
+    expect(await screen.findByText('Queued 12 tracks')).toBeInTheDocument();
   });
 
   it('renders queue, provider-usage, and advanced status load failures', async () => {

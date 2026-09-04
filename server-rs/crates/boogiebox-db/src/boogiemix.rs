@@ -1650,11 +1650,34 @@ pub fn queue_background_deep_analysis_batch(
     if mode == "off" || batch_size == 0 {
         return Ok(0);
     }
-    let tracks = load_background_tracks_for_deep_analysis(conn, mode, batch_size)?;
+    let Some(scope) = background_mode_scope(mode) else {
+        return Ok(0);
+    };
+    let tracks = load_scoped_deep_analysis_tracks(conn, scope, Some(batch_size), false)?;
     queue_missing_deep_analysis_for_tracks_with_priority(
         conn,
         &tracks,
         false,
+        DEEP_ANALYSIS_PRIORITY_BACKGROUND,
+    )
+}
+
+/// Force-queues deep analysis for every track in the collection, regardless
+/// of the currently selected background mode and regardless of whether a
+/// track is already analysed.
+///
+/// Queued at `DEEP_ANALYSIS_PRIORITY_BACKGROUND`, not `..._MANUAL`: this is
+/// the collection-wide sibling of the periodic background sweep above (it
+/// shares `background_mode_scope`'s "all_music" scope), not of the per-library
+/// manual actions, so `Pause Background` governs it the same way it governs
+/// routine background analysis — a run this large needs to be pausable
+/// through the control the user already knows.
+pub fn queue_all_deep_analysis(conn: &Connection, force: bool) -> Result<usize, JobError> {
+    let tracks = load_scoped_deep_analysis_tracks(conn, ALL_MUSIC_SCOPE, None, force)?;
+    queue_missing_deep_analysis_for_tracks_with_priority(
+        conn,
+        &tracks,
+        force,
         DEEP_ANALYSIS_PRIORITY_BACKGROUND,
     )
 }
@@ -1692,27 +1715,53 @@ fn load_library_tracks_for_deep_analysis(
     query_deep_track_inputs(conn, &sql, params![library_id, DEEP_ANALYSIS_VERSION])
 }
 
-fn load_background_tracks_for_deep_analysis(
-    conn: &Connection,
-    mode: &str,
-    limit: usize,
-) -> Result<Vec<MixTrackInput>, JobError> {
-    let scope = match mode {
+/// SQL scope for the "all_music" background mode — also `queue_all_deep_analysis`'s
+/// scope, since forcing the whole collection is that same mode with the
+/// staleness check bypassed rather than a different selection.
+const ALL_MUSIC_SCOPE: &str = "1=1";
+
+/// Maps a `boogiemixDeepAnalysisBackgroundMode` setting value to the SQL
+/// fragment selecting the tracks it covers. `None` for `"off"` or anything
+/// unrecognised, which callers treat as "queue nothing".
+fn background_mode_scope(mode: &str) -> Option<&'static str> {
+    Some(match mode {
         "playlists_only" => "EXISTS(SELECT 1 FROM playlist_tracks pt WHERE pt.track_id=t.id)",
         "favorites_and_playlists" => {
             "(EXISTS(SELECT 1 FROM playlist_tracks pt WHERE pt.track_id=t.id)
               OR EXISTS(SELECT 1 FROM track_ratings tr WHERE tr.track_id=t.id AND tr.rating >= 4)
               OR EXISTS(SELECT 1 FROM play_history ph WHERE ph.track_id=t.id AND ph.played_at >= datetime('now','-180 days')))"
         }
-        "all_music" => "1=1",
-        _ => return Ok(Vec::new()),
+        "all_music" => ALL_MUSIC_SCOPE,
+        _ => return None,
+    })
+}
+
+/// Tracks matching `scope`, eligible for deep analysis.
+///
+/// Always excludes tracks with a job already pending/running, so neither the
+/// periodic background sweep nor a manual force-all ever double-queues a
+/// track mid-flight. `force` decides whether an already-current analysis is
+/// still included — see `load_library_tracks_for_deep_analysis` above for why
+/// this can't live purely in the caller: a caller asking to force gets an
+/// already-empty list from a non-force-aware query and silently queues
+/// nothing.
+fn load_scoped_deep_analysis_tracks(
+    conn: &Connection,
+    scope: &str,
+    limit: Option<usize>,
+    force: bool,
+) -> Result<Vec<MixTrackInput>, JobError> {
+    let staleness = if force {
+        "?1 IS NOT NULL"
+    } else {
+        "tda.track_id IS NULL OR tda.analysis_version != ?1 OR tda.file_fingerprint != (t.file_path || '|' || COALESCE(t.file_size, -1) || '|' || COALESCE(t.scanned_at, ''))"
     };
     let mut sql = base_deep_track_select(&format!(
         "WHERE {scope}
            AND NOT EXISTS(SELECT 1 FROM deep_analysis_jobs j WHERE j.track_id=t.id AND j.status IN ('pending','running'))
-           AND (tda.track_id IS NULL OR tda.analysis_version != ?1 OR tda.file_fingerprint != (t.file_path || '|' || COALESCE(t.file_size, -1) || '|' || COALESCE(t.scanned_at, '')))"
+           AND ({staleness})"
     ));
-    append_limit(&mut sql, Some(limit));
+    append_limit(&mut sql, limit);
     query_deep_track_inputs(conn, &sql, params![DEEP_ANALYSIS_VERSION])
 }
 
@@ -2258,6 +2307,103 @@ mod tests {
             .query_row("SELECT track_id FROM deep_analysis_jobs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(track_id, "t2");
+    }
+
+    #[test]
+    fn queue_all_deep_analysis_queues_nothing_when_everything_is_current() {
+        let conn = setup_deep_db();
+        mark_library_analysed(&conn);
+
+        let queued = queue_all_deep_analysis(&conn, false).unwrap();
+
+        assert_eq!(queued, 0);
+        assert_eq!(pending_job_count(&conn), 0);
+    }
+
+    #[test]
+    fn forcing_all_deep_analysis_requeues_already_analysed_tracks() {
+        let conn = setup_deep_db();
+        mark_library_analysed(&conn);
+
+        let queued = queue_all_deep_analysis(&conn, true).unwrap();
+
+        assert_eq!(
+            queued, 3,
+            "every track in the collection should be re-queued"
+        );
+        assert_eq!(pending_job_count(&conn), 3);
+    }
+
+    #[test]
+    fn queue_all_deep_analysis_still_picks_up_stale_tracks_without_forcing() {
+        let conn = setup_deep_db();
+        mark_library_analysed(&conn);
+        conn.execute(
+            "UPDATE track_deep_analysis SET file_fingerprint='moved' WHERE track_id='t2'",
+            [],
+        )
+        .unwrap();
+
+        let queued = queue_all_deep_analysis(&conn, false).unwrap();
+
+        assert_eq!(queued, 1);
+        let track_id: String = conn
+            .query_row("SELECT track_id FROM deep_analysis_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(track_id, "t2");
+    }
+
+    #[test]
+    fn queue_all_deep_analysis_covers_every_library_not_just_one() {
+        // The whole distinction from queue_library_deep_analysis: no library_id
+        // filter at all. Add a second library with its own track and confirm a
+        // force-all run reaches it too.
+        let conn = setup_deep_db();
+        conn.execute_batch(
+            "INSERT INTO libraries(id, name) VALUES('lib2', 'Second Library');
+             INSERT INTO tracks(id, library_id, file_path, duration)
+             VALUES('t4', 'lib2', 'D:\\Music\\four.mp3', 200);",
+        )
+        .unwrap();
+        mark_library_analysed(&conn); // covers t1-t4, since it selects from all tracks
+
+        let queued = queue_all_deep_analysis(&conn, true).unwrap();
+
+        assert_eq!(queued, 4);
+        let track_ids: Vec<String> = conn
+            .prepare("SELECT track_id FROM deep_analysis_jobs ORDER BY track_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(track_ids.contains(&"t4".to_string()), "{track_ids:?}");
+    }
+
+    #[test]
+    fn queue_all_deep_analysis_runs_at_background_priority() {
+        // Deliberately background, not manual: this is the collection-wide
+        // sibling of the periodic background sweep, not of the per-library
+        // manual actions, so Pause/Resume Background has to be able to stop
+        // it — a run this large needs to be pausable through the control the
+        // user already knows.
+        let conn = setup_deep_db();
+
+        queue_all_deep_analysis(&conn, false).unwrap();
+
+        let priority: i64 = conn
+            .query_row("SELECT priority FROM deep_analysis_jobs LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(priority, DEEP_ANALYSIS_PRIORITY_BACKGROUND);
+
+        let claimed_while_paused =
+            claim_next_deep_analysis_job_with_background(&conn, false).unwrap();
+        assert!(
+            claimed_while_paused.is_none(),
+            "a paused background worker must not claim a force-all job"
+        );
     }
 
     #[test]
