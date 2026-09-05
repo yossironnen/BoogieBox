@@ -2867,7 +2867,8 @@ export default function BrowseView({
     if (seenResetRequestRef.current === resetRequest) return;
     seenResetRequestRef.current = resetRequest;
     goRoot();
-  }, [resetRequest, goRoot]);
+    clearBrowseRefinements();
+  }, [resetRequest, goRoot, clearBrowseRefinements]);
 
   // Build breadcrumb
   const breadcrumb = (() => {
