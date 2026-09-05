@@ -463,14 +463,14 @@ function Breadcrumb({ items }: { items: { label: string; onClick: () => void }[]
     }}>
       {items.map((item, i) => (
         <React.Fragment key={i}>
-          {i > 0 && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>/</span>}
+          {i > 0 && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>/</span>}
           <button
             onClick={item.onClick}
             style={{
               background: 'none', border: 'none', padding: '2px 6px', borderRadius: 4,
               color: i === items.length - 1 ? 'var(--text)' : 'var(--accent)',
               cursor: i === items.length - 1 ? 'default' : 'pointer',
-              fontSize: 12, fontFamily: 'inherit', fontWeight: i === items.length - 1 ? 600 : 400,
+              fontSize: 14, fontFamily: 'inherit', fontWeight: i === items.length - 1 ? 600 : 400,
             }}
           >
             {item.label}
@@ -969,7 +969,7 @@ function AlbumCover({ albumId, title, refreshToken = 0, adaptiveAccentEnabled = 
           <div style={L.coverPlaceholder}>
             <AlbumIcon />
             {phase === 'none' ? (
-              <div style={{ fontSize: 9, marginTop: 6, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.4 }}>
+              <div style={{ fontSize: 11, marginTop: 6, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.4 }}>
                 No cover found
               </div>
             ) : null}
@@ -1180,7 +1180,7 @@ function LastFmTopTracks({
       <div style={L.topTracksHead}>
         <div style={L.topTracksTitle}>Top 5 Songs</div>
         <button
-          style={{ ...L.btnSecondary, padding: '5px 10px', fontSize: 12, opacity: state === 'ok' && !playLoading ? 1 : 0.6 }}
+          style={{ ...L.btnSecondary, padding: '5px 10px', fontSize: 14, opacity: state === 'ok' && !playLoading ? 1 : 0.6 }}
           onClick={() => onPlayTopTracks(tracks)}
           disabled={state !== 'ok' || playLoading}
           title={state === 'ok' ? 'Play matched top tracks from your library' : 'No top tracks available'}
@@ -1903,7 +1903,7 @@ export function AlbumGrid({
 }
 function LockBadge() {
   return (
-    <span title="Custom metadata — protected from auto-scan" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--accent)', verticalAlign: 'middle', marginLeft: 8 }}>
+    <span title="Custom metadata — protected from auto-scan" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--accent)', verticalAlign: 'middle', marginLeft: 8 }}>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     </span>
   );
@@ -1963,14 +1963,14 @@ function ArtistHeader({
             {artist.album_count} {artist.album_count === 1 ? 'album' : 'albums'} · {artist.track_count} tracks
           </div>
           {!!artist.identity_lock_pending && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: 'var(--text-muted)', marginTop: 6 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'var(--accent)', opacity: 0.6, animation: 'pulse 1.2s ease-in-out infinite' }} />
               <span>Matching artist metadata online…</span>
               {canEditMetadata && (
                 <button
                   onClick={handleLockNow}
                   disabled={lockingIdentity}
-                  style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: lockingIdentity ? 'default' : 'pointer', fontSize: 11, fontFamily: 'inherit' }}
+                  style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: lockingIdentity ? 'default' : 'pointer', fontSize: 13, fontFamily: 'inherit' }}
                 >
                   {lockingIdentity ? 'Locking…' : 'Lock now'}
                 </button>
@@ -1978,7 +1978,7 @@ function ArtistHeader({
             </div>
           )}
           {!!mergeInfo?.merged && !!mergeInfo.members.length && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)', marginTop: 6, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: 'var(--text-muted)', marginTop: 6, flexWrap: 'wrap' }}>
               <span>
                 Merged from: {mergeInfo.members.map((m, i) => (
                   <React.Fragment key={String(m.id)}>
@@ -1991,7 +1991,7 @@ function ArtistHeader({
                   <span style={{ opacity: 0.4 }}>·</span>
                   <button
                     onClick={() => setShowUnmerge(true)}
-                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}
+                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 14, fontFamily: 'inherit' }}
                   >
                     Unmerge
                   </button>
@@ -2252,7 +2252,7 @@ function TrackList({
               />
             </div>
             {track.has_deep_analysis && (
-              <span style={{ fontSize: 10, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available — AI stem analysis complete">✦</span>
+              <span style={{ fontSize: 12, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available — AI stem analysis complete">✦</span>
             )}
             <div style={{ ...L.meta, minWidth: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
               {fmtTrackDur(track.duration)}
@@ -3536,13 +3536,13 @@ const L: Record<string, React.CSSProperties> = {
     alignSelf: 'flex-start',
   },
   rootHeroStat: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 800,
     color: 'var(--text)',
     letterSpacing: -0.5,
   },
   rootHeroStatMuted: {
-    fontSize: 12,
+    fontSize: 14,
     color: 'var(--text-muted)',
     fontWeight: 600,
   },
@@ -3576,17 +3576,17 @@ const L: Record<string, React.CSSProperties> = {
     padding: '12px 24px',
     background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
     borderBottom: '1px solid color-mix(in srgb, var(--accent) 28%, var(--border))',
-    flexShrink: 0, fontSize: 12.5, color: 'var(--text)',
+    flexShrink: 0, fontSize: 14.5, color: 'var(--text)',
   },
   artistSelectBarText: { display: 'flex', alignItems: 'center', gap: 8 },
   artistSelectBarClear: {
     padding: '8px 16px', background: 'var(--bg)', border: '1px solid var(--border)',
-    borderRadius: 999, color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12,
+    borderRadius: 999, color: 'var(--text-muted)', cursor: 'pointer', fontSize: 14,
     fontFamily: 'inherit', fontWeight: 700,
   },
   artistSelectBarMerge: {
     padding: '8px 16px', background: 'var(--accent)', border: 'none',
-    borderRadius: 999, color: '#fff', cursor: 'pointer', fontSize: 12,
+    borderRadius: 999, color: '#fff', cursor: 'pointer', fontSize: 14,
     fontFamily: 'inherit', fontWeight: 700,
     boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent), 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent)',
   },
@@ -3595,7 +3595,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   tab: {
     padding: '10px 16px', background: 'rgba(255,255,255,0.03)', border: '1px solid color-mix(in srgb, var(--border) 74%, transparent)',
-    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13,
+    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 15,
     fontFamily: 'inherit', borderRadius: 999, fontWeight: 700,
   },
   tabActive: { color: 'var(--text)', background: 'color-mix(in srgb, var(--accent) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))' },
@@ -3609,7 +3609,7 @@ const L: Record<string, React.CSSProperties> = {
     paddingRight: 0,
   },
   toggleLabel: {
-    fontSize: 11, color: 'var(--text-muted)',
+    fontSize: 13, color: 'var(--text-muted)',
     textTransform: 'uppercase' as const, letterSpacing: 0.7, whiteSpace: 'nowrap' as const,
   },
   compactButton: {
@@ -3619,7 +3619,7 @@ const L: Record<string, React.CSSProperties> = {
     border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
     borderRadius: 999,
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
     whiteSpace: 'nowrap',
     fontWeight: 700,
@@ -3635,7 +3635,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   toggleOpt: {
     padding: '5px 12px', backgroundColor: 'transparent', border: 'none',
-    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11,
+    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13,
     fontFamily: 'inherit', whiteSpace: 'nowrap' as const, transition: 'all 0.15s',
   },
   toggleOptActive: {
@@ -3643,7 +3643,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   sectionHeading: {
     padding: '16px 20px 8px',
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: 600,
     color: 'var(--text-muted)',
     letterSpacing: 0.5,
@@ -3664,7 +3664,7 @@ const L: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border)',
     borderRadius: 6,
     cursor: 'pointer',
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'inherit',
     whiteSpace: 'nowrap',
   },
@@ -3678,7 +3678,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   libraryScopeHint: {
     marginTop: 6,
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
   },
   genrePopover: {
@@ -3704,7 +3704,7 @@ const L: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   genrePopoverTitle: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
@@ -3719,7 +3719,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   genreEmpty: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     padding: '4px 2px',
   },
   genreOptionRow: {
@@ -3731,7 +3731,7 @@ const L: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     cursor: 'pointer',
     color: 'var(--text)',
-    fontSize: 12,
+    fontSize: 14,
   },
   genreOptionName: {
     overflow: 'hidden',
@@ -3740,7 +3740,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   genreOptionCount: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     fontVariantNumeric: 'tabular-nums',
   },
   clearFilterBtn: {
@@ -3750,7 +3750,7 @@ const L: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border)',
     borderRadius: 6,
     cursor: 'pointer',
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'inherit',
     whiteSpace: 'nowrap',
   },
@@ -3777,13 +3777,13 @@ const L: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid var(--border)',
   },
   refinePopoverTitle: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 600,
     color: 'var(--text)',
   },
   refinePopoverMeta: {
     marginTop: 4,
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 1.4,
     color: 'var(--text-muted)',
     maxWidth: 260,
@@ -3802,7 +3802,7 @@ const L: Record<string, React.CSSProperties> = {
     background: 'var(--bg)',
   },
   refineSectionTitle: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     textTransform: 'uppercase',
     letterSpacing: 0.6,
@@ -3829,12 +3829,12 @@ const L: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border)',
     borderRadius: 999,
     cursor: 'pointer',
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'inherit',
   },
   activeChipDismiss: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 1,
   },
   activeChipClearAll: {
@@ -3843,7 +3843,7 @@ const L: Record<string, React.CSSProperties> = {
     color: 'var(--accent)',
     border: 'none',
     cursor: 'pointer',
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'inherit',
   },
   alphaShellFill: { position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
@@ -3872,8 +3872,8 @@ const L: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     background: 'transparent',
     color: 'var(--text-muted)',
-    fontSize: 9,
-    lineHeight: '14px',
+    fontSize: 11,
+    lineHeight: '16px',
     fontWeight: 600,
     padding: 0,
     cursor: 'pointer',
@@ -3930,7 +3930,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   similarArtistName: {
     overflow: 'hidden',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 700,
     lineHeight: 1.25,
     textAlign: 'center',
@@ -4004,7 +4004,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   gridTitle: {
     marginTop: 8,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 600,
     color: 'var(--text)',
     overflow: 'hidden',
@@ -4017,7 +4017,7 @@ const L: Record<string, React.CSSProperties> = {
     border: 'none',
     background: 'transparent',
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 1.35,
     textAlign: 'left' as const,
     cursor: 'pointer',
@@ -4032,7 +4032,7 @@ const L: Record<string, React.CSSProperties> = {
     justifyContent: 'flex-start',
     width: '100%',
   },
-  empty: { padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 },
+  empty: { padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 15 },
   row: {
     display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
     cursor: 'pointer', borderBottom: 'var(--browse-row-border, 1px solid var(--border))',
@@ -4082,16 +4082,16 @@ const L: Record<string, React.CSSProperties> = {
     background: 'color-mix(in srgb, var(--surface) 72%, transparent)',
     backdropFilter: 'blur(2px)',
   },
-  primaryText: { fontSize: 13, fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  secondaryText: { fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  meta: { fontSize: 11, color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' },
+  primaryText: { fontSize: 15, fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  secondaryText: { fontSize: 13, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  meta: { fontSize: 13, color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' },
   chevron: { color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center', opacity: 0.4 },
   playBtn: {
     display: 'flex', alignItems: 'center', gap: 5,
     background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
     color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
     borderRadius: 5, padding: '4px 10px', cursor: 'pointer',
-    fontSize: 11, fontFamily: 'inherit', fontWeight: 600, flexShrink: 0,
+    fontSize: 13, fontFamily: 'inherit', fontWeight: 600, flexShrink: 0,
   },
   albumHeader: {
     display: 'flex', alignItems: 'flex-start',
@@ -4100,9 +4100,9 @@ const L: Record<string, React.CSSProperties> = {
     background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent-primary) 13%, var(--surface)) 0%, var(--surface) 70%)',
     transition: 'background 300ms ease',
   },
-  albumTitle: { fontSize: 20, fontWeight: 700, color: 'var(--text)', marginBottom: 6, lineHeight: 1.2 },
+  albumTitle: { fontSize: 22, fontWeight: 700, color: 'var(--text)', marginBottom: 6, lineHeight: 1.2 },
   albumRatingRow: { display: 'flex', alignItems: 'center', marginBottom: 8 },
-  albumMeta: { fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 },
+  albumMeta: { fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 },
   coverBox: {
     flexShrink: 0, borderRadius: 6, overflow: 'hidden',
     backgroundColor: 'var(--border)',
@@ -4118,14 +4118,14 @@ const L: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', gap: 6,
     backgroundColor: 'var(--accent)', color: '#fff', border: 'none',
     borderRadius: 6, padding: '8px 16px', cursor: 'pointer',
-    fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
+    fontSize: 15, fontFamily: 'inherit', fontWeight: 600,
   },
   btnSecondary: {
     display: 'flex', alignItems: 'center', gap: 6,
     backgroundColor: 'transparent', color: 'var(--text-muted)',
     border: '1px solid var(--border)',
     borderRadius: 6, padding: '7px 14px', cursor: 'pointer',
-    fontSize: 13, fontFamily: 'inherit',
+    fontSize: 15, fontFamily: 'inherit',
   },
   trackRow: {
     display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px',
@@ -4133,7 +4133,7 @@ const L: Record<string, React.CSSProperties> = {
     cursor: 'default',
   },
   trackNum: {
-    width: 28, textAlign: 'right', fontSize: 12,
+    width: 28, textAlign: 'right', fontSize: 14,
     color: 'var(--text-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums',
   },
   playRowBtn: {
@@ -4149,7 +4149,7 @@ const L: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   trackTitle: {
-    fontSize: 13, fontWeight: 500, color: 'var(--text)',
+    fontSize: 15, fontWeight: 500, color: 'var(--text)',
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
   // ── Artist header ──
@@ -4182,7 +4182,7 @@ const L: Record<string, React.CSSProperties> = {
     position: 'absolute',
     right: 4,
     bottom: 4,
-    fontSize: 8,
+    fontSize: 10,
     color: '#ddd',
     background: 'rgba(0,0,0,0.55)',
     borderRadius: 3,
@@ -4195,49 +4195,49 @@ const L: Record<string, React.CSSProperties> = {
     paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 10,
   },
   bioNoKey: {
-    fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6,
+    fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6,
     padding: '4px 0',
   },
   bioLoading: {
     display: 'flex', alignItems: 'center', gap: 8,
-    fontSize: 12, color: 'var(--text-muted)',
+    fontSize: 14, color: 'var(--text-muted)',
   },
   bioLoadingDot: {
     width: 6, height: 6, borderRadius: '50%',
     backgroundColor: 'var(--accent)', opacity: 0.6,
     animation: 'pulse 1.2s ease-in-out infinite',
   },
-  bioEmpty: { fontSize: 12, color: 'var(--text-muted)', opacity: 0.5 },
+  bioEmpty: { fontSize: 14, color: 'var(--text-muted)', opacity: 0.5 },
   bioStats: { display: 'flex', gap: 20 },
   bioStat: { display: 'flex', flexDirection: 'column', gap: 1 },
   bioStatVal: {
-    fontSize: 15, fontWeight: 700, color: 'var(--text)',
+    fontSize: 17, fontWeight: 700, color: 'var(--text)',
     fontVariantNumeric: 'tabular-nums',
   },
   bioStatLbl: {
-    fontSize: 10, color: 'var(--text-muted)',
+    fontSize: 12, color: 'var(--text-muted)',
     textTransform: 'uppercase', letterSpacing: 0.8,
   },
   bioTags: { display: 'flex', flexWrap: 'wrap', gap: 5 },
   bioTag: {
-    fontSize: 10, padding: '2px 8px', borderRadius: 20,
+    fontSize: 12, padding: '2px 8px', borderRadius: 20,
     backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)',
     color: 'var(--accent)',
     border: '1px solid color-mix(in srgb, var(--accent) 20%, transparent)',
     textTransform: 'lowercase', letterSpacing: 0.3,
   },
   bioText: {
-    fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.7,
+    fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.7,
     display: '-webkit-box', WebkitBoxOrient: 'vertical',
     overflow: 'hidden',
   },
   bioExpandBtn: {
-    fontSize: 11, color: 'var(--accent)', background: 'transparent',
+    fontSize: 13, color: 'var(--accent)', background: 'transparent',
     border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit',
     textDecoration: 'underline', textUnderlineOffset: 2,
   },
   bioLink: {
-    fontSize: 11, color: 'var(--text-muted)',
+    fontSize: 13, color: 'var(--text-muted)',
     textDecoration: 'none', opacity: 0.6,
   },
   topTracksWrap: {
@@ -4249,7 +4249,7 @@ const L: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   topTracksTitle: {
-    fontSize: 12,
+    fontSize: 14,
     color: 'var(--text)',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
@@ -4262,7 +4262,7 @@ const L: Record<string, React.CSSProperties> = {
     gap: 10,
   },
   topTracksHint: {
-    fontSize: 12,
+    fontSize: 14,
     color: 'var(--text-muted)',
   },
   topTracksList: {
@@ -4281,20 +4281,20 @@ const L: Record<string, React.CSSProperties> = {
   topTrackRank: {
     width: 18,
     textAlign: 'right',
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     fontVariantNumeric: 'tabular-nums',
     flexShrink: 0,
   },
   topTrackName: {
-    fontSize: 13,
+    fontSize: 15,
     color: 'var(--text)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
   topTrackLink: {
-    fontSize: 13,
+    fontSize: 15,
     color: 'var(--accent)',
     textDecoration: 'none',
     whiteSpace: 'nowrap',
@@ -4303,7 +4303,7 @@ const L: Record<string, React.CSSProperties> = {
     display: 'block',
   },
   topTrackScrobbles: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     flexShrink: 0,
     whiteSpace: 'nowrap',

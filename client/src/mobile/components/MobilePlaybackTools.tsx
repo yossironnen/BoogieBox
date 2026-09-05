@@ -226,14 +226,14 @@ const S: Record<string, React.CSSProperties> = {
   },
   sectionTitle: {
     color: 'var(--text)',
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: 800,
     letterSpacing: -0.2,
   },
   description: {
     marginTop: 4,
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 1.5,
   },
   toggleRow: {
@@ -249,14 +249,14 @@ const S: Record<string, React.CSSProperties> = {
   controlTitle: {
     display: 'block',
     color: 'var(--text)',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 750,
   },
   controlMeta: {
     display: 'block',
     marginTop: 3,
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
     lineHeight: 1.4,
   },
   vinylHero: {
@@ -291,7 +291,7 @@ const S: Record<string, React.CSSProperties> = {
     backgroundColor: 'transparent',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 750,
   },
   modeButtonActive: {
@@ -316,7 +316,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   rangeValue: {
     color: 'var(--accent)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 800,
   },
   range: {

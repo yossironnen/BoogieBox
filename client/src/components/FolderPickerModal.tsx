@@ -35,9 +35,9 @@ const S = {
     padding: '14px 16px 10px',
     borderBottom: '1px solid var(--border)',
   },
-  title: { fontWeight: 700, fontSize: 15, color: 'var(--text)', marginBottom: 6 },
+  title: { fontWeight: 700, fontSize: 17, color: 'var(--text)', marginBottom: 6 },
   breadcrumb: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     fontFamily: 'monospace',
     wordBreak: 'break-all' as const,
@@ -59,7 +59,7 @@ const S = {
     border: '1px solid var(--border)',
     borderRadius: 5,
     padding: '4px 10px',
-    fontSize: 12,
+    fontSize: 14,
     color: 'var(--text-muted)',
     cursor: 'pointer',
     fontFamily: 'inherit',
@@ -79,7 +79,7 @@ const S = {
     color: 'var(--text)',
     borderRadius: 5,
     padding: '4px 8px',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
     outline: 'none',
   },
@@ -90,7 +90,7 @@ const S = {
     color: 'var(--text)',
     borderRadius: 5,
     padding: '4px 8px',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'monospace',
     outline: 'none',
   },
@@ -106,14 +106,14 @@ const S = {
     padding: '7px 10px',
     borderRadius: 5,
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 15,
     color: 'var(--text)',
     userSelect: 'none' as const,
   },
   emptyMsg: {
     padding: '20px 16px',
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     textAlign: 'center' as const,
   },
   footer: {
@@ -125,7 +125,7 @@ const S = {
     borderTop: '1px solid var(--border)',
   },
   selectedPath: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     fontFamily: 'monospace',
     flex: 1,
@@ -141,7 +141,7 @@ const S = {
     borderRadius: 6,
     padding: '7px 16px',
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 600,
     fontFamily: 'inherit',
   },
@@ -152,10 +152,10 @@ const S = {
     borderRadius: 6,
     padding: '7px 14px',
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 15,
     fontFamily: 'inherit',
   },
-  errorMsg: { padding: '8px 16px', color: '#ef4444', fontSize: 12 },
+  errorMsg: { padding: '8px 16px', color: '#ef4444', fontSize: 14 },
 };
 
 const FolderIcon = () => (
@@ -279,7 +279,7 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
         <div style={S.header}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
             <div style={S.title}>Choose a folder</div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', opacity: 0.7, fontStyle: 'italic' }}>server filesystem</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', opacity: 0.7, fontStyle: 'italic' }}>server filesystem</div>
           </div>
           <div style={S.breadcrumb}>{currentPath || 'Drives'}</div>
         </div>
@@ -315,7 +315,7 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
           >
             ⌨ Path
           </button>
-          {loading && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</span>}
+          {loading && <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>Loading…</span>}
         </div>
 
         {showNewFolder && (

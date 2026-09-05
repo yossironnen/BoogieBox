@@ -96,7 +96,7 @@ export default function SonicFingerprintPanel({
       {/* Header row */}
       <div style={hybridAudioPanelStyles.fingerprintHeader}>
         <span style={{
-          fontSize: 10,
+          fontSize: 12,
           fontWeight: 750,
           letterSpacing: '0.09em',
           color: 'var(--accent)',
@@ -201,7 +201,7 @@ function StemRow({
       style={{ display: 'flex', alignItems: 'center', gap: 6 }}
     >
       <span style={{
-        fontSize: 10,
+        fontSize: 12,
         fontWeight: 700,
         letterSpacing: '0.08em',
         color,
@@ -247,7 +247,7 @@ function SectionLegend({ sections }: { sections: TrackSection[] }) {
       {unique.map(s => {
         const color = SECTION_LABEL_COLORS[s.kind.toLowerCase()] ?? 'var(--text-muted)';
         return (
-          <span key={s.kind} style={{ fontSize: 10, color, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span key={s.kind} style={{ fontSize: 12, color, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
             <span style={{ width: 7, height: 7, borderRadius: 1.5, backgroundColor: color, display: 'inline-block' }} />
             {s.kind}
           </span>

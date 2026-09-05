@@ -76,11 +76,11 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
       }}>
         {/* Header */}
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 3 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 3 }}>
             Merge Artists
           </div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>Merge {artists.length} artists into one</div>
-          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>Merge {artists.length} artists into one</div>
+          <div style={{ fontSize: 13.5, color: 'var(--text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {artists.map(a => a.name).join(' · ')}
           </div>
         </div>
@@ -88,7 +88,7 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
         {/* Body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 10 }}>
               Choose the artist name
             </div>
             {artists.map(a => (
@@ -103,8 +103,8 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
               >
                 <input type="radio" name="merge-master" checked={choice === a.id} onChange={() => setChoice(a.id)} style={{ accentColor: 'var(--accent)' }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                     {a.album_count} {a.album_count === 1 ? 'album' : 'albums'} · {a.track_count} tracks
                   </div>
                 </div>
@@ -119,7 +119,7 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
               }}
             >
               <input type="radio" name="merge-master" checked={choice === 'custom'} onChange={() => setChoice('custom')} style={{ accentColor: 'var(--accent)' }} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>Use a custom name</span>
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>Use a custom name</span>
               <input
                 value={customName}
                 onChange={e => { setCustomName(e.target.value); setChoice('custom'); }}
@@ -127,7 +127,7 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
                 placeholder="Type a new artist name…"
                 style={{
                   flex: 1, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
-                  padding: '7px 10px', color: 'var(--text)', fontSize: 12.5, fontFamily: 'inherit',
+                  padding: '7px 10px', color: 'var(--text)', fontSize: 14.5, fontFamily: 'inherit',
                 }}
               />
             </label>
@@ -140,14 +140,14 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
               borderRadius: 8, padding: '12px 14px',
               display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
             }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.6 }}>Result</span>
-              <span style={{ fontSize: 13, color: 'var(--text)', textAlign: 'right' }}>
+              <span style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.6 }}>Result</span>
+              <span style={{ fontSize: 15, color: 'var(--text)', textAlign: 'right' }}>
                 <b>{resultName}</b> — {totalAlbums} albums, {totalTracks} tracks
               </span>
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 8, fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+          <div style={{ display: 'flex', gap: 8, fontSize: 13.5, color: 'var(--text-muted)', lineHeight: 1.55 }}>
             <LockIcon />
             <span>
               The other names merge into this one — their albums and tracks move over, no
@@ -157,14 +157,14 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
             </span>
           </div>
 
-          {error && <div style={{ fontSize: 12, color: '#f87171' }}>{error}</div>}
+          {error && <div style={{ fontSize: 14, color: '#f87171' }}>{error}</div>}
         </div>
 
         {/* Footer */}
         <div style={{ padding: '14px 24px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button
             onClick={onClose}
-            style={{ padding: '8px 18px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
+            style={{ padding: '8px 18px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 15, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
           >
             Cancel
           </button>
@@ -175,7 +175,7 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
               padding: '8px 18px',
               background: saving ? 'color-mix(in srgb, var(--accent) 50%, var(--surface))' : 'var(--accent)',
               border: 'none', borderRadius: 6,
-              color: '#fff', fontSize: 13, fontWeight: 700,
+              color: '#fff', fontSize: 15, fontWeight: 700,
               cursor: canSubmit ? 'pointer' : 'not-allowed',
               opacity: canSubmit ? 1 : 0.6,
               fontFamily: 'var(--font), monospace',

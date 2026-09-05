@@ -30,7 +30,7 @@ const STYLE = {
     flex: 1,
     minHeight: 34,
     padding: '6px 30px 6px 9px',
-    fontSize: 11,
+    fontSize: 13,
   },
   input: {
     ...hybridControlStyles.field,
@@ -38,19 +38,19 @@ const STYLE = {
     minWidth: 120,
     minHeight: 34,
     padding: '6px 9px',
-    fontSize: 11,
+    fontSize: 13,
   },
   btn: {
     ...hybridControlStyles.secondaryButton,
     minHeight: 34,
     padding: '6px 10px',
-    fontSize: 11,
+    fontSize: 13,
   },
-  status: { fontSize: 10, color: 'var(--text-muted)' },
+  status: { fontSize: 12, color: 'var(--text-muted)' },
   bandStrip: { display: 'flex', gap: 4, flexWrap: 'nowrap' as const },
   bandChip: (active: boolean, enabled: boolean): React.CSSProperties => ({
     flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
-    padding: '6px 2px', borderRadius: 9, cursor: 'pointer', fontSize: 9,
+    padding: '6px 2px', borderRadius: 9, cursor: 'pointer', fontSize: 11,
     border: '1px solid transparent',
     backgroundColor: active ? 'var(--accent-soft)' : 'var(--surface-subtle)',
     opacity: enabled ? 1 : 0.45,
@@ -59,19 +59,19 @@ const STYLE = {
     lineHeight: 1.2,
   }),
   controlRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const },
-  controlLabel: { fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' as const, minWidth: 28 },
+  controlLabel: { fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' as const, minWidth: 28 },
   numberInput: {
     ...hybridControlStyles.field,
     width: 72,
     minHeight: 32,
     padding: '5px 7px',
-    fontSize: 11,
+    fontSize: 13,
   },
   smallSelect: {
     ...hybridControlStyles.select,
     minHeight: 32,
     padding: '5px 28px 5px 8px',
-    fontSize: 11,
+    fontSize: 13,
   },
 } as const;
 
@@ -144,7 +144,7 @@ export default function ParametricEqEditor({
       <div style={{ ...STYLE.profileRow, ...(mobile ? { alignItems: 'stretch', flexWrap: 'wrap' as const } : null) }}>
         <select
           aria-label="EQ profile"
-          style={{ ...STYLE.select, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+          style={{ ...STYLE.select, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
           value={profile}
           disabled={autoEqEnabled}
           onChange={(e) => handleProfileSelect(e.currentTarget.value)}
@@ -157,7 +157,7 @@ export default function ParametricEqEditor({
           ))}
         </select>
         <button
-          style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+          style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
           disabled={autoEqEnabled || !isCustomProfile}
           onClick={handleDelete}
           title="Delete selected custom profile"
@@ -168,14 +168,14 @@ export default function ParametricEqEditor({
       <div style={{ ...STYLE.profileRow, ...(mobile ? { alignItems: 'stretch', flexWrap: 'wrap' as const } : null) }}>
         <input
           aria-label="New EQ profile name"
-          style={{ ...STYLE.input, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+          style={{ ...STYLE.input, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
           placeholder="Save as..."
           value={newProfileName}
           disabled={autoEqEnabled}
           onChange={(e) => { onNewProfileNameChange(e.currentTarget.value); setStatus(null); }}
         />
         <button
-          style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+          style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
           disabled={autoEqEnabled}
           onClick={handleSave}
         >
@@ -219,7 +219,7 @@ export default function ParametricEqEditor({
               aria-pressed={i === selectedBandIndex}
               aria-label={`Band ${i + 1} ${band.label}, ${freqLabel} Hz, ${gainLabel} dB`}
             >
-              <span style={{ fontWeight: 700, fontSize: 10 }}>{i + 1}</span>
+              <span style={{ fontWeight: 700, fontSize: 12 }}>{i + 1}</span>
               <span>{band.label}</span>
               <span>{freqLabel}</span>
               <span>{gainLabel}</span>
@@ -235,7 +235,7 @@ export default function ParametricEqEditor({
             <span style={STYLE.controlLabel}>Type</span>
             <select
               aria-label={`Band ${selectedBandIndex + 1} type`}
-              style={{ ...STYLE.smallSelect, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+              style={{ ...STYLE.smallSelect, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
               value={selectedBand.type}
               disabled={autoEqEnabled}
               onChange={(e) => updateBand(selectedBandIndex, { type: e.currentTarget.value as ParametricEqBandType })}
@@ -244,7 +244,7 @@ export default function ParametricEqEditor({
                 <option key={value} value={value}>{label}</option>
               ))}
             </select>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 checked={selectedBand.enabled}
@@ -260,7 +260,7 @@ export default function ParametricEqEditor({
             <input
               aria-label={`Band ${selectedBandIndex + 1} frequency`}
               type="number"
-              style={{ ...STYLE.numberInput, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+              style={{ ...STYLE.numberInput, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
               min={PARAMETRIC_FREQ_MIN}
               max={PARAMETRIC_FREQ_MAX}
               step={1}
@@ -271,13 +271,13 @@ export default function ParametricEqEditor({
                 if (Number.isFinite(v)) updateBand(selectedBandIndex, { frequencyHz: clampFreq(v) });
               }}
             />
-            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Hz</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Hz</span>
 
             <span style={{ ...STYLE.controlLabel, marginLeft: 8 }}>Q</span>
             <input
               aria-label={`Band ${selectedBandIndex + 1} Q`}
               type="number"
-              style={{ ...STYLE.numberInput, ...(mobile ? { minHeight: 44, fontSize: 12 } : null) }}
+              style={{ ...STYLE.numberInput, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
               min={PARAMETRIC_Q_MIN}
               max={PARAMETRIC_Q_MAX}
               step={0.1}
@@ -298,7 +298,7 @@ export default function ParametricEqEditor({
               style={{
                 ...STYLE.numberInput,
                 opacity: hasGain ? 1 : 0.4,
-                ...(mobile ? { minHeight: 44, fontSize: 12 } : null),
+                ...(mobile ? { minHeight: 44, fontSize: 14 } : null),
               }}
               min={PARAMETRIC_DB_MIN}
               max={PARAMETRIC_DB_MAX}
@@ -310,7 +310,7 @@ export default function ParametricEqEditor({
                 if (Number.isFinite(v)) updateBand(selectedBandIndex, { gainDb: clampDb(v) });
               }}
             />
-            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>dB</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>dB</span>
             <input
               type="range"
               min={PARAMETRIC_DB_MIN}
@@ -322,7 +322,7 @@ export default function ParametricEqEditor({
               onChange={(e) => updateBand(selectedBandIndex, { gainDb: clampDb(Number(e.currentTarget.value)) })}
               aria-label={`Band ${selectedBandIndex + 1} gain`}
             />
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', minWidth: 32, textAlign: 'right' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 32, textAlign: 'right' }}>
               {selectedBand.gainDb >= 0 ? '+' : ''}{selectedBand.gainDb.toFixed(1)} dB
             </span>
           </div>

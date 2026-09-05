@@ -384,7 +384,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   labelText: {
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 750,
     textTransform: 'uppercase',
     letterSpacing: 1,
@@ -399,7 +399,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface)',
     color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 15,
+    fontSize: 17,
     outline: 'none',
   },
   textarea: {
@@ -413,7 +413,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface)',
     color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 15,
+    fontSize: 17,
     outline: 'none',
   },
   primaryButton: {
@@ -423,7 +423,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--accent)',
     color: 'var(--on-accent)',
     fontFamily: 'inherit',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 750,
   },
   primaryButtonDisabled: hybridMobileContentStyles.disabled,
@@ -434,7 +434,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface-subtle)',
     color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 750,
   },
   errorText: {
@@ -473,7 +473,7 @@ const styles: Record<string, React.CSSProperties> = {
     placeItems: 'center',
     background: 'var(--accent-soft)',
     color: 'var(--accent)',
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 800,
   },
   trackSummaryMeta: {
@@ -484,14 +484,14 @@ const styles: Record<string, React.CSSProperties> = {
   pickerTrackTitle: {
     overflow: 'hidden',
     color: 'var(--text)',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 750,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
   pickerTrackMeta: {
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 600,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -536,7 +536,7 @@ const styles: Record<string, React.CSSProperties> = {
     placeItems: 'center',
     background: 'var(--accent-soft)',
     color: 'var(--accent)',
-    fontSize: 17,
+    fontSize: 19,
     fontWeight: 800,
   },
   listRowMain: {
@@ -547,20 +547,20 @@ const styles: Record<string, React.CSSProperties> = {
   listRowTitle: {
     overflow: 'hidden',
     color: 'var(--text)',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 750,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
   listRowMeta: {
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 600,
   },
   listRowStatus: {
     color: 'var(--accent)',
     flexShrink: 0,
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 750,
   },
   emptyText: {
@@ -584,12 +584,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   actionTitle: {
     color: 'var(--text)',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 750,
   },
   actionMeta: {
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 600,
   },
 };

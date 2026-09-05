@@ -433,7 +433,7 @@ const styles: Record<string, CSSProperties> = {
   similarHeading: {
     margin: 0,
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 800,
     letterSpacing: '0.08em',
     textTransform: 'uppercase',
@@ -469,7 +469,7 @@ const styles: Record<string, CSSProperties> = {
   similarName: {
     maxWidth: '100%',
     overflow: 'hidden',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 750,
     lineHeight: 1.25,
     textOverflow: 'ellipsis',
@@ -499,13 +499,13 @@ const styles: Record<string, CSSProperties> = {
     justifyContent: 'center',
     borderRadius: 8,
     color: 'var(--text-faint)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 700,
   },
   trackIndexPlaying: {
     background: 'var(--accent)',
     color: 'var(--on-accent)',
-    fontSize: 9,
+    fontSize: 11,
   },
   trackContent: {
     minWidth: 0,
@@ -530,7 +530,7 @@ const styles: Record<string, CSSProperties> = {
   trackTitle: {
     overflow: 'hidden',
     color: 'var(--text)',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 750,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -538,7 +538,7 @@ const styles: Record<string, CSSProperties> = {
   playingText: {
     overflow: 'hidden',
     color: 'var(--accent)',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 800,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -554,7 +554,7 @@ const styles: Record<string, CSSProperties> = {
     color: 'var(--text-muted)',
     cursor: 'pointer',
     fontFamily: 'inherit',
-    fontSize: 13,
+    fontSize: 15,
     letterSpacing: 1,
   },
 };

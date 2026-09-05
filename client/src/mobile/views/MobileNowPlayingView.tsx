@@ -602,7 +602,7 @@ const styles: Record<string, React.CSSProperties> = {
   pageTitle: {
     margin: '3px 0 0',
     color: 'var(--text)',
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: 800,
     letterSpacing: -0.5,
     lineHeight: 1.05,
@@ -615,7 +615,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface-subtle)',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
-    fontSize: 17,
+    fontSize: 19,
   },
   topActions: {
     display: 'flex',
@@ -631,7 +631,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface-subtle)',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 800,
   },
   toolButtonActive: {
@@ -651,7 +651,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 12,
     background: 'var(--accent-soft)',
     color: 'var(--accent)',
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: 800,
   },
   emptyTitle: hybridMobileContentStyles.emptyTitle,
@@ -684,7 +684,7 @@ const styles: Record<string, React.CSSProperties> = {
     placeItems: 'center',
     background: 'linear-gradient(135deg, var(--accent-soft), var(--surface-subtle))',
     color: 'var(--accent)',
-    fontSize: 64,
+    fontSize: 66,
     fontWeight: 800,
   },
   coverHint: {
@@ -696,7 +696,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     background: 'var(--overlay)',
     color: 'var(--on-accent)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 700,
     backdropFilter: 'blur(10px)',
   },
@@ -714,7 +714,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     marginBottom: 14,
     color: 'var(--text)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 800,
     letterSpacing: 1.1,
     textTransform: 'uppercase',
@@ -724,16 +724,16 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     background: 'var(--accent-soft)',
     color: 'var(--accent)',
-    fontSize: 9,
+    fontSize: 11,
   },
-  lyricsState: { color: 'var(--text-muted)', fontSize: 12, paddingTop: 16 },
+  lyricsState: { color: 'var(--text-muted)', fontSize: 14, paddingTop: 16 },
   karaokeWrap: { display: 'grid', gap: 10 },
-  karaokeLine: { color: 'var(--text-muted)', fontSize: 18, lineHeight: 1.35, fontWeight: 600 },
+  karaokeLine: { color: 'var(--text-muted)', fontSize: 20, lineHeight: 1.35, fontWeight: 600 },
   karaokeLineActive: {
     color: 'var(--text)',
     textShadow: '0 0 24px color-mix(in srgb, var(--accent) 45%, transparent)',
   },
-  lyricsText: { color: 'var(--text)', fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap' },
+  lyricsText: { color: 'var(--text)', fontSize: 16, lineHeight: 1.65, whiteSpace: 'pre-wrap' },
   stageDots: {
     minHeight: 24,
     display: 'flex',
@@ -758,7 +758,7 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     overflow: 'hidden',
     color: 'var(--text)',
-    fontSize: 24,
+    fontSize: 26,
     fontWeight: 800,
     letterSpacing: -0.65,
     lineHeight: 1.1,
@@ -769,7 +769,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 6,
     overflow: 'hidden',
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 600,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -787,7 +787,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     justifyContent: 'space-between',
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 650,
   },
   controls: {
@@ -803,7 +803,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface-subtle)',
     color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 21,
+    fontSize: 23,
   },
   play: {
     minHeight: 56,
@@ -812,7 +812,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--accent)',
     color: 'var(--on-accent)',
     fontFamily: 'inherit',
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: 800,
   },
   queueSection: { marginTop: 26 },
@@ -827,14 +827,14 @@ const styles: Record<string, React.CSSProperties> = {
   queueHeader: {
     margin: 0,
     color: 'var(--text)',
-    fontSize: 17,
+    fontSize: 19,
     fontWeight: 800,
     letterSpacing: -0.25,
   },
   queueHint: {
     marginTop: 4,
     color: 'var(--text-muted)',
-    fontSize: 9,
+    fontSize: 11,
     lineHeight: 1.35,
   },
   clearQueue: {
@@ -846,7 +846,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface-subtle)',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 700,
   },
   queueList: hybridMobileContentStyles.list,
@@ -860,7 +860,7 @@ const styles: Record<string, React.CSSProperties> = {
     paddingRight: 16,
     background: 'linear-gradient(90deg, color-mix(in srgb, var(--danger) 8%, var(--surface)), var(--danger))',
     color: 'var(--on-accent)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 800,
   },
   queueRow: {
@@ -917,7 +917,7 @@ const styles: Record<string, React.CSSProperties> = {
     placeItems: 'center',
     background: 'var(--surface-subtle)',
     color: 'var(--accent)',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: 800,
   },
   queueMeta: { minWidth: 0, display: 'grid', gap: 3 },
@@ -929,7 +929,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 800,
     touchAction: 'none',
   },
@@ -941,12 +941,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
-    fontSize: 14,
+    fontSize: 16,
   },
   queueTitle: {
     overflow: 'hidden',
     color: 'var(--text)',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 750,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -954,7 +954,7 @@ const styles: Record<string, React.CSSProperties> = {
   queueSub: {
     overflow: 'hidden',
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 600,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -1020,20 +1020,20 @@ function MobileSonicFingerprintPanel({
       background: 'linear-gradient(150deg, var(--surface), var(--surface-subtle))',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', color: 'var(--accent)', textTransform: 'uppercase' as const }}>
+        <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: '0.12em', color: 'var(--accent)', textTransform: 'uppercase' as const }}>
           Sonic Fingerprint ✦
         </span>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Tap to return</span>
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Tap to return</span>
       </div>
 
       {loading && (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 16 }}>
           Analyzing…
         </div>
       )}
 
       {!loading && !fingerprint && (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 16 }}>
           No analysis available
         </div>
       )}
@@ -1056,7 +1056,7 @@ function MobileSonicFingerprintPanel({
               const playedCount = Math.round(playedRatio * bins.length);
               return (
                 <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color, width: 46, flexShrink: 0, textAlign: 'right' as const }}>{label}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', color, width: 46, flexShrink: 0, textAlign: 'right' as const }}>{label}</span>
                   <div style={{ flex: 1, height: 18, display: 'flex', alignItems: 'center', gap: 0.5 }}>
                     {bins.map((strength, i) => (
                       <div
@@ -1080,7 +1080,7 @@ function MobileSonicFingerprintPanel({
           </div>
 
           {fingerprint.demucsModel && (
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' as const }}>{fingerprint.demucsModel}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' as const }}>{fingerprint.demucsModel}</div>
           )}
         </>
       )}
@@ -1091,7 +1091,7 @@ function MobileSonicFingerprintPanel({
 function MobileFpBadge({ label }: { label: string }) {
   return (
     <span style={{
-      fontSize: 11,
+      fontSize: 13,
       padding: '3px 10px',
       borderRadius: 6,
       border: '1px solid color-mix(in srgb, var(--accent) 35%, var(--border))',

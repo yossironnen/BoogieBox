@@ -96,15 +96,15 @@ export default function ConfirmModal({
       >
         {/* Header */}
         <div style={{ padding: '18px 24px 4px' }}>
-          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: accentColor, marginBottom: 3 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: accentColor, marginBottom: 3 }}>
             {tone === 'danger' ? 'Confirm — this cannot be undone' : 'Confirm'}
           </div>
-          <div id="confirm-modal-title" style={{ fontSize: 16, fontWeight: 700 }}>{title}</div>
+          <div id="confirm-modal-title" style={{ fontSize: 18, fontWeight: 700 }}>{title}</div>
         </div>
 
         {/* Body */}
         <div style={{ padding: '14px 24px 20px' }}>
-          <div id="confirm-modal-message" style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>
+          <div id="confirm-modal-message" style={{ fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>
             {message}
           </div>
         </div>
@@ -117,7 +117,7 @@ export default function ConfirmModal({
               disabled={busy}
               style={{
                 padding: '8px 18px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6,
-                color: 'var(--text)', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer',
+                color: 'var(--text)', fontSize: 15, cursor: busy ? 'not-allowed' : 'pointer',
                 opacity: busy ? 0.6 : 1, fontFamily: 'var(--font), monospace',
               }}
             >
@@ -132,7 +132,7 @@ export default function ConfirmModal({
               padding: '8px 18px',
               background: busy ? `color-mix(in srgb, ${accentColor} 50%, var(--surface))` : accentColor,
               border: 'none', borderRadius: 6,
-              color: 'var(--on-accent, #fff)', fontSize: 13, fontWeight: 700,
+              color: 'var(--on-accent, #fff)', fontSize: 15, fontWeight: 700,
               cursor: busy ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font), monospace',
             }}

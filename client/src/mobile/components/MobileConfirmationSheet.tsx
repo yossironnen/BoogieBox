@@ -105,13 +105,13 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 13,
     background: 'color-mix(in srgb, var(--danger) 9%, var(--surface))',
     color: 'var(--danger)',
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 850,
   },
   description: {
     margin: 0,
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     lineHeight: 1.55,
   },
   itemLabel: {
@@ -121,7 +121,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 11,
     background: 'var(--surface-subtle)',
     color: 'var(--text)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 750,
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -132,7 +132,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 11,
     background: 'color-mix(in srgb, var(--danger) 8%, var(--surface))',
     color: 'var(--danger)',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 650,
   },
   actions: {
@@ -149,7 +149,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface-subtle)',
     color: 'var(--text)',
     fontFamily: 'inherit',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 750,
   },
   confirmButton: {
@@ -161,7 +161,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'color-mix(in srgb, var(--danger) 12%, var(--surface))',
     color: 'var(--danger)',
     fontFamily: 'inherit',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 800,
   },
   disabled: {

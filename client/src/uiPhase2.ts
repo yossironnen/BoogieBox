@@ -25,7 +25,7 @@ export const phase2 = {
     flexWrap: 'wrap' as const,
   },
   eyebrow: {
-    fontSize: 11,
+    fontSize: 13,
     letterSpacing: 1.1,
     textTransform: 'uppercase' as const,
     color: 'var(--text-muted)',
@@ -33,7 +33,7 @@ export const phase2 = {
   },
   heroTitle: {
     marginTop: 8,
-    fontSize: 30,
+    fontSize: 32,
     lineHeight: 1.02,
     letterSpacing: -0.9,
     color: 'var(--text)',
@@ -41,7 +41,7 @@ export const phase2 = {
   },
   heroBody: {
     marginTop: 10,
-    fontSize: 14,
+    fontSize: 16,
     lineHeight: 1.55,
     color: 'color-mix(in srgb, var(--text) 88%, var(--text-muted))',
     maxWidth: 720,
@@ -83,14 +83,14 @@ export const phase2 = {
   },
   mobileTitle: {
     color: 'var(--text)',
-    fontSize: 30,
+    fontSize: 32,
     fontWeight: 800,
     lineHeight: 1.02,
     letterSpacing: -0.9,
   },
   mobileKicker: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 700,
     letterSpacing: 1.1,
     textTransform: 'uppercase' as const,

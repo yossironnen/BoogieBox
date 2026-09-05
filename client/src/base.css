@@ -12,6 +12,20 @@
   --bg-texture-image: none;
   --bg-texture-size: auto;
   --font:       'IBM Plex Mono';
+
+  /* Typographic scale — Option B ("Comfortable", ~+18%) from
+     wip/font-size-increase-plan.md. Component inline styles already carry
+     these literal values (flat +2px per size step); these tokens exist so
+     new UI can reference the scale instead of hardcoding another px number. */
+  --fs-2xs: 11px;  /* was 9px  — badges, fine print */
+  --fs-xs:  12px;  /* was 10px — metadata, durations, captions */
+  --fs-sm:  13px;  /* was 11px — secondary body text */
+  --fs-md:  14px;  /* was 12px — primary body/list text */
+  --fs-lg:  19px;  /* was 17px — dialog/section titles */
+  --fs-xl:  22px;  /* was 20px — hero/large titles */
+  --space-1: 6px;  /* was 4px */
+  --space-2: 8px;  /* was 6px */
+  --space-3: 13px; /* was 10px */
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; }
@@ -128,8 +142,8 @@ select option { background-color: var(--surface); color: var(--text); }
   background: color-mix(in srgb, var(--accent) 4%, var(--bg));
   color: color-mix(in srgb, var(--text-muted) 84%, var(--accent));
   border-radius: 999px;
-  padding: 3px 9px;
-  font-size: 10px;
+  padding: 4px 10px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.5px;
   text-transform: uppercase;

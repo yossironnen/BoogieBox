@@ -142,7 +142,7 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
                 display: 'block',
                 marginBottom: 8,
                 color: 'var(--text)',
-                fontSize: 12,
+                fontSize: 14,
                 fontWeight: 750,
               }}
             >

@@ -30,14 +30,14 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 6,
   padding: '8px 10px',
   color: 'var(--text)',
-  fontSize: 13,
+  fontSize: 15,
   fontFamily: 'var(--font), monospace',
   width: '100%',
   boxSizing: 'border-box',
 };
 
 const labelStyle: React.CSSProperties = {
-  fontSize: 10, fontWeight: 700,
+  fontSize: 12, fontWeight: 700,
   color: 'var(--text-muted)',
   textTransform: 'uppercase',
   letterSpacing: 1,
@@ -162,8 +162,8 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
       }}>
         {/* Header */}
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>Edit {isAlbum ? 'Album' : 'Artist'}</div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: 4 }}>✕</button>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>Edit {isAlbum ? 'Album' : 'Artist'}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: 4 }}>✕</button>
         </div>
 
         {/* Body */}
@@ -176,7 +176,7 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
               background: 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
               border: '1px solid color-mix(in srgb, var(--accent) 35%, transparent)',
               borderRadius: 8, padding: '10px 14px',
-              fontSize: 12, color: 'var(--accent)',
+              fontSize: 14, color: 'var(--accent)',
             }}>
               <LockIcon />
               <span>Custom metadata — protected from auto-scan. Use <em>Refresh Metadata</em> to re-fetch from providers.</span>
@@ -200,19 +200,19 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  style={{ padding: '7px 14px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
+                  style={{ padding: '7px 14px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 14, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
                 >
                   Choose image…
                 </button>
                 {artworkPreview && (
                   <button
                     onClick={() => { setArtworkPreview(null); setArtworkBase64(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer', textAlign: 'left', padding: 0 }}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 13, cursor: 'pointer', textAlign: 'left', padding: 0 }}
                   >
                     Remove selection
                   </button>
                 )}
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>JPG, PNG or WebP</span>
+                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>JPG, PNG or WebP</span>
                 <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
               </div>
             </div>
@@ -288,14 +288,14 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
             />
           </div>
 
-          {error && <div style={{ fontSize: 12, color: '#f87171' }}>{error}</div>}
+          {error && <div style={{ fontSize: 14, color: '#f87171' }}>{error}</div>}
         </div>
 
         {/* Footer */}
         <div style={{ padding: '14px 24px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button
             onClick={onClose}
-            style={{ padding: '8px 18px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
+            style={{ padding: '8px 18px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 15, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
           >
             Cancel
           </button>
@@ -306,7 +306,7 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
               padding: '8px 18px',
               background: saving ? 'color-mix(in srgb, var(--accent) 50%, var(--surface))' : 'var(--accent)',
               border: 'none', borderRadius: 6,
-              color: '#fff', fontSize: 13, fontWeight: 700,
+              color: '#fff', fontSize: 15, fontWeight: 700,
               cursor: saving ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font), monospace',
             }}

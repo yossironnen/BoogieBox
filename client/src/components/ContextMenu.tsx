@@ -284,7 +284,7 @@ function PlaylistSubmenu({ target, onDone }: {
             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {pl.name}
             </span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-muted)', flexShrink: 0 }}>
               {fb === 'adding' ? '…' : fb === 'done' ? '✓' : ''}
             </span>
           </button>
@@ -372,7 +372,7 @@ function CrossfadeOverridePanel({ entityType, entityId, onDone }: {
             key={opt.value}
             onClick={() => { setMode(opt.value); save(opt.value, duration); }}
             style={{
-              flex: 1, padding: '5px 0', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+              flex: 1, padding: '5px 0', fontSize: 13, fontWeight: 600, cursor: 'pointer',
               border: 'none', outline: 'none', fontFamily: 'inherit',
               backgroundColor: mode === opt.value ? 'var(--accent)' : 'var(--bg)',
               color: mode === opt.value ? '#fff' : 'var(--text)',
@@ -386,14 +386,14 @@ function CrossfadeOverridePanel({ entityType, entityId, onDone }: {
       {/* Duration slider */}
       {mode === 'crossfade' && (
         <div style={{ padding: '0 10px 8px', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>1s</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>1s</span>
           <input
             type="range" min={1} max={10} step={1} value={duration}
             onChange={e => { const v = Number(e.target.value); setDuration(v); save(mode, v); }}
             style={{ flex: 1, accentColor: 'var(--accent)' }}
           />
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>10s</span>
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', minWidth: 20, textAlign: 'right' }}>{duration}s</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>10s</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', minWidth: 20, textAlign: 'right' }}>{duration}s</span>
         </div>
       )}
 
@@ -404,14 +404,14 @@ function CrossfadeOverridePanel({ entityType, entityId, onDone }: {
             onClick={reset}
             style={{
               background: 'transparent', border: '1px solid var(--border)', borderRadius: 5,
-              color: 'var(--text-muted)', fontSize: 10, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit',
+              color: 'var(--text-muted)', fontSize: 12, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit',
             }}
           >
             Reset to default
           </button>
         )}
-        {saving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Saving…</span>}
-        {!hasOverride && !saving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Using global default</span>}
+        {saving && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving…</span>}
+        {!hasOverride && !saving && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Using global default</span>}
       </div>
     </div>
   );
@@ -650,7 +650,7 @@ export function ContextMenuRoot() {
             onMouseEnter={openPlaylistSubmenu}
           >
             <ListSVG /> Add to playlist
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>
+            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 12 }}>
               {showPlaylists ? '▲' : '▼'}
             </span>
           </button>
@@ -687,7 +687,7 @@ export function ContextMenuRoot() {
             onMouseEnter={openCrossfadeSubmenu}
           >
             <CrossfadeSVG /> Set crossfade…
-            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 10 }}>
+            <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 12 }}>
               {showCrossfade ? '▲' : '▼'}
             </span>
           </button>
@@ -736,7 +736,7 @@ const CM: Record<string, React.CSSProperties> = {
     // maxHeight is applied at position time (see positionMenu).
     overflowX: 'hidden',
     overflowY: 'auto',
-    fontSize: 13,
+    fontSize: 15,
     fontFamily: 'var(--font), monospace',
     userSelect: 'none',
   },
@@ -747,14 +747,14 @@ const CM: Record<string, React.CSSProperties> = {
     gap: 2,
   },
   targetKind: {
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: 700,
     textTransform: 'uppercase' as const,
     letterSpacing: 1,
     color: 'var(--accent)',
   },
   targetTitle: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 600,
     color: 'var(--text)',
     overflow: 'hidden',
@@ -778,7 +778,7 @@ const CM: Record<string, React.CSSProperties> = {
     border: 'none',
     color: 'var(--text)',
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 15,
     fontFamily: 'inherit',
     textAlign: 'left' as const,
     transition: 'background 0.1s',
@@ -799,7 +799,7 @@ const CM: Record<string, React.CSSProperties> = {
   },
   submenuHeader: {
     padding: '6px 14px',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: 700,
     textTransform: 'uppercase' as const,
     letterSpacing: 0.8,
@@ -807,12 +807,12 @@ const CM: Record<string, React.CSSProperties> = {
   },
   loadingRow: {
     padding: '8px 14px',
-    fontSize: 12,
+    fontSize: 14,
     color: 'var(--text-muted)',
   },
   emptyRow: {
     padding: '6px 14px 8px',
-    fontSize: 12,
+    fontSize: 14,
     color: 'var(--text-muted)',
   },
   plItem: {
@@ -824,7 +824,7 @@ const CM: Record<string, React.CSSProperties> = {
     background: 'transparent',
     border: 'none',
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
     textAlign: 'left' as const,
   },
@@ -842,7 +842,7 @@ const CM: Record<string, React.CSSProperties> = {
     color: 'var(--text)',
     borderRadius: 5,
     padding: '5px 8px',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
     outline: 'none',
   },
@@ -853,7 +853,7 @@ const CM: Record<string, React.CSSProperties> = {
     borderRadius: 5,
     padding: '5px 10px',
     cursor: 'pointer',
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'inherit',
     fontWeight: 600,
     flexShrink: 0,
@@ -861,7 +861,7 @@ const CM: Record<string, React.CSSProperties> = {
   newPlError: {
     width: '100%',
     color: '#ef4444',
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 1.3,
   },
 };

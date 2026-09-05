@@ -113,7 +113,7 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
     borderRadius: 6,
     padding: '8px 10px',
     color: 'var(--text)',
-    fontSize: 13,
+    fontSize: 15,
     fontFamily: 'var(--font), monospace',
     width: '100%',
     boxSizing: 'border-box',
@@ -142,10 +142,10 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
       }}>
         {/* Header */}
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>Refresh Metadata</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>Refresh Metadata</div>
           <button
             onClick={onClose}
-            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: 4 }}
+            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: 4 }}
           >✕</button>
         </div>
 
@@ -153,7 +153,7 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'grid', gridTemplateColumns: mode === 'album' ? '1fr 1fr' : '1fr', gap: 12, marginBottom: 12 }}>
             <div>
-              <label style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>
                 Artist
               </label>
               <input style={inputStyle} value={artist} onChange={e => setArtist(e.target.value)}
@@ -161,7 +161,7 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
             </div>
             {mode === 'album' && (
               <div>
-                <label style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 6 }}>
                   Album
                 </label>
                 <input style={inputStyle} value={album} onChange={e => setAlbum(e.target.value)}
@@ -176,7 +176,7 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
               padding: '8px 20px',
               background: artist.trim() && !loading ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 35%, var(--surface))',
               border: 'none', borderRadius: 6,
-              color: '#fff', fontSize: 12, fontWeight: 700,
+              color: '#fff', fontSize: 14, fontWeight: 700,
               cursor: loading || !artist.trim() ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font), monospace',
             }}
@@ -184,14 +184,14 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
             {loading ? 'Searching…' : 'Search'}
           </button>
           {error && (
-            <div style={{ marginTop: 10, fontSize: 12, color: '#f87171' }}>{error}</div>
+            <div style={{ marginTop: 10, fontSize: 14, color: '#f87171' }}>{error}</div>
           )}
         </div>
 
         {/* Results */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}>
           {results === null && !loading && (
-            <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', paddingTop: 24 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 15, textAlign: 'center', paddingTop: 24 }}>
               Enter search terms above and click Search.
             </div>
           )}
@@ -201,14 +201,14 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
               background: 'color-mix(in srgb, #f59e0b 12%, transparent)',
               border: '1px solid color-mix(in srgb, #f59e0b 40%, var(--border))',
               borderRadius: 8, padding: '10px 12px', marginBottom: 14,
-              fontSize: 12, color: 'var(--text)', lineHeight: 1.5,
+              fontSize: 14, color: 'var(--text)', lineHeight: 1.5,
             }}>
               <span aria-hidden="true">⚠️</span>
               <span>Metadata provider rate limit reached. This is common on free API tiers — please try again in a few minutes.</span>
             </div>
           )}
           {results !== null && results.length === 0 && (
-            <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', paddingTop: 24 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 15, textAlign: 'center', paddingTop: 24 }}>
               No results found.
             </div>
           )}
@@ -218,14 +218,14 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
               <div key={provider} style={{ marginBottom: 24 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <span style={{
-                    fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1,
+                    fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1,
                     color: '#fff',
                     background: PROVIDER_COLORS[provider] ?? '#555',
                     borderRadius: 4, padding: '2px 7px',
                   }}>
                     {PROVIDER_LABELS[provider] ?? provider}
                   </span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{providerResults.length} result{providerResults.length !== 1 ? 's' : ''}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{providerResults.length} result{providerResults.length !== 1 ? 's' : ''}</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {providerResults.map((r, i) => {
@@ -247,9 +247,9 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
                           <div style={{ width: 48, height: 48, borderRadius: 6, background: 'var(--border)', flexShrink: 0 }} />
                         )}
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
-                          {r.artist && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{r.artist}</div>}
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, display: 'flex', gap: 8 }}>
+                          <div style={{ fontWeight: 700, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
+                          {r.artist && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{r.artist}</div>}
+                          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2, display: 'flex', gap: 8 }}>
                             {r.year && <span>{r.year}</span>}
                             {r.genre && <span>{r.genre}</span>}
                             {r.tags?.slice(0, 3).map(t => <span key={t}>{t}</span>)}
@@ -262,7 +262,7 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
                             padding: '6px 14px',
                             background: 'var(--accent)',
                             border: 'none', borderRadius: 6,
-                            color: '#fff', fontSize: 11, fontWeight: 700,
+                            color: '#fff', fontSize: 13, fontWeight: 700,
                             cursor: isApplying ? 'wait' : 'pointer',
                             flexShrink: 0,
                             fontFamily: 'var(--font), monospace',

@@ -70,7 +70,7 @@ function HomeAlbumCover({ albumId, title, size = 150 }: { albumId: ClientEntityI
     <div ref={containerRef} style={{
       width: size, height: size,
       backgroundColor: 'var(--bg)', color: 'var(--text-muted)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13,
     }}>
       {phase === 'idle' ? '' : 'No Cover'}
     </div>
@@ -116,7 +116,7 @@ function WidgetCard({ title, span, className, titleClassName, hybridDesign = fal
         <div
           className={titleClassName}
           style={{
-          fontSize: 18, fontWeight: 700, color: 'var(--text)',
+          fontSize: 20, fontWeight: 700, color: 'var(--text)',
           letterSpacing: -0.4,
           ...(hybridDesign ? hybridHomeStyles.cardTitle : {}),
         }}
@@ -129,7 +129,7 @@ function WidgetCard({ title, span, className, titleClassName, hybridDesign = fal
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
             color: 'var(--text-muted)', padding: '0 4px', lineHeight: 1,
-            fontSize: 16, opacity: 0.7,
+            fontSize: 18, opacity: 0.7,
           }}
         >
           {collapsed ? '▸' : '▾'}
@@ -156,11 +156,11 @@ function StatsWidget({ stats }: { stats: Stats | null }) {
           backgroundColor: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)',
         }}>
           <div style={{
-            fontSize: 28, fontWeight: 700, color: 'var(--accent)',
+            fontSize: 30, fontWeight: 700, color: 'var(--accent)',
             fontVariantNumeric: 'tabular-nums', lineHeight: 1.1,
           }}>{value}</div>
           <div style={{
-            fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase',
+            fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase',
             letterSpacing: 1, marginTop: 6,
           }}>{label}</div>
         </div>
@@ -285,11 +285,11 @@ function RecentAlbumsWidget({
           </div>
           <div style={{ padding: '8px 10px' }}>
             <div style={{
-              fontSize: 12, fontWeight: 600, color: 'var(--text)',
+              fontSize: 14, fontWeight: 600, color: 'var(--text)',
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>{album.title}</div>
             <div style={{
-              fontSize: 11, color: 'var(--text-muted)', marginTop: 2,
+              fontSize: 13, color: 'var(--text-muted)', marginTop: 2,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>{album.album_artist || album.artist || 'Unknown Artist'}</div>
           </div>
@@ -1205,7 +1205,7 @@ function RecentlyPlayedWidget({
               <div style={{ ...H.topRatedPrimary, display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
                 {track.has_deep_analysis && (
-                  <span style={{ fontSize: 9, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available">✦</span>
+                  <span style={{ fontSize: 11, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available">✦</span>
                 )}
               </div>
               <div style={H.topRatedSecondary}>
@@ -1518,8 +1518,8 @@ function QuickPlaylistsWidget({
               />
             ))}
           </div>
-          <div style={{ flex: 1, fontSize: 13, color: 'var(--text)', fontWeight: 500 }}>{pl.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ flex: 1, fontSize: 15, color: 'var(--text)', fontWeight: 500 }}>{pl.name}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
             {pl.track_count} tracks
           </div>
         </button>
@@ -1570,7 +1570,7 @@ function VideoPosterCard({
         ) : (
           <div style={{
             width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'var(--text-muted)', fontSize: 10,
+            color: 'var(--text-muted)', fontSize: 12,
           }}>
             No Poster
           </div>
@@ -1578,11 +1578,11 @@ function VideoPosterCard({
       </div>
       <div style={{ padding: '6px 8px' }}>
         <div style={{
-          fontSize: 11, fontWeight: 600, color: 'var(--text)',
+          fontSize: 13, fontWeight: 600, color: 'var(--text)',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{title}</div>
         <div style={{
-          fontSize: 10, color: 'var(--text-muted)', marginTop: 2,
+          fontSize: 12, color: 'var(--text-muted)', marginTop: 2,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{meta}</div>
       </div>
@@ -1713,7 +1713,7 @@ const H: Record<string, React.CSSProperties> = {
     color: 'color-mix(in srgb, var(--text-muted) 82%, var(--accent))',
     borderRadius: 999,
     padding: '7px 12px',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 700,
     letterSpacing: 0.2,
     cursor: 'pointer',
@@ -1757,7 +1757,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   topRatedSectionTitle: {
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     letterSpacing: 0.2,
     fontWeight: 700,
     paddingTop: 1,
@@ -1765,7 +1765,7 @@ const H: Record<string, React.CSSProperties> = {
   topRatedRank: {
     width: 18,
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     fontVariantNumeric: 'tabular-nums',
     flexShrink: 0,
     textAlign: 'center',
@@ -1806,7 +1806,7 @@ const H: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     color: 'var(--text-muted)',
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: 700,
     letterSpacing: 0.4,
   },
@@ -1818,7 +1818,7 @@ const H: Record<string, React.CSSProperties> = {
     gap: 2,
   },
   topRatedPrimary: {
-    fontSize: 13,
+    fontSize: 15,
     color: 'var(--text)',
     fontWeight: 600,
     overflow: 'hidden',
@@ -1826,7 +1826,7 @@ const H: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap',
   },
   topRatedSecondary: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -1834,7 +1834,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   topRatedRating: {
     width: 52,
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     textAlign: 'right',
     fontVariantNumeric: 'tabular-nums',
@@ -1842,7 +1842,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   listRowTitle: {
     width: 140,
-    fontSize: 12,
+    fontSize: 14,
     color: 'var(--accent)',
     fontWeight: 600,
     textDecoration: 'underline',
@@ -1854,7 +1854,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   listRowSubTitle: {
     flex: 1,
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -1862,7 +1862,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   listRowValue: {
     width: 48,
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     textAlign: 'right',
     fontVariantNumeric: 'tabular-nums',
@@ -1885,7 +1885,7 @@ const H: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     padding: '8px 14px',
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 700,
     letterSpacing: 0.3,
     fontFamily: 'inherit',
@@ -1930,7 +1930,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   genreDiscoveryIntro: {
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     lineHeight: 1.5,
   },
   genreDiscoveryList: {
@@ -1957,7 +1957,7 @@ const H: Record<string, React.CSSProperties> = {
     minWidth: 0,
   },
   genreDiscoveryName: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 700,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -1965,7 +1965,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   genreDiscoveryMeta: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     marginTop: 3,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -1987,7 +1987,7 @@ const H: Record<string, React.CSSProperties> = {
     width: 44,
     flexShrink: 0,
     textAlign: 'right',
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text-muted)',
     fontVariantNumeric: 'tabular-nums',
   },
@@ -1999,7 +1999,7 @@ const H: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     padding: '6px 12px',
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 700,
     fontFamily: 'inherit',
   },
@@ -2019,13 +2019,13 @@ const H: Record<string, React.CSSProperties> = {
   },
   autoDjLabel: {
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     letterSpacing: 0.2,
     fontWeight: 700,
   },
   autoDjIntro: {
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     lineHeight: 1.45,
     marginTop: 3,
   },
@@ -2036,7 +2036,7 @@ const H: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     padding: '6px 10px',
     cursor: 'pointer',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 700,
     fontFamily: 'inherit',
     whiteSpace: 'nowrap',
@@ -2056,13 +2056,13 @@ const H: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     padding: '7px 12px',
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 700,
     fontFamily: 'inherit',
   },
   autoDjChipCount: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 600,
   },
   autoDjPicker: {
@@ -2080,7 +2080,7 @@ const H: Record<string, React.CSSProperties> = {
     color: 'var(--text)',
     borderRadius: 6,
     padding: '6px 8px',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
     minHeight: 94,
   },
@@ -2089,7 +2089,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   autoDjStatus: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
   },
   autoDjTransitionWrap: {
     display: 'flex',
@@ -2113,13 +2113,13 @@ const H: Record<string, React.CSSProperties> = {
   },
   autoDjTransitionLabel: {
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     letterSpacing: 0.2,
     fontWeight: 700,
   },
   autoDjOptionsMeta: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     textTransform: 'capitalize',
   },
   autoDjOptionsPanel: {
@@ -2145,7 +2145,7 @@ const H: Record<string, React.CSSProperties> = {
     color: 'var(--text)',
     cursor: 'pointer',
     padding: '5px 10px',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 600,
     fontFamily: 'inherit',
   },
@@ -2160,7 +2160,7 @@ const H: Record<string, React.CSSProperties> = {
     maxWidth: 320,
   },
   autoDjDurationEdge: {
-    fontSize: 10,
+    fontSize: 12,
     color: 'var(--text-muted)',
   },
   autoDjDurationSlider: {
@@ -2168,7 +2168,7 @@ const H: Record<string, React.CSSProperties> = {
     accentColor: 'var(--accent)',
   },
   autoDjDurationValue: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--text)',
     minWidth: 22,
     textAlign: 'right',
@@ -2180,7 +2180,7 @@ const H: Record<string, React.CSSProperties> = {
     minHeight: 16,
   },
   autoDjTransitionHint: {
-    fontSize: 10,
+    fontSize: 12,
     color: 'var(--text-muted)',
   },
   autoDjResetBtn: {
@@ -2190,12 +2190,12 @@ const H: Record<string, React.CSSProperties> = {
     borderRadius: 5,
     padding: '2px 8px',
     cursor: 'pointer',
-    fontSize: 10,
+    fontSize: 12,
     fontFamily: 'inherit',
   },
   errorText: {
     color: '#ef4444',
-    fontSize: 11,
+    fontSize: 13,
   },
   boogieRangeRow: {
     display: 'flex',
@@ -2206,7 +2206,7 @@ const H: Record<string, React.CSSProperties> = {
   },
   boogieRangeLabel: {
     color: 'var(--text-muted)',
-    fontSize: 12,
+    fontSize: 14,
     letterSpacing: 0.2,
     fontWeight: 700,
   },
@@ -2227,7 +2227,7 @@ const H: Record<string, React.CSSProperties> = {
     padding: '10px 12px',
   },
   boogieMetricLabel: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 700,
     letterSpacing: 0.2,
     color: 'var(--text-muted)',
@@ -2237,7 +2237,7 @@ const H: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'baseline',
     gap: 4,
-    fontSize: 20,
+    fontSize: 22,
     color: 'var(--text)',
     fontWeight: 700,
     fontVariantNumeric: 'tabular-nums',
@@ -2245,13 +2245,13 @@ const H: Record<string, React.CSSProperties> = {
   },
   boogieMetricUnit: {
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     letterSpacing: 0.2,
   },
   boogieMetricArtistValue: {
     marginTop: 4,
     color: 'var(--text)',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 700,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -2273,11 +2273,11 @@ const H: Record<string, React.CSSProperties> = {
   boogieMetricSubValue: {
     marginTop: 2,
     color: 'var(--text-muted)',
-    fontSize: 11,
+    fontSize: 13,
     minHeight: 14,
   },
   widgetEmpty: {
-    color: 'var(--text-muted)', fontSize: 13, padding: '10px 0',
+    color: 'var(--text-muted)', fontSize: 15, padding: '10px 0',
   },
   recentAlbumArtWrap: {
     position: 'relative',

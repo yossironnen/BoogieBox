@@ -19,14 +19,14 @@ it('exposes one current tab, Hybrid emphasis, and touch-safe navigation', () => 
   expect(home).toHaveStyle({
     minHeight: '56px',
     color: 'var(--accent)',
-    fontSize: '11px',
+    fontSize: '13px',
     fontWeight: '700',
   });
   expect(home.firstElementChild).toHaveStyle({
     width: '38px',
     height: '30px',
     background: 'var(--accent-soft)',
-    fontSize: '22px',
+    fontSize: '24px',
   });
   expect(search).not.toHaveAttribute('aria-current');
 

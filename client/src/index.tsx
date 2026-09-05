@@ -30,7 +30,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
       return (
         <div style={{ padding: 32, fontFamily: 'monospace', background: '#09090b', color: '#ef4444', minHeight: '100vh' }}>
           <h2 style={{ marginBottom: 16 }}>React render error</h2>
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13 }}>{this.state.error.message}{'\n\n'}{this.state.error.stack}</pre>
+          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 15 }}>{this.state.error.message}{'\n\n'}{this.state.error.stack}</pre>
         </div>
       );
     }

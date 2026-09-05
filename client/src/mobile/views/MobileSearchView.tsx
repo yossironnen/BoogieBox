@@ -393,7 +393,7 @@ export default function MobileSearchView({
                 onChange={event => setYearFrom(event.target.value)}
                 placeholder="From year"
                 aria-label="From year"
-                style={{ ...hybridMobileContentStyles.field, minHeight: 44, fontSize: 13 }}
+                style={{ ...hybridMobileContentStyles.field, minHeight: 44, fontSize: 15 }}
                 inputMode="numeric"
               />
               <input
@@ -401,7 +401,7 @@ export default function MobileSearchView({
                 onChange={event => setYearTo(event.target.value)}
                 placeholder="To year"
                 aria-label="To year"
-                style={{ ...hybridMobileContentStyles.field, minHeight: 44, fontSize: 13 }}
+                style={{ ...hybridMobileContentStyles.field, minHeight: 44, fontSize: 15 }}
                 inputMode="numeric"
               />
             </div>
@@ -420,7 +420,7 @@ const styles: Record<string, CSSProperties> = {
   sectionTitle: {
     margin: 0,
     color: 'var(--text)',
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: 800,
     letterSpacing: -0.2,
   },
@@ -466,7 +466,7 @@ const styles: Record<string, CSSProperties> = {
     color: 'var(--text-muted)',
     cursor: 'pointer',
     fontFamily: 'inherit',
-    fontSize: 13,
+    fontSize: 15,
     letterSpacing: 1,
   },
   filterSheet: {

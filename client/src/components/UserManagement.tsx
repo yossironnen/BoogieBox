@@ -15,11 +15,11 @@ interface Props {
 const inputStyle: React.CSSProperties = {
   background: 'var(--surface)', border: '1px solid var(--border)',
   color: 'var(--text)', borderRadius: 6, padding: '6px 10px',
-  fontSize: 13, outline: 'none', width: '100%',
+  fontSize: 15, outline: 'none', width: '100%',
 };
 
 const btnStyle = (variant: 'primary' | 'danger' | 'ghost' = 'primary'): React.CSSProperties => ({
-  padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+  padding: '6px 14px', borderRadius: 6, fontSize: 14, fontWeight: 600,
   cursor: 'pointer', border: 'none',
   background: variant === 'primary' ? 'var(--accent)' : variant === 'danger' ? '#ef4444' : 'var(--surface)',
   color: variant === 'ghost' ? 'var(--text-muted)' : '#fff',
@@ -74,14 +74,14 @@ function PinModal({ userId, username, onClose }: { userId: EntityId; username: s
 
   const PinRow = ({ arr, setArr, label, refs2 }: { arr: string[]; setArr: (v: string[]) => void; label: string; refs2: typeof refs }) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</div>
+      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{label}</div>
       <div style={{ display: 'flex', gap: 8 }}>
         {arr.map((digit, i) => (
           <input
             key={i} ref={refs2[i]} type="password" inputMode="numeric" maxLength={1} value={digit}
             onChange={e => handleChange(arr, setArr, refs2, i, e.target.value)}
             onKeyDown={e => handleKeyDown(arr, refs2, i, e)}
-            style={{ width: 44, height: 52, textAlign: 'center', fontSize: 22, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', outline: 'none', caretColor: 'transparent' }}
+            style={{ width: 44, height: 52, textAlign: 'center', fontSize: 24, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', outline: 'none', caretColor: 'transparent' }}
             onFocus={e => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
             onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
           />
@@ -93,10 +93,10 @@ function PinModal({ userId, username, onClose }: { userId: EntityId; username: s
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, minWidth: 300, display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>Set PIN for {username}</div>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>Set PIN for {username}</div>
         <PinRow arr={pin} setArr={setPin} label="New PIN" refs2={refs} />
         <PinRow arr={confirm} setArr={setConfirm} label="Confirm PIN" refs2={crefs} />
-        {error && <div style={{ color: '#ef4444', fontSize: 12 }}>{error}</div>}
+        {error && <div style={{ color: '#ef4444', fontSize: 14 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button style={btnStyle('ghost')} onClick={handleClear} disabled={saving}>Clear PIN</button>
           <button style={btnStyle('ghost')} onClick={onClose} disabled={saving}>Cancel</button>
@@ -195,9 +195,9 @@ export default function UserManagement({ currentUser }: Props) {
     }
   };
 
-  const sectionHead: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 };
+  const sectionHead: React.CSSProperties = { fontSize: 14, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 };
   const permTag = (active: boolean, label: string) => (
-    <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: active ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)', color: active ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600 }}>
+    <span style={{ fontSize: 12, padding: '2px 7px', borderRadius: 4, background: active ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)', color: active ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600 }}>
       {label}
     </span>
   );
@@ -208,29 +208,29 @@ export default function UserManagement({ currentUser }: Props) {
       <div>
         <div style={sectionHead}>Users</div>
         {loading ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading...</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 15 }}>Loading...</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {users.map(user => (
               <div key={user.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
                 <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>{user.username}</span>
-                  {user.id === currentUser.id && <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 6 }}>(you)</span>}
+                  <span style={{ fontSize: 15, fontWeight: 600 }}>{user.username}</span>
+                  {user.id === currentUser.id && <span style={{ fontSize: 12, color: 'var(--accent)', marginLeft: 6 }}>(you)</span>}
                 </div>
-                <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: user.role === 'admin' ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.06)', color: user.role === 'admin' ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600 }}>
+                <span style={{ fontSize: 12, padding: '2px 8px', borderRadius: 4, background: user.role === 'admin' ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.06)', color: user.role === 'admin' ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600 }}>
                   {user.role}
                 </span>
                 {user.role === 'user' && (
                   <>
-                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 10 }} title="Toggle libraries management permission" onClick={() => handleTogglePermission(user, 'canManageLibraries')}>
+                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 12 }} title="Toggle libraries management permission" onClick={() => handleTogglePermission(user, 'canManageLibraries')}>
                       {permTag(user.canManageLibraries, 'Libraries')}
                     </button>
-                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 10 }} title="Toggle metadata edit permission" onClick={() => handleTogglePermission(user, 'canEditMetadata')}>
+                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 12 }} title="Toggle metadata edit permission" onClick={() => handleTogglePermission(user, 'canEditMetadata')}>
                       {permTag(user.canEditMetadata, 'Metadata')}
                     </button>
                   </>
                 )}
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{user.hasPin ? '🔒 PIN' : 'No PIN'}</span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{user.hasPin ? '🔒 PIN' : 'No PIN'}</span>
                 <button style={btnStyle('ghost')} onClick={() => setPinModalUser(user)}>
                   {user.hasPin ? 'Change PIN' : 'Set PIN'}
                 </button>
@@ -273,20 +273,20 @@ export default function UserManagement({ currentUser }: Props) {
           </div>
           {newRole === 'user' && (
             <div style={{ display: 'flex', gap: 16 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--text-muted)', cursor: 'pointer' }}>
                 <input type="checkbox" style={checkboxStyle} checked={newCanManageLibraries} onChange={e => setNewCanManageLibraries(e.target.checked)} />
                 Allow libraries management
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--text-muted)', cursor: 'pointer' }}>
                 <input type="checkbox" style={checkboxStyle} checked={newCanEditMetadata} onChange={e => setNewCanEditMetadata(e.target.checked)} />
                 Allow metadata editing
               </label>
             </div>
           )}
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
             PINs travel to the server in plain HTTP requests. Use remote access only on trusted networks.
           </div>
-          {addError && <div style={{ color: '#ef4444', fontSize: 12 }}>{addError}</div>}
+          {addError && <div style={{ color: '#ef4444', fontSize: 14 }}>{addError}</div>}
           <button style={{ ...btnStyle('primary'), alignSelf: 'flex-start' }} onClick={handleAdd}>
             Add User
           </button>

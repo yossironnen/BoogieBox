@@ -290,7 +290,7 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: 'var(--accent)',
     color: 'var(--on-accent)',
     border: '1px solid var(--bg)',
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: 800,
     lineHeight: 1,
   },
@@ -308,7 +308,7 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: 'var(--surface-raised)',
     color: 'var(--text)',
     boxShadow: 'var(--shadow-subtle)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 600,
     lineHeight: 1.4,
     whiteSpace: 'normal',
@@ -353,7 +353,7 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: 'color-mix(in srgb, var(--accent) 28%, var(--surface))',
     color: 'var(--text)',
     border: '1px solid color-mix(in srgb, var(--accent) 38%, var(--border))',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: 700,
   },
   identityText: {
@@ -366,7 +366,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   username: {
     color: 'var(--text)',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: 650,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -375,7 +375,7 @@ const styles: Record<string, React.CSSProperties> = {
   role: {
     marginTop: 1,
     color: 'var(--text-muted)',
-    fontSize: 10,
+    fontSize: 12,
   },
   logoutButton: {
     width: 38,
@@ -390,7 +390,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     color: 'var(--text-muted)',
     cursor: 'pointer',
-    fontSize: 17,
+    fontSize: 19,
     lineHeight: 1,
   },
 };

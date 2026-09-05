@@ -136,7 +136,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   eyebrow: {
     color: 'var(--accent)',
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: 800,
     letterSpacing: 1.1,
     textTransform: 'uppercase',
@@ -144,7 +144,7 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     margin: '3px 0 0',
     color: 'var(--text)',
-    fontSize: 19,
+    fontSize: 21,
     fontWeight: 800,
     letterSpacing: -0.4,
     lineHeight: 1.05,
@@ -161,7 +161,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface-subtle)',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
-    fontSize: 20,
+    fontSize: 22,
   },
   body: {
     minHeight: 0,

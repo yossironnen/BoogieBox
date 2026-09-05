@@ -1450,8 +1450,8 @@ function StereoVU({
     background: 'color-mix(in srgb, var(--text) 6%, transparent)',
     border: `1px solid ${PLAYER_THEME_TOKENS.border}`,
     borderRadius: 3, padding: '1px 5px',
-    color: PLAYER_THEME_TOKENS.textMuted, fontSize: 8, fontFamily: PLAYER_THEME_TOKENS.font,
-    cursor: 'pointer', letterSpacing: 0.5, lineHeight: '12px',
+    color: PLAYER_THEME_TOKENS.textMuted, fontSize: 10, fontFamily: PLAYER_THEME_TOKENS.font,
+    cursor: 'pointer', letterSpacing: 0.5, lineHeight: '14px',
   };
 
   return (
@@ -1473,7 +1473,7 @@ function StereoVU({
 
       {mode === 'bars' && (
         <div style={{
-          writingMode: 'vertical-rl', fontSize: 7, fontWeight: 700,
+          writingMode: 'vertical-rl', fontSize: 9, fontWeight: 700,
           letterSpacing: 3, color: PLAYER_THEME_TOKENS.textMuted, userSelect: 'none',
           fontFamily: PLAYER_THEME_TOKENS.font, marginRight: 1, textTransform: 'uppercase',
         }}>VU</div>
@@ -1506,7 +1506,7 @@ function StereoVU({
       {vuDebugOn && (
         <div style={{
           position: 'fixed', left: 4, bottom: 4, zIndex: 9999,
-          background: 'rgba(0,0,0,0.85)', color: '#0f0', fontSize: 11,
+          background: 'rgba(0,0,0,0.85)', color: '#0f0', fontSize: 13,
           fontFamily: 'monospace', padding: '4px 6px', borderRadius: 4,
           maxWidth: '90vw', wordBreak: 'break-all', pointerEvents: 'none',
         }}>
@@ -1639,8 +1639,8 @@ function QueuePanel({ queue, currentIndex, onSelect, onRemove, onClear, onClose,
             }}
           >
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: i === currentIndex ? 700 : 550, color: PLAYER_THEME_TOKENS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.title || track.file_name}</div>
-              <div style={{ fontSize: 11, color: PLAYER_THEME_TOKENS.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.artist || 'Unknown artist'}</div>
+              <div style={{ fontSize: 14, fontWeight: i === currentIndex ? 700 : 550, color: PLAYER_THEME_TOKENS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.title || track.file_name}</div>
+              <div style={{ fontSize: 13, color: PLAYER_THEME_TOKENS.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.artist || 'Unknown artist'}</div>
             </div>
             <button
               type="button"
@@ -2874,7 +2874,7 @@ export default function Player({
         <div style={P.trackInfo}>
           <div style={P.trackTitle}>{currentTrackTitle}</div>
           {getTranscodeWarning(currentTrack, ffmpegAvailable)
-            ? <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>⚠ {getTranscodeWarning(currentTrack, ffmpegAvailable)}</div>
+            ? <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>⚠ {getTranscodeWarning(currentTrack, ffmpegAvailable)}</div>
             : (
               <div style={P.trackSub}>
                 {currentTrackMeta.artist ? (
@@ -2921,7 +2921,7 @@ export default function Player({
         <div style={P.controls}>
           <button style={P.ctrlBtn} onClick={playPrev}><PrevIcon /></button>
           <button style={{ ...P.ctrlBtn, ...P.playBtn }} onClick={() => onStateChange({ ...state, isPlaying: !isPlaying })}>
-            {loading ? <span style={{ fontSize: 12, lineHeight: 1 }}>•••</span> : isPlaying ? <PauseIcon /> : <PlayIcon />}
+            {loading ? <span style={{ fontSize: 14, lineHeight: 1 }}>•••</span> : isPlaying ? <PauseIcon /> : <PlayIcon />}
           </button>
           <button style={P.ctrlBtn} onClick={playNext}><NextIcon /></button>
         </div>
@@ -3056,7 +3056,7 @@ export default function Player({
             {/* Standard progress row: time + waveform/slider + time */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {audioError
-                ? <span style={{ color: '#ef4444', fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>? {audioError}</span>
+                ? <span style={{ color: '#ef4444', fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>? {audioError}</span>
                 : <>
                     <span style={P.timeLabel}>{fmt(currentTime)}</span>
                     {showWaveformProgress ? (
@@ -3142,15 +3142,15 @@ export default function Player({
             {eqOpen && (
               <div style={{ ...P.eqPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }} ref={eqPopupRef} role="dialog" aria-label="Equalizer">
                 <div style={P.eqHeader}>
-                  <strong style={{ fontSize: 12 }}>Equalizer</strong>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                  <strong style={{ fontSize: 14 }}>Equalizer</strong>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                     <span style={{ color: PLAYER_THEME_TOKENS.textMuted }}>Auto EQ</span>
                     <input type="checkbox" checked={autoEqEnabled} onChange={(e) => setAutoEqEnabled(e.currentTarget.checked)} />
                   </label>
                   <button style={P.eqCloseBtn} onClick={() => setEqOpen(false)} aria-label="Close equalizer"><CloseIcon /></button>
                 </div>
                 {autoEqEnabled && (
-                  <div style={{ fontSize: 10, color: PLAYER_THEME_TOKENS.textMuted }}>
+                  <div style={{ fontSize: 12, color: PLAYER_THEME_TOKENS.textMuted }}>
                     Auto EQ active - preset: <strong style={{ color: PLAYER_THEME_TOKENS.text }}>{autoEqCurrentPreset}</strong>
                     <span> {'->'} <strong style={{ color: PLAYER_THEME_TOKENS.text }}>{mapGraphicProfileToParametricPreset(autoEqCurrentPreset)}</strong></span>
                   </div>
@@ -3287,15 +3287,15 @@ const P: Record<string, React.CSSProperties> = {
     minWidth: PLAYER_LAYOUT.trackInfoMinWidth,
     overflow: 'hidden',
   },
-  trackTitle:   { fontSize: 14, fontWeight: 700, color: PLAYER_THEME_TOKENS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  trackSub:     { display: 'flex', alignItems: 'center', fontSize: 11, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  trackTitle:   { fontSize: 16, fontWeight: 700, color: PLAYER_THEME_TOKENS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  trackSub:     { display: 'flex', alignItems: 'center', fontSize: 13, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   trackSubText: { color: PLAYER_THEME_TOKENS.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   trackArtistLink: {
     background: 'transparent',
     border: 'none',
     padding: 0,
     margin: 0,
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'inherit',
     color: PLAYER_THEME_TOKENS.accent,
     textDecoration: 'underline',
@@ -3310,7 +3310,7 @@ const P: Record<string, React.CSSProperties> = {
     border: 'none',
     padding: 0,
     margin: 0,
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: 'inherit',
     color: PLAYER_THEME_TOKENS.accent,
     textDecoration: 'underline',
@@ -3347,7 +3347,7 @@ const P: Record<string, React.CSSProperties> = {
     gap: 12,
     minWidth: 220,
   },
-  timeLabel:    { fontSize: 11, color: PLAYER_THEME_TOKENS.textMuted, flexShrink: 0, fontVariantNumeric: 'tabular-nums', minWidth: 36 },
+  timeLabel:    { fontSize: 13, color: PLAYER_THEME_TOKENS.textMuted, flexShrink: 0, fontVariantNumeric: 'tabular-nums', minWidth: 36 },
   rightCluster: { display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' },
   rightControls:{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, position: 'relative' },
   volumeStack: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 },
@@ -3393,7 +3393,7 @@ const P: Record<string, React.CSSProperties> = {
     color: PLAYER_THEME_TOKENS.text,
     borderRadius: 6,
     padding: '5px 8px',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
     outline: 'none',
   },
@@ -3403,12 +3403,12 @@ const P: Record<string, React.CSSProperties> = {
     color: PLAYER_THEME_TOKENS.text,
     borderRadius: 6,
     padding: '5px 10px',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
     cursor: 'pointer',
   },
   eqStatus: {
-    fontSize: 10,
+    fontSize: 12,
     color: PLAYER_THEME_TOKENS.textMuted,
   },
   eqSelect: {
@@ -3417,7 +3417,7 @@ const P: Record<string, React.CSSProperties> = {
     color: PLAYER_THEME_TOKENS.text,
     borderRadius: 6,
     padding: '5px 8px',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
   },
   eqBands: {
@@ -3434,11 +3434,11 @@ const P: Record<string, React.CSSProperties> = {
     minWidth: 44,
   },
   eqBandLabel: {
-    fontSize: 10,
+    fontSize: 12,
     color: PLAYER_THEME_TOKENS.textMuted,
   },
   eqDbLabel: {
-    fontSize: 10,
+    fontSize: 12,
     color: PLAYER_THEME_TOKENS.textMuted,
     minWidth: 34,
     textAlign: 'center',
@@ -3468,23 +3468,23 @@ const P: Record<string, React.CSSProperties> = {
     margin: 0,
     whiteSpace: 'pre-wrap',
     fontFamily: PLAYER_THEME_TOKENS.font,
-    fontSize: 11,
+    fontSize: 13,
     color: PLAYER_THEME_TOKENS.text,
     lineHeight: 1.45,
   },
   lyricsMuted: {
-    fontSize: 11,
+    fontSize: 13,
     color: PLAYER_THEME_TOKENS.textMuted,
   },
   lyricsError: {
-    fontSize: 11,
+    fontSize: 13,
     color: 'var(--danger)',
   },
   karaokeToggle: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 4,
-    fontSize: 10,
+    fontSize: 12,
     color: PLAYER_THEME_TOKENS.textMuted,
   },
   syncedLyricsWrap: {
@@ -3495,7 +3495,7 @@ const P: Record<string, React.CSSProperties> = {
   syncedLine: {
     padding: '7px 9px',
     borderRadius: 8,
-    fontSize: 12,
+    fontSize: 14,
     color: PLAYER_THEME_TOKENS.textMuted,
     lineHeight: 1.4,
     transition: 'color 120ms ease, background 120ms ease',

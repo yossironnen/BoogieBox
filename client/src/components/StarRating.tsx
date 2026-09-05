@@ -14,9 +14,9 @@ type StarRatingProps = {
 };
 
 const SIZE_PRESETS = {
-  compact: { star: 14, gap: 2, valueFont: 11 },
-  regular: { star: 16, gap: 3, valueFont: 12 },
-  hero: { star: 18, gap: 4, valueFont: 13 },
+  compact: { star: 16, gap: 3, valueFont: 13 },
+  regular: { star: 18, gap: 4, valueFont: 14 },
+  hero: { star: 20, gap: 5, valueFont: 15 },
 } as const;
 
 const STAR = '\u2605';

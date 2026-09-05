@@ -67,8 +67,8 @@ const Icon = {
 };
 
 const L = {
-  sectionTitle: { fontSize: 16, fontWeight: 700, marginBottom: 8, color: 'var(--text)' },
-  intro: { color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.6, margin: '0 0 20px' },
+  sectionTitle: { fontSize: 18, fontWeight: 700, marginBottom: 8, color: 'var(--text)' },
+  intro: { color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.6, margin: '0 0 20px' },
   addForm: { display: 'flex', gap: 8, flexWrap: 'wrap' as const, alignItems: 'center' as const },
   input: {
     flex: 1,
@@ -78,7 +78,7 @@ const L = {
     color: 'var(--text)',
     borderRadius: 6,
     padding: '8px 12px',
-    fontSize: 13,
+    fontSize: 15,
     fontFamily: 'inherit',
     outline: 'none',
   },
@@ -92,7 +92,7 @@ const L = {
     borderRadius: 6,
     padding: '8px 16px',
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 15,
     fontFamily: 'inherit',
     fontWeight: 600,
   },
@@ -106,7 +106,7 @@ const L = {
     borderRadius: 6,
     padding: '6px 12px',
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: 'inherit',
   },
   btnDanger: {
@@ -119,12 +119,12 @@ const L = {
     padding: '6px 8px',
     cursor: 'pointer',
   },
-  errorMsg: { color: '#ef4444', marginTop: 8, fontSize: 12 },
+  errorMsg: { color: '#ef4444', marginTop: 8, fontSize: 14 },
   helperCard: {
     marginTop: 8,
     padding: '10px 14px',
     borderRadius: 6,
-    fontSize: 12,
+    fontSize: 14,
   },
   muted: { color: 'var(--text-muted)' },
   listWrap: { marginTop: 20 },
@@ -141,8 +141,8 @@ const L = {
     alignItems: 'flex-start',
     gap: 12,
   },
-  libName: { fontWeight: 700, color: 'var(--text)', fontSize: 14, marginBottom: 4 },
-  libPath: { color: 'var(--text)', fontSize: 12, wordBreak: 'break-all' as const, marginBottom: 4 },
+  libName: { fontWeight: 700, color: 'var(--text)', fontSize: 16, marginBottom: 4 },
+  libPath: { color: 'var(--text)', fontSize: 14, wordBreak: 'break-all' as const, marginBottom: 4 },
   folderList: { display: 'flex', flexDirection: 'column' as const, gap: 6, margin: '10px 0' },
   folderRow: {
     display: 'flex',
@@ -154,8 +154,8 @@ const L = {
     backgroundColor: 'var(--bg)',
     border: '1px solid var(--border)',
   },
-  folderPathText: { color: 'var(--text)', fontSize: 12, wordBreak: 'break-all' as const, flex: 1 },
-  libMeta: { color: 'var(--text-muted)', fontSize: 11 },
+  folderPathText: { color: 'var(--text)', fontSize: 14, wordBreak: 'break-all' as const, flex: 1 },
+  libMeta: { color: 'var(--text-muted)', fontSize: 13 },
   libActions: { display: 'flex', gap: 8 },
   progressWrap: { marginTop: 10 },
   progressBar: {
@@ -170,7 +170,7 @@ const L = {
     borderRadius: 999,
     transition: 'width 0.2s ease',
   },
-  progressText: { fontSize: 11, color: 'var(--text-muted)', marginTop: 4 },
+  progressText: { fontSize: 13, color: 'var(--text-muted)', marginTop: 4 },
 };
 
 /** Library Settings Tab is part of this module's public API. */

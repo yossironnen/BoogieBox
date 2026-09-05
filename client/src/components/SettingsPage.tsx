@@ -150,8 +150,8 @@ function ColorInput({ label, value, onChange }: { label: string; value: string; 
           }}
         />
         <div>
-          <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500 }}>{label}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{value}</div>
+          <div style={{ fontSize: 14, color: 'var(--text)', fontWeight: 500 }}>{label}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{value}</div>
         </div>
       </div>
       <input
@@ -161,7 +161,7 @@ function ColorInput({ label, value, onChange }: { label: string; value: string; 
         onChange={e => onChange(e.target.value)}
         style={{
           ...hybridControlStyles.field,
-          width: 108, minHeight: 36, padding: '7px 9px', fontSize: 11,
+          width: 108, minHeight: 36, padding: '7px 9px', fontSize: 13,
           fontFamily: 'monospace',
         }}
       />
@@ -356,14 +356,14 @@ function ScheduleRow({
   return (
     <div style={Sc.row}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)', marginBottom: 2 }}>
+        <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text)', marginBottom: 2 }}>
           {library.name}
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {library.primary_path ?? library.path}
         </div>
         {schedule && (
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, display: 'flex', gap: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, display: 'flex', gap: 16 }}>
             <span>Last: {fmtLastRun(schedule.last_run)}</span>
             {schedule.enabled ? <span>Next: {fmtNextRun(schedule.next_run)}</span> : null}
           </div>
@@ -372,7 +372,7 @@ function ScheduleRow({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         {/* Enable toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--text-muted)' }}>
           <button
             type="button"
             role="switch"
@@ -1167,10 +1167,10 @@ export default function SettingsPage({
           >
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 0.65fr) minmax(300px, 1.35fr)', gap: 14 }}>
               <div style={{ padding: '16px', borderRadius: 12, background: 'var(--surface-subtle)' }}>
-                <div style={{ fontFamily: HYBRID_FONT_FAMILY, color: 'var(--text)', fontSize: 18, fontWeight: 750 }}>
+                <div style={{ fontFamily: HYBRID_FONT_FAMILY, color: 'var(--text)', fontSize: 20, fontWeight: 750 }}>
                   Satoshi
                 </div>
-                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 5 }}>New design typeface</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 5 }}>New design typeface</div>
               </div>
               <div style={{
                 padding: 18,
@@ -1179,17 +1179,17 @@ export default function SettingsPage({
                 border: `1px solid ${local.colorBorder}`,
                 fontFamily: HYBRID_FONT_FAMILY,
               }}>
-                <div style={{ color: local.colorText, fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                <div style={{ color: local.colorText, fontWeight: 700, fontSize: 17, marginBottom: 6 }}>
                   The Quick Brown Fox
                 </div>
-                <div style={{ color: local.colorTextMuted, fontSize: 12, marginBottom: 10 }}>
+                <div style={{ color: local.colorTextMuted, fontSize: 14, marginBottom: 10 }}>
                   Artist · Album · 2024 · Jazz
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <div style={{ padding: '6px 14px', borderRadius: 8, backgroundColor: local.colorAccent, color: 'var(--on-accent)', fontSize: 12, fontWeight: 650 }}>
+                  <div style={{ padding: '6px 14px', borderRadius: 8, backgroundColor: local.colorAccent, color: 'var(--on-accent)', fontSize: 14, fontWeight: 650 }}>
                     ▶ Play
                   </div>
-                  <div style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${local.colorBorder}`, color: local.colorTextMuted, fontSize: 12 }}>
+                  <div style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${local.colorBorder}`, color: local.colorTextMuted, fontSize: 14 }}>
                     + Queue
                   </div>
                 </div>
@@ -1213,13 +1213,13 @@ export default function SettingsPage({
               >
                 <span style={{ ...hybridControlStyles.switchThumb, ...(adaptiveAccentEnabled ? hybridControlStyles.switchThumbActive : {}) }} />
               </button>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>
                 {adaptiveAccentEnabled
                   ? 'Adaptive from album/artist artwork (current behavior)'
                   : 'Use selected theme accent only'}
               </div>
             </div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 6 }}>
               Applies to album view, artist view, and playback bar. Saved for your user profile.
             </div>
           </SettingsPanel>
@@ -1240,13 +1240,13 @@ export default function SettingsPage({
               >
                 <span style={{ ...hybridControlStyles.switchThumb, ...(hideCompilationOnlyArtists ? hybridControlStyles.switchThumbActive : {}) }} />
               </button>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>
                 {hideCompilationOnlyArtists
                   ? 'Hiding artists with no owned releases (default)'
                   : 'Showing every artist, including compilation-only appearances'}
               </div>
             </div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 6 }}>
               Applies to Browse only. Saved for your user profile.
             </div>
           </SettingsPanel>
@@ -1256,7 +1256,7 @@ export default function SettingsPage({
             description="Turn vinyl mode on/off from the player. These preferences apply whenever it's active."
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={vinylHardcore}
@@ -1264,7 +1264,7 @@ export default function SettingsPage({
                 />
                 Hardcore Vinyl (no seeking / no jumping)
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={vinylNeedleDrop}
@@ -1272,7 +1272,7 @@ export default function SettingsPage({
                 />
                 Needle-drop sound
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={vinylAnalogFxDisabled}
@@ -1281,7 +1281,7 @@ export default function SettingsPage({
                 Disable analog noise effects
               </label>
               <div style={{ opacity: vinylAnalogFxDisabled ? 0.5 : 1 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 4 }}>
                   Needle-drop intensity: {Math.round(vinylNeedleDropIntensity * 100)}%
                 </div>
                 <input
@@ -1296,13 +1296,13 @@ export default function SettingsPage({
                 />
               </div>
             </div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 6 }}>
               Saved for your user profile.
             </div>
           </SettingsPanel>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
               Theme, Custom palette, and accent settings auto-save for your user profile.
             </div>
             <button type="button" style={P.btnSecondary} onClick={resetTheme}>
@@ -1316,13 +1316,13 @@ export default function SettingsPage({
       {activeTab === 'schedules' && canManageLibraries && (
         <div style={P.section}>
           <div style={P.sectionTitle}>Auto-Scan Schedule</div>
-          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.6 }}>
             Set how often each library should be checked for new files. Scans run in the
             background and schedule changes take effect right away.
           </p>
 
           {libraries.length === 0 && (
-            <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 15, padding: '20px 0' }}>
               No libraries added yet. Add a library first.
             </div>
           )}
@@ -1340,8 +1340,8 @@ export default function SettingsPage({
           <div style={{ marginTop: 16, padding: '12px 16px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>Queue &amp; Maintenance</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Queue &amp; Maintenance</div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
                   Monitor background activity, stop stuck scan work, and queue maintenance tasks when you need them.
                 </div>
               </div>
@@ -1350,12 +1350,12 @@ export default function SettingsPage({
               </button>
             </div>
             {queueActionResult && (
-              <div style={{ color: '#86efac', fontSize: 11, marginBottom: 10 }}>
+              <div style={{ color: '#86efac', fontSize: 13, marginBottom: 10 }}>
                 {queueActionResult}
               </div>
             )}
             {queueError && (
-              <div style={{ color: '#fca5a5', fontSize: 11, marginBottom: 10 }}>
+              <div style={{ color: '#fca5a5', fontSize: 13, marginBottom: 10 }}>
                 {queueError}
               </div>
             )}
@@ -1376,7 +1376,7 @@ export default function SettingsPage({
                         border: '1px solid var(--border)',
                         background: 'var(--bg)',
                         color: 'var(--text-muted)',
-                        fontSize: 11,
+                        fontSize: 13,
                       }}
                     >
                       <strong style={{ color: 'var(--text)', fontWeight: 600 }}>{item.count}</strong> {item.label}
@@ -1384,7 +1384,7 @@ export default function SettingsPage({
                   ))}
                 </div>
                 <div style={{ display: 'grid', gap: 10 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>Live queue</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Live queue</div>
                   {(queueSnapshot.queues.scan.length > 0 || queueSnapshot.queues.postScan.length > 0) ? (
                   <div style={{ display: 'grid', gap: 10 }}>
                     {queueSnapshot.queues.scan.map((entry) => {
@@ -1394,12 +1394,12 @@ export default function SettingsPage({
                         <div key={`scan-${entry.id}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{entry.library_name || 'Library'} scan</div>
-                              <span style={{ fontSize: 10, color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{entry.library_name || 'Library'} scan</div>
+                              <span style={{ fontSize: 12, color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
                                 {formatQueueStateLabel(entry.status)}
                               </span>
                             </div>
-                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
                               {entry.files_found != null || entry.files_scanned != null
                                 ? `${entry.files_scanned ?? 0} of ${entry.files_found ?? 0} files scanned`
                                 : 'Preparing scan'}
@@ -1432,14 +1432,14 @@ export default function SettingsPage({
                         <div key={`post-scan-${entry.id}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
                                 {entry.library_name || 'Library'} {entry.job_type ? `• ${entry.job_type}` : 'post-scan'}
                               </div>
-                              <span style={{ fontSize: 10, color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
+                              <span style={{ fontSize: 12, color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
                                 {formatQueueStateLabel(entry.status)}
                               </span>
                             </div>
-                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
                               {entry.current_step || 'Waiting for worker'}
                               {entry.started_at ? ` • Started ${fmtQueueTime(entry.started_at)}` : ''}
                               {entry.error_message ? ` • ${entry.error_message}` : ''}
@@ -1458,7 +1458,7 @@ export default function SettingsPage({
                     })}
                   </div>
                   ) : (
-                    <div style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', fontSize: 11, color: 'var(--text-muted)' }}>
+                    <div style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', fontSize: 13, color: 'var(--text-muted)' }}>
                       No active scan or post-scan jobs right now.
                     </div>
                   )}
@@ -1466,20 +1466,20 @@ export default function SettingsPage({
                 {libraries.length > 0 && (
                   <div style={{ display: 'grid', gap: 10 }}>
                     <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>Run maintenance</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Run maintenance</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
                         Queue a follow-up job for a specific library. These run in the background and show up in the live queue above.
                       </div>
                     </div>
                     {libraries.map((library) => (
                       <div key={`manual-post-scan-${library.id}`} style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}>
                         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{library.name}</div>
-                          <span style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{library.name}</div>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
                             {'MUSIC'}
                           </span>
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginBottom: 8 }}>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4, marginBottom: 8 }}>
                           Choose a background maintenance task for this library.
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -1512,7 +1512,7 @@ export default function SettingsPage({
               <button
                 type="button"
                 onClick={() => setShowRawQueueSnapshot((value) => !value)}
-                style={{ ...P.btnSecondary, padding: '7px 12px', fontSize: 11 }}
+                style={{ ...P.btnSecondary, padding: '7px 12px', fontSize: 13 }}
               >
                 {showRawQueueSnapshot ? 'Hide raw queue snapshot' : 'Show raw queue snapshot'}
               </button>
@@ -1531,7 +1531,7 @@ export default function SettingsPage({
                     background: 'var(--bg)',
                     color: 'var(--text)',
                     padding: '12px 14px',
-                    fontSize: 11,
+                    fontSize: 13,
                     lineHeight: 1.6,
                     fontFamily: 'Consolas, Monaco, monospace',
                     marginTop: 10,
@@ -1575,10 +1575,10 @@ export default function SettingsPage({
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                 Server-side transcoding
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                 When enabled, the server converts FLAC, M4A, AAC, WMA and other
                 formats to MP3 before streaming. Disable to stream the raw file
                 bytes directly — useful when your browser natively supports the
@@ -1610,7 +1610,7 @@ export default function SettingsPage({
             </div>
           </div>
 
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6, padding: '0 4px' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, padding: '0 4px' }}>
             <strong style={{ color: 'var(--text)' }}>Note:</strong> This setting is stored as a browser
             cookie and applies only to this device/browser. Other browsers or devices accessing the
             same server will use their own setting. The change takes effect on the next track played.
@@ -1619,10 +1619,10 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginTop: 12, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
               Server transcoding quality
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
               Select MP3 output quality used when server-side transcoding is enabled.
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1631,7 +1631,7 @@ export default function SettingsPage({
                 onChange={e => { setTranscodeQuality(e.target.value as 'low' | 'high'); setTranscodeQualityResult(null); }}
                 style={{
                   background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                  borderRadius: 6, padding: '7px 10px', fontSize: 12, fontFamily: 'inherit', outline: 'none',
+                  borderRadius: 6, padding: '7px 10px', fontSize: 14, fontFamily: 'inherit', outline: 'none',
                 }}
               >
                 <option value="low">Low (192 kbps CBR)</option>
@@ -1653,14 +1653,14 @@ export default function SettingsPage({
                 }}
                 style={{
                   padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                  background: 'var(--accent)', color: '#fff', fontSize: 12, cursor: 'pointer',
+                  background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
                   opacity: transcodeQualitySaving ? 0.6 : 1,
                 }}
               >
                 {transcodeQualitySaving ? 'Saving...' : 'Save Quality'}
               </button>
               {transcodeQualityResult && (
-                <span style={{ fontSize: 12, color: transcodeQualityResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                <span style={{ fontSize: 14, color: transcodeQualityResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
                   {transcodeQualityResult}
                 </span>
               )}
@@ -1689,8 +1689,8 @@ export default function SettingsPage({
                 }} />
               </div>
               <div>
-                <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text)' }}>ReplayGain normalization</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>ReplayGain normalization</div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 1 }}>
                   Normalize loudness across all tracks using EBU R128. Applies during server-side transcoding only.
                 </div>
               </div>
@@ -1702,13 +1702,13 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
               BoogieMix output folder
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
               Admin override for rendered mix files. Leave blank to use the default folder inside the active database directory (`mix-outputs`).
             </div>
-            <div style={{ fontSize: 12, color: '#f59e0b', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
+            <div style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
               BoogieMix is experimental and output quality may vary between runs.
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1725,7 +1725,7 @@ export default function SettingsPage({
                   color: 'var(--text)',
                   borderRadius: 6,
                   padding: '7px 10px',
-                  fontSize: 12,
+                  fontSize: 14,
                   fontFamily: 'inherit',
                   outline: 'none',
                 }}
@@ -1746,14 +1746,14 @@ export default function SettingsPage({
                 }}
                 style={{
                   padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                  background: 'var(--accent)', color: '#fff', fontSize: 12, cursor: 'pointer',
+                  background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
                   opacity: boogiemixOutputFolderSaving ? 0.6 : 1,
                 }}
               >
                 {boogiemixOutputFolderSaving ? 'Saving...' : 'Save Folder'}
               </button>
               {boogiemixOutputFolderResult && (
-                <span style={{ fontSize: 12, color: boogiemixOutputFolderResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                <span style={{ fontSize: 14, color: boogiemixOutputFolderResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
                   {boogiemixOutputFolderResult}
                 </span>
               )}
@@ -1764,16 +1764,16 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
               BoogieMix deep analysis
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
               Torch/Demucs analysis is separate from BPM analysis and is only used by High Quality BoogieMix jobs when the runtime is ready.
             </div>
             {boogiemixDeepLoading ? (
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading deep analysis status...</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading deep analysis status...</div>
             ) : boogiemixDeepStatus ? (
-              <div style={{ display: 'grid', gap: 10, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              <div style={{ display: 'grid', gap: 10, fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
                 <div style={{ color: boogiemixDeepStatus.runtime?.enabled ? '#22c55e' : '#f59e0b', fontWeight: 600 }}>
                   {boogiemixDeepStatus.runtime?.summary ?? 'Deep analysis runtime status unavailable.'}
                 </div>
@@ -1792,7 +1792,7 @@ export default function SettingsPage({
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {boogiemixDeepStatus.queue.running > 0 && (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'rgba(34,197,94,0.15)', border: '1px solid #22c55e', borderRadius: 10, padding: '1px 8px', color: '#22c55e', fontWeight: 700, fontSize: 11 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'rgba(34,197,94,0.15)', border: '1px solid #22c55e', borderRadius: 10, padding: '1px 8px', color: '#22c55e', fontWeight: 700, fontSize: 13 }}>
                       <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', display: 'inline-block', animation: 'bm-pulse 1.2s ease-in-out infinite' }} />
                       ANALYZING
                     </span>
@@ -1816,7 +1816,7 @@ export default function SettingsPage({
                           return 'Background mode saved';
                         });
                       }}
-                      style={{ maxWidth: 360, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}
+                      style={{ maxWidth: 360, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 14 }}
                     >
                       <option value="off">Off</option>
                       <option value="playlists_only">Playlists only</option>
@@ -1834,7 +1834,7 @@ export default function SettingsPage({
                     const analyzedTracks = boogiemixDeepStatus?.cache.analyzedTracks ?? 0;
                     return (
                       <div style={{ display: 'grid', gap: 6, paddingTop: 2 }}>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                           {totalTracks.toLocaleString()} tracks in your collection · {analyzedTracks.toLocaleString()} already analyzed
                         </div>
                         <button
@@ -1857,7 +1857,7 @@ export default function SettingsPage({
                           style={{
                             alignSelf: 'flex-start', padding: '7px 12px', borderRadius: 6,
                             border: '1px solid #ef4444', background: 'transparent', color: '#ef4444',
-                            fontSize: 12, cursor: totalTracks === 0 ? 'not-allowed' : 'pointer',
+                            fontSize: 14, cursor: totalTracks === 0 ? 'not-allowed' : 'pointer',
                             opacity: totalTracks === 0 ? 0.55 : 1,
                           }}
                         >
@@ -1882,9 +1882,9 @@ export default function SettingsPage({
                             return 'Max track length saved';
                           });
                         }}
-                        style={{ width: 80, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}
+                        style={{ width: 80, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 14 }}
                       />
-                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>
                         minutes — tracks longer than this are skipped (0 = no limit). Timeout scales automatically at 5 s per track-second.
                       </span>
                     </div>
@@ -1900,7 +1900,7 @@ export default function SettingsPage({
                     ];
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Analysis model</span>
+                        <span style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Analysis model</span>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {models.map(({ value, label, desc }) => {
                             const forced = !gpuAvailable;
@@ -1919,7 +1919,7 @@ export default function SettingsPage({
                                     return `Model set to ${label}`;
                                   });
                                 }}
-                                style={{ fontSize: 11, padding: '5px 10px', borderRadius: 6, border: active ? '1px solid var(--accent)' : '1px solid var(--border)', background: active ? 'color-mix(in srgb, var(--accent) 15%, var(--surface))' : 'var(--surface)', color: disabled ? 'var(--text-muted)' : 'var(--text)', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 }}
+                                style={{ fontSize: 13, padding: '5px 10px', borderRadius: 6, border: active ? '1px solid var(--accent)' : '1px solid var(--border)', background: active ? 'color-mix(in srgb, var(--accent) 15%, var(--surface))' : 'var(--surface)', color: disabled ? 'var(--text-muted)' : 'var(--text)', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 }}
                               >
                                 {label}
                               </button>
@@ -1927,7 +1927,7 @@ export default function SettingsPage({
                           })}
                         </div>
                         {!gpuAvailable && (
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>HPSS forced — no GPU detected on the server</span>
+                          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>HPSS forced — no GPU detected on the server</span>
                         )}
                       </div>
                     );
@@ -1937,7 +1937,7 @@ export default function SettingsPage({
                       value={boogiemixDeepSelectedLibrary}
                       onChange={(e) => setBoogiemixDeepSelectedLibrary(e.target.value as ClientEntityId)}
                       aria-label="BoogieMix deep-analysis library"
-                      style={{ minWidth: 220, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}
+                      style={{ minWidth: 220, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 14 }}
                     >
                       <option value="">Select library</option>
                       {libraries.map((library) => (
@@ -2013,7 +2013,7 @@ export default function SettingsPage({
                 </div>
               </div>
             ) : (
-              <div style={{ fontSize: 11, color: '#f59e0b' }}>
+              <div style={{ fontSize: 13, color: '#f59e0b' }}>
                 Deep analysis status unavailable. High Quality mixes will report fallback details when created.
               </div>
             )}
@@ -2025,13 +2025,13 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
               Control how tracks transition during playback. Override per-album or per-playlist via their context menus.
             </div>
 
             {/* Mode picker — 3 pill buttons */}
             <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+              <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
                 Transition mode
               </label>
               <div style={{ display: 'flex', gap: 0, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', width: 'fit-content' }}>
@@ -2054,7 +2054,7 @@ export default function SettingsPage({
                       setTimeout(() => setCfResult(null), 2000);
                     }}
                     style={{
-                      padding: '7px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      padding: '7px 16px', fontSize: 14, fontWeight: 600, cursor: 'pointer',
                       border: 'none', outline: 'none',
                       backgroundColor: cfMode === opt.value ? 'var(--accent)' : 'var(--bg)',
                       color: cfMode === opt.value ? '#fff' : 'var(--text)',
@@ -2070,11 +2070,11 @@ export default function SettingsPage({
             {/* Duration slider — visible only when crossfade mode */}
             {cfMode === 'crossfade' && (
               <div style={{ marginBottom: 8 }}>
-                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
                   Crossfade duration: <strong style={{ color: 'var(--text)' }}>{cfDuration}s</strong>
                 </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>1s</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>1s</span>
                   <input
                     type="range"
                     min={1}
@@ -2095,14 +2095,14 @@ export default function SettingsPage({
                     }}
                     style={{ flex: 1, accentColor: 'var(--accent)' }}
                   />
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>10s</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>10s</span>
                 </div>
               </div>
             )}
 
             {/* Save status */}
             {(cfSaving || cfResult) && (
-              <div style={{ fontSize: 11, color: cfResult === 'Error' ? '#e74c3c' : 'var(--text-muted)', marginTop: 4 }}>
+              <div style={{ fontSize: 13, color: cfResult === 'Error' ? '#e74c3c' : 'var(--text-muted)', marginTop: 4 }}>
                 {cfSaving ? 'Saving…' : cfResult}
               </div>
             )}
@@ -2117,10 +2117,10 @@ export default function SettingsPage({
           }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   Generate waveform when missing
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   If enabled, BoogieBox starts waveform generation on playback for tracks that do not already
                   have cached waveform data.
                 </div>
@@ -2150,10 +2150,10 @@ export default function SettingsPage({
 
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   Enable waveform background mapping
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   Runs a scheduled background task that maps waveform data for tracks that are still missing it.
                 </div>
               </div>
@@ -2182,7 +2182,7 @@ export default function SettingsPage({
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Mapping frequency</label>
+                <label style={{ fontSize: 13, color: 'var(--text-muted)' }}>Mapping frequency</label>
                 <select
                   value={waveformFrequencyHours}
                   onChange={async (e) => {
@@ -2193,7 +2193,7 @@ export default function SettingsPage({
                   disabled={!waveformBackgroundEnabled}
                   style={{
                     background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                    borderRadius: 6, padding: '6px 10px', fontSize: 12, fontFamily: 'inherit',
+                    borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit',
                     opacity: waveformBackgroundEnabled ? 1 : 0.5,
                   }}
                 >
@@ -2204,7 +2204,7 @@ export default function SettingsPage({
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Batch size per run</label>
+                <label style={{ fontSize: 13, color: 'var(--text-muted)' }}>Batch size per run</label>
                 <select
                   value={waveformBatchSize}
                   onChange={async (e) => {
@@ -2214,7 +2214,7 @@ export default function SettingsPage({
                   }}
                   style={{
                     background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                    borderRadius: 6, padding: '6px 10px', fontSize: 12, fontFamily: 'inherit',
+                    borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit',
                   }}
                 >
                   {WAVEFORM_BATCH_OPTIONS.map((opt) => (
@@ -2232,7 +2232,7 @@ export default function SettingsPage({
                   border: '1px solid var(--border)',
                   background: 'var(--bg)',
                   color: 'var(--text)',
-                  fontSize: 12,
+                  fontSize: 14,
                   cursor: 'pointer',
                 }}
               >
@@ -2240,7 +2240,7 @@ export default function SettingsPage({
               </button>
             </div>
 
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
               {waveformLoading ? 'Loading waveform status...' : (
                 waveformStatus
                   ? <>
@@ -2258,7 +2258,7 @@ export default function SettingsPage({
             </div>
 
             {(waveformSaving || waveformSettingsResult || waveformRunResult) && (
-              <div style={{ fontSize: 11, marginTop: 10, color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: 13, marginTop: 10, color: 'var(--text-muted)' }}>
                 {waveformSaving ? 'Saving waveform settings...' : waveformSettingsResult}
                 {waveformRunResult ? <div style={{ marginTop: 4 }}>{waveformRunResult}</div> : null}
               </div>
@@ -2274,10 +2274,10 @@ export default function SettingsPage({
           }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   Enable BPM background analysis
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   Runs BPM analysis on a schedule for tracks that are still missing BPM data.
                 </div>
               </div>
@@ -2306,7 +2306,7 @@ export default function SettingsPage({
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Analysis frequency</label>
+                <label style={{ fontSize: 13, color: 'var(--text-muted)' }}>Analysis frequency</label>
                 <select
                   value={bpmFrequencyHours}
                   onChange={async (e) => {
@@ -2317,7 +2317,7 @@ export default function SettingsPage({
                   disabled={!bpmBackgroundEnabled}
                   style={{
                     background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                    borderRadius: 6, padding: '6px 10px', fontSize: 12, fontFamily: 'inherit',
+                    borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit',
                     opacity: bpmBackgroundEnabled ? 1 : 0.5,
                   }}
                 >
@@ -2330,10 +2330,10 @@ export default function SettingsPage({
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   BPM Detection
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   Detect BPM for tracks using local FFmpeg audio analysis.
                   Results are used by BoogieMix for better tempo matching and transitions.
                 </div>
@@ -2351,7 +2351,7 @@ export default function SettingsPage({
                 }}
                 style={{
                   padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)',
-                  backgroundColor: 'var(--surface-hover)', color: 'var(--text)', fontSize: 12,
+                  backgroundColor: 'var(--surface-hover)', color: 'var(--text)', fontSize: 14,
                   cursor: 'pointer', whiteSpace: 'nowrap',
                 }}
               >
@@ -2359,7 +2359,7 @@ export default function SettingsPage({
               </button>
             </div>
 
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
               {bpmLoading ? 'Loading BPM status...' : (
                 bpmStatus
                   ? <>
@@ -2376,7 +2376,7 @@ export default function SettingsPage({
             </div>
 
             {(bpmSaving || bpmSettingsResult || bpmRunResult) && (
-              <div style={{ fontSize: 11, marginTop: 10, color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: 13, marginTop: 10, color: 'var(--text-muted)' }}>
                 {bpmSaving ? 'Saving BPM settings...' : bpmSettingsResult}
                 {bpmRunResult ? <div style={{ marginTop: 4 }}>{bpmRunResult}</div> : null}
               </div>
@@ -2393,10 +2393,10 @@ export default function SettingsPage({
             {/* Enable toggle */}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   Enable DLNA server
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   Broadcast your music libraries on the local network so DLNA-compatible
                   devices can discover and stream audio.
                 </div>
@@ -2422,7 +2422,7 @@ export default function SettingsPage({
 
             {/* Friendly name */}
             <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+              <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
                 Device name (shown on network)
               </label>
               <input
@@ -2432,7 +2432,7 @@ export default function SettingsPage({
                 placeholder="BoogieBox"
                 style={{
                   width: '100%', maxWidth: 280, background: 'var(--bg)', border: '1px solid var(--border)',
-                  color: 'var(--text)', borderRadius: 6, padding: '7px 10px', fontSize: 12,
+                  color: 'var(--text)', borderRadius: 6, padding: '7px 10px', fontSize: 14,
                   fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box',
                 }}
               />
@@ -2440,7 +2440,7 @@ export default function SettingsPage({
 
             {/* Port */}
             <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+              <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
                 DLNA HTTP port
               </label>
               <input
@@ -2452,7 +2452,7 @@ export default function SettingsPage({
                 max={65535}
                 style={{
                   width: 120, background: 'var(--bg)', border: '1px solid var(--border)',
-                  color: 'var(--text)', borderRadius: 6, padding: '7px 10px', fontSize: 12,
+                  color: 'var(--text)', borderRadius: 6, padding: '7px 10px', fontSize: 14,
                   fontFamily: 'monospace', outline: 'none',
                 }}
               />
@@ -2465,7 +2465,7 @@ export default function SettingsPage({
                   width: 8, height: 8, borderRadius: '50%',
                   backgroundColor: dlnaStatus.running ? '#22c55e' : 'var(--border)',
                 }} />
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>
                   {dlnaStatus.running
                     ? `Running on port ${dlnaStatus.port} as "${dlnaStatus.friendlyName}"`
                     : 'Stopped'}
@@ -2502,14 +2502,14 @@ export default function SettingsPage({
                 }}
                 style={{
                   padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                  background: 'var(--accent)', color: '#fff', fontSize: 12, cursor: 'pointer',
+                  background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
                   opacity: dlnaSaving ? 0.6 : 1,
                 }}
               >
                 {dlnaSaving ? 'Saving…' : 'Save DLNA Settings'}
               </button>
               {dlnaResult && (
-                <span style={{ fontSize: 12, color: dlnaResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                <span style={{ fontSize: 14, color: dlnaResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
                   {dlnaResult}
                 </span>
               )}
@@ -2526,10 +2526,10 @@ export default function SettingsPage({
             {/* Scan debug */}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 12 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   Scan debug logging
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   Writes detailed scan and post-scan diagnostics — including metadata provider requests
                   (Discogs, Last.fm, Deezer, Spotify, LRCLIB, lyrics.ovh) and their results — to{' '}
                   <code style={{ color: 'var(--accent)' }}>scan-debug.log</code>. Takes effect immediately, no restart
@@ -2561,12 +2561,12 @@ export default function SettingsPage({
                 }} />
               </div>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
               Debug mode is <strong style={{ color: 'var(--text)' }}>{scanDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
               When enabled, scan queueing, file and batch checkpoints, follow-up job dispatch, worker progress, failures, and completion events are appended to the shared debug log.
             </div>
             {(scanDebugSaving || scanDebugResult) && (
-              <div style={{ fontSize: 11, marginTop: 6, color: scanDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
+              <div style={{ fontSize: 13, marginTop: 6, color: scanDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
                 {scanDebugSaving ? 'Saving…' : scanDebugResult}
               </div>
             )}
@@ -2576,10 +2576,10 @@ export default function SettingsPage({
             {/* Deep analysis debug */}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 12 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   BoogieMix deep analysis debug logging
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                   Writes verbose deep analysis diagnostics to <code style={{ color: 'var(--accent)' }}>deep-analysis-debug.log</code>.
                   Logs every tick decision, Python runtime detection step (candidates, venv paths, version checks,
                   demucs/torch/CUDA probes), job claim, worker spawn, stdin write, process exit status, stdout/stderr,
@@ -2612,13 +2612,13 @@ export default function SettingsPage({
                 }} />
               </div>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
               Deep analysis debug is <strong style={{ color: 'var(--text)' }}>{deepmixDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
               Logs appear in <code style={{ color: 'var(--accent)' }}>deep-analysis-debug.log</code> under the <code style={{ color: 'var(--accent)'}}>[boogiemix:deep]</code> prefix.
               Disable after investigation — the server's main log stays clean regardless.
             </div>
             {(deepmixDebugSaving || deepmixDebugResult) && (
-              <div style={{ fontSize: 11, marginTop: 6, color: deepmixDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
+              <div style={{ fontSize: 13, marginTop: 6, color: deepmixDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
                 {deepmixDebugSaving ? 'Saving…' : deepmixDebugResult}
               </div>
             )}
@@ -2626,10 +2626,10 @@ export default function SettingsPage({
             {(logFilePaths.server || logFilePaths.scan || logFilePaths.deep) && (
               <>
                 <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '16px 0' }} />
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
                   Log files
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.9, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.9, fontFamily: 'monospace', wordBreak: 'break-all' }}>
                   {logFilePaths.server && <div>server.log — {logFilePaths.server}</div>}
                   {logFilePaths.scan && <div>scan-debug.log — {logFilePaths.scan}</div>}
                   {logFilePaths.deep && <div>deep-analysis-debug.log — {logFilePaths.deep}</div>}
@@ -2646,19 +2646,19 @@ export default function SettingsPage({
                 padding: '16px 20px', borderRadius: 8, marginBottom: 12,
                 backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
               }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                   Active database folder
                 </div>
                 {currentDbFolder && (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                  <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
                     {currentDbFolder}
                   </div>
                 )}
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
+                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
                   Switch to a different database folder. The server will reload all settings from the new database.
                   If the folder does not contain a database yet, a fresh one will be created.
                 </div>
-                <div style={{ fontSize: 12, color: '#f59e0b', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
+                <div style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
                   Warning: switching databases reloads the server state. You will be logged out and the page will reload.
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2671,14 +2671,14 @@ export default function SettingsPage({
                       minWidth: 320, flex: 1,
                       background: 'var(--bg)', border: '1px solid var(--border)',
                       color: 'var(--text)', borderRadius: 6, padding: '7px 10px',
-                      fontSize: 12, fontFamily: 'inherit', outline: 'none',
+                      fontSize: 14, fontFamily: 'inherit', outline: 'none',
                     }}
                   />
                   <button
                     onClick={() => setShowDbFolderPicker(true)}
                     style={{
                       padding: '7px 14px', borderRadius: 6, border: '1px solid var(--border)',
-                      background: 'var(--bg)', color: 'var(--text)', fontSize: 12, cursor: 'pointer',
+                      background: 'var(--bg)', color: 'var(--text)', fontSize: 14, cursor: 'pointer',
                     }}
                   >
                     Browse...
@@ -2704,7 +2704,7 @@ export default function SettingsPage({
                     })}
                     style={{
                       padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                      background: 'var(--accent)', color: '#fff', fontSize: 12, cursor: 'pointer',
+                      background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
                       opacity: (switchDbSaving || !switchDbFolder.trim()) ? 0.6 : 1,
                     }}
                   >
@@ -2712,7 +2712,7 @@ export default function SettingsPage({
                   </button>
                 </div>
                 {switchDbResult && (
-                  <div style={{ fontSize: 12, marginTop: 8, color: switchDbResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                  <div style={{ fontSize: 14, marginTop: 8, color: switchDbResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
                     {switchDbResult}
                   </div>
                 )}
@@ -2735,13 +2735,13 @@ export default function SettingsPage({
 
           {/* Discogs */}
           <div style={P.sectionTitle}>Discogs</div>
-          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 20, lineHeight: 1.7 }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
             Discogs is used to fetch album cover art when no local <code style={{ color: 'var(--accent)' }}>folder.jpg</code> is found.
             A free personal access token is required.
           </p>
 
           <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
               To get a free token:
               &nbsp;<strong style={{ color: 'var(--text)' }}>1.</strong> Sign in at{' '}
               <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noreferrer"
@@ -2760,7 +2760,7 @@ export default function SettingsPage({
                   flex: 1, minWidth: 240,
                   backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
                   color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 13, fontFamily: 'monospace', outline: 'none',
+                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
                 }}
               />
               <button onClick={testDiscogsToken} disabled={discogsSaving} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
@@ -2773,7 +2773,7 @@ export default function SettingsPage({
 
             {discogsTestResult && (
               <div style={{
-                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 12,
+                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 14,
                 backgroundColor: discogsTestResult.startsWith('✓') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
                 border: `1px solid ${discogsTestResult.startsWith('✓') ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
                 color: discogsTestResult.startsWith('✓') ? '#86efac' : '#fca5a5',
@@ -2783,7 +2783,7 @@ export default function SettingsPage({
             )}
           </div>
 
-          <div style={{ padding: '12px 16px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+          <div style={{ padding: '12px 16px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
             <strong style={{ color: 'var(--text)' }}>How cover art works:</strong><br />
             When you open an album, BoogieBox checks the album's folder for a local image
             (<code>folder.jpg</code>, <code>cover.jpg</code>, <code>front.jpg</code>, etc.).
@@ -2793,12 +2793,12 @@ export default function SettingsPage({
           </div>
 
           {showGeniusIntegration && <div style={{ ...P.sectionTitle, marginTop: 32 }}>Lyrics: Genius</div>}
-          {showGeniusIntegration && <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 20, lineHeight: 1.7 }}>
+          {showGeniusIntegration && <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
             Used to retrieve lyrics for tracks.
           </p>}
 
           {showGeniusIntegration && <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
               Create an app at{' '}
               <a href="https://genius.com/api-clients" target="_blank" rel="noreferrer"
                 style={{ color: 'var(--accent)' }}>genius.com/api-clients</a>
@@ -2815,7 +2815,7 @@ export default function SettingsPage({
                   flex: 1, minWidth: 220,
                   backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
                   color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 13, fontFamily: 'monospace', outline: 'none',
+                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
                 }}
               />
               <input
@@ -2827,7 +2827,7 @@ export default function SettingsPage({
                   flex: 1, minWidth: 220,
                   backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
                   color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 13, fontFamily: 'monospace', outline: 'none',
+                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
                 }}
               />
               <button onClick={testGeniusCreds} disabled={geniusSaving} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
@@ -2840,7 +2840,7 @@ export default function SettingsPage({
 
             {geniusResult && (
               <div style={{
-                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 12,
+                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 14,
                 backgroundColor: geniusResult.startsWith('OK') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
                 border: `1px solid ${geniusResult.startsWith('OK') ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
                 color: geniusResult.startsWith('OK') ? '#86efac' : '#fca5a5',
@@ -2852,13 +2852,13 @@ export default function SettingsPage({
 
           {/* Last.fm */}
           <div style={{ ...P.sectionTitle, marginTop: 32 }}>Last.fm</div>
-          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 20, lineHeight: 1.7 }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
             Used to show artist biographies, album reviews, listener stats, and genre tags
             on artist and album pages in the Browse view. Requires a free API key.
           </p>
 
           <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
               To get a free API key:
               &nbsp;<strong style={{ color: 'var(--text)' }}>1.</strong> Create an account at{' '}
               <a href="https://www.last.fm/api/account/create" target="_blank" rel="noreferrer"
@@ -2877,7 +2877,7 @@ export default function SettingsPage({
                   flex: 1, minWidth: 240,
                   backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
                   color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 13, fontFamily: 'monospace', outline: 'none',
+                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
                 }}
               />
               <button onClick={testLastfmKey} disabled={lastfmSaving} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
@@ -2890,7 +2890,7 @@ export default function SettingsPage({
 
             {lastfmResult && (
               <div style={{
-                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 12,
+                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 14,
                 backgroundColor: lastfmResult.startsWith('✓') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
                 border: `1px solid ${lastfmResult.startsWith('✓') ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
                 color: lastfmResult.startsWith('✓') ? '#86efac' : '#fca5a5',
@@ -2901,13 +2901,13 @@ export default function SettingsPage({
           </div>
 
           <div style={{ ...P.sectionTitle, marginTop: 32 }}>Artist Images: Deezer + Spotify Fallback</div>
-          <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 20, lineHeight: 1.7 }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
             Artist photos now use Deezer first when no local image is available.
             Discogs is used as secondary fallback (if token is configured), and Spotify is the final fallback.
           </p>
 
           <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
               Create an app at{' '}
               <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer"
                 style={{ color: 'var(--accent)' }}>developer.spotify.com/dashboard</a>
@@ -2924,7 +2924,7 @@ export default function SettingsPage({
                   flex: 1, minWidth: 220,
                   backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
                   color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 13, fontFamily: 'monospace', outline: 'none',
+                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
                 }}
               />
               <input
@@ -2936,7 +2936,7 @@ export default function SettingsPage({
                   flex: 1, minWidth: 220,
                   backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
                   color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 13, fontFamily: 'monospace', outline: 'none',
+                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
                 }}
               />
               <button onClick={testSpotifyCreds} disabled={spotifySaving} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
@@ -2949,7 +2949,7 @@ export default function SettingsPage({
 
             {spotifyResult && (
               <div style={{
-                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 12,
+                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 14,
                 backgroundColor: spotifyResult.startsWith('✓') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
                 border: `1px solid ${spotifyResult.startsWith('✓') ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
                 color: spotifyResult.startsWith('✓') ? '#86efac' : '#fca5a5',
@@ -2965,13 +2965,13 @@ export default function SettingsPage({
               <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 14 }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
                       Metadata provider usage
                     </div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
                       Counts increase only when BoogieBox actually caches provider-backed data or returns provider-backed data to the UI.
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6 }}>
                       Snapshot: {providerUsage ? fmtQueueTime(providerUsage.fetched_at) : 'Not loaded'}
                     </div>
                   </div>
@@ -2981,11 +2981,11 @@ export default function SettingsPage({
                 </div>
 
                 {providerUsageError && (
-                  <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 12 }}>{providerUsageError}</div>
+                  <div style={{ fontSize: 14, color: '#ef4444', marginBottom: 12 }}>{providerUsageError}</div>
                 )}
 
                 {!providerUsageLoading && providerUsage && providerUsage.providers.length === 0 && (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No provider usage has been recorded yet.</div>
+                  <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>No provider usage has been recorded yet.</div>
                 )}
 
                 {!!providerUsage?.providers.length && (
@@ -2993,16 +2993,16 @@ export default function SettingsPage({
                     {providerUsage.providers.map((provider: ProviderUsageProviderSummary) => (
                       <div key={provider.provider} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', backgroundColor: 'color-mix(in srgb, var(--surface) 88%, var(--bg))' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{formatProviderLabel(provider.provider)}</div>
-                          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>{provider.total_count}</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{formatProviderLabel(provider.provider)}</div>
+                          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>{provider.total_count}</div>
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.6 }}>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.6 }}>
                           {Object.entries(provider.usage_breakdown)
                             .sort((a, b) => b[1] - a[1])
                             .map(([usageType, count]) => `${usageType.replace(/_/g, ' ')}: ${count}`)
                             .join(' • ')}
                         </div>
-                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
                           Last used: {provider.last_used_at ? fmtQueueTime(provider.last_used_at) : 'Never'}
                         </div>
                       </div>
@@ -3014,7 +3014,7 @@ export default function SettingsPage({
                   <div style={{ marginTop: 14 }}>
                     <button
                       onClick={() => setShowProviderUsageRows((value) => !value)}
-                      style={{ ...P.btnSecondary, padding: '7px 14px', fontSize: 12 }}
+                      style={{ ...P.btnSecondary, padding: '7px 14px', fontSize: 14 }}
                     >
                       {showProviderUsageRows ? 'Hide usage rows' : 'Show usage rows'}
                     </button>
@@ -3029,7 +3029,7 @@ export default function SettingsPage({
                               gap: 10,
                               padding: '10px 12px',
                               borderTop: index === 0 ? 'none' : '1px solid var(--border)',
-                              fontSize: 11,
+                              fontSize: 13,
                               color: 'var(--text-muted)',
                             }}
                           >
@@ -3133,7 +3133,7 @@ const P: Record<string, React.CSSProperties> = {
   },
   aboutTitle: {
     margin: '0 0 10px',
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 700,
     color: 'var(--text)',
   },
@@ -3141,7 +3141,7 @@ const P: Record<string, React.CSSProperties> = {
     margin: '0 0 18px',
     maxWidth: 620,
     color: 'var(--text-muted)',
-    fontSize: 13,
+    fontSize: 15,
     lineHeight: 1.7,
   },
   aboutLink: {

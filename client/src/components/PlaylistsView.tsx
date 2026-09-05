@@ -96,7 +96,7 @@ const MIX_STEP_LABEL: Record<string, string> = {
 function PlaylistArtwork({ albumIds, compact = false }: { albumIds: ClientEntityId[]; compact?: boolean }) {
   const ids = albumIds.slice(0, 4);
   return (
-    <div style={{ ...PD.collage, ...(compact ? { width: 64, padding: 2, gap: 2, borderRadius: 8 } : {}) }}>
+    <div style={{ ...PD.collage, ...(compact ? { width: 70, padding: 3, gap: 3, borderRadius: 8 } : {}) }}>
       {ids.map(id => (
         <div key={id} style={{ ...PD.collageTile, ...(compact ? { borderRadius: 4 } : {}) }}>
           <ArtImage src={api.albumArtUrl(id, 300)} alt="" imgStyle={PD.collageArt} />
@@ -297,7 +297,7 @@ function DeletePlaylistDialog({
 }) {
   return (
     <PlaylistPopup title="Delete Playlist" onClose={onCancel}>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.4 }}>
           Delete playlist "{playlistName}"?
         </div>
         {error && <div style={D.errorText}>{error}</div>}
@@ -318,9 +318,9 @@ function DeletePlaylistDialog({
 const D: Record<string, React.CSSProperties> = {
   overlay: { position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, ...hybridMediaStyles.overlay },
   dialog: { padding: 24, width: 400, display: 'flex', flexDirection: 'column', gap: 12, ...hybridMediaStyles.dialog },
-  dialogTitle: { fontSize: 17, fontWeight: 750, color: 'var(--text)', marginBottom: 4, letterSpacing: -0.3 },
+  dialogTitle: { fontSize: 19, fontWeight: 750, color: 'var(--text)', marginBottom: 4, letterSpacing: -0.3 },
   input: { ...hybridControlStyles.field },
-  errorText: { color: 'var(--danger)', fontSize: 12, lineHeight: 1.3 },
+  errorText: { color: 'var(--danger)', fontSize: 14, lineHeight: 1.3 },
   saveBtn: { ...hybridControlStyles.primaryButton },
   cancelBtn: { ...hybridControlStyles.secondaryButton },
   dangerBtn: { ...hybridControlStyles.dangerButton },
@@ -370,7 +370,7 @@ function AddTracksPanel({
   return (
     <div style={AP.panel}>
       <div style={AP.header}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>Add Tracks</div>
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Add Tracks</div>
         <button type="button" aria-label="Close add tracks" style={AP.closeBtn} onClick={onClose}><XIcon /></button>
       </div>
       <div style={AP.searchRow}>
@@ -420,15 +420,15 @@ const AP: Record<string, React.CSSProperties> = {
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 16px 10px', borderBottom: 'none', flexShrink: 0 },
   closeBtn: { ...hybridControlStyles.iconButton, width: 32, minWidth: 32, height: 32, background: 'transparent' },
   searchRow: { display: 'flex', alignItems: 'center', gap: 8, margin: '0 12px 8px', padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text-muted)', flexShrink: 0, background: 'var(--surface-subtle)' },
-  searchInput: { flex: 1, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 12, fontFamily: 'inherit', padding: '2px 0' },
+  searchInput: { flex: 1, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 14, fontFamily: 'inherit', padding: '2px 0' },
   clearBtn: { background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0 },
   results: { flex: 1, overflowY: 'auto', paddingBottom: 0 },
-  hint: { padding: '24px 14px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 },
+  hint: { padding: '24px 14px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 },
   row: { display: 'flex', alignItems: 'center', gap: 8, margin: '2px 8px', padding: '8px 10px', border: 'none', borderRadius: 10, transition: 'background 0.1s' },
-  trackTitle: { fontSize: 12, fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  trackSub: { fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 },
-  dur: { fontSize: 10, color: 'var(--text-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' },
-  addBtn: { ...hybridControlStyles.tonalButton, padding: 0, minHeight: 30, width: 30, height: 30, flexShrink: 0, fontSize: 12 },
+  trackTitle: { fontSize: 14, fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  trackSub: { fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 },
+  dur: { fontSize: 12, color: 'var(--text-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' },
+  addBtn: { ...hybridControlStyles.tonalButton, padding: 0, minHeight: 34, width: 34, height: 34, flexShrink: 0, fontSize: 14 },
 };
 
 // ─── Draggable Track Row ──────────────────────────────────────────────────────
@@ -533,7 +533,7 @@ function DraggableTrackRow({
         </div>
       </div>
       {track.has_deep_analysis && (
-        <span style={{ fontSize: 10, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available — AI stem analysis complete">✦</span>
+        <span style={{ fontSize: 12, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available — AI stem analysis complete">✦</span>
       )}
       <div style={T.dur}>{fmtTrackDur(track.duration)}</div>
       <button type="button" aria-label={`Remove ${track.title || track.file_name} from playlist`} style={T.removeBtn} onClick={(e) => { e.stopPropagation(); onRemove(); }} title="Remove from playlist"><TrashIcon /></button>
@@ -544,15 +544,15 @@ function DraggableTrackRow({
 const T: Record<string, React.CSSProperties> = {
   row: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'grab', userSelect: 'none', transition: 'background 0.1s', ...hybridMediaStyles.listRow },
   grip: { color: 'var(--text-muted)', flexShrink: 0, opacity: 0.35, display: 'flex', alignItems: 'center', cursor: 'grab' },
-  num: { width: 22, textAlign: 'right', fontSize: 11, color: 'var(--text-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' },
+  num: { width: 25, textAlign: 'right', fontSize: 13, color: 'var(--text-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' },
   playBtn: { background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px 3px', borderRadius: 4, display: 'flex', alignItems: 'center', opacity: 0.55, flexShrink: 0 },
   art: { width: 32, height: 32, borderRadius: 6, overflow: 'hidden', flexShrink: 0, border: '1px solid color-mix(in srgb, var(--text-muted) 20%, var(--border))', backgroundColor: 'var(--surface-subtle)' },
   artImg: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
   artFallback: { width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', opacity: 0.4 },
-  title: { fontSize: 12, fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  sub: { fontSize: 10, color: 'var(--text-muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  title: { fontSize: 14, fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  sub: { fontSize: 12, color: 'var(--text-muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   subLink: { background: 'none', border: 'none', padding: 0, margin: 0, color: 'var(--accent)', cursor: 'pointer', font: 'inherit', fontSize: 'inherit' },
-  dur: { fontSize: 11, color: 'var(--text-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums', width: 38, textAlign: 'right' },
+  dur: { fontSize: 13, color: 'var(--text-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums', width: 42, textAlign: 'right' },
   removeBtn: { background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px 4px', borderRadius: 4, display: 'flex', alignItems: 'center', opacity: 0.4, flexShrink: 0 },
 };
 
@@ -638,7 +638,7 @@ function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
       </button>
       {editError && <div role="alert" style={D.errorText}>{editError}</div>}
         <div style={{ padding: '16px 0', borderTop: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>
             Crossfade settings
           </div>
           {/* Mode pills */}
@@ -671,7 +671,7 @@ function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
           {/* Duration slider */}
           {cfMode === 'crossfade' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>1s</span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>1s</span>
               <input
                 type="range" aria-label="Crossfade settings" min={1} max={10} step={1} value={cfDuration}
                 onChange={async e => {
@@ -684,8 +684,8 @@ function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
                 }}
                 style={{ flex: 1, minWidth: 0, accentColor: 'var(--accent)' }}
               />
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>10s</span>
-              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{cfDuration}s</span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>10s</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{cfDuration}s</span>
             </div>
           )}
           {/* Reset + status */}
@@ -705,14 +705,14 @@ function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
                   ...PD.btnSecondary,
                   minHeight: 30,
                   padding: '5px 9px',
-                  fontSize: 10,
+                  fontSize: 12,
                 }}
               >
                 Reset to default
               </button>
             )}
-            {cfSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Saving…</span>}
-            {!cfHasOverride && !cfSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Using global default</span>}
+            {cfSaving && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving…</span>}
+            {!cfHasOverride && !cfSaving && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Using global default</span>}
           </div>
         </div>
       <button type="button" title="Delete playlist" style={{ ...PD.menuItem, borderTop: '1px solid var(--border)', color: 'var(--danger)' }}
@@ -1010,9 +1010,9 @@ function PlaylistDetail({
       </div>
       {showMix && (
         <PlaylistPopup title="BoogieMix (Experimental)" onClose={() => setShowMix(false)}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>BoogieMix is experimental and may produce inconsistent results.</div>
-          {deepFallbackMessage && <div style={{ fontSize: 12, color: 'var(--warning)' }}>{deepFallbackMessage}</div>}
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>BoogieMix is experimental and may produce inconsistent results.</div>
+          {deepFallbackMessage && <div style={{ fontSize: 14, color: 'var(--warning)' }}>{deepFallbackMessage}</div>}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
             BoogieMix style
             <select
             value={mixStyle}
@@ -1026,7 +1026,7 @@ function PlaylistDetail({
             <option value="safe_mix">Safe mix</option>
           </select>
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
             BoogieMix quality
             <select
             value={mixQuality}
@@ -1038,7 +1038,7 @@ function PlaylistDetail({
             <option value="high_quality">High Quality (Deep Analysis)</option>
           </select>
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
             Transition length
             <select
             value={mixCrossfade}
@@ -1100,12 +1100,12 @@ function PlaylistDetail({
                 {statusLine.tone === 'active' && <SpinnerIcon />}
                 {statusLine.tone === 'done' && <CheckIcon />}
                 {(statusLine.tone === 'error' || statusLine.tone === 'warn') && <AlertIcon />}
-                <span style={{ fontSize: 12, fontWeight: 600, color: statusToneColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: statusToneColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {statusLine.text}
                 </span>
                 {mixOutputs[0] && statusLine.tone === 'done' && <MixOutputActions output={mixOutputs[0]} playlistName={playlist.name} playTrack={playTrack} />}
                 {mixCancelable && (
-                  <button style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 11 }} onClick={cancelBoogieMix}>
+                  <button style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 13 }} onClick={cancelBoogieMix}>
                     Cancel
                   </button>
                 )}
@@ -1115,7 +1115,7 @@ function PlaylistDetail({
                   in-progress job's output. */}
               {mixOutputs[0] && statusLine.tone !== 'done' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                     Previous mix — {mixOutputs[0].file_name}
                   </span>
                   <MixOutputActions output={mixOutputs[0]} playlistName={playlist.name} playTrack={playTrack} />
@@ -1123,7 +1123,7 @@ function PlaylistDetail({
               )}
               {statusHover && (
                 <div style={PD.statusPopover}>
-                  <div style={{ fontSize: 11, color: 'var(--warning)', fontWeight: 650, marginBottom: 6 }}>
+                  <div style={{ fontSize: 13, color: 'var(--warning)', fontWeight: 650, marginBottom: 6 }}>
                     BoogieMix is experimental and may produce inconsistent results.
                   </div>
                   {(deepRunning || deepProgress || deepError) && (
@@ -1136,39 +1136,39 @@ function PlaylistDetail({
                     />
                   )}
                   {mixJob && (
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                       Quality: {mixJob.mix_quality === 'high_quality' ? 'High Quality (Deep Analysis)' : 'Standard'}
                       {usedDeepAnalysis ? ' · Demucs-enhanced planning used' : ' · Standard analysis path'}
                     </div>
                   )}
                   {deepFallbackMessage && (
-                    <div style={{ marginTop: 2, fontSize: 11, color: 'var(--warning)' }}>
+                    <div style={{ marginTop: 2, fontSize: 13, color: 'var(--warning)' }}>
                       {deepFallbackMessage}
                     </div>
                   )}
                   {deepStatus && (
-                    <div style={{ marginTop: 2, fontSize: 11, color: 'var(--text-muted)' }}>
+                    <div style={{ marginTop: 2, fontSize: 13, color: 'var(--text-muted)' }}>
                       Deep analysis runtime: {deepStatus.runtime?.summary ?? (deepStatus.runtime?.enabled ? 'Ready' : 'Unavailable')} · Queue {deepStatus.queue?.pending ?? 0} pending
                       {mixJob?.deep_analysis_total_count ? ` · Ready ${mixJob.deep_analysis_ready_count ?? 0}/${mixJob.deep_analysis_total_count}` : ''}
                     </div>
                   )}
                   {mixJob?.mix_strategy && (
-                    <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                    <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted)' }}>
                       AI Mix Strategy: {mixJob.mix_strategy}
                     </div>
                   )}
                   {energyCurvePhases.length > 0 && (
-                    <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                    <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted)' }}>
                       {energyCurvePhases.join(' → ')}
                     </div>
                   )}
                   {planSummary?.anthemTrackId && (
-                    <div style={{ marginTop: 2, fontSize: 11, color: 'var(--text-muted)' }}>
+                    <div style={{ marginTop: 2, fontSize: 13, color: 'var(--text-muted)' }}>
                       Anthem Track ID: {planSummary.anthemTrackId}
                     </div>
                   )}
-                  {mixJob?.last_message && <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>{mixJob.last_message}</div>}
-                  {mixError && <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>{mixError}</div>}
+                  {mixJob?.last_message && <div style={{ marginTop: 4, fontSize: 13, color: 'var(--text-muted)' }}>{mixJob.last_message}</div>}
+                  {mixError && <div style={{ marginTop: 4, fontSize: 13, color: 'var(--danger)' }}>{mixError}</div>}
                 </div>
               )}
             </div>
@@ -1177,15 +1177,15 @@ function PlaylistDetail({
           {!loading && loadError && (
             <div style={PD.empty}>
               <ListIcon />
-              <div style={{ marginTop: 12, fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>Could not load tracks</div>
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>{loadError}</div>
+              <div style={{ marginTop: 12, fontSize: 16, fontWeight: 500, color: 'var(--text)' }}>Could not load tracks</div>
+              <div style={{ marginTop: 6, fontSize: 14, color: 'var(--text-muted)' }}>{loadError}</div>
             </div>
           )}
           {!loading && !loadError && tracks.length === 0 && (
             <div style={PD.empty}>
               <ListIcon />
-              <div style={{ marginTop: 12, fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>It’s Oh So Quiet</div>
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>Click "Add Tracks" to search and add music</div>
+              <div style={{ marginTop: 12, fontSize: 16, fontWeight: 500, color: 'var(--text)' }}>It’s Oh So Quiet</div>
+              <div style={{ marginTop: 6, fontSize: 14, color: 'var(--text-muted)' }}>Click "Add Tracks" to search and add music</div>
             </div>
           )}
           {tracks.map((track, i) => (
@@ -1241,9 +1241,9 @@ const PD: Record<string, React.CSSProperties> = {
   collageFallback: { background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)), color-mix(in srgb, var(--surface) 88%, var(--bg)))' },
   kicker: phase2.eyebrow,
   name: { color: 'var(--text)', marginTop: 6, marginBottom: 6, lineHeight: 1.02, ...hybridPlaylistStyles.detailName },
-  desc: { fontSize: 13, color: 'color-mix(in srgb, var(--text) 86%, var(--text-muted))', marginBottom: 8, maxWidth: 620, lineHeight: 1.55 },
-  meta: { fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 },
-  empty: { ...phase2.desktopMediaRow, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 24, padding: '72px 20px', color: 'var(--text-muted)', fontSize: 13, ...hybridMediaStyles.emptyState },
+  desc: { fontSize: 15, color: 'color-mix(in srgb, var(--text) 86%, var(--text-muted))', marginBottom: 8, maxWidth: 620, lineHeight: 1.55 },
+  meta: { fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 },
+  empty: { ...phase2.desktopMediaRow, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 24, padding: '72px 20px', color: 'var(--text-muted)', fontSize: 15, ...hybridMediaStyles.emptyState },
   actionGroup: { ...hybridPlaylistStyles.actionGroup },
   menuItem: { ...hybridControlStyles.secondaryButton, width: '100%', justifyContent: 'flex-start', minHeight: 44, border: 'none', borderRadius: 6, background: 'transparent', textAlign: 'left' },
   btnPrimary: { ...hybridControlStyles.primaryButton },
@@ -1290,7 +1290,7 @@ function MixOutputActions({
   return (
     <>
       <button
-        style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 11 }}
+        style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 13 }}
         onClick={() => {
           const mixTrack = mixOutputToTrack(output, playlistName);
           playTrack(mixTrack, [mixTrack]);
@@ -1298,7 +1298,7 @@ function MixOutputActions({
       >
         Play
       </button>
-      <a href={api.boogiemix ? api.boogiemix.outputDownloadUrl(output.id) : '#'} style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: 11 }}>
+      <a href={api.boogiemix ? api.boogiemix.outputDownloadUrl(output.id) : '#'} style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: 13 }}>
         Download
       </a>
     </>
@@ -1331,24 +1331,24 @@ function DeepAnalysisProgressPanel({
   return (
     <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 10, backgroundColor: 'var(--surface)', border: '1px solid var(--divider-subtle)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
           {running ? '⚡ Deep Analysis Running' : finished ? '✓ Deep Analysis Complete' : '⚡ Deep Analysis'}
         </span>
         <button
           onClick={onDismiss}
-          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 13, lineHeight: 1, padding: '0 2px' }}
+          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 15, lineHeight: 1, padding: '0 2px' }}
           title="Dismiss"
         >
           ×
         </button>
       </div>
-      {error && <div style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 4 }}>{error}</div>}
+      {error && <div style={{ fontSize: 13, color: 'var(--danger)', marginBottom: 4 }}>{error}</div>}
       {progress && (
         <>
           <div style={{ width: '100%', height: 6, borderRadius: 3, backgroundColor: 'var(--border)', overflow: 'hidden', marginBottom: 6 }}>
             <div style={{ height: '100%', width: `${pct}%`, borderRadius: 3, backgroundColor: finished ? 'var(--success)' : 'var(--accent)', transition: 'width 0.4s ease' }} />
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <span>{done}/{total} processed</span>
             {active > 0 && <span style={{ color: 'var(--accent)' }}>{active} running</span>}
             {pending > 0 && <span>{pending} queued</span>}
@@ -1358,12 +1358,12 @@ function DeepAnalysisProgressPanel({
             {progress.failed > 0 && <span style={{ color: 'var(--danger)' }}>{progress.failed} failed</span>}
           </div>
           {running && active > 0 && (
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
               Processing with Demucs CPU analysis — this may take several minutes per track.
             </div>
           )}
           {finished && (
-            <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 4 }}>
+            <div style={{ fontSize: 13, color: 'var(--success)', marginTop: 4 }}>
               {analyzedCached} track{analyzedCached !== 1 ? 's' : ''} have saved deep-analysis data.
               {analyzedFallback > 0 ? ` ${analyzedFallback} are fallback rows; real Demucs stem analysis did not complete for those tracks.` : ''}
               {progress.failed > 0 ? ` ${progress.failed} failed.` : ''}
@@ -1372,7 +1372,7 @@ function DeepAnalysisProgressPanel({
         </>
       )}
       {!progress && running && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           Queued {queuedCount} track{queuedCount !== 1 ? 's' : ''} for analysis…
         </div>
       )}
@@ -1394,7 +1394,7 @@ function PlaylistSidebar({
   return (
     <div data-ui-region="playlist-sidebar" style={SB.sidebar}>
       <div style={SB.header}>
-        <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>Playlists</span>
+        <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text)' }}>Playlists</span>
         <button type="button" aria-label="New playlist" style={SB.newBtn} onClick={onCreate} title="New playlist">
           <PlusIcon />
         </button>
@@ -1429,11 +1429,11 @@ const SB: Record<string, React.CSSProperties> = {
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, ...hybridPlaylistStyles.sidebarHeader },
   newBtn: { ...hybridControlStyles.iconButton, width: 34, minWidth: 34, height: 34, background: 'var(--accent)', color: 'var(--on-accent)' },
   list: { flex: 1, overflowY: 'auto', paddingBottom: 0 },
-  empty: { padding: '28px 16px', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.7, textAlign: 'center' },
+  empty: { padding: '28px 16px', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.7, textAlign: 'center' },
   item: { display: 'block', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.12s, color 0.12s', ...hybridPlaylistStyles.sidebarItem },
   itemActive: { ...hybridPlaylistStyles.sidebarItemActive },
-  itemName: { fontSize: 14, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 4 },
-  itemMeta: { fontSize: 11, color: 'var(--text-muted)' },
+  itemName: { fontSize: 16, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 4 },
+  itemMeta: { fontSize: 13, color: 'var(--text-muted)' },
 };
 
 // ─── Top-level PlaylistsView ──────────────────────────────────────────────────
@@ -1515,8 +1515,8 @@ export default function PlaylistsView({
         {!selected && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 16, color: 'var(--text-muted)' }}>
             <ListIcon />
-            <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>Select a playlist</div>
-            <div style={{ fontSize: 12 }}>Or create a new one with the + button</div>
+            <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--text)' }}>Select a playlist</div>
+            <div style={{ fontSize: 14 }}>Or create a new one with the + button</div>
             <button type="button" style={PD.btnPrimary} onClick={() => { setCreateError(''); setShowCreate(true); }}>
               <PlusIcon /> New Playlist
             </button>

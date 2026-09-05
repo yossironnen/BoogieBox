@@ -68,21 +68,21 @@ export default function UnmergeModal({ artistId, artistName, members, onClose, o
       }}>
         {/* Header */}
         <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 3 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 3 }}>
             Unmerge Artist
           </div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>Unmerge {artistName}</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>Unmerge {artistName}</div>
         </div>
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          <div style={{ fontSize: 14.5, color: 'var(--text-muted)', lineHeight: 1.6 }}>
             Splitting a name back out restores it as its own artist and moves its albums/tracks
             back. Uncheck a name to keep it merged.
           </div>
 
           <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 10 }}>
               Merged names
             </div>
             {members.map(m => (
@@ -100,8 +100,8 @@ export default function UnmergeModal({ artistId, artistName, members, onClose, o
                   style={{ width: 16, height: 16, accentColor: 'var(--accent)' }}
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{m.original_name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{m.original_name}</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                     {m.album_count} {m.album_count === 1 ? 'album' : 'albums'} · {m.track_count} tracks
                   </div>
                 </div>
@@ -109,18 +109,18 @@ export default function UnmergeModal({ artistId, artistName, members, onClose, o
             ))}
           </div>
 
-          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+          <div style={{ fontSize: 13.5, color: 'var(--text-muted)', lineHeight: 1.55 }}>
             This does not undo any other edits you made after merging.
           </div>
 
-          {error && <div style={{ fontSize: 12, color: '#f87171' }}>{error}</div>}
+          {error && <div style={{ fontSize: 14, color: '#f87171' }}>{error}</div>}
         </div>
 
         {/* Footer */}
         <div style={{ padding: '14px 24px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button
             onClick={onClose}
-            style={{ padding: '8px 18px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
+            style={{ padding: '8px 18px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 15, cursor: 'pointer', fontFamily: 'var(--font), monospace' }}
           >
             Cancel
           </button>
@@ -132,7 +132,7 @@ export default function UnmergeModal({ artistId, artistName, members, onClose, o
               background: 'transparent',
               border: '1px solid color-mix(in srgb, #f87171 55%, var(--border))',
               borderRadius: 6,
-              color: '#f87171', fontSize: 13, fontWeight: 700,
+              color: '#f87171', fontSize: 15, fontWeight: 700,
               cursor: checked.size === 0 || saving ? 'not-allowed' : 'pointer',
               opacity: checked.size === 0 || saving ? 0.6 : 1,
               fontFamily: 'var(--font), monospace',
