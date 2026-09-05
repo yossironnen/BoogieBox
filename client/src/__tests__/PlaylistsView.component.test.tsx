@@ -84,9 +84,22 @@ const trackB = {
   file_name: 'alpha-two.mp3',
 };
 
+
+function openOptions() {
+  const detail = document.querySelector('[data-ui-region="playlist-detail"]') as HTMLElement;
+  fireEvent.click(within(detail).getByRole('button', { name: 'More actions' }));
+}
+
+function openMix() {
+  fireEvent.click(screen.getByRole('button', { name: 'BoogieMix (Experimental)' }));
+}
+
 describe('PlaylistsView integration flows', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // jsdom cannot provide the browser top layer; browser QA covers native focus containment.
+    HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+    HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
     apiMock.playlists.list.mockResolvedValue([playlist]);
     apiMock.playlists.tracks.mockResolvedValue([trackA, trackB]);
     apiMock.playlists.create.mockResolvedValue({ id: '2', name: 'Focus' });
@@ -156,6 +169,100 @@ describe('PlaylistsView integration flows', () => {
     vi.useRealTimers();
   });
 
+  it('shares header artwork with sidebar rows without extra track fetches', async () => {
+    apiMock.playlists.list.mockResolvedValue([playlist, { ...playlist, id: '2', name: 'Focus', art_album_ids: ['501'] }]);
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+    const sources = (node: HTMLElement) => Array.from(node.querySelectorAll('img')).map(img => img.getAttribute('src'));
+    const row = screen.getByRole('button', { name: /Road Trip.*2 tracks/ });
+    expect(sources(row)).toEqual(sources(screen.getByLabelText('Road Trip artwork')));
+    expect(sources(row)).toEqual(['/api/albums/401/art?size=300', '/api/albums/402/art?size=300']);
+    expect(sources(screen.getByRole('button', { name: /Focus.*2 tracks/ }))).toEqual(['/api/albums/501/art?size=300']);
+    expect(apiMock.playlists.tracks).toHaveBeenCalledTimes(1);
+    expect(apiMock.playlists.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens another playlist options without switching selection and deletes only that playlist', async () => {
+    apiMock.playlists.list.mockResolvedValue([playlist, { ...playlist, id: '2', name: 'Focus' }]);
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+    const row = screen.getByRole('button', { name: /Focus.*2 tracks/ }).parentElement!;
+    fireEvent.click(within(row).getByRole('button', { name: 'More actions' }));
+    expect(screen.getByRole('dialog', { name: 'Focus' })).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledWith('playlist', '2'));
+    expect(screen.getByRole('button', { name: /Road Trip.*2 tracks/ })).toHaveAttribute('aria-current', 'true');
+    expect(apiMock.playlists.tracks).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTitle('Delete playlist'));
+    expect(apiMock.playlists.remove).not.toHaveBeenCalled();
+    apiMock.playlists.list.mockResolvedValue([playlist]);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(apiMock.playlists.remove).toHaveBeenCalledWith('2'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByText('Alpha One')).toBeInTheDocument();
+  });
+
+  it('supports keyboard navigation and escape or outside dismissal in the playback menu', async () => {
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+    const arrow = screen.getByRole('button', { name: 'Queue All' });
+    fireEvent.click(arrow);
+    expect(screen.getByRole('menuitem', { name: 'Play All' })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: 'Queue All' })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(arrow).toHaveFocus();
+    fireEvent.click(arrow);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('disables empty playlist actions and renders shared fallback artwork', async () => {
+    apiMock.playlists.list.mockResolvedValue([{ ...playlist, track_count: 0, art_album_ids: [] }]);
+    apiMock.playlists.tracks.mockResolvedValue([]);
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByLabelText('Road Trip artwork');
+    expect(screen.getByRole('button', { name: 'Play All' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Queue All' })).toBeDisabled();
+    expect(screen.getByLabelText('Road Trip artwork').firstElementChild?.children).toHaveLength(4);
+    openMix();
+    expect(screen.getByTitle('BoogieMix is experimental')).toBeDisabled();
+    expect(screen.getByTitle(/Run Demucs/)).toBeDisabled();
+  });
+
+  it('restores focus on popup dismissal and preserves mix configuration', async () => {
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+    const trigger = screen.getByRole('button', { name: 'BoogieMix (Experimental)' });
+    trigger.focus();
+    openMix();
+    const dismiss = screen.getByRole('button', { name: 'Dismiss' });
+    dismiss.focus();
+    fireEvent.keyDown(dismiss, { key: 'Tab', shiftKey: true });
+    expect(screen.getByTitle(/Run Demucs/)).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    expect(dismiss).toHaveFocus();
+    fireEvent.change(screen.getByTitle('BoogieMix style'), { target: { value: 'safe_mix' } });
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    openMix();
+    expect(screen.getByTitle('BoogieMix style')).toHaveValue('safe_mix');
+    fireEvent.click(screen.getByRole('dialog'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(apiMock.boogiemix.createJob).not.toHaveBeenCalled();
+  });
+
+  it('leaves remember position unchanged when saving fails', async () => {
+    apiMock.playlists.update.mockRejectedValueOnce(new Error('Could not update playlist'));
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+    openOptions();
+    fireEvent.click(screen.getByRole('switch', { name: 'Remember track position' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not update playlist');
+    expect(screen.getByRole('switch', { name: 'Remember track position' })).toHaveAttribute('aria-checked', 'false');
+  });
+
   it('loads a playlist, plays/queues tracks, reorders, and removes a track', async () => {
     const playTrack = vi.fn();
     const addToQueue = vi.fn();
@@ -181,6 +288,7 @@ describe('PlaylistsView integration flows', () => {
     expect(playTrack).toHaveBeenCalledWith(expect.objectContaining({ id: '101' }), expect.arrayContaining([expect.objectContaining({ id: '101' }), expect.objectContaining({ id: '102' })]), expect.objectContaining({ type: 'playlist', id: '1' }));
 
     fireEvent.click(screen.getByRole('button', { name: /Queue All/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Queue All' }));
     expect(addToQueue).toHaveBeenCalledTimes(2);
     expect(addToQueue).toHaveBeenCalledWith(expect.objectContaining({ id: '101' }));
     expect(addToQueue).toHaveBeenCalledWith(expect.objectContaining({ id: '102' }));
@@ -298,9 +406,11 @@ describe('PlaylistsView integration flows', () => {
     render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId={'1'} />);
 
     await waitFor(() => expect(apiMock.boogiemix.deepAnalysisStatus).toHaveBeenCalled());
+    openMix();
     fireEvent.change(screen.getByTitle('BoogieMix quality'), { target: { value: 'high_quality' } });
 
-    expect(screen.getByText(/High Quality needs deep analysis\. Missing: torch, demucs/i)).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByText(/High Quality needs deep analysis\. Missing: torch, demucs/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     fireEvent.mouseEnter(screen.getByTestId('boogiemix-status'));
     expect(screen.getByText(/Deep analysis runtime:/i)).toHaveTextContent('Missing: torch, demucs.');
   });
@@ -326,6 +436,7 @@ describe('PlaylistsView integration flows', () => {
 
     await waitFor(() => expect(apiMock.playlists.tracks).toHaveBeenCalledWith('1'));
 
+    openOptions();
     fireEvent.click(screen.getByTitle('Rename'));
     expect(screen.getByRole('dialog', { name: 'Rename Playlist' })).toBeInTheDocument();
     const nameInput = screen.getByDisplayValue('Road Trip');
@@ -345,10 +456,10 @@ describe('PlaylistsView integration flows', () => {
     render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
     await screen.findByText('Alpha One');
 
+    openOptions();
     fireEvent.click(screen.getByTitle('Remember track position: Off'));
     await waitFor(() => expect(apiMock.playlists.update).toHaveBeenCalledWith('1', 'Road Trip', 'Travel songs', 1));
-    fireEvent.click(screen.getByTitle('Crossfade settings'));
-    expect(await screen.findByText('Crossfade override')).toBeInTheDocument();
+    expect(await screen.findByText('Crossfade settings')).toBeInTheDocument();
     for (const mode of ['Off', 'Zero-gap', 'Crossfade']) {
       fireEvent.click(screen.getByRole('button', { name: mode }));
     }
@@ -358,8 +469,8 @@ describe('PlaylistsView integration flows', () => {
     }));
     fireEvent.click(screen.getByRole('button', { name: 'Reset to default' }));
     await waitFor(() => expect(apiMock.crossfade.removeOverride).toHaveBeenCalledWith('playlist', '1'));
-    fireEvent.click(screen.getByTitle('Crossfade settings'));
-    expect(screen.queryByText('Crossfade override')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText('Crossfade settings')).not.toBeInTheDocument();
   });
 
   it('creates playlists from empty state and reports create, edit, and delete failures', async () => {
@@ -379,6 +490,7 @@ describe('PlaylistsView integration flows', () => {
     apiMock.playlists.remove.mockRejectedValueOnce(new Error('Delete failed'));
     render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
     await screen.findByText('Alpha One');
+    openOptions();
     fireEvent.click(screen.getByTitle('Rename'));
     fireEvent.change(screen.getByDisplayValue('Road Trip'), { target: { value: 'Failed' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -403,6 +515,7 @@ describe('PlaylistsView integration flows', () => {
     });
     render(<PlaylistsView playTrack={playTrack} addToQueue={vi.fn()} initialPlaylistId="1" />);
     await screen.findByText('Alpha One');
+    openMix();
     fireEvent.change(screen.getByTitle('BoogieMix style'), { target: { value: 'chill_blend' } });
     fireEvent.change(screen.getByTitle('BoogieMix quality'), { target: { value: 'high_quality' } });
     fireEvent.change(screen.getByTitle('Transition length'), { target: { value: '45' } });
@@ -439,6 +552,7 @@ describe('PlaylistsView integration flows', () => {
     await waitFor(() => expect(apiMock.boogiemix.cancelJob).toHaveBeenCalledWith('mix-1'));
     await waitFor(() => expect(screen.getByTestId('boogiemix-status')).toHaveTextContent('BoogieMix canceled'));
 
+    openMix();
     fireEvent.click(screen.getByTitle(/Run Demucs deep analysis/i));
     await waitFor(() => expect(apiMock.boogiemix.queuePlaylistDeepAnalysis).toHaveBeenCalledWith('1'));
     expect(await screen.findByText('Deep analysis — 2/2 tracks')).toBeInTheDocument();
@@ -464,7 +578,8 @@ describe('PlaylistsView integration flows', () => {
 
     await waitFor(() => expect(apiMock.boogiemix.latestJobForPlaylist).toHaveBeenCalledWith('1'));
     expect(await screen.findByText('BoogieMix — Rendering 70%')).toBeInTheDocument();
-    // The BoogieMix trigger button stays disabled while a reattached job is still active.
+    // Configuration stays accessible; starting a second render is disabled.
+    openMix();
     expect(screen.getByTitle('BoogieMix is experimental')).toBeDisabled();
   });
 
@@ -483,8 +598,10 @@ describe('PlaylistsView integration flows', () => {
     apiMock.boogiemix.queuePlaylistDeepAnalysis.mockRejectedValueOnce(new Error('Deep failed'));
     render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
     await screen.findByText('Alpha One');
+    openMix();
     fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
     expect(await screen.findByText('Mix failed')).toBeInTheDocument();
+    openMix();
     fireEvent.click(screen.getByTitle(/Run Demucs deep analysis/i));
     expect(await screen.findByText('Deep failed')).toBeInTheDocument();
     fireEvent.mouseEnter(screen.getByTestId('boogiemix-status'));
@@ -492,4 +609,3 @@ describe('PlaylistsView integration flows', () => {
     expect(screen.queryByText('Deep failed')).not.toBeInTheDocument();
   });
 });
-

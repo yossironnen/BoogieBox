@@ -45,6 +45,8 @@ vi.mock('../api', () => ({
 describe('PlaylistsView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+    HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
     apiMock.playlists.list.mockResolvedValue([
       {
         id: '1',
@@ -95,9 +97,11 @@ describe('PlaylistsView', () => {
     await waitFor(() => expect(apiMock.playlists.list).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: /Road\s+Trip/i }));
+    const optionButtons = screen.getAllByRole('button', { name: 'More actions' });
+    fireEvent.click(optionButtons[optionButtons.length - 1]);
     fireEvent.click(screen.getByTitle('Delete playlist'));
 
-    expect(screen.getByText('BoogieBox')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Delete Playlist' })).toBeInTheDocument();
     expect(screen.getByText('Delete Playlist')).toBeInTheDocument();
     expect(screen.getByText(/Delete playlist \"Road\s+Trip\"\?/i)).toBeInTheDocument();
     expect(apiMock.playlists.remove).not.toHaveBeenCalled();
@@ -182,4 +186,3 @@ describe('PlaylistsView', () => {
     expect(track.file_size).toBeNull();
   });
 });
-

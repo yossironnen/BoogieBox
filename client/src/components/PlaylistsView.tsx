@@ -3,6 +3,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../api';
 import type { Playlist, PlaylistTrack, Track, CrossfadeMode, BoogieMixDeepAnalysisStatus, BoogieMixJob, BoogieMixOutput, ClientEntityId, PlaylistDeepAnalysisProgress } from '../types';
 import type { EntityId } from '../entityId';
@@ -78,8 +79,6 @@ const SearchIcon  = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="
 const ListIcon    = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>;
 const XIcon       = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
 const QueueIcon   = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
-const CrossfadeIcon  = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 20V4l10 8L2 20z" opacity="0.6"/><path d="M12 20V4l10 8-10 8z"/></svg>;
-const BookmarkIcon   = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>;
 const MixIcon        = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 3h4v4"/><path d="M3 21l18-18"/><path d="M21 17v4h-4"/><path d="M3 3l6 6"/><path d="M15 15l6 6"/></svg>;
 const NoteIcon        = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M9 18V5l10-1v12"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="16" r="2.5"/></svg>;
 const SpinnerIcon    = () => <svg className="sidebar-scan-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M18.2 17.2A8 8 0 1 1 20 12"/></svg>;
@@ -91,6 +90,120 @@ const MIX_ACTIVE_STATUSES: BoogieMixJob['status'][] = ['pending', 'analyzing', '
 const MIX_STEP_LABEL: Record<string, string> = {
   pending: 'Queued', analyzing: 'Analyzing', planning: 'Planning', rendering: 'Rendering',
 };
+
+
+/** Shared artwork for the playlist header and sidebar; no per-row track fetches. */
+function PlaylistArtwork({ albumIds, compact = false }: { albumIds: ClientEntityId[]; compact?: boolean }) {
+  const ids = albumIds.slice(0, 4);
+  return (
+    <div style={{ ...PD.collage, ...(compact ? { width: 64, padding: 2, gap: 2, borderRadius: 8 } : {}) }}>
+      {ids.map(id => (
+        <div key={id} style={{ ...PD.collageTile, ...(compact ? { borderRadius: 4 } : {}) }}>
+          <ArtImage src={api.albumArtUrl(id, 300)} alt="" imgStyle={PD.collageArt} />
+        </div>
+      ))}
+      {createPlaylistFallbackTiles(ids.length).map(tile => (
+        <div key={`fallback-${tile}`} style={{ ...PD.collageTile, ...PD.collageFallback }} />
+      ))}
+    </div>
+  );
+}
+
+function PlaylistKebab({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" aria-label="More actions" aria-haspopup="dialog"
+      style={{ ...PD.iconBtn, background: 'transparent', border: 'none', flexShrink: 0 }}
+      onClick={onClick}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="12" cy="19" r="2" />
+      </svg>
+    </button>
+  );
+}
+
+/** Native modal supplies focus containment and prevents interaction behind a popup. */
+function PlaylistPopup({ title, onClose, children }: {
+  title: string; onClose: () => void; children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    const dialog = ref.current;
+    dialog?.showModal();
+    return () => { dialog?.close(); if (trigger?.isConnected) trigger.focus(); };
+  }, []);
+  return createPortal(
+    <dialog ref={ref} aria-label={title}
+      onCancel={e => { e.preventDefault(); onClose(); }}
+      onKeyDown={e => {
+        if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+        if (e.key === 'Tab') {
+          const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>(':is(button, input, select, textarea, a[href]):not(:disabled)'));
+          const first = controls[0];
+          const last = controls[controls.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+          if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+        }
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      style={{ ...D.overlay, width: '100%', maxWidth: '100%', height: '100%', maxHeight: '100%', margin: 0, padding: 16, border: 0, boxSizing: 'border-box', color: 'var(--text)' }}>
+      <div style={{ ...D.dialog, width: 'min(480px, 100%)', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto', boxSizing: 'border-box' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ ...D.dialogTitle, flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{title}</div>
+          <button type="button" aria-label="Dismiss" style={PD.iconBtn} onClick={onClose}><XIcon /></button>
+        </div>
+        {children}
+      </div>
+    </dialog>, document.body,
+  );
+}
+
+function PlaylistPlayback({ disabled, onPlay, onQueue }: {
+  disabled: boolean; onPlay: () => void; onQueue: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    const dismiss = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [open]);
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'flex', flexShrink: 0 }}
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false); }}
+      onKeyDown={e => {
+        if (e.key === 'Escape') { setOpen(false); trigger.current?.focus(); }
+        if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End')) {
+          e.preventDefault();
+          const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+          const index = items.indexOf(document.activeElement as HTMLButtonElement);
+          items[e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (index + (e.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length]?.focus();
+        }
+      }}>
+      <button type="button" disabled={disabled} onClick={onPlay}
+        style={{ ...PD.btnPrimary, borderTopRightRadius: 0, borderBottomRightRadius: 0, ...(disabled ? hybridControlStyles.disabled : {}) }}>
+        <PlayIcon /> Play All
+      </button>
+      <button ref={trigger} type="button" aria-label="Queue All" aria-haspopup="menu" aria-expanded={open}
+        disabled={disabled} onClick={() => setOpen(value => !value)}
+        onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); } }}
+        style={{ ...PD.btnPrimary, padding: '0 12px', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: '1px solid color-mix(in srgb, var(--on-accent) 30%, transparent)', ...(disabled ? hybridControlStyles.disabled : {}) }}>
+        <span aria-hidden="true">⌄</span>
+      </button>
+      {open && (
+        <div role="menu" aria-label="Play All" style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 30, minWidth: 180, padding: 6, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
+          <button type="button" role="menuitem" style={PD.menuItem} onClick={() => { setOpen(false); trigger.current?.focus(); onPlay(); }}><PlayIcon /> Play All</button>
+          <button type="button" role="menuitem" style={PD.menuItem} onClick={() => { setOpen(false); trigger.current?.focus(); onQueue(); }}><QueueIcon /> Queue All</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── New / Edit Playlist Dialog ───────────────────────────────────────────────
 
@@ -144,15 +257,7 @@ function PlaylistDialog({
   const submit = () => { if (name.trim()) onSave(name.trim(), desc.trim()); };
 
   return (
-    <div style={D.overlay} onClick={onCancel}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="playlist-dialog-title"
-        style={D.dialog}
-        onClick={e => e.stopPropagation()}
-      >
-        <div id="playlist-dialog-title" style={D.dialogTitle}>{initial ? 'Rename Playlist' : 'New Playlist'}</div>
+    <PlaylistPopup title={initial ? 'Rename Playlist' : 'New Playlist'} onClose={onCancel}>
         <input
           ref={inputRef}
           style={D.input}
@@ -175,8 +280,7 @@ function PlaylistDialog({
             {initial ? 'Save' : 'Create'}
           </button>
         </div>
-      </div>
-    </div>
+    </PlaylistPopup>
   );
 }
 
@@ -192,18 +296,7 @@ function DeletePlaylistDialog({
   error?: string;
 }) {
   return (
-    <div style={D.overlay} onClick={onCancel}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-playlist-dialog-title"
-        style={D.dialog}
-        onClick={e => e.stopPropagation()}
-      >
-        <div style={D.dialogTitle}>BoogieBox</div>
-        <div id="delete-playlist-dialog-title" style={{ fontSize: 13, color: 'var(--text)', fontWeight: 700 }}>
-          Delete Playlist
-        </div>
+    <PlaylistPopup title="Delete Playlist" onClose={onCancel}>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
           Delete playlist "{playlistName}"?
         </div>
@@ -218,8 +311,7 @@ function DeletePlaylistDialog({
             Delete
           </button>
         </div>
-      </div>
-    </div>
+    </PlaylistPopup>
   );
 }
 
@@ -466,13 +558,176 @@ const T: Record<string, React.CSSProperties> = {
 
 // ─── Playlist Detail Panel ────────────────────────────────────────────────────
 
+
+function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
+  playlist: Playlist; onUpdate: () => void; onDelete: (id: EntityId) => void; onClose: () => void;
+}) {
+  // Keep the original row/toolbar trigger across the nested editor and confirmation views.
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    return () => { if (trigger?.isConnected) trigger.focus(); };
+  }, []);
+  const [showEdit, setShowEdit]   = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [editError, setEditError] = useState('');
+  const [cfMode, setCfMode]       = useState<CrossfadeMode>('off');
+  const [cfDuration, setCfDuration] = useState(2);
+  const [cfHasOverride, setCfHasOverride] = useState(false);
+  const [cfSaving, setCfSaving]   = useState(false);
+  const [rememberProgress, setRememberProgress] = useState(!!(playlist.remember_progress));
+  const [rememberSaving, setRememberSaving] = useState(false);
+  useEffect(() => {
+    let canceled = false;
+    api.crossfade.config('playlist', playlist.id).then(cfg => {
+      if (canceled) return;
+      setCfMode(cfg.mode); setCfDuration(cfg.duration); setCfHasOverride(cfg.source === 'override');
+    }).catch(() => {});
+    return () => { canceled = true; };
+  }, [playlist.id]);
+  const handleEdit = async (name: string, description: string) => {
+    try {
+      await api.playlists.update(playlist.id, name, description);
+      setEditError('');
+      setShowEdit(false);
+      onUpdate();
+    } catch (e: any) {
+      setEditError(e?.message || 'Could not update playlist');
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      await api.playlists.remove(playlist.id);
+      setDeleteError('');
+      setShowDeleteConfirm(false);
+      onDelete(playlist.id);
+    } catch (e: any) {
+      setDeleteError(e?.message || 'Could not delete playlist');
+    }
+  };
+
+  const handleToggleRememberProgress = async () => {
+    const next = !rememberProgress;
+    setRememberSaving(true);
+    setEditError('');
+    try {
+      await api.playlists.update(playlist.id, playlist.name, playlist.description ?? '', next ? 1 : 0);
+      setRememberProgress(next);
+      onUpdate();
+    } catch (e: any) {
+      setEditError(e?.message || 'Could not update playlist');
+    } finally { setRememberSaving(false); }
+  };
+
+
+  if (showEdit) return <PlaylistDialog initial={{ name: playlist.name, description: playlist.description ?? '' }}
+    onSave={handleEdit} onCancel={() => { setEditError(''); setShowEdit(false); }} error={editError} />;
+  if (showDeleteConfirm) return <DeletePlaylistDialog playlistName={playlist.name}
+    onConfirm={handleDelete} onCancel={() => { setDeleteError(''); setShowDeleteConfirm(false); }} error={deleteError} />;
+  return (
+    <PlaylistPopup title={playlist.name} onClose={onClose}>
+      <button type="button" title="Rename" style={PD.menuItem} onClick={() => { setEditError(''); setShowEdit(true); }}><EditIcon /> Rename</button>
+      <button type="button" role="switch" aria-checked={rememberProgress} aria-label="Remember track position"
+        disabled={rememberSaving} title={rememberProgress ? 'Remember track position: On' : 'Remember track position: Off'}
+        style={{ ...PD.menuItem, justifyContent: 'space-between' }} onClick={handleToggleRememberProgress}>
+        Remember track position
+        <span aria-hidden="true" style={{ width: 40, height: 24, borderRadius: 12, padding: 3, boxSizing: 'border-box', background: rememberProgress ? 'var(--accent)' : 'var(--border)' }}>
+          <span style={{ display: 'block', width: 18, height: 18, borderRadius: '50%', background: 'var(--text)', transform: rememberProgress ? 'translateX(16px)' : undefined }} />
+        </span>
+      </button>
+      {editError && <div role="alert" style={D.errorText}>{editError}</div>}
+        <div style={{ padding: '16px 0', borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>
+            Crossfade settings
+          </div>
+          {/* Mode pills */}
+          <div style={{ ...PD.segmentedGroup, display: 'flex', marginBottom: 8 }}>
+            {([
+              { value: 'off' as const, label: 'Off' },
+              { value: 'zerogap' as const, label: 'Zero-gap' },
+              { value: 'crossfade' as const, label: 'Crossfade' },
+            ]).map(opt => (
+              <button
+                key={opt.value}
+                aria-pressed={cfMode === opt.value}
+                onClick={async () => {
+                  setCfMode(opt.value);
+                  setCfSaving(true);
+                  await api.crossfade.upsertOverride({ entity_type: 'playlist', entity_id: playlist.id, mode: opt.value, duration: cfDuration }).catch(() => {});
+                  setCfHasOverride(true);
+                  setCfSaving(false);
+                }}
+                style={{
+                  ...PD.segment,
+                  flex: 1,
+                  ...(cfMode === opt.value ? PD.segmentActive : {}),
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {/* Duration slider */}
+          {cfMode === 'crossfade' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>1s</span>
+              <input
+                type="range" aria-label="Crossfade settings" min={1} max={10} step={1} value={cfDuration}
+                onChange={async e => {
+                  const v = Number(e.target.value);
+                  setCfDuration(v);
+                  setCfSaving(true);
+                  await api.crossfade.upsertOverride({ entity_type: 'playlist', entity_id: playlist.id, mode: cfMode, duration: v }).catch(() => {});
+                  setCfHasOverride(true);
+                  setCfSaving(false);
+                }}
+                style={{ flex: 1, minWidth: 0, accentColor: 'var(--accent)' }}
+              />
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>10s</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{cfDuration}s</span>
+            </div>
+          )}
+          {/* Reset + status */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {cfHasOverride && (
+              <button
+                onClick={async () => {
+                  setCfSaving(true);
+                  await api.crossfade.removeOverride('playlist', playlist.id).catch(() => {});
+                  const cfg = await api.crossfade.config('playlist', playlist.id).catch(() => ({ mode: 'off' as const, duration: 2, source: 'global' as const }));
+                  setCfMode(cfg.mode);
+                  setCfDuration(cfg.duration);
+                  setCfHasOverride(cfg.source === 'override');
+                  setCfSaving(false);
+                }}
+                style={{
+                  ...PD.btnSecondary,
+                  minHeight: 30,
+                  padding: '5px 9px',
+                  fontSize: 10,
+                }}
+              >
+                Reset to default
+              </button>
+            )}
+            {cfSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Saving…</span>}
+            {!cfHasOverride && !cfSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Using global default</span>}
+          </div>
+        </div>
+      <button type="button" title="Delete playlist" style={{ ...PD.menuItem, borderTop: '1px solid var(--border)', color: 'var(--danger)' }}
+        onClick={() => { setDeleteError(''); setShowDeleteConfirm(true); }}><TrashIcon /> Delete playlist</button>
+    </PlaylistPopup>
+  );
+}
+
 function PlaylistDetail({
-  playlist, onUpdate, onDelete,
+  playlist, onUpdate, onOptions,
   playTrack, addToQueue, onOpenAlbum, onOpenArtist,
 }: {
   playlist: Playlist;
   onUpdate: () => void;
-  onDelete: () => void;
+  onOptions: () => void;
   playTrack: (track: Track, all?: Track[], source?: import('../types').QueueSource) => void;
   addToQueue: (track: Track) => void;
   onOpenAlbum: (album: import('../types').Album) => void;
@@ -482,18 +737,11 @@ function PlaylistDetail({
   const [loading, setLoading]     = useState(true);
   const [loadError, setLoadError] = useState('');
   const [showAdd, setShowAdd]     = useState(false);
-  const [showEdit, setShowEdit]   = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [deleteError, setDeleteError] = useState('');
-  const [editError, setEditError] = useState('');
   const [dragFrom, setDragFrom]   = useState<number | null>(null);
   const [dragOver, setDragOver]   = useState<number | null>(null);
-  const [showCrossfade, setShowCrossfade] = useState(false);
-  const [cfMode, setCfMode]       = useState<CrossfadeMode>('off');
-  const [cfDuration, setCfDuration] = useState(2);
-  const [cfHasOverride, setCfHasOverride] = useState(false);
-  const [cfSaving, setCfSaving]   = useState(false);
-  const [rememberProgress, setRememberProgress] = useState(!!(playlist.remember_progress));
+  const rememberProgress = !!playlist.remember_progress;
+  const [showMix, setShowMix] = useState(false);
+  const [mixStarting, setMixStarting] = useState(false);
   const [hoveredTrackId, setHoveredTrackId] = useState<ClientEntityId | null>(null);
   const [mixJobId, setMixJobId] = useState<ClientEntityId | null>(null);
   const [mixJob, setMixJob] = useState<BoogieMixJob | null>(null);
@@ -572,15 +820,6 @@ function PlaylistDetail({
     };
   }, [mixJobId, playlist.id]);
 
-  // Load crossfade config for this playlist
-  useEffect(() => {
-    api.crossfade.config('playlist', playlist.id).then(cfg => {
-      setCfMode(cfg.mode);
-      setCfDuration(cfg.duration);
-      setCfHasOverride(cfg.source === 'override');
-    }).catch(() => {});
-  }, [playlist.id]);
-
   const remove = async (trackId: ClientEntityId) => {
     await api.playlists.removeTrack(playlist.id, trackId);
     setTracks(prev => prev.filter(t => t.id !== trackId));
@@ -620,42 +859,11 @@ function PlaylistDetail({
     onUpdate();
   };
 
-  const handleEdit = async (name: string, description: string) => {
-    try {
-      await api.playlists.update(playlist.id, name, description);
-      setEditError('');
-      setShowEdit(false);
-      onUpdate();
-    } catch (e: any) {
-      setEditError(e?.message || 'Could not update playlist');
-    }
-  };
-
-  const handleDelete = async () => {
-    try {
-      await api.playlists.remove(playlist.id);
-      setDeleteError('');
-      setShowDeleteConfirm(false);
-      onDelete();
-    } catch (e: any) {
-      setDeleteError(e?.message || 'Could not delete playlist');
-    }
-  };
-
-  const handleToggleRememberProgress = async () => {
-    const next = !rememberProgress;
-    setRememberProgress(next);
-    await api.playlists.update(playlist.id, playlist.name, playlist.description ?? '', next ? 1 : 0).catch(() => {});
-  };
-
   const playAll   = () => { if (tracks.length) playTrack(tracks[0], tracks, { type: 'playlist', id: playlist.id, rememberProgress }); };
   const queueAll  = () => tracks.forEach(t => addToQueue(t));
   const totalDur  = tracks.reduce((a, t) => a + (t.duration ?? 0), 0);
   const collageAlbumIds = buildPlaylistCollageAlbumIds(tracks);
-  const headerCollageAlbumIds = collageAlbumIds.length
-    ? collageAlbumIds
-    : (playlist.art_album_ids ?? []).slice(0, 4);
-  const collageFallbackTiles = createPlaylistFallbackTiles(headerCollageAlbumIds.length);
+  const headerCollageAlbumIds = playlist.art_album_ids ?? collageAlbumIds;
   const deepFallbackMessage = formatBoogieMixFallbackMessage(
     mixJob,
     mixQuality === 'high_quality' ? deepStatus : null,
@@ -702,6 +910,8 @@ function PlaylistDetail({
     ? { active: 'var(--text)', done: 'var(--success)', error: 'var(--danger)', warn: 'var(--warning)' }[statusLine.tone]
     : 'var(--text)';
   const startBoogieMix = async () => {
+    if (mixStarting) return;
+    setMixStarting(true);
     try {
       if (!api.boogiemix) return;
       setMixError('');
@@ -710,6 +920,8 @@ function PlaylistDetail({
       setMixJob(await api.boogiemix.getJob(created.jobId));
     } catch (e: any) {
       setMixError(e?.message || 'Failed to start BoogieMix');
+    } finally {
+      setMixStarting(false);
     }
   };
   const cancelBoogieMix = async () => {
@@ -769,16 +981,7 @@ function PlaylistDetail({
     <div data-ui-region="playlist-detail" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
       {/* Header */}
       <div style={PD.header}>
-        <div style={PD.collage} aria-label={`${playlist.name} artwork`}>
-          {headerCollageAlbumIds.map((albumId) => (
-            <div key={albumId} style={PD.collageTile}>
-              <ArtImage src={api.albumArtUrl(albumId, 300)} alt="" imgStyle={PD.collageArt} />
-            </div>
-          ))}
-          {collageFallbackTiles.map((tile) => (
-            <div key={`playlist-fallback-${tile}`} style={{ ...PD.collageTile, ...PD.collageFallback }} />
-          ))}
-        </div>
+        <div aria-label={`${playlist.name} artwork`}><PlaylistArtwork albumIds={headerCollageAlbumIds} /></div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={PD.kicker}>Curated Collection</div>
           <div style={PD.name}>{playlist.name}</div>
@@ -791,40 +994,27 @@ function PlaylistDetail({
             ].filter(Boolean).join(' · ')}
           </div>
         </div>
-        <div style={PD.actionGroup}>
-          <button type="button" style={{ ...PD.btnPrimary, ...(!tracks.length ? hybridControlStyles.disabled : {}) }} onClick={playAll} disabled={!tracks.length}>
-            <PlayIcon /> Play All
+
+        <div style={{ ...PD.actionGroup, flexBasis: '100%', minWidth: 0 }}>
+          <PlaylistPlayback disabled={!tracks.length} onPlay={playAll} onQueue={queueAll} />
+          <button type="button" style={showAdd ? PD.btnTonal : PD.btnSecondary} onClick={() => setShowAdd(value => !value)}>
+            <PlusIcon /> Add Tracks
           </button>
-          <button type="button" style={{ ...PD.btnSecondary, ...(!tracks.length ? hybridControlStyles.disabled : {}) }} onClick={queueAll} disabled={!tracks.length}>
-            <QueueIcon /> Queue All
-          </button>
-          <button
-            type="button"
-            style={{
-              ...PD.btnSecondary,
-              ...(!api.boogiemix || tracks.length < 2 || mixActive
-                ? hybridControlStyles.disabled
-                : {}),
-            }}
-            onClick={startBoogieMix}
-            disabled={!api.boogiemix || tracks.length < 2 || mixActive}
-            title="BoogieMix is experimental"
-          >
-            <MixIcon /> BoogieMix (Experimental)
-          </button>
-          <button
-            type="button"
-            style={{
-              ...PD.btnSecondary,
-              ...(!api.boogiemix || tracks.length === 0 || deepRunning ? hybridControlStyles.disabled : {}),
-            }}
-            onClick={runDeepAnalysis}
-            disabled={!api.boogiemix || tracks.length === 0 || deepRunning}
-            title="Run Demucs deep analysis on all tracks in this playlist. Replaces synthetic placeholder data with real AI stem analysis."
-          >
-            ⚡ Deep Analysis
-          </button>
-          <select
+          <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', alignItems: 'center' }}>
+            <button type="button" aria-haspopup="dialog" style={PD.btnSecondary} onClick={() => setShowMix(true)}>
+              <MixIcon /> BoogieMix (Experimental)
+            </button>
+            <PlaylistKebab onClick={onOptions} />
+          </div>
+        </div>
+      </div>
+      {showMix && (
+        <PlaylistPopup title="BoogieMix (Experimental)" onClose={() => setShowMix(false)}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>BoogieMix is experimental and may produce inconsistent results.</div>
+          {deepFallbackMessage && <div style={{ fontSize: 12, color: 'var(--warning)' }}>{deepFallbackMessage}</div>}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+            BoogieMix style
+            <select
             value={mixStyle}
             onChange={(e) => setMixStyle(e.target.value as any)}
             style={{ ...PD.select, minWidth: 120 }}
@@ -835,7 +1025,10 @@ function PlaylistDetail({
             <option value="long_build">Long build</option>
             <option value="safe_mix">Safe mix</option>
           </select>
-          <select
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+            BoogieMix quality
+            <select
             value={mixQuality}
             onChange={(e) => setMixQuality(e.target.value as any)}
             style={{ ...PD.select, minWidth: 164 }}
@@ -844,7 +1037,10 @@ function PlaylistDetail({
             <option value="standard">Standard</option>
             <option value="high_quality">High Quality (Deep Analysis)</option>
           </select>
-          <select
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+            Transition length
+            <select
             value={mixCrossfade}
             onChange={(e) => setMixCrossfade(Number(e.target.value))}
             style={{ ...PD.select, minWidth: 116 }}
@@ -857,118 +1053,36 @@ function PlaylistDetail({
             <option value={32}>32s blend</option>
             <option value={45}>45s blend</option>
           </select>
-          <button type="button" style={showAdd ? PD.btnTonal : PD.btnSecondary} onClick={() => setShowAdd(s => !s)}>
-            <PlusIcon /> Add Tracks
+          </label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <button
+            type="button"
+            style={{
+              ...PD.btnPrimary,
+              ...(!api.boogiemix || tracks.length < 2 || mixActive || mixStarting
+                ? hybridControlStyles.disabled
+                : {}),
+            }}
+            onClick={async () => { await startBoogieMix(); setShowMix(false); }}
+            disabled={!api.boogiemix || tracks.length < 2 || mixActive || mixStarting}
+            title="BoogieMix is experimental"
+          >
+            <MixIcon /> BoogieMix (Experimental)
           </button>
           <button
             type="button"
-            aria-label={rememberProgress ? 'Disable remembered track position' : 'Remember track position'}
-            style={{ ...PD.iconBtn, ...(rememberProgress ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
-            onClick={handleToggleRememberProgress}
-            title={rememberProgress ? 'Remember track position: On' : 'Remember track position: Off'}
+            style={{
+              ...PD.btnSecondary,
+              ...(!api.boogiemix || tracks.length === 0 || deepRunning ? hybridControlStyles.disabled : {}),
+            }}
+            onClick={async () => { await runDeepAnalysis(); setShowMix(false); }}
+            disabled={!api.boogiemix || tracks.length === 0 || deepRunning}
+            title="Run Demucs deep analysis on all tracks in this playlist. Replaces synthetic placeholder data with real AI stem analysis."
           >
-            <BookmarkIcon />
+            ⚡ Deep Analysis
           </button>
-          <button
-            type="button"
-            aria-label="Crossfade settings"
-            style={{ ...PD.iconBtn, ...(showCrossfade ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
-            onClick={() => setShowCrossfade(s => !s)}
-            title="Crossfade settings"
-          >
-            <CrossfadeIcon />
-          </button>
-          <button type="button" aria-label="Rename playlist" style={PD.iconBtn} onClick={() => { setEditError(''); setShowEdit(true); }} title="Rename"><EditIcon /></button>
-          <button
-            type="button"
-            aria-label="Delete playlist"
-            style={PD.iconDanger}
-            onClick={() => { setDeleteError(''); setShowDeleteConfirm(true); }}
-            title="Delete playlist"
-          >
-            <TrashIcon />
-          </button>
-        </div>
-      </div>
-
-      {/* Crossfade override panel */}
-      {showCrossfade && (
-        <div style={PD.crossfadePanel}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>
-            Crossfade override
           </div>
-          {/* Mode pills */}
-          <div style={{ ...PD.segmentedGroup, marginBottom: 8 }}>
-            {([
-              { value: 'off' as const, label: 'Off' },
-              { value: 'zerogap' as const, label: 'Zero-gap' },
-              { value: 'crossfade' as const, label: 'Crossfade' },
-            ]).map(opt => (
-              <button
-                key={opt.value}
-                onClick={async () => {
-                  setCfMode(opt.value);
-                  setCfSaving(true);
-                  await api.crossfade.upsertOverride({ entity_type: 'playlist', entity_id: playlist.id, mode: opt.value, duration: cfDuration }).catch(() => {});
-                  setCfHasOverride(true);
-                  setCfSaving(false);
-                }}
-                style={{
-                  ...PD.segment,
-                  ...(cfMode === opt.value ? PD.segmentActive : {}),
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {/* Duration slider */}
-          {cfMode === 'crossfade' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>1s</span>
-              <input
-                type="range" min={1} max={10} step={1} value={cfDuration}
-                onChange={async e => {
-                  const v = Number(e.target.value);
-                  setCfDuration(v);
-                  setCfSaving(true);
-                  await api.crossfade.upsertOverride({ entity_type: 'playlist', entity_id: playlist.id, mode: cfMode, duration: v }).catch(() => {});
-                  setCfHasOverride(true);
-                  setCfSaving(false);
-                }}
-                style={{ flex: 1, maxWidth: 200, accentColor: 'var(--accent)' }}
-              />
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>10s</span>
-              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>{cfDuration}s</span>
-            </div>
-          )}
-          {/* Reset + status */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {cfHasOverride && (
-              <button
-                onClick={async () => {
-                  setCfSaving(true);
-                  await api.crossfade.removeOverride('playlist', playlist.id).catch(() => {});
-                  const cfg = await api.crossfade.config('playlist', playlist.id).catch(() => ({ mode: 'off' as const, duration: 2, source: 'global' as const }));
-                  setCfMode(cfg.mode);
-                  setCfDuration(cfg.duration);
-                  setCfHasOverride(cfg.source === 'override');
-                  setCfSaving(false);
-                }}
-                style={{
-                  ...PD.btnSecondary,
-                  minHeight: 30,
-                  padding: '5px 9px',
-                  fontSize: 10,
-                }}
-              >
-                Reset to default
-              </button>
-            )}
-            {cfSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Saving…</span>}
-            {!cfHasOverride && !cfSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Using global default</span>}
-          </div>
-        </div>
+        </PlaylistPopup>
       )}
 
       {/* Body: tracks + optional add panel */}
@@ -1105,23 +1219,7 @@ function PlaylistDetail({
         )}
       </div>
 
-      {showEdit && (
-        <PlaylistDialog
-          initial={{ name: playlist.name, description: playlist.description ?? '' }}
-          onSave={handleEdit}
-          onCancel={() => { setEditError(''); setShowEdit(false); }}
-          error={editError}
-        />
-      )}
 
-      {showDeleteConfirm && (
-        <DeletePlaylistDialog
-          playlistName={playlist.name}
-          onConfirm={handleDelete}
-          onCancel={() => { setDeleteError(''); setShowDeleteConfirm(false); }}
-          error={deleteError}
-        />
-      )}
     </div>
   );
 }
@@ -1147,6 +1245,7 @@ const PD: Record<string, React.CSSProperties> = {
   meta: { fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 },
   empty: { ...phase2.desktopMediaRow, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 24, padding: '72px 20px', color: 'var(--text-muted)', fontSize: 13, ...hybridMediaStyles.emptyState },
   actionGroup: { ...hybridPlaylistStyles.actionGroup },
+  menuItem: { ...hybridControlStyles.secondaryButton, width: '100%', justifyContent: 'flex-start', minHeight: 44, border: 'none', borderRadius: 6, background: 'transparent', textAlign: 'left' },
   btnPrimary: { ...hybridControlStyles.primaryButton },
   btnSecondary: { ...hybridControlStyles.secondaryButton },
   btnTonal: { ...hybridControlStyles.tonalButton },
@@ -1284,11 +1383,12 @@ function DeepAnalysisProgressPanel({
 // ─── Sidebar: Playlist List ───────────────────────────────────────────────────
 
 function PlaylistSidebar({
-  playlists, selectedId, onSelect, onCreate,
+  playlists, selectedId, onSelect, onCreate, onOptions,
 }: {
   playlists: Playlist[];
   selectedId: EntityId | null;
   onSelect: (p: Playlist) => void;
+  onOptions: (p: Playlist) => void;
   onCreate: () => void;
 }) {
   return (
@@ -1304,19 +1404,20 @@ function PlaylistSidebar({
           <div style={SB.empty}>It's lonely here. Click + to create a new playlist.</div>
         )}
         {playlists.map(pl => (
-          <button
-            type="button"
-            key={pl.id}
-            style={{ ...SB.item, ...(selectedId === pl.id ? SB.itemActive : {}) }}
-            onClick={() => onSelect(pl)}
-            aria-current={selectedId === pl.id ? 'true' : undefined}
-          >
-            <div style={SB.itemName}>{pl.name}</div>
-            <div style={SB.itemMeta}>
-              {pl.track_count} track{pl.track_count !== 1 ? 's' : ''}
-              {pl.total_duration ? ` · ${fmtDur(pl.total_duration)}` : ''}
-            </div>
-          </button>
+          <div key={pl.id} style={{ ...SB.item, display: 'flex', alignItems: 'center', gap: 8, ...(selectedId === pl.id ? SB.itemActive : {}) }}>
+            <button type="button" style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer' }}
+              onClick={() => onSelect(pl)} aria-current={selectedId === pl.id ? 'true' : undefined}>
+              <span aria-hidden="true"><PlaylistArtwork albumIds={pl.art_album_ids ?? []} compact /></span>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ ...SB.itemName, display: 'block' }}>{pl.name}</span>
+                <span style={SB.itemMeta}>
+                  {pl.track_count} track{pl.track_count !== 1 ? 's' : ''}
+                  {pl.total_duration ? ` · ${fmtDur(pl.total_duration)}` : ''}
+                </span>
+              </span>
+            </button>
+            <PlaylistKebab onClick={() => onOptions(pl)} />
+          </div>
         ))}
       </div>
     </div>
@@ -1324,7 +1425,7 @@ function PlaylistSidebar({
 }
 
 const SB: Record<string, React.CSSProperties> = {
-  sidebar: { display: 'flex', flexDirection: 'column', flexShrink: 0, ...hybridPlaylistStyles.sidebar },
+  sidebar: { display: 'flex', flexDirection: 'column', flexShrink: 0, ...hybridPlaylistStyles.sidebar, width: 296 },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, ...hybridPlaylistStyles.sidebarHeader },
   newBtn: { ...hybridControlStyles.iconButton, width: 34, minWidth: 34, height: 34, background: 'var(--accent)', color: 'var(--on-accent)' },
   list: { flex: 1, overflowY: 'auto', paddingBottom: 0 },
@@ -1354,25 +1455,24 @@ export default function PlaylistsView({
   const [selected, setSelected]     = useState<Playlist | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createError, setCreateError] = useState('');
+  const [optionsPlaylist, setOptionsPlaylist] = useState<Playlist | null>(null);
 
   const loadPlaylists = useCallback(async () => {
     const list = await api.playlists.list();
     setPlaylists(list);
-    // Re-sync the selected playlist object (name/count may have changed)
-    if (selected) {
-      const updated = list.find((p: Playlist) => p.id === selected.id);
-      if (updated) setSelected(updated);
-    }
-  }, [selected]);
+    setSelected(current => current ? list.find(p => p.id === current.id) ?? null : null);
+    setOptionsPlaylist(current => current ? list.find(p => p.id === current.id) ?? null : null);
+  }, []);
 
-  useEffect(() => { loadPlaylists(); }, [loadPlaylists]);
+  useEffect(() => { void loadPlaylists(); }, [loadPlaylists]);
 
-  // If a playlist id was passed in (e.g. from "Add to playlist" elsewhere), auto-select it
+  // Apply an external navigation request once, not on every list refresh.
+  const appliedInitialId = useRef<EntityId | null>(null);
   useEffect(() => {
-    if (initialPlaylistId && playlists.length) {
-      const pl = playlists.find(p => p.id === initialPlaylistId);
-      if (pl) setSelected(pl);
-    }
+    if (!initialPlaylistId) { appliedInitialId.current = null; return; }
+    if (appliedInitialId.current === initialPlaylistId) return;
+    const pl = playlists.find(p => p.id === initialPlaylistId);
+    if (pl) { appliedInitialId.current = initialPlaylistId; setSelected(pl); }
   }, [initialPlaylistId, playlists]);
 
   const handleCreate = async (name: string, description: string) => {
@@ -1392,8 +1492,9 @@ export default function PlaylistsView({
     }
   };
 
-  const handleDeleted = async () => {
-    setSelected(null);
+  const handleDeleted = async (id: EntityId) => {
+    setOptionsPlaylist(null);
+    setSelected(current => current?.id === id ? null : current);
     await loadPlaylists();
   };
 
@@ -1406,10 +1507,11 @@ export default function PlaylistsView({
         playlists={playlists}
         selectedId={selected?.id ?? null}
         onSelect={pl => setSelected(pl)}
+        onOptions={setOptionsPlaylist}
         onCreate={() => { setCreateError(''); setShowCreate(true); }}
       />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
         {!selected && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 16, color: 'var(--text-muted)' }}>
             <ListIcon />
@@ -1425,7 +1527,7 @@ export default function PlaylistsView({
             key={selected.id}
             playlist={selected}
             onUpdate={loadPlaylists}
-            onDelete={handleDeleted}
+            onOptions={() => setOptionsPlaylist(selected)}
             playTrack={playTrack}
             addToQueue={addToQueue}
             onOpenAlbum={onOpenAlbum}
@@ -1434,6 +1536,10 @@ export default function PlaylistsView({
         )}
       </div>
 
+      {optionsPlaylist && (
+        <PlaylistOptions key={optionsPlaylist.id} playlist={optionsPlaylist} onUpdate={loadPlaylists}
+          onDelete={handleDeleted} onClose={() => setOptionsPlaylist(null)} />
+      )}
       {showCreate && (
         <PlaylistDialog
           onSave={handleCreate}
