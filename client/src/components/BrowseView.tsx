@@ -2659,6 +2659,7 @@ export default function BrowseView({
   const goAlbum  = useCallback((album: Album, artist: Artist | null = null, mode?: 'artist' | 'album_artist') => {
     setCurrentArtist(null);
     setCurrentAlbum(album);
+    setTrackRatingFilter('all');
     const d: any = { level: 'album', album, artist, _groupBy: mode };
     setDrill(d);
   }, []);
