@@ -201,29 +201,15 @@ describe('PlaylistsView integration flows', () => {
     expect(screen.getByText('Alpha One')).toBeInTheDocument();
   });
 
-  it('supports keyboard navigation and escape or outside dismissal in the playback menu', async () => {
-    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
-    await screen.findByText('Alpha One');
-    const arrow = screen.getByRole('button', { name: 'Queue All' });
-    fireEvent.click(arrow);
-    expect(screen.getByRole('menuitem', { name: 'Play All' })).toHaveFocus();
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
-    expect(screen.getByRole('menuitem', { name: 'Queue All' })).toHaveFocus();
-    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    expect(arrow).toHaveFocus();
-    fireEvent.click(arrow);
-    fireEvent.pointerDown(document.body);
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-  });
-
   it('disables empty playlist actions and renders shared fallback artwork', async () => {
     apiMock.playlists.list.mockResolvedValue([{ ...playlist, track_count: 0, art_album_ids: [] }]);
     apiMock.playlists.tracks.mockResolvedValue([]);
     render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
     await screen.findByLabelText('Road Trip artwork');
     expect(screen.getByRole('button', { name: 'Play All' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Queue All' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Shuffle play all tracks' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Queue all tracks' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add tracks' })).not.toBeDisabled();
     expect(screen.getByLabelText('Road Trip artwork').firstElementChild?.children).toHaveLength(4);
     openMix();
     expect(screen.getByTitle('BoogieMix is experimental')).toBeDisabled();
@@ -284,11 +270,10 @@ describe('PlaylistsView integration flows', () => {
     const rowBArt = screen.getByText('Alpha Two').closest('[draggable="true"]')!.querySelector('img')!;
     expect(rowBArt).toHaveAttribute('src', '/api/albums/302/art?size=300');
 
-    fireEvent.click(screen.getByRole('button', { name: /Play All/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Play All$/i }));
     expect(playTrack).toHaveBeenCalledWith(expect.objectContaining({ id: '101' }), expect.arrayContaining([expect.objectContaining({ id: '101' }), expect.objectContaining({ id: '102' })]), expect.objectContaining({ type: 'playlist', id: '1' }));
 
-    fireEvent.click(screen.getByRole('button', { name: /Queue All/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Queue All' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Queue all tracks' }));
     expect(addToQueue).toHaveBeenCalledTimes(2);
     expect(addToQueue).toHaveBeenCalledWith(expect.objectContaining({ id: '101' }));
     expect(addToQueue).toHaveBeenCalledWith(expect.objectContaining({ id: '102' }));
@@ -415,6 +400,45 @@ describe('PlaylistsView integration flows', () => {
     expect(screen.getByText(/Deep analysis runtime:/i)).toHaveTextContent('Missing: torch, demucs.');
   });
 
+  it('offers to run deep analysis first when starting BoogieMix on an unanalyzed playlist', async () => {
+    // Default trackA/trackB have no has_deep_analysis flag — an unanalyzed playlist.
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+
+    openMix();
+    fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
+    expect(apiMock.boogiemix.createJob).not.toHaveBeenCalled();
+    expect(screen.getByText(/hasn.t been deep-analyzed yet/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Run Deep Analysis First/i }));
+    await waitFor(() => expect(apiMock.boogiemix.queuePlaylistDeepAnalysis).toHaveBeenCalledWith('1'));
+    expect(apiMock.boogiemix.createJob).not.toHaveBeenCalled();
+  });
+
+  it('lets the user continue BoogieMix without analysis after the unanalyzed-playlist warning', async () => {
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+
+    openMix();
+    fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
+    expect(screen.getByText(/hasn.t been deep-analyzed yet/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue Without Analysis' }));
+    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'club_blend', 'standard', 16));
+    expect(apiMock.boogiemix.queuePlaylistDeepAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('skips the unanalyzed-playlist warning once tracks already have deep analysis', async () => {
+    apiMock.playlists.tracks.mockResolvedValue([{ ...trackA, has_deep_analysis: true }, trackB]);
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+
+    openMix();
+    fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
+    expect(screen.queryByText(/hasn.t been deep-analyzed yet/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'club_blend', 'standard', 16));
+  });
+
   it('searches and adds tracks from the Add Tracks panel', async () => {
     render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId={'1'} />);
 
@@ -505,6 +529,9 @@ describe('PlaylistsView integration flows', () => {
 
   it('starts and cancels BoogieMix, runs deep analysis, and renders output and plan details', async () => {
     const playTrack = vi.fn();
+    // Already analyzed, so Start goes straight to createJob — the
+    // not-analyzed warning path is covered separately below.
+    apiMock.playlists.tracks.mockResolvedValue([{ ...trackA, has_deep_analysis: true }, { ...trackB, has_deep_analysis: true }]);
     apiMock.boogiemix.listOutputs.mockResolvedValue([{ id: 'out1', file_name: 'mix.flac', duration_sec: 200, file_size_bytes: 1000, format: 'mp3' }]);
     apiMock.boogiemix.getJob.mockResolvedValueOnce({
       id: 'mix-1', status: 'planning', progress_percent: 50, current_step: 'AI plan',
@@ -558,6 +585,36 @@ describe('PlaylistsView integration flows', () => {
     expect(await screen.findByText('Deep analysis — 2/2 tracks')).toBeInTheDocument();
   });
 
+  it('refreshes a track\'s Sonic Fingerprint icon as deep analysis progresses, without a manual reload', async () => {
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+    expect(screen.queryByTitle('Sonic Fingerprint available — AI stem analysis complete')).not.toBeInTheDocument();
+
+    // First fetch (right after queuing) still shows work in progress; the
+    // interval poll 2s later is what reports the track as finished.
+    apiMock.boogiemix.playlistDeepAnalysisProgress
+      .mockResolvedValueOnce({ pending: 1, running: 1, done: 0, failed: 0, skipped: 0, total: 2 })
+      .mockResolvedValueOnce({ pending: 0, running: 0, done: 1, failed: 0, skipped: 0, total: 2 });
+    apiMock.playlists.tracks.mockResolvedValueOnce([{ ...trackA, has_deep_analysis: true }, trackB]);
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      openMix();
+      fireEvent.click(screen.getByTitle(/Run Demucs deep analysis/i));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(apiMock.boogiemix.queuePlaylistDeepAnalysis).toHaveBeenCalledWith('1');
+      expect(screen.queryByTitle('Sonic Fingerprint available — AI stem analysis complete')).not.toBeInTheDocument();
+
+      // The poll interval tick sees the completed count rise and silently
+      // refetches the track list — this is the fix under test.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(apiMock.playlists.tracks).toHaveBeenCalledTimes(2);
+      expect(screen.getByTitle('Sonic Fingerprint available — AI stem analysis complete')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps Play/Download on the main status line (no separate "Previous mix" line) once the mix is ready', async () => {
     apiMock.boogiemix.listOutputs.mockResolvedValue([{ id: 'out1', file_name: 'mix.flac', duration_sec: 200, file_size_bytes: 1000, format: 'mp3' }]);
     render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" />);
@@ -594,6 +651,9 @@ describe('PlaylistsView integration flows', () => {
   });
 
   it('reports BoogieMix and deep-analysis startup failures', async () => {
+    // Already analyzed, so Start goes straight to createJob instead of the
+    // not-analyzed warning.
+    apiMock.playlists.tracks.mockResolvedValue([{ ...trackA, has_deep_analysis: true }, { ...trackB, has_deep_analysis: true }]);
     apiMock.boogiemix.createJob.mockRejectedValueOnce(new Error('Mix failed'));
     apiMock.boogiemix.queuePlaylistDeepAnalysis.mockRejectedValueOnce(new Error('Deep failed'));
     render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);

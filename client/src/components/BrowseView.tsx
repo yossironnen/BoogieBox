@@ -452,6 +452,37 @@ const ArtistIcon = () => (
     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
   </svg>
 );
+// Icon-only album action buttons (Play/Queue/Vinyl/Edit/Refresh) — see .icon-action-btn in base.css.
+const QueueIcon = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+    <line x1="3" y1="6" x2="15" y2="6" /><line x1="3" y1="12" x2="15" y2="12" /><line x1="3" y1="18" x2="11" y2="18" />
+    <line x1="18" y1="15" x2="18" y2="21" /><line x1="15" y1="18" x2="21" y2="18" />
+  </svg>
+);
+const VinylIcon = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+    <circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3.2" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+  </svg>
+);
+// Same glyph as the player's own shuffle button (Player.tsx ShuffleIcon) for consistency.
+const ShuffleIcon = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="16 3 21 3 21 8" /><line x1="4" y1="20" x2="21" y2="3" />
+    <polyline points="21 16 21 21 16 21" /><line x1="15" y1="15" x2="21" y2="21" /><line x1="4" y1="4" x2="9" y2="9" />
+  </svg>
+);
+const EditIcon = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </svg>
+);
+// Download-cloud, not a plain reload glyph — this pulls fresh metadata from
+// an online provider (Last.fm/Discogs/etc.), it doesn't just re-render the page.
+const RefreshIcon = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M8 17l4 4 4-4" /><path d="M12 12v9" /><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 4 16.3" />
+  </svg>
+);
 
 // ─── Breadcrumb ───────────────────────────────────────────────────────────────
 
@@ -2014,18 +2045,21 @@ function ArtistHeader({
               showValue={true}
             />
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
             <button
-              style={{ ...L.btnPrimary, opacity: radioLoading ? 0.7 : 1 }}
+              className="icon-action-btn icon-action-btn--primary"
+              data-tip={radioLoading ? 'Building Radio…' : 'Play Artist Radio'}
+              aria-label="Play Artist Radio — build a random radio queue from similar style tags"
               onClick={onPlayRadio}
               disabled={radioLoading}
-              title="Build a random radio queue from similar style tags"
             >
-              <PlayIcon /> {radioLoading ? 'Building Radio...' : 'Play Artist Radio'}
+              {radioLoading ? <span className="icon-action-spinner" aria-hidden="true" /> : <PlayIcon size={15} />}
             </button>
-            <button style={L.btnSecondary} onClick={() => setShowEdit(true)}>Edit</button>
-            <button style={L.btnSecondary} onClick={() => setShowMeta(true)}>
-              Refresh Metadata
+            <button className="icon-action-btn" data-tip="Edit" aria-label="Edit artist" onClick={() => setShowEdit(true)}>
+              <EditIcon />
+            </button>
+            <button className="icon-action-btn" data-tip="Refresh Metadata" aria-label="Refresh metadata" onClick={() => setShowMeta(true)}>
+              <RefreshIcon />
             </button>
           </div>
         </div>
@@ -2066,13 +2100,13 @@ function ArtistHeader({
 
 function TrackList({
   tracks, loading, album, lastfmKey,
-  onPlayTrack, onQueueTrack, onPlayAll, onQueueAll, onPlayVinyl, onRefreshed, onArtistClick, onRateAlbum, onRateTrack, adaptiveAccentEnabled,
-  ratingFilter, onRatingFilterChange, trackSortMode, trackSortDir, onTrackSortModeChange, onTrackSortDirChange,
+  onPlayTrack, onQueueTrack, onPlayAll, onShuffle, onQueueAll, onPlayVinyl, onRefreshed, onArtistClick, onRateAlbum, onRateTrack, adaptiveAccentEnabled,
 }: {
   tracks: Track[]; loading: boolean; album: Album; lastfmKey: string;
   onPlayTrack: (t: Track) => void;
   onQueueTrack: (t: Track) => void;
   onPlayAll: () => void;
+  onShuffle: () => void;
   onQueueAll: () => void;
   onPlayVinyl: () => void;
   onRefreshed: (mergedIntoId?: ClientEntityId) => void;
@@ -2080,12 +2114,6 @@ function TrackList({
   onRateAlbum: (rating: number | null) => void | Promise<void>;
   onRateTrack: (track: Track, rating: number | null) => void | Promise<void>;
   adaptiveAccentEnabled: boolean;
-  ratingFilter: RatingFilter;
-  onRatingFilterChange: (filter: RatingFilter) => void;
-  trackSortMode: TrackSortMode;
-  trackSortDir: 'asc' | 'desc';
-  onTrackSortModeChange: (mode: TrackSortMode) => void;
-  onTrackSortDirChange: (dir: 'asc' | 'desc') => void;
 }) {
   const [showMeta, setShowMeta] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
@@ -2104,7 +2132,7 @@ function TrackList({
         {/* Left pane: art + title + buttons */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, flexShrink: 0 }}>
           <AlbumCover albumId={album.id} title={album.title} refreshToken={coverRefreshToken} adaptiveAccentEnabled={adaptiveAccentEnabled} />
-          <div style={{ minWidth: 0 }}>
+          <div style={{ minWidth: 0, maxWidth: 360 }}>
             <div style={L.albumTitle}>{album.title}{!!album.metadata_locked && <LockBadge />}</div>
             <div style={L.albumRatingRow}>
               <StarRating
@@ -2128,56 +2156,25 @@ function TrackList({
                 </>);
               })()}
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '6px 8px', marginTop: 14, justifyContent: 'start' }}>
-              <button style={L.btnPrimary} onClick={onPlayAll}>
-                <PlayIcon /> Play All
+            <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+              <button className="icon-action-btn icon-action-btn--primary" data-tip="Play All" aria-label="Play All" onClick={onPlayAll}>
+                <PlayIcon size={15} />
               </button>
-              <button style={L.btnSecondary} onClick={onQueueAll}>+ Queue All</button>
-              <button style={L.btnSecondary} onClick={onPlayVinyl}>Vinyl Mode</button>
-              <button style={L.btnSecondary} onClick={() => setShowEdit(true)}>Edit</button>
-              <button style={L.btnSecondary} onClick={() => setShowMeta(true)}>Refresh Metadata</button>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 14, flexWrap: 'wrap' }}>
-              <div style={L.toggleWrap} title="Sort album tracks">
-                <span style={L.toggleLabel}>Track Sort</span>
-                <div style={L.togglePill}>
-                  <button
-                    style={{ ...L.toggleOpt, ...(trackSortMode === 'album' ? L.toggleOptActive : {}) }}
-                    onClick={() => onTrackSortModeChange('album')}
-                  >
-                    Album Order
-                  </button>
-                  <button
-                    style={{ ...L.toggleOpt, ...(trackSortMode === 'rating' ? L.toggleOptActive : {}) }}
-                    onClick={() => {
-                      if (trackSortMode === 'rating') onTrackSortDirChange(trackSortDir === 'asc' ? 'desc' : 'asc');
-                      else onTrackSortModeChange('rating');
-                    }}
-                  >
-                    Rating{trackSortMode === 'rating' ? (trackSortDir === 'asc' ? ' ↑' : ' ↓') : ''}
-                  </button>
-                </div>
-              </div>
-              <div style={L.toggleWrap} title="Filter album tracks by rating">
-                <span style={L.toggleLabel}>Track Rating</span>
-                <div style={L.togglePill}>
-                  {([
-                    ['all', 'All'],
-                    ['rated', 'Rated'],
-                    ['unrated', 'Unrated'],
-                    ['gte4', '4+'],
-                    ['gte3', '3+'],
-                  ] as Array<[RatingFilter, string]>).map(([value, label]) => (
-                    <button
-                      key={value}
-                      style={{ ...L.toggleOpt, ...(ratingFilter === value ? L.toggleOptActive : {}) }}
-                      onClick={() => onRatingFilterChange(value)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <button className="icon-action-btn" data-tip="Shuffle Play" aria-label="Shuffle play all tracks" onClick={onShuffle}>
+                <ShuffleIcon />
+              </button>
+              <button className="icon-action-btn" data-tip="Queue All" aria-label="Queue all tracks" onClick={onQueueAll}>
+                <QueueIcon />
+              </button>
+              <button className="icon-action-btn" data-tip="Vinyl Mode" aria-label="Play in Vinyl Mode" onClick={onPlayVinyl}>
+                <VinylIcon />
+              </button>
+              <button className="icon-action-btn" data-tip="Edit" aria-label="Edit album" onClick={() => setShowEdit(true)}>
+                <EditIcon />
+              </button>
+              <button className="icon-action-btn" data-tip="Refresh Metadata" aria-label="Refresh metadata" onClick={() => setShowMeta(true)}>
+                <RefreshIcon />
+              </button>
             </div>
           </div>
         </div>
@@ -2387,9 +2384,6 @@ export default function BrowseView({
   const [sonicFingerprintOnly, setSonicFingerprintOnly] = useState(false);
   const [artistRatingFilter, setArtistRatingFilter] = useState<RatingFilter>('all');
   const [albumRatingFilter, setAlbumRatingFilter] = useState<RatingFilter>('all');
-  const [trackRatingFilter, setTrackRatingFilter] = useState<RatingFilter>('all');
-  const [trackSortMode, setTrackSortMode] = useState<TrackSortMode>('album');
-  const [trackSortDir, setTrackSortDir] = useState<'asc' | 'desc'>('desc');
   const [loading, setLoading] = useState(false);
   // Metadata refresh overrides — updated in-place without touching drill or re-fetching tracks
   const [currentAlbum, setCurrentAlbum] = useState<Album | null>(null);
@@ -2442,10 +2436,6 @@ export default function BrowseView({
   const sortedAppearsOnAlbums = useMemo(
     () => sortAlbums(filteredAppearsOnAlbums, albumSortField, albumSortDir),
     [filteredAppearsOnAlbums, albumSortField, albumSortDir],
-  );
-  const displayedAlbumTracks = useMemo(
-    () => sortTracks(filterTracksByRating(albumTracks, trackRatingFilter), trackSortMode, trackSortDir),
-    [albumTracks, trackRatingFilter, trackSortMode, trackSortDir],
   );
   const artistAlbumSections = useMemo(
     () => groupArtistDiscographyByReleaseType(sortedArtistAlbums),
@@ -2659,7 +2649,6 @@ export default function BrowseView({
   const goAlbum  = useCallback((album: Album, artist: Artist | null = null, mode?: 'artist' | 'album_artist') => {
     setCurrentArtist(null);
     setCurrentAlbum(album);
-    setTrackRatingFilter('all');
     const d: any = { level: 'album', album, artist, _groupBy: mode };
     setDrill(d);
   }, []);
@@ -3456,22 +3445,25 @@ export default function BrowseView({
       )}
       {drill.level === 'album' && (
         <TrackList
-          tracks={displayedAlbumTracks} loading={loading} album={currentAlbum ?? drill.album} lastfmKey={lastfmKey}
-          onPlayTrack={t => playTrack(t, displayedAlbumTracks, { type: 'album', id: drill.album.id })}
+          tracks={albumTracks} loading={loading} album={currentAlbum ?? drill.album} lastfmKey={lastfmKey}
+          onPlayTrack={t => playTrack(t, albumTracks, { type: 'album', id: drill.album.id })}
           onQueueTrack={t => addToQueue(t)}
-          onPlayAll={() => { if (displayedAlbumTracks.length) playTrack(displayedAlbumTracks[0], displayedAlbumTracks, { type: 'album', id: drill.album.id }); }}
-          onQueueAll={() => displayedAlbumTracks.forEach(t => addToQueue(t))}
+          onPlayAll={() => { if (albumTracks.length) playTrack(albumTracks[0], albumTracks, { type: 'album', id: drill.album.id }); }}
+          onShuffle={() => {
+            if (!albumTracks.length) return;
+            const shuffled = [...albumTracks];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
+            playTrack(shuffled[0], shuffled, { type: 'album', id: drill.album.id });
+          }}
+          onQueueAll={() => albumTracks.forEach(t => addToQueue(t))}
           onPlayVinyl={() => playAlbumInVinylMode(albumTracks, drill.album.id)}
           onRefreshed={(mergedIntoId) => { api.album(mergedIntoId ?? drill.album.id).then(setCurrentAlbum).catch(() => {}); }}
           onRateAlbum={(rating) => handleAlbumRatingChange(currentAlbum ?? drill.album, rating)}
           onRateTrack={handleTrackRatingChange}
           adaptiveAccentEnabled={adaptiveAccentEnabled}
-          ratingFilter={trackRatingFilter}
-          onRatingFilterChange={setTrackRatingFilter}
-          trackSortMode={trackSortMode}
-          trackSortDir={trackSortDir}
-          onTrackSortModeChange={setTrackSortMode}
-          onTrackSortDirChange={setTrackSortDir}
           onArtistClick={() => {
             if (drill.artist) { goArtist(drill.artist); return; }
             const name = drill.album.album_artist || drill.album.artist;
@@ -4163,7 +4155,7 @@ const L: Record<string, React.CSSProperties> = {
   },
   artistHeaderLeft: {
     display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0,
-    minWidth: 240,
+    minWidth: 240, maxWidth: 400,
   },
   artistHeaderIcon: {
     width: 64, height: 64, borderRadius: '50%',
@@ -4194,7 +4186,8 @@ const L: Record<string, React.CSSProperties> = {
   // ── Last.fm bio pane ──
   bioWrap: {
     flex: 1, minWidth: 0, borderLeft: '1px solid var(--border)',
-    paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 10,
+    paddingLeft: 20, paddingRight: 4, display: 'flex', flexDirection: 'column', gap: 10,
+    maxHeight: 280, overflowY: 'auto',
   },
   bioNoKey: {
     fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6,

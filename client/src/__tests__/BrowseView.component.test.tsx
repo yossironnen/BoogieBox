@@ -279,9 +279,9 @@ describe('BrowseView component flows', () => {
 
     fireEvent.click(screen.getByText('Album One'));
     await waitFor(() => expect(apiMock.albumTracks).toHaveBeenCalledWith('10'));
-    expect(await screen.findByRole('button', { name: /Play All/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^Play All$/i })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Play All/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Play All$/i }));
     await waitFor(() => expect(playTrack).toHaveBeenCalledTimes(3));
     const lastPlayCall = playTrack.mock.calls[playTrack.mock.calls.length - 1];
     expect(lastPlayCall?.[0]).toEqual(expect.objectContaining({ id: expect.stringMatching(/^(1|2)$/) }));
@@ -291,7 +291,7 @@ describe('BrowseView component flows', () => {
     ]));
     expect(lastPlayCall?.[2]).toEqual({ type: 'album', id: '10' });
 
-    fireEvent.click(screen.getByRole('button', { name: /\+ Queue All/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Queue all tracks/i }));
     expect(addToQueue).toHaveBeenCalledTimes(2);
   }, 15000);
 
@@ -813,7 +813,7 @@ describe('BrowseView component flows', () => {
     expect(screen.getByText('Top Artist')).toBeInTheDocument();
   });
 
-  it('filters and sorts albums and album tracks by rating on desktop', async () => {
+  it('filters and sorts albums by rating on desktop', async () => {
     const playTrack = vi.fn();
     const playAlbumInVinylMode = vi.fn();
     const addToQueue = vi.fn();
@@ -891,16 +891,12 @@ describe('BrowseView component flows', () => {
 
     fireEvent.click(screen.getByText('Top Rated'));
     await waitFor(() => expect(apiMock.albumTracksByGroup).toHaveBeenCalledWith('Top Rated', 'Artist One'));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Rated' }));
+    // Album detail's track list has no rating filter/sort of its own — it
+    // always shows every track in album order.
     await waitFor(() => {
-      expect(screen.queryByText('Unrated Track')).not.toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Rating$/ }));
-    await waitFor(() => {
-      const trackTitles = screen.getAllByText(/^(Top Track|Mid Track)$/).map((node) => node.textContent);
-      expect(trackTitles.slice(0, 2)).toEqual(['Top Track', 'Mid Track']);
+      expect(screen.getByText('Unrated Track')).toBeInTheDocument();
+      expect(screen.getByText('Mid Track')).toBeInTheDocument();
+      expect(screen.getByText('Top Track')).toBeInTheDocument();
     });
   }, 15000);
 

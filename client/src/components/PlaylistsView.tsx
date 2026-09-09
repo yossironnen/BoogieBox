@@ -70,16 +70,20 @@ export function formatBoogieMixFallbackMessage(
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
-const PlayIcon    = () => <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>;
-const PlusIcon    = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
+const PlayIcon    = ({ size = 11 }: { size?: number }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>;
+const PlusIcon    = ({ size = 13 }: { size?: number }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
 const TrashIcon   = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>;
 const EditIcon    = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>;
 const GripIcon    = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="9" cy="7" r="1" fill="currentColor"/><circle cx="15" cy="7" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="17" r="1" fill="currentColor"/><circle cx="15" cy="17" r="1" fill="currentColor"/></svg>;
 const SearchIcon  = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
 const ListIcon    = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>;
 const XIcon       = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
-const QueueIcon   = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
-const MixIcon        = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 3h4v4"/><path d="M3 21l18-18"/><path d="M21 17v4h-4"/><path d="M3 3l6 6"/><path d="M15 15l6 6"/></svg>;
+const QueueIcon   = ({ size = 12 }: { size?: number }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
+// Same crossing-arrows glyph as the album/artist Shuffle Play icon and the
+// player's own shuffle button, for consistency.
+const ShuffleIcon = () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>;
+// Mixer sliders — was a crossing-arrows glyph indistinguishable from Shuffle.
+const MixIcon        = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="12" height="4" rx="1"/><rect x="3" y="16" width="15" height="4" rx="1"/></svg>;
 const NoteIcon        = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M9 18V5l10-1v12"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="16" r="2.5"/></svg>;
 const SpinnerIcon    = () => <svg className="sidebar-scan-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M18.2 17.2A8 8 0 1 1 20 12"/></svg>;
 const CheckIcon      = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>;
@@ -158,49 +162,36 @@ function PlaylistPopup({ title, onClose, children }: {
   );
 }
 
-function PlaylistPlayback({ disabled, onPlay, onQueue }: {
-  disabled: boolean; onPlay: () => void; onQueue: () => void;
+/** Icon-only Play/Shuffle/Queue/Add Tracks row — matches the album/artist
+ * header treatment (transparent .icon-action-btn + hover/focus tooltip). */
+function PlaylistToolbar({
+  disabled, onPlay, onShuffle, onQueue, addTracksOpen, onToggleAddTracks,
+}: {
+  disabled: boolean;
+  onPlay: () => void;
+  onShuffle: () => void;
+  onQueue: () => void;
+  addTracksOpen: boolean;
+  onToggleAddTracks: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-    const dismiss = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', dismiss);
-    return () => document.removeEventListener('pointerdown', dismiss);
-  }, [open]);
   return (
-    <div ref={ref} style={{ position: 'relative', display: 'flex', flexShrink: 0 }}
-      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false); }}
-      onKeyDown={e => {
-        if (e.key === 'Escape') { setOpen(false); trigger.current?.focus(); }
-        if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End')) {
-          e.preventDefault();
-          const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
-          const index = items.indexOf(document.activeElement as HTMLButtonElement);
-          items[e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (index + (e.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length]?.focus();
-        }
-      }}>
-      <button type="button" disabled={disabled} onClick={onPlay}
-        style={{ ...PD.btnPrimary, borderTopRightRadius: 0, borderBottomRightRadius: 0, ...(disabled ? hybridControlStyles.disabled : {}) }}>
-        <PlayIcon /> Play All
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+      <button type="button" className="icon-action-btn icon-action-btn--primary" data-tip="Play All" aria-label="Play All"
+        disabled={disabled} onClick={onPlay}>
+        <PlayIcon size={15} />
       </button>
-      <button ref={trigger} type="button" aria-label="Queue All" aria-haspopup="menu" aria-expanded={open}
-        disabled={disabled} onClick={() => setOpen(value => !value)}
-        onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); } }}
-        style={{ ...PD.btnPrimary, padding: '0 12px', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: '1px solid color-mix(in srgb, var(--on-accent) 30%, transparent)', ...(disabled ? hybridControlStyles.disabled : {}) }}>
-        <span aria-hidden="true">⌄</span>
+      <button type="button" className="icon-action-btn" data-tip="Shuffle Play" aria-label="Shuffle play all tracks"
+        disabled={disabled} onClick={onShuffle}>
+        <ShuffleIcon />
       </button>
-      {open && (
-        <div role="menu" aria-label="Play All" style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 30, minWidth: 180, padding: 6, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
-          <button type="button" role="menuitem" style={PD.menuItem} onClick={() => { setOpen(false); trigger.current?.focus(); onPlay(); }}><PlayIcon /> Play All</button>
-          <button type="button" role="menuitem" style={PD.menuItem} onClick={() => { setOpen(false); trigger.current?.focus(); onQueue(); }}><QueueIcon /> Queue All</button>
-        </div>
-      )}
+      <button type="button" className="icon-action-btn" data-tip="Queue All" aria-label="Queue all tracks"
+        disabled={disabled} onClick={onQueue}>
+        <QueueIcon size={17} />
+      </button>
+      <button type="button" className={addTracksOpen ? 'icon-action-btn icon-action-btn--primary' : 'icon-action-btn'}
+        data-tip="Add Tracks" aria-label="Add tracks" onClick={onToggleAddTracks}>
+        <PlusIcon size={17} />
+      </button>
     </div>
   );
 }
@@ -756,6 +747,13 @@ function PlaylistDetail({
   const [deepQueuedCount, setDeepQueuedCount] = useState(0);
   const [deepError, setDeepError] = useState('');
   const [statusHover, setStatusHover] = useState(false);
+  // Shown instead of the mix config in the popup when Start is clicked on a
+  // playlist with no deep-analyzed tracks at all — offers to analyze first.
+  const [showAnalyzeWarning, setShowAnalyzeWarning] = useState(false);
+  // Tracks the last-seen completed count (done + skipped) so the poll below
+  // only re-fetches tracks when a track's deep-analysis status actually
+  // changed, instead of on every 2s tick.
+  const deepCompletedRef = useRef(0);
 
   const loadTracks = useCallback(async () => {
     setLoading(true);
@@ -860,6 +858,15 @@ function PlaylistDetail({
   };
 
   const playAll   = () => { if (tracks.length) playTrack(tracks[0], tracks, { type: 'playlist', id: playlist.id, rememberProgress }); };
+  const shufflePlay = () => {
+    if (!tracks.length) return;
+    const shuffled = [...tracks];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    playTrack(shuffled[0], shuffled, { type: 'playlist', id: playlist.id, rememberProgress });
+  };
   const queueAll  = () => tracks.forEach(t => addToQueue(t));
   const totalDur  = tracks.reduce((a, t) => a + (t.duration ?? 0), 0);
   const collageAlbumIds = buildPlaylistCollageAlbumIds(tracks);
@@ -868,6 +875,8 @@ function PlaylistDetail({
     mixJob,
     mixQuality === 'high_quality' ? deepStatus : null,
   );
+  const analyzedTrackCount = tracks.filter(t => t.has_deep_analysis).length;
+  const playlistNotAnalyzed = tracks.length > 0 && analyzedTrackCount === 0;
   const usedDeepAnalysis = Boolean(mixJob?.used_deep_analysis);
   const planSummary = mixJob?.plan_summary;
   const energyCurvePhases = planSummary?.energyCurvePhases ?? [];
@@ -940,6 +949,7 @@ function PlaylistDetail({
     setDeepError('');
     setDeepRunning(true);
     setDeepProgress(null);
+    deepCompletedRef.current = 0;
     try {
       const result = await api.boogiemix.queuePlaylistDeepAnalysis(playlist.id);
       setDeepQueuedCount(result.queued);
@@ -959,6 +969,14 @@ function PlaylistDetail({
         const prog = await api.boogiemix!.playlistDeepAnalysisProgress(playlist.id);
         if (stopped) return;
         setDeepProgress(prog);
+        // A track finished (or was skipped) since the last tick — refresh the
+        // track list so its Sonic Fingerprint icon shows up without the user
+        // having to leave and reopen the playlist.
+        const completed = prog.done + prog.skipped;
+        if (completed > deepCompletedRef.current) {
+          deepCompletedRef.current = completed;
+          api.playlists.tracks(playlist.id).then(fresh => { if (!stopped) setTracks(fresh); }).catch(() => {});
+        }
         if (prog.pending === 0 && prog.running === 0) {
           clearInterval(timer);
           setDeepRunning(false);
@@ -996,19 +1014,51 @@ function PlaylistDetail({
         </div>
 
         <div style={{ ...PD.actionGroup, flexBasis: '100%', minWidth: 0 }}>
-          <PlaylistPlayback disabled={!tracks.length} onPlay={playAll} onQueue={queueAll} />
-          <button type="button" style={showAdd ? PD.btnTonal : PD.btnSecondary} onClick={() => setShowAdd(value => !value)}>
-            <PlusIcon /> Add Tracks
-          </button>
+          <PlaylistToolbar
+            disabled={!tracks.length}
+            onPlay={playAll}
+            onShuffle={shufflePlay}
+            onQueue={queueAll}
+            addTracksOpen={showAdd}
+            onToggleAddTracks={() => setShowAdd(value => !value)}
+          />
           <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', alignItems: 'center' }}>
-            <button type="button" aria-haspopup="dialog" style={PD.btnSecondary} onClick={() => setShowMix(true)}>
+            <button type="button" aria-haspopup="dialog" style={PD.btnSecondary} onClick={() => { setShowAnalyzeWarning(false); setShowMix(true); }}>
               <MixIcon /> BoogieMix (Experimental)
             </button>
             <PlaylistKebab onClick={onOptions} />
           </div>
         </div>
       </div>
-      {showMix && (
+      {showMix && showAnalyzeWarning && (
+        <PlaylistPopup title="BoogieMix (Experimental)" onClose={() => { setShowAnalyzeWarning(false); setShowMix(false); }}>
+          <div style={{ fontSize: 14, color: 'var(--warning)', fontWeight: 650 }}>
+            This playlist hasn&rsquo;t been deep-analyzed yet.
+          </div>
+          <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
+            BoogieMix plans its transitions from each track&rsquo;s Sonic Fingerprint (AI stem analysis).
+            Without it, this mix will fall back to standard analysis and may blend less precisely.
+            Run deep analysis first, or continue anyway.
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <button
+              type="button"
+              style={PD.btnPrimary}
+              onClick={async () => { setShowAnalyzeWarning(false); await runDeepAnalysis(); setShowMix(false); }}
+            >
+              ⚡ Run Deep Analysis First
+            </button>
+            <button
+              type="button"
+              style={PD.btnSecondary}
+              onClick={async () => { setShowAnalyzeWarning(false); await startBoogieMix(); setShowMix(false); }}
+            >
+              Continue Without Analysis
+            </button>
+          </div>
+        </PlaylistPopup>
+      )}
+      {showMix && !showAnalyzeWarning && (
         <PlaylistPopup title="BoogieMix (Experimental)" onClose={() => setShowMix(false)}>
           <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>BoogieMix is experimental and may produce inconsistent results.</div>
           {deepFallbackMessage && <div style={{ fontSize: 14, color: 'var(--warning)' }}>{deepFallbackMessage}</div>}
@@ -1063,7 +1113,11 @@ function PlaylistDetail({
                 ? hybridControlStyles.disabled
                 : {}),
             }}
-            onClick={async () => { await startBoogieMix(); setShowMix(false); }}
+            onClick={async () => {
+              if (playlistNotAnalyzed) { setShowAnalyzeWarning(true); return; }
+              await startBoogieMix();
+              setShowMix(false);
+            }}
             disabled={!api.boogiemix || tracks.length < 2 || mixActive || mixStarting}
             title="BoogieMix is experimental"
           >
