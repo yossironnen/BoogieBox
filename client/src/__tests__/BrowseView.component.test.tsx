@@ -481,9 +481,6 @@ describe('BrowseView component flows', () => {
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
     await waitFor(() => expect(apiMock.albums).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Browse refine options' })).getByRole('button', { name: 'Grid' }));
-
     fireEvent.click(screen.getByTitle('Album One'));
     await waitFor(() => expect(apiMock.albumTracksByGroup).toHaveBeenCalledWith('Album One', 'Artist One'));
 
@@ -513,9 +510,6 @@ describe('BrowseView component flows', () => {
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
     await waitFor(() => expect(apiMock.albums).toHaveBeenCalled());
-
-    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Browse refine options' })).getByRole('button', { name: 'Grid' }));
 
     const scrollIntoViewMock = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -549,9 +543,6 @@ describe('BrowseView component flows', () => {
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
     await waitFor(() => expect(apiMock.albums).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Browse refine options' })).getByRole('button', { name: 'Grid' }));
-
     expect(screen.getByRole('img', { name: 'Album One album rating' })).toBeInTheDocument();
     expect(screen.getByText('4.5')).toBeInTheDocument();
 
@@ -614,14 +605,12 @@ describe('BrowseView component flows', () => {
     await waitFor(() => expect(apiMock.albums).toHaveBeenCalled());
     expect(screen.getByTitle('Album One')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
-    const refineDialog = screen.getByRole('dialog', { name: 'Browse refine options' });
-    fireEvent.click(within(refineDialog).getByRole('button', { name: 'Table' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to table view' }));
 
     await waitFor(() => expect(screen.queryByTitle('Album One')).not.toBeInTheDocument());
     expect(screen.getByText('View: Table')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clear refine filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all refine filters' }));
 
     await waitFor(() => expect(screen.getByTitle('Album One')).toBeInTheDocument());
     expect(screen.queryByText('View: Table')).not.toBeInTheDocument();
@@ -657,25 +646,26 @@ describe('BrowseView component flows', () => {
     await screen.findByTitle('Artist One');
 
     fireEvent.click(screen.getByTitle(/Sonic Fingerprint/));
-    fireEvent.click(screen.getByRole('button', { name: 'Library filter menu' }));
-    const libraryMenu = screen.getByRole('menu', { name: 'Library filter options' });
-    for (const checkbox of within(libraryMenu).getAllByRole('checkbox')) fireEvent.click(checkbox);
-    expect(screen.getByText('2 selected')).toBeInTheDocument();
-    fireEvent.click(within(libraryMenu).getByRole('button', { name: 'Clear' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to table view' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
     let dialog = screen.getByRole('dialog', { name: 'Browse refine options' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Table' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Library filter menu' }));
+    const libraryMenu = within(dialog).getByRole('menu', { name: 'Library filter options' });
+    for (const checkbox of within(libraryMenu).getAllByRole('checkbox')) fireEvent.click(checkbox);
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+    fireEvent.click(within(libraryMenu).getByRole('button', { name: 'Clear library selection' }));
+
     fireEvent.click(within(dialog).getByRole('button', { name: 'Name ↑' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Unrated' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Genre filter menu' }));
     const genreMenu = screen.getByRole('menu', { name: 'Genre filter options' });
     fireEvent.click(within(genreMenu).getAllByRole('checkbox')[0]);
     fireEvent.click(within(genreMenu).getAllByRole('checkbox')[1]);
-    fireEvent.click(within(genreMenu).getByRole('button', { name: 'Clear' }));
+    fireEvent.click(within(genreMenu).getByRole('button', { name: 'Clear genre selection' }));
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Browse refine options' })).not.toBeInTheDocument();
-    expect(screen.getAllByText('✦ Sonic Fingerprint')).toHaveLength(2);
+    expect(screen.getByText('✦ Sonic Fingerprint')).toBeInTheDocument();
     expect(screen.getByText('Rating: Unrated')).toBeInTheDocument();
     expect(screen.getByText('Sort: Name ↓')).toBeInTheDocument();
     expect(screen.getByText('View: Table')).toBeInTheDocument();
@@ -694,7 +684,7 @@ describe('BrowseView component flows', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '3+' }));
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole('dialog', { name: 'Browse refine options' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Clear refine filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all refine filters' }));
     await waitFor(() => expect(screen.getByTitle('Album One')).toBeInTheDocument());
   });
 
@@ -1006,6 +996,7 @@ describe('BrowseView component flows', () => {
     );
 
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalledWith(expect.objectContaining({ library_ids: ['2'] })));
+    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
     expect(screen.getByRole('button', { name: 'Library filter locked to sidebar selection' })).toBeDisabled();
     expect(screen.getByText('Sidebar scoped')).toBeInTheDocument();
 
@@ -1049,6 +1040,7 @@ describe('BrowseView component flows', () => {
 
     expect(screen.getByText('Browse Music')).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
     fireEvent.click(screen.getByRole('button', { name: 'Library filter menu' }));
     const menu = screen.getByRole('menu', { name: 'Library filter options' });
     expect(within(menu).getByText('Main Music')).toBeInTheDocument();
@@ -1138,7 +1130,7 @@ describe('BrowseView component flows', () => {
       <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
     );
     await screen.findByText('Artist One');
-    expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Select artists to merge' })).not.toBeInTheDocument();
   });
 
   it('lets a permitted user select 2 artists and merge them', async () => {
@@ -1153,7 +1145,7 @@ describe('BrowseView component flows', () => {
     );
     await screen.findByText('Madonna');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select artists to merge' }));
     fireEvent.click(screen.getByText('Madonna'));
     fireEvent.click(screen.getByText('Madonna Ciccone'));
     expect(screen.getByText('2 artists selected')).toBeInTheDocument();
@@ -1193,10 +1185,10 @@ describe('BrowseView component flows', () => {
       <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
     );
     await screen.findByText('Artist One');
-    expect(screen.getByRole('button', { name: 'Select' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select artists to merge' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /^Albums/ }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Select artists to merge' })).not.toBeInTheDocument());
   });
 
   it('disables selecting the Various Artists compilation entry', async () => {
@@ -1209,7 +1201,7 @@ describe('BrowseView component flows', () => {
       <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
     );
     await screen.findByText('Various Artists');
-    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select artists to merge' }));
 
     fireEvent.click(screen.getByText('Various Artists'));
     expect(screen.queryByText('1 artist selected')).not.toBeInTheDocument();

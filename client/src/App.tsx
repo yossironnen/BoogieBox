@@ -430,6 +430,33 @@ function AlbumRowIcon() {
   );
 }
 
+function SearchArtThumb({ src, alt, rounded, size = 32, fallback }: {
+  src: string | null;
+  alt: string;
+  rounded?: boolean;
+  size?: number;
+  fallback: React.ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return (
+      <span style={{ ...S.quickIcon, width: size, height: size, justifyContent: 'center', background: 'color-mix(in srgb, var(--text) 6%, transparent)', borderRadius: rounded ? '50%' : 6, flexShrink: 0 }}>
+        {fallback}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      width={size}
+      height={size}
+      style={{ width: size, height: size, borderRadius: rounded ? '50%' : 6, objectFit: 'cover', flexShrink: 0 }}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function OpenIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -703,25 +730,34 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
         <button
           type="button"
           style={{
-            ...S.select,
-            ...hybridSearchStyles.select,
+            padding: 0,
+            width: 34,
+            height: 34,
+            flexShrink: 0,
+            alignSelf: 'center',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(255,255,255,0.04)',
+            color: 'var(--text)',
+            border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+            borderRadius: 999,
             cursor: 'pointer',
+            fontSize: 16,
             fontFamily: 'inherit',
             fontWeight: 700,
-            whiteSpace: 'nowrap',
-            border: sonicFingerprintOnly
-              ? '1px solid color-mix(in srgb, var(--accent) 60%, var(--border))'
-              : undefined,
-            background: sonicFingerprintOnly
-              ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))'
-              : undefined,
-            color: sonicFingerprintOnly ? 'var(--accent)' : undefined,
+            ...(sonicFingerprintOnly ? {
+              color: 'var(--accent)',
+              background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--accent) 50%, var(--border))',
+            } : {}),
           }}
           onClick={() => setSonicFingerprintOnly(v => !v)}
           title="Show only tracks with Sonic Fingerprint (AI stem analysis)"
+          aria-label="Filter by Sonic Fingerprint"
           aria-pressed={sonicFingerprintOnly}
         >
-          ✦ Sonic Fingerprint
+          ✦
         </button>
       </div>
 
@@ -764,7 +800,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
                     }
                   }}
                 >
-                  <span style={S.quickIcon}><ArtistRowIcon /></span>
+                  <SearchArtThumb src={api.artistPhotoUrl(artist.id, 300)} alt="" rounded fallback={<ArtistRowIcon />} />
                   <span style={S.quickName}>{artist.name}</span>
                   <span style={S.quickMeta}>
                     {artist.album_count} {artist.album_count === 1 ? 'album' : 'albums'} · {artist.track_count} tracks
@@ -796,7 +832,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
                     }
                   }}
                 >
-                  <span style={S.quickIcon}><AlbumRowIcon /></span>
+                  <SearchArtThumb src={api.albumArtUrl(album.id, 300)} alt="" fallback={<AlbumRowIcon />} />
                   <span style={S.quickName}>{album.title}</span>
                   <span style={S.quickMeta}>
                     {[album.album_artist || album.artist, album.year].filter(Boolean).join(' · ')}
@@ -839,6 +875,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
       <>
       <div style={{ ...S.tableHeader, ...hybridSearchStyles.tableHeader }}>
         <div style={{ ...S.thCell, width: 32, flexShrink: 0 }} />
+        <div style={{ ...S.thCell, width: 32, flexShrink: 0 }} />
         {cols.map(col => (
           <div key={col.field} style={{ ...S.thCell, ...col.style }} onClick={() => toggleSort(col.field)}>
             {col.label} <SortIcon field={col.field} />
@@ -873,6 +910,14 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
                 onClick={e => { e.stopPropagation(); playTrack(track, displayedTracks); }}>
                 <Icon.Play />
               </button>
+            </div>
+            <div style={{ ...S.tdCell, width: 32, flexShrink: 0 }}>
+              <SearchArtThumb
+                src={track.album_id != null ? api.albumArtUrl(track.album_id, 300) : null}
+                alt=""
+                size={28}
+                fallback={<Icon.Music />}
+              />
             </div>
             <div style={{ ...S.tdCell, flex: 3 }}><div style={S.trackTitle}>{track.title || track.file_name}</div></div>
             <div style={{ ...S.tdCell, flex: 2, color: 'var(--text-muted)' }}>{track.artist || '–'}</div>

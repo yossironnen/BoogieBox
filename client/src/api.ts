@@ -352,6 +352,10 @@ export const api = {
   setArtistRating: (id: ApiEntityId, rating: number | null) =>
     patch<{ ok: boolean; rating: number | null }>(`/artists/${id}/rating`, { rating }),
   refreshArtistPhoto: (id: ApiEntityId) => fetch(`${BASE}/api/artists/${id}/photo?refresh=1`),
+  artistPhotoCandidates: (id: ApiEntityId) =>
+    get<{ candidates: { provider: string; url: string }[] }>(`/artists/${id}/photo/candidates`),
+  selectArtistPhoto: (id: ApiEntityId, url: string, provider?: string) =>
+    post<{ ok: boolean }>(`/artists/${id}/photo/select`, { url, provider }),
   // Artist consolidation (merge/unmerge duplicate artists) — see
   // wip/artist-consolidation-implementation-plan.md.
   mergeArtists: (artistIds: ApiEntityId[], masterName: string, masterArtistId?: ApiEntityId) =>

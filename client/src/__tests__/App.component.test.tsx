@@ -33,6 +33,8 @@ const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi
     setTrackRating: vi.fn(),
     artists: vi.fn(),
     albums: vi.fn(),
+    albumArtUrl: vi.fn(() => ''),
+    artistPhotoUrl: vi.fn(() => ''),
     debugTestPath: vi.fn(),
     auth: {
       me: vi.fn(),

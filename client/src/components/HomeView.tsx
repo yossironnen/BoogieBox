@@ -1457,13 +1457,19 @@ function QuickPlaylistsWidget({
 
   const createBtn = (
     <button
-      style={{ ...H.createPlaylistBtn, opacity: creating ? 0.7 : 1 }}
+      style={{
+        ...H.createPlaylistBtn,
+        width: 34, height: 34, padding: 0,
+        opacity: creating ? 0.7 : 1,
+      }}
       onClick={createPlaylist}
       disabled={creating}
       aria-label="Create playlist from home"
       title="Create playlist"
     >
-      + New Playlist
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+      </svg>
     </button>
   );
 

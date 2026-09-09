@@ -1023,8 +1023,15 @@ function PlaylistDetail({
             onToggleAddTracks={() => setShowAdd(value => !value)}
           />
           <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', alignItems: 'center' }}>
-            <button type="button" aria-haspopup="dialog" style={PD.btnSecondary} onClick={() => { setShowAnalyzeWarning(false); setShowMix(true); }}>
-              <MixIcon /> BoogieMix (Experimental)
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              style={PD.iconBtn}
+              onClick={() => { setShowAnalyzeWarning(false); setShowMix(true); }}
+              title="BoogieMix (Experimental) — AI-planned transitions for this playlist"
+              aria-label="BoogieMix (Experimental)"
+            >
+              <MixIcon />
             </button>
             <PlaylistKebab onClick={onOptions} />
           </div>

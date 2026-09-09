@@ -11,6 +11,7 @@ import MetadataRefreshModal from './MetadataRefreshModal';
 import MetadataEditModal from './MetadataEditModal';
 import MergeArtistsModal from './MergeArtistsModal';
 import UnmergeModal from './UnmergeModal';
+import ArtistPhotoPicker from './ArtistPhotoPicker';
 import ConfirmModal from './ConfirmModal';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
 import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
@@ -447,8 +448,8 @@ const AlbumIcon = () => (
     <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="3" />
   </svg>
 );
-const ArtistIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+const ArtistIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
   </svg>
 );
@@ -481,6 +482,39 @@ const EditIcon = () => (
 const RefreshIcon = () => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M8 17l4 4 4-4" /><path d="M12 12v9" /><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 4 16.3" />
+  </svg>
+);
+
+const FilterIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M4 6h16M7 12h10M10 18h4" />
+  </svg>
+);
+const SelectModeIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <rect x="3" y="5" width="6" height="6" rx="1" /><path d="M11 8h10" />
+    <rect x="3" y="14" width="6" height="6" rx="1" /><path d="M11 17h10" />
+  </svg>
+);
+const GridViewIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+    <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+  </svg>
+);
+const TableViewIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
+  </svg>
+);
+const XIcon = ({ size = 13 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+const TrashIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" />
   </svg>
 );
 
@@ -931,9 +965,10 @@ export function AlbumList({
         <button
           style={L.playBtn}
           title="Play album"
+          aria-label={`Play ${album.title}`}
           onClick={e => { e.stopPropagation(); onPlay(album); }}
         >
-          <PlayIcon /> Play
+          <PlayIcon />
         </button>
         <KebabButton
           target={{ kind: 'album', albumId: album.id, title: album.title }}
@@ -1026,7 +1061,7 @@ interface LastFmTopTrack {
   url?: string;
 }
 
-type ArtistPhotoPhase = 'loading' | 'local' | 'deezer' | 'spotify' | 'none';
+type ArtistPhotoPhase = 'loading' | 'local' | 'none';
 
 function normalizeTrackText(value: string | null | undefined): string {
   return (value ?? '')
@@ -1243,26 +1278,32 @@ function LastFmTopTracks({
   );
 }
 
-function ArtistPhoto({ artistId, artist, refreshToken = 0, adaptiveAccentEnabled = false }: {
+function ArtistPhoto({ artistId, artist, refreshToken = 0, adaptiveAccentEnabled = false, onChangePhoto }: {
   artistId: ClientEntityId;
   artist: string;
   refreshToken?: number;
   adaptiveAccentEnabled?: boolean;
+  onChangePhoto?: () => void;
 }) {
   const [phase, setPhase] = useState<ArtistPhotoPhase>('loading');
   const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null);
+  const [hovered, setHovered] = useState(false);
   const imgSrc = api.artistPhotoUrl(artistId, 800, refreshToken || undefined);
   useAdaptiveAccentEnabled(phase !== 'none' && phase !== 'loading' ? imgSrc : null, adaptiveAccentEnabled, imgEl);
 
   return (
-    <div style={{ ...L.artistHeaderIcon, overflow: 'hidden', position: 'relative', padding: 0 }}>
+    <div
+      style={{ ...L.artistHeaderIcon, overflow: 'hidden', position: 'relative', padding: 0 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <ArtImage
         src={imgSrc}
         alt={artist}
         eager={true}
         fetchPriority="high"
         imgStyle={{ width: '100%', height: '100%', objectFit: 'cover' }}
-        fallback={<div style={L.artistHeaderPlaceholder}><ArtistIcon /></div>}
+        fallback={<div style={L.artistHeaderPlaceholder}><ArtistIcon size={56} /></div>}
         onImageReady={setImgEl}
         onLoadStateChange={(state) => {
           if (state === 'loaded') setPhase('local');
@@ -1270,10 +1311,20 @@ function ArtistPhoto({ artistId, artist, refreshToken = 0, adaptiveAccentEnabled
           else setPhase('loading');
         }}
       />
-      {phase !== 'none' && phase !== 'loading' && (
-        <div style={L.artistPhotoBadge}>
-          {phase === 'local' ? 'Local' : phase === 'deezer' ? 'Deezer' : 'Spotify'}
-        </div>
+      {onChangePhoto && hovered && (
+        <button
+          type="button"
+          onClick={onChangePhoto}
+          style={L.artistPhotoChangeOverlay}
+          aria-label="Change artist photo"
+          title="Change artist photo"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+          Change photo
+        </button>
       )}
     </div>
   );
@@ -1953,6 +2004,7 @@ function ArtistHeader({
 }) {
   const [showMeta, setShowMeta] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
+  const [showPhotoPicker, setShowPhotoPicker] = useState(false);
   const [photoToken, setPhotoToken] = useState(0);
   const [mergeInfo, setMergeInfo] = useState<ArtistMergeInfo | null>(null);
   const [showUnmerge, setShowUnmerge] = useState(false);
@@ -1984,7 +2036,13 @@ function ArtistHeader({
   return (
     <div style={L.artistHeader}>
       <div style={L.artistHeaderLeft}>
-        <ArtistPhoto artistId={artist.id} artist={artist.name} refreshToken={photoToken} adaptiveAccentEnabled={adaptiveAccentEnabled} />
+        <ArtistPhoto
+          artistId={artist.id}
+          artist={artist.name}
+          refreshToken={photoToken}
+          adaptiveAccentEnabled={adaptiveAccentEnabled}
+          onChangePhoto={canEditMetadata ? () => setShowPhotoPicker(true) : undefined}
+        />
         <div>
           <div style={L.albumTitle}>
             {artist.name}
@@ -2090,6 +2148,14 @@ function ArtistHeader({
           members={mergeInfo.members}
           onClose={() => setShowUnmerge(false)}
           onUnmerged={() => { setShowUnmerge(false); onRefreshed(); }}
+        />
+      )}
+      {showPhotoPicker && (
+        <ArtistPhotoPicker
+          artistId={artist.id}
+          artistName={artist.name}
+          onClose={() => setShowPhotoPicker(false)}
+          onSelected={() => { setPhotoToken(t => t + 1); onRefreshed(); }}
         />
       )}
     </div>
@@ -2916,8 +2982,8 @@ export default function BrowseView({
           <div style={L.genrePopoverHead}>
             <span style={L.genrePopoverTitle}>Select genres</span>
             {selectedGenres.length > 0 && (
-              <button style={L.clearFilterBtn} onClick={clearGenreFilter}>
-                Clear
+              <button style={L.clearIconBtn} onClick={clearGenreFilter} title="Clear genre selection" aria-label="Clear genre selection">
+                <XIcon />
               </button>
             )}
           </div>
@@ -2970,8 +3036,8 @@ export default function BrowseView({
           <div style={L.genrePopoverHead}>
             <span style={L.genrePopoverTitle}>Select libraries</span>
             {selectedLibraryIds.length > 0 && (
-              <button style={L.clearFilterBtn} onClick={clearLibraryFilter}>
-                Clear
+              <button style={L.clearIconBtn} onClick={clearLibraryFilter} title="Clear library selection" aria-label="Clear library selection">
+                <XIcon />
               </button>
             )}
           </div>
@@ -3064,20 +3130,25 @@ export default function BrowseView({
     </div>
   );
 
+  const libraryRefineActive = !isLibraryScopeForced && selectedLibraryIds.length > 0;
   const artistRefineActive = artistRatingFilter !== 'all'
     || artistSortDir !== 'asc'
     || selectedGenres.length > 0
-    || rootViewMode !== 'grid';
+    || libraryRefineActive;
   const albumRefineActive = albumRatingFilter !== 'all'
     || albumSortField !== 'title'
     || albumSortDir !== 'asc'
     || selectedGenres.length > 0
-    || rootViewMode !== 'grid'
+    || libraryRefineActive
     || groupBy !== 'album_artist';
   const refineActive = tab === 'artists' ? artistRefineActive : albumRefineActive;
+  const libraryRefineChip = libraryRefineActive
+    ? [{ key: 'library', label: `Library: ${librarySummary}`, onClear: clearLibraryFilter }]
+    : [];
   const activeRefinementChips = tab === 'artists'
     ? [
       ...(sonicFingerprintOnly ? [{ key: 'sfp', label: '✦ Sonic Fingerprint', onClear: () => setSonicFingerprintOnly(false) }] : []),
+      ...libraryRefineChip,
       ...(selectedGenres.length > 0 ? [{ key: 'genre', label: `Genre: ${selectedGenres.length} selected`, onClear: clearGenreFilter }] : []),
       ...(artistRatingFilter !== 'all' ? [{ key: 'rating', label: `Rating: ${getRatingFilterLabel(artistRatingFilter)}`, onClear: () => setArtistRatingFilter('all') }] : []),
       ...(artistSortDir !== 'asc' ? [{ key: 'sort', label: 'Sort: Name ↓', onClear: () => setArtistSortDir('asc') }] : []),
@@ -3085,23 +3156,34 @@ export default function BrowseView({
     ]
     : [
       ...(sonicFingerprintOnly ? [{ key: 'sfp', label: '✦ Sonic Fingerprint', onClear: () => setSonicFingerprintOnly(false) }] : []),
+      ...libraryRefineChip,
       ...(selectedGenres.length > 0 ? [{ key: 'genre', label: `Genre: ${selectedGenres.length} selected`, onClear: clearGenreFilter }] : []),
       ...(albumRatingFilter !== 'all' ? [{ key: 'rating', label: `Rating: ${getRatingFilterLabel(albumRatingFilter)}`, onClear: () => setAlbumRatingFilter('all') }] : []),
       ...((albumSortField !== 'title' || albumSortDir !== 'asc') ? [{ key: 'sort', label: `Sort: ${getAlbumSortLabel(albumSortField, albumSortDir)}`, onClear: () => { setAlbumSortField('title'); setAlbumSortDir('asc'); } }] : []),
       ...(groupBy !== 'album_artist' ? [{ key: 'groupBy', label: `Group: ${groupBy === 'artist' ? 'Artist' : 'Album Artist'}`, onClear: () => setGroupBy('album_artist') }] : []),
       ...(rootViewMode !== 'grid' ? [{ key: 'view', label: 'View: Table', onClear: () => setPersistedRootViewMode('grid') }] : []),
     ];
+  // Badge count on the Filters icon: everything the Refine dialog controls,
+  // excluding Sonic Fingerprint (its own icon) and View (its own toggle in the bar).
+  const refineBadgeCount = activeRefinementChips.filter((chip) => chip.key !== 'sfp' && chip.key !== 'view').length;
 
   const refineControl = (
     <div ref={refinePanelRef} style={{ ...L.toggleWrap, ...L.refineWrap }} title="Browse refinements">
       <button
-        style={{ ...L.compactButton, ...(refineActive || refineOpen ? L.compactButtonActive : {}) }}
+        style={{
+          ...L.compactButton,
+          ...L.iconOnlyButton,
+          position: 'relative',
+          ...(refineActive || refineOpen ? L.compactButtonActive : {}),
+        }}
         onClick={() => setRefineOpen((open) => !open)}
+        title={refineBadgeCount > 0 ? `Filters — ${refineBadgeCount} active` : 'Filters'}
         aria-label="Browse refine options"
         aria-haspopup="dialog"
         aria-expanded={refineOpen}
       >
-        Refine
+        <FilterIcon />
+        {refineBadgeCount > 0 && <span style={L.refineBadge}>{refineBadgeCount}</span>}
       </button>
       {refineOpen && (
         <div style={L.refinePopover} role="dialog" aria-label="Browse refine options">
@@ -3115,27 +3197,10 @@ export default function BrowseView({
             </button>
           </div>
           <div style={L.refinePopoverBody}>
-            <div style={L.refineSection}>
-              <div style={L.refineSectionTitle}>Layout</div>
-              <div style={L.refineSectionBody}>
-                <div style={{ ...L.toggleWrap, padding: 0 }} title={`Switch ${tab} browse layout`}>
-                  <span style={L.toggleLabel}>View</span>
-                  <div style={L.togglePill}>
-                    <button
-                      style={{ ...L.toggleOpt, ...(rootViewMode === 'table' ? L.toggleOptActive : {}) }}
-                      onClick={() => setPersistedRootViewMode('table')}
-                    >
-                      Table
-                    </button>
-                    <button
-                      style={{ ...L.toggleOpt, ...(rootViewMode === 'grid' ? L.toggleOptActive : {}) }}
-                      onClick={() => setPersistedRootViewMode('grid')}
-                    >
-                      Grid
-                    </button>
-                  </div>
-                </div>
-                {tab === 'albums' && (
+            {tab === 'albums' && (
+              <div style={L.refineSection}>
+                <div style={L.refineSectionTitle}>Layout</div>
+                <div style={L.refineSectionBody}>
                   <div style={{ ...L.toggleWrap, padding: 0 }} title="Choose how albums are grouped">
                     <span style={L.toggleLabel}>Group by</span>
                     <div style={L.togglePill}>
@@ -3153,9 +3218,9 @@ export default function BrowseView({
                       </button>
                     </div>
                   </div>
-                )}
+                </div>
               </div>
-            </div>
+            )}
             <div style={L.refineSection}>
               <div style={L.refineSectionTitle}>Sorting</div>
               <div style={L.refineSectionBody}>
@@ -3179,6 +3244,7 @@ export default function BrowseView({
               <div style={L.refineSectionBody}>
                 {tab === 'artists' ? artistRatingFilterControl : albumRatingFilterControl}
                 {genreFilterControl}
+                {libraryFilterControl}
               </div>
             </div>
           </div>
@@ -3247,6 +3313,8 @@ export default function BrowseView({
               <button
                 style={{
                   ...L.compactButton,
+                  ...L.iconOnlyButton,
+                  fontSize: 16,
                   ...(sonicFingerprintOnly ? {
                     ...L.compactButtonActive,
                     color: 'var(--accent)',
@@ -3255,14 +3323,17 @@ export default function BrowseView({
                 }}
                 onClick={() => setSonicFingerprintOnly(v => !v)}
                 title="Show only artists/albums with Sonic Fingerprint (AI stem analysis)"
+                aria-label="Filter by Sonic Fingerprint"
                 aria-pressed={sonicFingerprintOnly}
               >
-                ✦ Sonic Fingerprint
+                ✦
               </button>
               {tab === 'artists' && canEditMetadata && (
                 <button
                   style={{
                     ...L.compactButton,
+                    ...L.iconOnlyButton,
+                    position: 'relative',
                     ...(artistSelectMode ? {
                       ...L.compactButtonActive,
                       color: 'var(--accent)',
@@ -3270,14 +3341,31 @@ export default function BrowseView({
                     } : {}),
                   }}
                   onClick={() => (artistSelectMode ? exitArtistSelectMode() : setArtistSelectMode(true))}
-                  title="Select artists to merge duplicate entries"
+                  title={artistSelectMode ? `Select artists to merge — ${selectedArtistIds.size} selected` : 'Select artists to merge duplicate entries'}
+                  aria-label="Select artists to merge"
                   aria-pressed={artistSelectMode}
                 >
-                  {artistSelectMode ? `Select · ${selectedArtistIds.size} selected` : 'Select'}
+                  <SelectModeIcon />
+                  {artistSelectMode && selectedArtistIds.size > 0 && (
+                    <span style={L.refineBadge}>{selectedArtistIds.size}</span>
+                  )}
                 </button>
               )}
+              <span style={L.toolbarDivider} />
+              <button
+                style={{
+                  ...L.compactButton,
+                  ...L.iconOnlyButton,
+                  ...(rootViewMode === 'table' ? L.compactButtonActive : {}),
+                }}
+                onClick={() => setPersistedRootViewMode(rootViewMode === 'grid' ? 'table' : 'grid')}
+                title={rootViewMode === 'grid' ? 'Table view' : 'Grid view'}
+                aria-label={rootViewMode === 'grid' ? 'Switch to table view' : 'Switch to grid view'}
+                aria-pressed={rootViewMode === 'table'}
+              >
+                {rootViewMode === 'grid' ? <GridViewIcon /> : <TableViewIcon />}
+              </button>
               {refineControl}
-              {libraryFilterControl}
             </div>
           </div>
           {tab === 'artists' && artistSelectMode && (
@@ -3287,7 +3375,9 @@ export default function BrowseView({
                 <span style={{ color: 'var(--text-muted)' }}> — select 2 or more to merge them into one</span>
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
-                <button style={L.artistSelectBarClear} onClick={exitArtistSelectMode}>Clear</button>
+                <button style={L.artistSelectBarClear} onClick={exitArtistSelectMode} title="Exit select mode" aria-label="Exit select mode">
+                  <XIcon />
+                </button>
                 <button
                   style={{ ...L.artistSelectBarMerge, ...(selectedArtistIds.size < 2 ? L.artistSelectBarMergeDisabled : {}) }}
                   disabled={selectedArtistIds.size < 2}
@@ -3303,11 +3393,16 @@ export default function BrowseView({
               {activeRefinementChips.map((chip) => (
                 <button key={chip.key} style={L.activeChip} onClick={chip.onClear}>
                   <span>{chip.label}</span>
-                  <span style={L.activeChipDismiss}>x</span>
+                  <span style={L.activeChipDismiss}><XIcon size={9} /></span>
                 </button>
               ))}
-              <button style={L.activeChipClearAll} onClick={clearBrowseRefinements}>
-                Clear refine filters
+              <button
+                style={L.activeChipClearAll}
+                onClick={clearBrowseRefinements}
+                title="Clear all refine filters"
+                aria-label="Clear all refine filters"
+              >
+                <TrashIcon />
               </button>
             </div>
           )}
@@ -3574,7 +3669,9 @@ const L: Record<string, React.CSSProperties> = {
   },
   artistSelectBarText: { display: 'flex', alignItems: 'center', gap: 8 },
   artistSelectBarClear: {
-    padding: '8px 16px', background: 'var(--bg)', border: '1px solid var(--border)',
+    width: 34, height: 34, padding: 0, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'var(--bg)', border: '1px solid var(--border)',
     borderRadius: 999, color: 'var(--text-muted)', cursor: 'pointer', fontSize: 14,
     fontFamily: 'inherit', fontWeight: 700,
   },
@@ -3622,6 +3719,24 @@ const L: Record<string, React.CSSProperties> = {
     background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
     color: 'var(--text)',
     border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))',
+  },
+  iconOnlyButton: {
+    padding: 0,
+    width: 34,
+    height: 34,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolbarDivider: {
+    width: 1, height: 20, background: 'var(--border)', margin: '0 2px', flexShrink: 0,
+  },
+  refineBadge: {
+    position: 'absolute', top: -5, right: -5,
+    minWidth: 15, height: 15, padding: '0 4px',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 10, fontWeight: 700, lineHeight: 1,
+    background: 'var(--accent)', color: 'var(--bg)', borderRadius: 999,
   },
   togglePill: {
     display: 'flex', backgroundColor: 'var(--bg)',
@@ -3748,6 +3863,12 @@ const L: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     whiteSpace: 'nowrap',
   },
+  clearIconBtn: {
+    width: 24, height: 24, padding: 0, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'transparent', color: 'var(--text-muted)',
+    border: '1px solid var(--border)', borderRadius: 999, cursor: 'pointer',
+  },
   refinePopover: {
     position: 'absolute',
     top: 'calc(100% + 8px)',
@@ -3827,17 +3948,18 @@ const L: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
   },
   activeChipDismiss: {
+    display: 'flex', alignItems: 'center',
     color: 'var(--text-muted)',
-    fontSize: 13,
     lineHeight: 1,
   },
   activeChipClearAll: {
-    padding: 0,
+    width: 24, height: 24, padding: 0, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
     background: 'transparent',
     color: 'var(--accent)',
-    border: 'none',
+    border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
+    borderRadius: 999,
     cursor: 'pointer',
-    fontSize: 13,
     fontFamily: 'inherit',
   },
   alphaShellFill: { position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
@@ -4081,11 +4203,11 @@ const L: Record<string, React.CSSProperties> = {
   meta: { fontSize: 13, color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' },
   chevron: { color: 'var(--text-muted)', flexShrink: 0, display: 'flex', alignItems: 'center', opacity: 0.4 },
   playBtn: {
-    display: 'flex', alignItems: 'center', gap: 5,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    width: 28, height: 28, padding: 0,
     background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
     color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
-    borderRadius: 5, padding: '4px 10px', cursor: 'pointer',
-    fontSize: 13, fontFamily: 'inherit', fontWeight: 600, flexShrink: 0,
+    borderRadius: 999, cursor: 'pointer', flexShrink: 0,
   },
   albumHeader: {
     display: 'flex', alignItems: 'flex-start',
@@ -4154,11 +4276,13 @@ const L: Record<string, React.CSSProperties> = {
     transition: 'background 300ms ease',
   },
   artistHeaderLeft: {
-    display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0,
-    minWidth: 240, maxWidth: 400,
+    display: 'flex', alignItems: 'center', gap: 20, flexShrink: 0,
+    minWidth: 240, maxWidth: 520,
   },
   artistHeaderIcon: {
-    width: 64, height: 64, borderRadius: '50%',
+    // Matches AlbumCover's 160px size and 6px corner radius so the artist
+    // and album pages read as one visual system side by side.
+    width: 160, height: 160, borderRadius: 6,
     backgroundColor: 'color-mix(in srgb, var(--accent) 12%, transparent)',
     border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -4172,16 +4296,11 @@ const L: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     color: 'var(--accent)',
   },
-  artistPhotoBadge: {
-    position: 'absolute',
-    right: 4,
-    bottom: 4,
-    fontSize: 10,
-    color: '#ddd',
-    background: 'rgba(0,0,0,0.55)',
-    borderRadius: 3,
-    padding: '1px 4px',
-    letterSpacing: 0.2,
+  artistPhotoChangeOverlay: {
+    position: 'absolute', inset: 0, border: 'none', borderRadius: 6,
+    background: 'rgba(0,0,0,0.55)', color: '#fff',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+    fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
   },
   // ── Last.fm bio pane ──
   bioWrap: {

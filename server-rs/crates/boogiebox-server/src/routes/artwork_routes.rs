@@ -20,7 +20,7 @@ use crate::{
         find_existing_cached_image, find_folder_cover_image, get_assigned_cache_file_path,
         http_date_secs, mime_from_path,
     },
-    auth::AdminUser,
+    auth::{AdminUser, AuthenticatedUser},
     image_thumb::generate_thumbnail,
     providers::{
         download_image, search_deezer_artist_image, search_discogs_album_cover,
@@ -44,6 +44,14 @@ pub fn artwork_router(state: SharedState) -> Router {
             post(album_artwork_upload_handler),
         )
         .route("/api/artists/{id}/photo", get(artist_photo_handler))
+        .route(
+            "/api/artists/{id}/photo/candidates",
+            get(artist_photo_candidates_handler),
+        )
+        .route(
+            "/api/artists/{id}/photo/select",
+            post(artist_photo_select_handler),
+        )
         .route(
             "/api/artists/{id}/artwork",
             post(artist_artwork_upload_handler),
@@ -742,6 +750,238 @@ async fn serve_artist_thumb(
         Ok(Ok(())) => stream_image_file(thumb_path).await,
         _ => stream_image_file(orig_buf).await,
     }
+}
+
+// -- Artist photo candidates / select -------------------------------------------
+
+/// Same "admin or metadata editor" rule `music_routes.rs` uses for artist
+/// edits — the photo picker is reached from the same `canEditMetadata`-gated
+/// UI, so it must accept the same non-admin editors, not just admins.
+fn can_edit_metadata(user: &AuthenticatedUser) -> bool {
+    user.is_admin() || user.can_edit_metadata
+}
+
+fn forbidden_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorResponse {
+            error: "Forbidden".into(),
+            setup_required: None,
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PhotoCandidate {
+    provider: &'static str,
+    url: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PhotoCandidatesResponse {
+    candidates: Vec<PhotoCandidate>,
+}
+
+/// Searches Deezer, Discogs, and Spotify concurrently for an artist photo and
+/// returns every match found, instead of `artist_photo_handler`'s first-hit-wins
+/// behavior — lets the caller offer a picker across all configured providers.
+async fn artist_photo_candidates_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Response {
+    if !can_edit_metadata(&user) {
+        return forbidden_response();
+    }
+
+    let (db, http_client, _db_folder) = match get_art_state(&state) {
+        Some(t) => t,
+        None => return setup_required_response(),
+    };
+
+    let artist_id = id.clone();
+    let artist = match tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::artwork::get_artist_for_art(&conn, &artist_id)
+    })
+    .await
+    {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Artist not found".into(),
+                    setup_required: None,
+                }),
+            )
+                .into_response()
+        }
+        _ => return internal_error(),
+    };
+
+    let settings = {
+        let db2 = match get_db(&state) {
+            Some(d) => d,
+            None => return internal_error(),
+        };
+        tokio::task::spawn_blocking(move || {
+            let conn = db2.lock().unwrap_or_else(|p| p.into_inner());
+            (
+                boogiebox_db::artwork::get_setting(&conn, "discogsToken"),
+                boogiebox_db::artwork::get_setting(&conn, "spotifyClientId"),
+                boogiebox_db::artwork::get_setting(&conn, "spotifyClientSecret"),
+            )
+        })
+        .await
+        .ok()
+    };
+
+    let (discogs_token, spotify_id, spotify_secret) = match settings {
+        Some(t) => t,
+        None => return internal_error(),
+    };
+
+    let deezer_fut = search_deezer_artist_image(&http_client, &artist.name);
+    let discogs_fut = async {
+        match &discogs_token {
+            Some(token) => search_discogs_artist_image(&http_client, token, &artist.name).await,
+            None => None,
+        }
+    };
+    let spotify_fut = async {
+        match (&spotify_id, &spotify_secret) {
+            (Some(cid), Some(csecret)) => {
+                search_spotify_artist_image(&http_client, cid, csecret, &artist.name).await
+            }
+            _ => None,
+        }
+    };
+
+    let (deezer, discogs, spotify) = tokio::join!(deezer_fut, discogs_fut, spotify_fut);
+
+    let candidates = [
+        ("deezer", deezer),
+        ("discogs", discogs),
+        ("spotify", spotify),
+    ]
+    .into_iter()
+    .filter_map(|(provider, url)| url.map(|url| PhotoCandidate { provider, url }))
+    .collect();
+
+    (StatusCode::OK, Json(PhotoCandidatesResponse { candidates })).into_response()
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PhotoSelectBody {
+    url: String,
+    provider: Option<String>,
+}
+
+/// Downloads a candidate photo (from `artist_photo_candidates_handler`, or any
+/// other provider URL) and stores it as the artist's artwork via the same
+/// cache-write path as a manual upload — including locking metadata so a later
+/// scan or `?refresh=1` doesn't silently replace the user's pick.
+async fn artist_photo_select_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(body): Json<PhotoSelectBody>,
+) -> Response {
+    if !can_edit_metadata(&user) {
+        return forbidden_response();
+    }
+
+    let (db, http_client, _db_folder) = match get_art_state(&state) {
+        Some(t) => t,
+        None => return setup_required_response(),
+    };
+
+    let artist_id = id.clone();
+    let exists = tokio::task::spawn_blocking({
+        let db2 = db.clone();
+        move || {
+            let conn = db2.lock().unwrap_or_else(|p| p.into_inner());
+            boogiebox_db::artwork::get_artist_for_art(&conn, &artist_id).is_some()
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    if !exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Artist not found".into(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    }
+
+    let Some((bytes, ext)) = download_image(&http_client, &body.url).await else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: "Could not download the selected photo".into(),
+                setup_required: None,
+            }),
+        )
+            .into_response();
+    };
+
+    let art_root = artist_art_original_root(&state);
+    let cache_key = build_artist_art_cache_key(&id);
+    let item_dir = cache_item_dir(&art_root, &cache_key);
+    let _ = tokio::task::spawn_blocking({
+        let thumb_root_300 = artist_art_thumb_root(&state, 300);
+        let thumb_root_800 = artist_art_thumb_root(&state, 800);
+        let ck = cache_key.clone();
+        move || {
+            clear_cached_image_files(&item_dir);
+            for (tr, sz) in [(&thumb_root_300, 300u32), (&thumb_root_800, 800)] {
+                if let Some(p) =
+                    get_assigned_cache_file_path(tr, &ck, &format!("thumb-{sz}"), ".jpg", false)
+                {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+    })
+    .await;
+
+    let dest = match get_assigned_cache_file_path(&art_root, &cache_key, "original", &ext, true) {
+        Some(p) => p,
+        None => return internal_error(),
+    };
+
+    match tokio::task::spawn_blocking(move || std::fs::write(&dest, &bytes)).await {
+        Ok(Ok(())) => {}
+        _ => return internal_error(),
+    }
+
+    let artist_id2 = id.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::artwork::set_artist_metadata_locked(&conn, &artist_id2);
+    })
+    .await
+    .ok();
+
+    if let Some(prov) = body.provider {
+        let db3 = match get_db(&state) {
+            Some(d) => d,
+            None => return (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
+        };
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db3.lock().unwrap_or_else(|p| p.into_inner());
+            boogiebox_db::artwork::record_provider_usage(&conn, &prov, "artist_art", "select");
+        })
+        .await;
+    }
+
+    (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
 }
 
 // -- Artwork upload ------------------------------------------------------------

@@ -5,6 +5,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { Album, Artist, ClientEntityId } from '../types';
+import ArtistPhotoPicker from './ArtistPhotoPicker';
 
 interface AlbumProps {
   mode: 'album';
@@ -73,6 +74,7 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
   const [artworkPreview, setArtworkPreview] = useState<string | null>(null);
   const [artworkBase64, setArtworkBase64]   = useState<string | null>(null);
   const [artworkMime, setArtworkMime]       = useState<string>('image/jpeg');
+  const [showPhotoPicker, setShowPhotoPicker] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [saving, setSaving] = useState(false);
@@ -204,6 +206,17 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
                 >
                   Choose image…
                 </button>
+                {!isAlbum && (
+                  <button
+                    onClick={() => setShowPhotoPicker(true)}
+                    style={{ padding: '7px 14px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 14, cursor: 'pointer', fontFamily: 'var(--font), monospace', display: 'flex', alignItems: 'center', gap: 7 }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" />
+                    </svg>
+                    Browse provider photos…
+                  </button>
+                )}
                 {artworkPreview && (
                   <button
                     onClick={() => { setArtworkPreview(null); setArtworkBase64(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
@@ -315,6 +328,14 @@ export default function MetadataEditModal({ mode, entityId, initialData, onClose
           </button>
         </div>
       </div>
+      {showPhotoPicker && !isAlbum && (
+        <ArtistPhotoPicker
+          artistId={entityId}
+          artistName={name || artist?.name || ''}
+          onClose={() => setShowPhotoPicker(false)}
+          onSelected={() => { setShowPhotoPicker(false); onSaved(); }}
+        />
+      )}
     </div>
   );
 }
