@@ -973,15 +973,29 @@ async fn search_spotify_metadata(
 /// Documents the Download Image public API surface.
 pub async fn download_image(client: &Client, url: &str) -> Option<(Vec<u8>, String)> {
     let t0 = log_request("image", "download", url);
-    let resp = client
+    let resp = match client
         .get(url)
         .header("User-Agent", USER_AGENT)
         .send()
         .await
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(err) => {
+            // `.ok()?` here would silently swallow the real cause (timeout,
+            // TLS, DNS, connection refused) — log it so a provider-specific
+            // download failure (e.g. Deezer failing while Discogs succeeds)
+            // is diagnosable from server logs instead of a bare "not found".
+            tracing::warn!("provider call ← image download failed url={url} error={err}");
+            return None;
+        }
+    };
     log_response("image", "download", t0, resp.status());
 
     if !resp.status().is_success() {
+        tracing::warn!(
+            "provider call ← image download non-success url={url} status={}",
+            resp.status()
+        );
         return None;
     }
 

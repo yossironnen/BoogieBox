@@ -32,6 +32,16 @@ use crate::{
 const ALBUM_THUMB_SIZES: &[u32] = &[300, 800];
 const ARTIST_THUMB_SIZES: &[u32] = &[300, 800];
 
+/// Album covers are grid-rendered in bulk and rarely edited — a long
+/// browser-cache lifetime is worth the (rare) staleness risk.
+const ALBUM_ART_CACHE_CONTROL: &str = "public, max-age=86400, stale-while-revalidate=43200";
+/// Artist photos are a single image per page and, since the provider photo
+/// picker shipped, are edited far more often — `no-cache` forces a cheap
+/// conditional revalidation on every load instead of trusting a stale
+/// `max-age` window, so a newly selected photo shows up immediately instead
+/// of only after 24h or a hard refresh.
+const ARTIST_ART_CACHE_CONTROL: &str = "no-cache";
+
 // -- Router --------------------------------------------------------------------
 
 /// Documents the Artwork Router public API surface.
@@ -251,7 +261,8 @@ async fn album_art_handler(
                 hit = "thumb",
                 "album art timing"
             );
-            return stream_image_file_conditional(thumb_path, &headers).await;
+            return stream_image_file_conditional(thumb_path, &headers, ALBUM_ART_CACHE_CONTROL)
+                .await;
         }
     }
 
@@ -271,11 +282,17 @@ async fn album_art_handler(
         };
         let src = original_path.clone();
         let dst = thumb_path.clone();
-        let result =
-            match tokio::task::spawn_blocking(move || generate_thumbnail(&src, &dst, size)).await {
-                Ok(Ok(())) => stream_image_file_conditional(thumb_path, &headers).await,
-                _ => stream_image_file_conditional(original_path, &headers).await,
-            };
+        let result = match tokio::task::spawn_blocking(move || generate_thumbnail(&src, &dst, size))
+            .await
+        {
+            Ok(Ok(())) => {
+                stream_image_file_conditional(thumb_path, &headers, ALBUM_ART_CACHE_CONTROL).await
+            }
+            _ => {
+                stream_image_file_conditional(original_path, &headers, ALBUM_ART_CACHE_CONTROL)
+                    .await
+            }
+        };
         tracing::debug!(
             route = "album_art",
             disk_cache_ms,
@@ -536,6 +553,7 @@ async fn artist_photo_handler(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     Query(params): Query<ArtParams>,
+    headers: HeaderMap,
 ) -> Response {
     let size = params
         .size
@@ -602,9 +620,10 @@ async fn artist_photo_handler(
     // Check cache
     if let Some(cached_path) = find_existing_cached_image(&item_dir) {
         if let Some(sz) = size {
-            return serve_artist_thumb(&state, &id, &cached_path, sz).await;
+            return serve_artist_thumb(&state, &id, &cached_path, sz, &headers).await;
         }
-        return stream_image_file(cached_path).await;
+        return stream_image_file_conditional(cached_path, &headers, ARTIST_ART_CACHE_CONTROL)
+            .await;
     }
 
     // Fetch from providers: Deezer -> Discogs -> Spotify
@@ -716,9 +735,9 @@ async fn artist_photo_handler(
     let cached_path = find_existing_cached_image(&item_dir).unwrap_or(dest);
 
     if let Some(sz) = size {
-        return serve_artist_thumb(&state, &id, &cached_path, sz).await;
+        return serve_artist_thumb(&state, &id, &cached_path, sz, &headers).await;
     }
-    stream_image_file(cached_path).await
+    stream_image_file_conditional(cached_path, &headers, ARTIST_ART_CACHE_CONTROL).await
 }
 
 async fn serve_artist_thumb(
@@ -726,6 +745,7 @@ async fn serve_artist_thumb(
     id: &str,
     original: &std::path::Path,
     size: u32,
+    headers: &HeaderMap,
 ) -> Response {
     let thumb_root = artist_art_thumb_root(state, size);
     let cache_key = build_artist_art_cache_key(id);
@@ -733,7 +753,7 @@ async fn serve_artist_thumb(
 
     if let Some(tp) = get_assigned_cache_file_path(&thumb_root, &cache_key, &slot, ".jpg", false) {
         if tp.is_file() {
-            return stream_image_file(tp).await;
+            return stream_image_file_conditional(tp, headers, ARTIST_ART_CACHE_CONTROL).await;
         }
     }
 
@@ -747,8 +767,10 @@ async fn serve_artist_thumb(
     let orig_buf = original.to_path_buf();
     let dst = thumb_path.clone();
     match tokio::task::spawn_blocking(move || generate_thumbnail(&src, &dst, size)).await {
-        Ok(Ok(())) => stream_image_file(thumb_path).await,
-        _ => stream_image_file(orig_buf).await,
+        Ok(Ok(())) => {
+            stream_image_file_conditional(thumb_path, headers, ARTIST_ART_CACHE_CONTROL).await
+        }
+        _ => stream_image_file_conditional(orig_buf, headers, ARTIST_ART_CACHE_CONTROL).await,
     }
 }
 
@@ -921,10 +943,18 @@ async fn artist_photo_select_handler(
     }
 
     let Some((bytes, ext)) = download_image(&http_client, &body.url).await else {
+        let provider_hint = body
+            .provider
+            .as_deref()
+            .map(|p| format!(" from {p}"))
+            .unwrap_or_default();
         return (
             StatusCode::BAD_GATEWAY,
             Json(ErrorResponse {
-                error: "Could not download the selected photo".into(),
+                error: format!(
+                    "Could not download the selected photo{provider_hint}. \
+                     The source may be temporarily unavailable — try again or pick another photo."
+                ),
                 setup_required: None,
             }),
         )
@@ -1315,7 +1345,11 @@ async fn stream_image_file(path: PathBuf) -> Response {
 /// `If-Modified-Since` handling — a `304` short-circuits the body entirely.
 /// Used by the album-art thumbnail route (plan Phase 3.1); other cached-image
 /// routes keep the plain `stream_image_file` until proven there too.
-async fn stream_image_file_conditional(path: PathBuf, req_headers: &header::HeaderMap) -> Response {
+async fn stream_image_file_conditional(
+    path: PathBuf,
+    req_headers: &header::HeaderMap,
+    cache_control: &str,
+) -> Response {
     let metadata = match tokio::fs::metadata(&path).await {
         Ok(m) => m,
         Err(_) => return internal_error(),
@@ -1341,10 +1375,7 @@ async fn stream_image_file_conditional(path: PathBuf, req_headers: &header::Head
             .status(StatusCode::NOT_MODIFIED)
             .header(header::ETAG, &etag)
             .header(header::LAST_MODIFIED, &last_modified)
-            .header(
-                header::CACHE_CONTROL,
-                "public, max-age=86400, stale-while-revalidate=43200",
-            )
+            .header(header::CACHE_CONTROL, cache_control)
             .body(Body::empty())
             .unwrap_or_else(|_| internal_error());
     }
@@ -1358,10 +1389,7 @@ async fn stream_image_file_conditional(path: PathBuf, req_headers: &header::Head
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
         .header(header::CONTENT_LENGTH, metadata.len().to_string())
-        .header(
-            header::CACHE_CONTROL,
-            "public, max-age=86400, stale-while-revalidate=43200",
-        )
+        .header(header::CACHE_CONTROL, cache_control)
         .header(header::ETAG, &etag)
         .header(header::LAST_MODIFIED, &last_modified)
         .body(Body::from_stream(ReaderStream::new(file)))

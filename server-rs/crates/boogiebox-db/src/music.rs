@@ -2948,6 +2948,7 @@ pub fn search_music(conn: &Connection, p: SearchMusicParams<'_>) -> rusqlite::Re
              FROM artists ar
              LEFT JOIN artist_ratings arr ON arr.artist_id = ar.id AND arr.user_id = ?1
              WHERE ar.name LIKE ?2 ESCAPE '\\'
+               AND EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)
              GROUP BY ar.id
              ORDER BY ar.name COLLATE NOCASE {order_dir}
              LIMIT 10"

@@ -12,6 +12,7 @@ import MetadataEditModal from './MetadataEditModal';
 import MergeArtistsModal from './MergeArtistsModal';
 import UnmergeModal from './UnmergeModal';
 import ArtistPhotoPicker from './ArtistPhotoPicker';
+import { getArtistPhotoVersion, bumpArtistPhotoVersion } from '../artistPhotoVersion';
 import ConfirmModal from './ConfirmModal';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
 import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
@@ -204,6 +205,7 @@ function safeLocalStorageSet(key: string, value: string): void {
     localStorage.setItem(key, value);
   } catch {}
 }
+
 
 /** Sort Albums is part of this module's public API. */
 export function sortAlbums(
@@ -1331,9 +1333,10 @@ function ArtistPhoto({ artistId, artist, refreshToken = 0, adaptiveAccentEnabled
 }
 
 function ArtistTileImage({ artistId, artist }: { artistId: ClientEntityId; artist: string }) {
+  const version = getArtistPhotoVersion(artistId);
   return (
     <ArtImage
-      src={api.artistPhotoUrl(artistId, 300)}
+      src={api.artistPhotoUrl(artistId, 300, version || undefined)}
       alt={artist}
       imgStyle={L.gridArtImg}
       fallback={<div style={L.gridArtPlaceholder}><ArtistIcon /></div>}
@@ -2005,7 +2008,7 @@ function ArtistHeader({
   const [showMeta, setShowMeta] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showPhotoPicker, setShowPhotoPicker] = useState(false);
-  const [photoToken, setPhotoToken] = useState(0);
+  const [photoToken, setPhotoToken] = useState(() => getArtistPhotoVersion(artist.id));
   const [mergeInfo, setMergeInfo] = useState<ArtistMergeInfo | null>(null);
   const [showUnmerge, setShowUnmerge] = useState(false);
   const [lockingIdentity, setLockingIdentity] = useState(false);
@@ -2017,6 +2020,14 @@ function ArtistHeader({
       if (!cancelled) setMergeInfo(info);
     }).catch(() => {});
     return () => { cancelled = true; };
+  }, [artist.id]);
+
+  // Covers the case where `artist` changes without this component remounting
+  // (e.g. clicking through to a similar artist) — the lazy `useState` above
+  // only runs once per mount, so without this the photo version would keep
+  // whichever artist's version it was initialized with.
+  useEffect(() => {
+    setPhotoToken(getArtistPhotoVersion(artist.id));
   }, [artist.id]);
 
   const handleLockNow = async () => {
@@ -2138,7 +2149,7 @@ function ArtistHeader({
           entityId={artist.id}
           initialData={artist}
           onClose={() => setShowEdit(false)}
-          onSaved={() => { setShowEdit(false); setPhotoToken(t => t + 1); onRefreshed(); }}
+          onSaved={() => { setShowEdit(false); setPhotoToken(bumpArtistPhotoVersion(artist.id)); onRefreshed(); }}
         />
       )}
       {showUnmerge && mergeInfo?.merged && (
@@ -2155,7 +2166,7 @@ function ArtistHeader({
           artistId={artist.id}
           artistName={artist.name}
           onClose={() => setShowPhotoPicker(false)}
-          onSelected={() => { setPhotoToken(t => t + 1); onRefreshed(); }}
+          onSelected={() => { setPhotoToken(bumpArtistPhotoVersion(artist.id)); onRefreshed(); }}
         />
       )}
     </div>

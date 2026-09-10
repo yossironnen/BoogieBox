@@ -8,6 +8,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { ClientEntityId } from '../types';
+import { getArtistPhotoVersion } from '../artistPhotoVersion';
 
 const PROVIDER_LABEL: Record<string, string> = {
   deezer: 'Deezer',
@@ -93,7 +94,7 @@ export default function ArtistPhotoPicker({ artistId, artistName, onClose, onSel
     }
   };
 
-  const currentPhotoUrl = api.artistPhotoUrl(artistId, 300);
+  const currentPhotoUrl = api.artistPhotoUrl(artistId, 300, getArtistPhotoVersion(artistId) || undefined);
 
   return (
     <div
