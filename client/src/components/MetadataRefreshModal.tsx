@@ -81,6 +81,10 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
     setError(null);
     try {
       if (mode === 'album') {
+        // Locking (i.e. NOT resetting the lock) is intentional: the user just chose this
+        // provider result deliberately, so it should stick through future library scans
+        // the same way a manual edit does — otherwise a rescan resolves the album by its
+        // raw file tags, orphans this row, and it gets pruned, silently reverting the edit.
         const resp = await api.updateAlbumMetadata(entityId, {
           title: result.title,
           album_artist: result.artist,
@@ -89,12 +93,12 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
           releaseType: result.releaseType,
           discogsReleaseType: result.provider === 'discogs' ? result.releaseType : undefined,
           spotifyReleaseType: result.provider === 'spotify' ? result.releaseType : undefined,
-        }, true);
+        });
         const effectiveId = resp.merged_into ?? entityId;
         void runWithTimeout(api.refreshAlbumCover(effectiveId), 3000);
         onApplied(resp.merged_into);
       } else {
-        await api.updateArtistMetadata(entityId, { name: result.title }, true);
+        await api.updateArtistMetadata(entityId, { name: result.title });
         void runWithTimeout(api.refreshArtistPhoto(entityId), 3000);
         onApplied();
       }

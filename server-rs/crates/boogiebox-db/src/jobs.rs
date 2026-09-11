@@ -688,16 +688,56 @@ pub fn upsert_scanned_track(
     conn: &Connection,
     input: &ScannedTrackInput,
 ) -> Result<EntityId, JobError> {
-    let artist_id = upsert_artist(conn, &input.artist)?;
-    let album_id = upsert_album(conn, &input.album, &input.album_artist)?;
-    let track_id = conn
+    // A rescan re-derives artist/album purely from the file's raw tags, which
+    // would silently undo a locked (user-edited) album/artist the moment its
+    // title stops matching those tags: the track gets moved to a fresh
+    // tag-matched row and the edited one, now empty, is left behind (or
+    // pruned). If this file's track already belongs to a locked album/artist,
+    // keep that link instead of re-resolving it from the tags.
+    let existing_track: Option<(EntityId, EntityId, EntityId)> = conn
         .query_row(
-            "SELECT id FROM tracks WHERE file_path=?1",
+            "SELECT id, artist_id, album_id FROM tracks WHERE file_path=?1",
             [&input.file_path],
-            |row| row.get::<_, EntityId>(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()?
-        .unwrap_or_else(|| EntityId::Str(new_id()));
+        .optional()?;
+
+    let (track_id, artist_id, album_id) = match existing_track {
+        Some((track_id, existing_artist_id, existing_album_id)) => {
+            let artist_locked: i64 = conn
+                .query_row(
+                    "SELECT metadata_locked FROM artists WHERE id=?1",
+                    [&existing_artist_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            let album_locked: i64 = conn
+                .query_row(
+                    "SELECT metadata_locked FROM albums WHERE id=?1",
+                    [&existing_album_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            let artist_id = if artist_locked == 1 {
+                existing_artist_id
+            } else {
+                upsert_artist(conn, &input.artist)?
+            };
+            let album_id = if album_locked == 1 {
+                existing_album_id
+            } else {
+                upsert_album(conn, &input.album, &input.album_artist)?
+            };
+            (track_id, artist_id, album_id)
+        }
+        None => {
+            let artist_id = upsert_artist(conn, &input.artist)?;
+            let album_id = upsert_album(conn, &input.album, &input.album_artist)?;
+            (EntityId::Str(new_id()), artist_id, album_id)
+        }
+    };
 
     conn.execute(
         "INSERT INTO tracks(
@@ -1896,6 +1936,64 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn upsert_scanned_track_rescan_keeps_a_locked_album_association() {
+        // Regression guard: a user edits an album's title (via the metadata
+        // edit modal or "Refresh Metadata") and that album gets locked. The
+        // file's raw tags still say the old title. A rescan must NOT move the
+        // track back to a fresh tag-matched album — that would silently
+        // revert the edit and orphan the locked row.
+        let f = fixture("upsert-track-locked-album");
+        let path = "/music/locked.mp3";
+        let track_id =
+            upsert_scanned_track(&f.conn, &scanned_track(&f.library_id, path, "Song One")).unwrap();
+
+        let album_id: EntityId = f
+            .conn
+            .query_row(
+                "SELECT album_id FROM tracks WHERE id=?1",
+                [&track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "UPDATE albums SET title='Edited Title', metadata_locked=1 WHERE id=?1",
+                [&album_id],
+            )
+            .unwrap();
+
+        // Rescan the same file; its tags still report "Test Album", not the
+        // edited title.
+        upsert_scanned_track(&f.conn, &scanned_track(&f.library_id, path, "Song One")).unwrap();
+
+        let (rescanned_album_id, title): (EntityId, String) = f
+            .conn
+            .query_row(
+                "SELECT al.id, al.title FROM tracks t JOIN albums al ON al.id = t.album_id WHERE t.id=?1",
+                [&track_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            rescanned_album_id, album_id,
+            "track must stay on the locked album"
+        );
+        assert_eq!(
+            title, "Edited Title",
+            "locked album title must survive the rescan"
+        );
+
+        let album_count: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM albums", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            album_count, 1,
+            "rescan must not create a duplicate tag-matched album"
+        );
     }
 
     #[test]

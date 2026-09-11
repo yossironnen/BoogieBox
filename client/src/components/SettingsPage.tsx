@@ -119,16 +119,95 @@ export function formatQueueStateLabel(status: string): string {
   }
 }
 
-const MUSIC_POST_SCAN_ACTIONS: Array<{ jobType: AdminPostScanJobType; label: string }> = [
-  { jobType: 'refresh_library_mappings', label: 'Refresh mappings' },
-  { jobType: 'cache_artist_images', label: 'Cache artist images' },
-  { jobType: 'cache_album_images', label: 'Cache album images' },
-  { jobType: 'warm_lastfm_info', label: 'Warm Last.fm' },
-  { jobType: 'warm_track_lyrics', label: 'Warm lyrics' },
-  { jobType: 'sync_artist_styles', label: 'Sync artist styles' },
+type QueueIconKey = 'refresh' | 'artistImage' | 'albumImage' | 'cloud' | 'lyrics' | 'styles' | 'stop' | 'cancel' | 'code' | 'help' | 'checkCircle' | 'save';
+
+const QueueIcon: Record<QueueIconKey, () => React.ReactElement> = {
+  refresh: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="23 4 23 10 17 10" />
+      <polyline points="1 20 1 14 7 14" />
+      <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+    </svg>
+  ),
+  artistImage: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21v-1a7 7 0 0114 0v1" />
+    </svg>
+  ),
+  albumImage: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  ),
+  cloud: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M17.5 19H7a4.5 4.5 0 01-.5-8.97A5.5 5.5 0 0117.24 8.03 4 4 0 0117.5 19z" />
+    </svg>
+  ),
+  lyrics: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="4" y1="7" x2="20" y2="7" />
+      <line x1="4" y1="12" x2="16" y2="12" />
+      <line x1="4" y1="17" x2="12" y2="17" />
+    </svg>
+  ),
+  styles: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M20.59 13.41L11 3.83A2 2 0 009.59 3.24L3.24 9.59A2 2 0 003.83 11l9.58 9.59a2 2 0 002.83 0l4.35-4.35a2 2 0 000-2.83z" />
+      <circle cx="7.5" cy="7.5" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  stop: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <rect x="5" y="5" width="14" height="14" rx="2" />
+    </svg>
+  ),
+  cancel: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  ),
+  code: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  ),
+  help: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9a2.5 2.5 0 014.9.8c0 1.7-2.4 2-2.4 3.7" />
+      <circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  checkCircle: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="8 12.5 11 15.5 16 9" />
+    </svg>
+  ),
+  save: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M5 3h11l3 3v15H5z" />
+      <path d="M8 3v6h8V3" />
+      <path d="M8 21v-7h8v7" />
+    </svg>
+  ),
+};
+
+const MUSIC_POST_SCAN_ACTIONS: Array<{ jobType: AdminPostScanJobType; label: string; icon: QueueIconKey }> = [
+  { jobType: 'refresh_library_mappings', label: 'Refresh mappings', icon: 'refresh' },
+  { jobType: 'cache_artist_images', label: 'Cache artist images', icon: 'artistImage' },
+  { jobType: 'cache_album_images', label: 'Cache album images', icon: 'albumImage' },
+  { jobType: 'warm_lastfm_info', label: 'Warm Last.fm', icon: 'cloud' },
+  { jobType: 'warm_track_lyrics', label: 'Warm lyrics', icon: 'lyrics' },
+  { jobType: 'sync_artist_styles', label: 'Sync artist styles', icon: 'styles' },
 ];
 
-function getLibraryPostScanActions(library: Library): Array<{ jobType: AdminPostScanJobType; label: string }> {
+function getLibraryPostScanActions(library: Library): Array<{ jobType: AdminPostScanJobType; label: string; icon: QueueIconKey }> {
   return MUSIC_POST_SCAN_ACTIONS;
 }
 
@@ -167,6 +246,193 @@ function ColorInput({ label, value, onChange }: { label: string; value: string; 
       />
     </div>
   );
+}
+
+// ─── Integration Connector ─────────────────────────────────────────────────
+
+type ConnectorStatus = 'not_configured' | 'saved' | 'connected' | 'failed';
+
+function connectorStatus(configured: boolean, connected: boolean | null): ConnectorStatus {
+  if (!configured) return 'not_configured';
+  if (connected === true) return 'connected';
+  if (connected === false) return 'failed';
+  return 'saved';
+}
+
+const CONNECTOR_STATUS_LABEL: Record<ConnectorStatus, string> = {
+  not_configured: 'Not configured',
+  saved: 'Saved',
+  connected: 'Connected',
+  failed: 'Failed',
+};
+
+const CONNECTOR_STATUS_COLOR: Record<ConnectorStatus, string> = {
+  not_configured: 'var(--text-muted)',
+  saved: 'var(--text)',
+  connected: 'var(--success)',
+  failed: 'var(--danger)',
+};
+
+function IntegrationConnector({
+  dotColor,
+  name,
+  description,
+  status,
+  helpOpen,
+  onToggleHelp,
+  helpContent,
+  onTest,
+  onSave,
+  busy,
+  errorMessage,
+  children,
+}: {
+  dotColor: string;
+  name: string;
+  description: string;
+  status: ConnectorStatus;
+  helpOpen: boolean;
+  onToggleHelp: () => void;
+  helpContent: React.ReactNode;
+  onTest: () => void;
+  onSave: () => void;
+  busy: boolean;
+  errorMessage: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{ padding: '14px 16px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ width: 9, height: 9, borderRadius: '50%', backgroundColor: dotColor, flexShrink: 0 }} />
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{name}</div>
+          <span style={{ fontSize: 12, color: CONNECTOR_STATUS_COLOR[status], border: '1px solid var(--border)', borderRadius: 999, padding: '2px 8px', whiteSpace: 'nowrap' }}>
+            {CONNECTOR_STATUS_LABEL[status]}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={onToggleHelp}
+            style={{ ...hybridControlStyles.iconButton, ...(helpOpen ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+            title={helpOpen ? 'Hide setup instructions' : 'Setup instructions'}
+            aria-label={helpOpen ? 'Hide setup instructions' : 'Setup instructions'}
+          >
+            <QueueIcon.help />
+          </button>
+          <button
+            type="button"
+            onClick={onTest}
+            disabled={busy}
+            style={{ ...hybridControlStyles.iconButton, ...(busy ? { opacity: 0.6 } : {}) }}
+            title="Test connection"
+            aria-label={`Test ${name} connection`}
+          >
+            <QueueIcon.checkCircle />
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={busy}
+            style={{ ...hybridControlStyles.iconButton, color: 'var(--accent)', ...(busy ? { opacity: 0.6 } : {}) }}
+            title="Save"
+            aria-label={`Save ${name} credentials`}
+          >
+            <QueueIcon.save />
+          </button>
+        </div>
+      </div>
+      <p style={{ color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.6, margin: '8px 0 0' }}>{description}</p>
+      {helpOpen && (
+        <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 6, backgroundColor: 'var(--bg)', border: '1px solid var(--border)', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {helpContent}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', marginTop: 12 }}>
+        {children}
+      </div>
+      {errorMessage && (
+        <div style={{ marginTop: 8, fontSize: 14, color: 'var(--danger)' }}>{errorMessage}</div>
+      )}
+    </div>
+  );
+}
+
+/** Folds a legacy "✓ …" / "✗ …" / "Testing…" result string into: nothing (success
+ * already shows via the status pill), a muted in-progress note, or an error line. */
+function connectorMessage(result: string | null): string | null {
+  if (!result) return null;
+  if (result.startsWith('✓')) return null;
+  if (/^Testing/.test(result)) return result;
+  return result.replace(/^✗\s*/, '');
+}
+
+// ─── Advanced-tab shared controls ──────────────────────────────────────────
+
+function ToggleSwitch({
+  checked,
+  onChange,
+  ariaLabel,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  ariaLabel: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={ariaLabel}
+      aria-checked={checked}
+      onClick={onChange}
+      disabled={disabled}
+      style={{
+        ...hybridControlStyles.switchTrack,
+        ...(checked ? hybridControlStyles.switchTrackActive : {}),
+        ...(disabled ? { opacity: 0.6, cursor: 'default' } : {}),
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ ...hybridControlStyles.switchThumb, ...(checked ? hybridControlStyles.switchThumbActive : {}) }} />
+    </button>
+  );
+}
+
+function ToggleRow({
+  title,
+  description,
+  checked,
+  onChange,
+  ariaLabel,
+  disabled,
+}: {
+  title: string;
+  description: React.ReactNode;
+  checked: boolean;
+  onChange: () => void;
+  ariaLabel?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>{description}</div>
+      </div>
+      <ToggleSwitch checked={checked} onChange={onChange} ariaLabel={ariaLabel ?? title} disabled={disabled} />
+    </div>
+  );
+}
+
+/** Renders a card's busy/result feedback line consistently: muted while busy,
+ * success-toned otherwise, danger-toned for a result starting with "Error". */
+function InlineStatus({ busy, busyText, result }: { busy: boolean; busyText: string; result: string | null }) {
+  if (busy) return <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 6 }}>{busyText}</div>;
+  if (!result) return null;
+  const isError = result.startsWith('Error') || result.startsWith('✗');
+  return <div style={{ fontSize: 14, color: isError ? 'var(--danger)' : 'var(--success)', marginTop: 6 }}>{result}</div>;
 }
 
 function SettingsPanel({
@@ -516,10 +782,14 @@ export default function SettingsPage({
   const [discogsToken, setDiscogsToken] = useState('');
   const [discogsTestResult, setDiscogsTestResult] = useState<string | null>(null);
   const [discogsSaving, setDiscogsSaving] = useState(false);
+  const [discogsConnected, setDiscogsConnected] = useState<boolean | null>(null);
+  const [discogsHelpOpen, setDiscogsHelpOpen] = useState(false);
   const [spotifyClientId, setSpotifyClientId] = useState('');
   const [spotifyClientSecret, setSpotifyClientSecret] = useState('');
   const [spotifySaving, setSpotifySaving] = useState(false);
   const [spotifyResult, setSpotifyResult] = useState<string | null>(null);
+  const [spotifyConnected, setSpotifyConnected] = useState<boolean | null>(null);
+  const [spotifyHelpOpen, setSpotifyHelpOpen] = useState(false);
   const [geniusClientId, setGeniusClientId] = useState('');
   const [geniusClientSecret, setGeniusClientSecret] = useState('');
   const [geniusSaving, setGeniusSaving] = useState(false);
@@ -527,6 +797,8 @@ export default function SettingsPage({
   const [lastfmKey, setLastfmKey] = useState('');
   const [lastfmSaving, setLastfmSaving] = useState(false);
   const [lastfmResult, setLastfmResult] = useState<string | null>(null);
+  const [lastfmConnected, setLastfmConnected] = useState<boolean | null>(null);
+  const [lastfmHelpOpen, setLastfmHelpOpen] = useState(false);
   const [streamDirect, setStreamDirectState] = useState(() => getStreamDirect());
   const [transcodeQuality, setTranscodeQuality] = useState<'low' | 'high'>(settings.transcodeQuality === 'high' ? 'high' : 'low');
   const [transcodeQualitySaving, setTranscodeQualitySaving] = useState(false);
@@ -915,6 +1187,7 @@ export default function SettingsPage({
   const saveDiscogsToken = async () => {
     setDiscogsSaving(true);
     setDiscogsTestResult(null);
+    setDiscogsConnected(null);
     try {
       await api.settings.update({ discogsToken: discogsToken.trim() });
       setDiscogsTestResult('✓ Token saved');
@@ -937,12 +1210,15 @@ export default function SettingsPage({
       );
       if (resp.ok) {
         setDiscogsTestResult('✓ Token is valid — Discogs connection OK');
+        setDiscogsConnected(true);
       } else {
         const j = await resp.json().catch(() => ({}));
         setDiscogsTestResult(`✗ Discogs returned ${resp.status}: ${(j as any).message ?? 'error'}`);
+        setDiscogsConnected(false);
       }
     } catch (e: any) {
       setDiscogsTestResult('✗ Network error: ' + e.message);
+      setDiscogsConnected(false);
     } finally {
       setDiscogsSaving(false);
     }
@@ -951,6 +1227,7 @@ export default function SettingsPage({
   const saveSpotifyCreds = async () => {
     setSpotifySaving(true);
     setSpotifyResult(null);
+    setSpotifyConnected(null);
     try {
       await api.settings.update({
         spotifyClientId: spotifyClientId.trim(),
@@ -975,8 +1252,10 @@ export default function SettingsPage({
     try {
       await api.integrations.spotifyTest();
       setSpotifyResult('✓ Spotify connection OK');
+      setSpotifyConnected(true);
     } catch (e: any) {
       setSpotifyResult('✗ ' + e.message);
+      setSpotifyConnected(false);
     } finally {
       setSpotifySaving(false);
     }
@@ -1019,6 +1298,7 @@ export default function SettingsPage({
   const saveLastfmKey = async () => {
     setLastfmSaving(true);
     setLastfmResult(null);
+    setLastfmConnected(null);
     try {
       await api.settings.update({ lastfmKey: lastfmKey.trim() });
       onSettingsChange({ ...local, lastfmKey: lastfmKey.trim() } as any);
@@ -1041,11 +1321,14 @@ export default function SettingsPage({
       const data = await resp.json();
       if (data.error) {
         setLastfmResult(`✗ Last.fm error ${data.error}: ${data.message}`);
+        setLastfmConnected(false);
       } else {
         setLastfmResult('✓ Key is valid — Last.fm connection OK');
+        setLastfmConnected(true);
       }
     } catch (e: any) {
       setLastfmResult('✗ Network error: ' + e.message);
+      setLastfmConnected(false);
     } finally {
       setLastfmSaving(false);
     }
@@ -1338,16 +1621,37 @@ export default function SettingsPage({
           ))}
 
           <div style={{ marginTop: 16, padding: '12px 16px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Queue &amp; Maintenance</div>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
                   Monitor background activity, stop stuck scan work, and queue maintenance tasks when you need them.
                 </div>
               </div>
-              <button onClick={() => void loadQueueSnapshot()} disabled={queueLoading} style={P.btnSecondary}>
-                {queueLoading ? 'Refreshing…' : 'Refresh'}
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  onClick={() => void loadQueueSnapshot()}
+                  disabled={queueLoading}
+                  style={{ ...hybridControlStyles.iconButton, ...(queueLoading ? { opacity: 0.6 } : {}) }}
+                  title={queueLoading ? 'Refreshing…' : 'Refresh'}
+                  aria-label={queueLoading ? 'Refreshing' : 'Refresh queue snapshot'}
+                >
+                  <QueueIcon.refresh />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRawQueueSnapshot((value) => !value)}
+                  style={{
+                    ...hybridControlStyles.iconButton,
+                    ...(showRawQueueSnapshot ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}),
+                  }}
+                  title={showRawQueueSnapshot ? 'Hide raw queue snapshot' : 'Show raw queue snapshot'}
+                  aria-label={showRawQueueSnapshot ? 'Hide raw queue snapshot' : 'Show raw queue snapshot'}
+                >
+                  <QueueIcon.code />
+                </button>
+              </div>
             </div>
             {queueActionResult && (
               <div style={{ color: '#86efac', fontSize: 13, marginBottom: 10 }}>
@@ -1359,8 +1663,30 @@ export default function SettingsPage({
                 {queueError}
               </div>
             )}
+            {showRawQueueSnapshot && (
+              <textarea
+                aria-label="Queue Snapshot"
+                readOnly
+                value={formatQueueSnapshot(queueSnapshot)}
+                style={{
+                  width: '100%',
+                  minHeight: 220,
+                  resize: 'vertical',
+                  boxSizing: 'border-box',
+                  borderRadius: 8,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  padding: '12px 14px',
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                  fontFamily: 'Consolas, Monaco, monospace',
+                  marginBottom: 12,
+                }}
+              />
+            )}
             {queueSnapshot && (
-              <div style={{ display: 'grid', gap: 12, marginBottom: 12 }}>
+              <div style={{ display: 'grid', gap: 14 }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {[
                     { label: 'Scans', count: queueSnapshot.queues.scan.length },
@@ -1374,7 +1700,6 @@ export default function SettingsPage({
                         padding: '6px 10px',
                         borderRadius: 999,
                         border: '1px solid var(--border)',
-                        background: 'var(--bg)',
                         color: 'var(--text-muted)',
                         fontSize: 13,
                       }}
@@ -1383,162 +1708,156 @@ export default function SettingsPage({
                     </div>
                   ))}
                 </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Live queue</div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 8 }}>Live queue</div>
                   {(queueSnapshot.queues.scan.length > 0 || queueSnapshot.queues.postScan.length > 0) ? (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {queueSnapshot.queues.scan.map((entry) => {
-                      const busyKey = `scan:${entry.id}`;
-                      const actionLabel = entry.status === 'running' ? 'Stop scan' : 'Cancel scan';
-                      return (
-                        <div key={`scan-${entry.id}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{entry.library_name || 'Library'} scan</div>
-                              <span style={{ fontSize: 12, color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
-                                {formatQueueStateLabel(entry.status)}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
-                              {entry.files_found != null || entry.files_scanned != null
-                                ? `${entry.files_scanned ?? 0} of ${entry.files_found ?? 0} files scanned`
-                                : 'Preparing scan'}
-                              {entry.started_at ? ` • Started ${fmtQueueTime(entry.started_at)}` : ''}
-                              {entry.errors != null ? ` • Errors ${entry.errors}` : ''}
-                            </div>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                    {[
+                      ...queueSnapshot.queues.scan.map((entry) => {
+                        const busyKey = `scan:${entry.id}`;
+                        const isRunning = entry.status === 'running';
+                        return {
+                          key: `scan-${entry.id}`,
+                          title: `${entry.library_name || 'Library'} scan`,
+                          status: entry.status,
+                          meta: [
+                            entry.files_found != null || entry.files_scanned != null
+                              ? `${entry.files_scanned ?? 0} of ${entry.files_found ?? 0} files scanned`
+                              : 'Preparing scan',
+                            entry.started_at ? `Started ${fmtQueueTime(entry.started_at)}` : null,
+                            entry.errors != null ? `Errors ${entry.errors}` : null,
+                          ].filter(Boolean).join(' • '),
+                          busyKey,
+                          actionTitle: isRunning ? 'Stop scan' : 'Cancel scan',
+                          onAction: () => void runQueueAction(busyKey, `Scan job ${entry.id} cancelled.`, () => api.admin.cancelScanJob(entry.id)),
+                        };
+                      }),
+                      ...queueSnapshot.queues.postScan.map((entry) => {
+                        const isRunning = entry.status === 'running';
+                        const busyKey = `post-scan:${entry.id}`;
+                        const action = isRunning
+                          ? () => api.admin.failPostScanJob(entry.id)
+                          : () => api.admin.cancelPostScanJob(entry.id);
+                        const successMessage = isRunning
+                          ? `Post-scan job ${entry.id} stopped.`
+                          : `Post-scan job ${entry.id} cancelled.`;
+                        return {
+                          key: `post-scan-${entry.id}`,
+                          title: `${entry.library_name || 'Library'} ${entry.job_type ? `• ${entry.job_type}` : 'post-scan'}`,
+                          status: entry.status,
+                          meta: [
+                            entry.current_step || 'Waiting for worker',
+                            entry.started_at ? `Started ${fmtQueueTime(entry.started_at)}` : null,
+                            entry.error_message || null,
+                          ].filter(Boolean).join(' • '),
+                          busyKey,
+                          actionTitle: isRunning ? 'Stop task' : 'Cancel task',
+                          onAction: () => void runQueueAction(busyKey, successMessage, action),
+                        };
+                      }),
+                    ].map((row, index) => (
+                      <div
+                        key={row.key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                          padding: '10px 12px',
+                          borderTop: index > 0 ? '1px solid var(--border)' : undefined,
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{row.title}</div>
+                            <span style={{ fontSize: 12, color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
+                              {formatQueueStateLabel(row.status)}
+                            </span>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => void runQueueAction(busyKey, `Scan job ${entry.id} cancelled.`, () => api.admin.cancelScanJob(entry.id))}
-                            disabled={queueActionBusy != null}
-                            style={{ ...P.btnSecondary, minWidth: 108, textAlign: 'center' }}
-                          >
-                            {queueActionBusy === busyKey ? 'Working…' : actionLabel}
-                          </button>
-                        </div>
-                      );
-                    })}
-                    {queueSnapshot.queues.postScan.map((entry) => {
-                      const isRunning = entry.status === 'running';
-                      const busyKey = `post-scan:${entry.id}`;
-                      const actionLabel = isRunning ? 'Stop task' : 'Cancel task';
-                      const action = isRunning
-                        ? () => api.admin.failPostScanJob(entry.id)
-                        : () => api.admin.cancelPostScanJob(entry.id);
-                      const successMessage = isRunning
-                        ? `Post-scan job ${entry.id} stopped.`
-                        : `Post-scan job ${entry.id} cancelled.`;
-                      return (
-                        <div key={`post-scan-${entry.id}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
-                                {entry.library_name || 'Library'} {entry.job_type ? `• ${entry.job_type}` : 'post-scan'}
-                              </div>
-                              <span style={{ fontSize: 12, color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
-                                {formatQueueStateLabel(entry.status)}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
-                              {entry.current_step || 'Waiting for worker'}
-                              {entry.started_at ? ` • Started ${fmtQueueTime(entry.started_at)}` : ''}
-                              {entry.error_message ? ` • ${entry.error_message}` : ''}
-                            </div>
+                          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
+                            {row.meta}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => void runQueueAction(busyKey, successMessage, action)}
-                            disabled={queueActionBusy != null}
-                            style={{ ...P.btnSecondary, minWidth: 108, textAlign: 'center' }}
-                          >
-                            {queueActionBusy === busyKey ? 'Working…' : actionLabel}
-                          </button>
                         </div>
-                      );
-                    })}
+                        <button
+                          type="button"
+                          onClick={row.onAction}
+                          disabled={queueActionBusy != null}
+                          style={{
+                            ...hybridControlStyles.iconButton,
+                            color: 'var(--danger)',
+                            ...(queueActionBusy === row.busyKey ? { opacity: 0.6 } : {}),
+                          }}
+                          title={queueActionBusy === row.busyKey ? 'Working…' : row.actionTitle}
+                          aria-label={row.actionTitle}
+                        >
+                          {row.actionTitle.startsWith('Stop') ? <QueueIcon.stop /> : <QueueIcon.cancel />}
+                        </button>
+                      </div>
+                    ))}
                   </div>
                   ) : (
-                    <div style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', fontSize: 13, color: 'var(--text-muted)' }}>
+                    <div style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)' }}>
                       No active scan or post-scan jobs right now.
                     </div>
                   )}
                 </div>
                 {libraries.length > 0 && (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>Run maintenance</div>
-                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
-                        Queue a follow-up job for a specific library. These run in the background and show up in the live queue above.
-                      </div>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Run maintenance</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                      These tasks already run automatically after every library scan — use these to trigger one on demand.
                     </div>
-                    {libraries.map((library) => (
-                      <div key={`manual-post-scan-${library.id}`} style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                      {libraries.map((library, index) => (
+                        <div
+                          key={`manual-post-scan-${library.id}`}
+                          style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                            padding: '10px 12px',
+                            borderTop: index > 0 ? '1px solid var(--border)' : undefined,
+                          }}
+                        >
                           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{library.name}</div>
-                          <span style={{ fontSize: 12, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 999, padding: '2px 7px' }}>
-                            {'MUSIC'}
-                          </span>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {getLibraryPostScanActions(library).map((action) => {
+                              const busyKey = `enqueue:${library.id}:${action.jobType}`;
+                              const ActionIcon = QueueIcon[action.icon];
+                              return (
+                                <button
+                                  key={`${library.id}-${action.jobType}`}
+                                  type="button"
+                                  onClick={() => void runQueueAction(
+                                    busyKey,
+                                    `${action.label} queued for ${library.name}.`,
+                                    () => api.admin.enqueuePostScanJob(library.id, action.jobType),
+                                  )}
+                                  disabled={queueActionBusy != null}
+                                  style={{
+                                    ...hybridControlStyles.iconButton,
+                                    width: 32,
+                                    minWidth: 32,
+                                    height: 32,
+                                    ...(queueActionBusy === busyKey ? { opacity: 0.6 } : {}),
+                                  }}
+                                  title={queueActionBusy === busyKey ? 'Queuing…' : action.label}
+                                  aria-label={action.label}
+                                >
+                                  <ActionIcon />
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4, marginBottom: 8 }}>
-                          Choose a background maintenance task for this library.
-                        </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                          {getLibraryPostScanActions(library).map((action) => {
-                            const busyKey = `enqueue:${library.id}:${action.jobType}`;
-                            return (
-                              <button
-                                key={`${library.id}-${action.jobType}`}
-                                type="button"
-                                onClick={() => void runQueueAction(
-                                  busyKey,
-                                  `${action.label} queued for ${library.name}.`,
-                                  () => api.admin.enqueuePostScanJob(library.id, action.jobType),
-                                )}
-                                disabled={queueActionBusy != null}
-                                style={P.btnSecondary}
-                              >
-                                {queueActionBusy === busyKey ? 'Queuing…' : action.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             )}
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-              <button
-                type="button"
-                onClick={() => setShowRawQueueSnapshot((value) => !value)}
-                style={{ ...P.btnSecondary, padding: '7px 12px', fontSize: 13 }}
-              >
-                {showRawQueueSnapshot ? 'Hide raw queue snapshot' : 'Show raw queue snapshot'}
-              </button>
-              {showRawQueueSnapshot && (
-                <textarea
-                  aria-label="Queue Snapshot"
-                  readOnly
-                  value={formatQueueSnapshot(queueSnapshot)}
-                  style={{
-                    width: '100%',
-                    minHeight: 220,
-                    resize: 'vertical',
-                    boxSizing: 'border-box',
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg)',
-                    color: 'var(--text)',
-                    padding: '12px 14px',
-                    fontSize: 13,
-                    lineHeight: 1.6,
-                    fontFamily: 'Consolas, Monaco, monospace',
-                    marginTop: 10,
-                  }}
-                />
-              )}
-            </div>
           </div>
         </div>
       )}
@@ -1556,6 +1875,7 @@ export default function SettingsPage({
               {[
                 ['advanced-playback', 'Playback'],
                 ['advanced-transitions', 'Transitions'],
+                ['advanced-boogiemix', 'BoogieMix'],
                 ['advanced-waveforms', 'Waveforms'],
                 ['advanced-bpm', 'BPM'],
                 ['advanced-dlna', 'DLNA'],
@@ -1570,53 +1890,37 @@ export default function SettingsPage({
           <div id="advanced-playback" style={P.advancedSectionTitle}>Playback</div>
 
           <div style={{
-            display: 'flex', alignItems: 'flex-start', gap: 20,
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                Server-side transcoding
-              </div>
-              <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                When enabled, the server converts FLAC, M4A, AAC, WMA and other
-                formats to MP3 before streaming. Disable to stream the raw file
-                bytes directly — useful when your browser natively supports the
-                format (e.g. Safari with FLAC/AAC) or when transcoding causes issues.
-              </div>
-            </div>
-            {/* Toggle */}
-            <div
-              onClick={() => {
+            <ToggleRow
+              title="Server-side transcoding"
+              ariaLabel="Server-side transcoding"
+              checked={!streamDirect}
+              onChange={() => {
                 const next = !streamDirect;
                 setStreamDirect(next);
                 setStreamDirectState(next);
                 onStreamDirectChange?.(next);
               }}
-              title={streamDirect ? 'Transcoding disabled — click to enable' : 'Transcoding enabled — click to disable'}
-              style={{
-                width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                position: 'relative', flexShrink: 0, marginTop: 2,
-                backgroundColor: streamDirect ? 'var(--border)' : 'var(--accent)',
-                transition: 'background 0.2s',
-              }}
-            >
-              <div style={{
-                position: 'absolute', top: 3,
-                left: streamDirect ? 3 : 23,
-                width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-              }} />
+              description={(
+                <>
+                  When enabled, the server converts FLAC, M4A, AAC, WMA and other
+                  formats to MP3 before streaming. Disable to stream the raw file
+                  bytes directly — useful when your browser natively supports the
+                  format (e.g. Safari with FLAC/AAC) or when transcoding causes issues.
+                </>
+              )}
+            />
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              <strong style={{ color: 'var(--text)' }}>Note:</strong> This setting is stored as a browser
+              cookie and applies only to this device/browser. Other browsers or devices accessing the
+              same server will use their own setting. The change takes effect on the next track played.
             </div>
           </div>
 
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, padding: '0 4px' }}>
-            <strong style={{ color: 'var(--text)' }}>Note:</strong> This setting is stored as a browser
-            cookie and applies only to this device/browser. Other browsers or devices accessing the
-            same server will use their own setting. The change takes effect on the next track played.
-          </div>
           <div style={{
-            padding: '16px 20px', borderRadius: 8, marginTop: 12, marginBottom: 12,
+            padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
             <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
@@ -1629,15 +1933,13 @@ export default function SettingsPage({
               <select
                 value={transcodeQuality}
                 onChange={e => { setTranscodeQuality(e.target.value as 'low' | 'high'); setTranscodeQualityResult(null); }}
-                style={{
-                  background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                  borderRadius: 6, padding: '7px 10px', fontSize: 14, fontFamily: 'inherit', outline: 'none',
-                }}
+                style={hybridControlStyles.select}
               >
                 <option value="low">Low (192 kbps CBR)</option>
                 <option value="high">High (320 kbps CBR)</option>
               </select>
               <button
+                type="button"
                 disabled={transcodeQualitySaving}
                 onClick={async () => {
                   setTranscodeQualitySaving(true);
@@ -1651,53 +1953,113 @@ export default function SettingsPage({
                     setTranscodeQualitySaving(false);
                   }
                 }}
-                style={{
-                  padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                  background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
-                  opacity: transcodeQualitySaving ? 0.6 : 1,
-                }}
+                style={{ ...hybridControlStyles.primaryButton, ...(transcodeQualitySaving ? hybridControlStyles.disabled : {}) }}
               >
                 {transcodeQualitySaving ? 'Saving...' : 'Save Quality'}
               </button>
-              {transcodeQualityResult && (
-                <span style={{ fontSize: 14, color: transcodeQualityResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
-                  {transcodeQualityResult}
-                </span>
-              )}
+              <InlineStatus busy={false} busyText="" result={transcodeQualityResult} />
             </div>
-            {/* ReplayGain normalization toggle */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
-              <div
-                onClick={async () => {
+            <div style={{ marginTop: 14 }}>
+              <ToggleRow
+                title="ReplayGain normalization"
+                ariaLabel="ReplayGain normalization"
+                checked={replayGainEnabled}
+                onChange={async () => {
                   const next = !replayGainEnabled;
                   setReplayGainEnabled(next);
                   await api.settings.update({ replayGainEnabled: String(next) });
                 }}
-                title={replayGainEnabled ? 'ReplayGain normalization on — click to disable' : 'ReplayGain normalization off — click to enable'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                  position: 'relative', flexShrink: 0,
-                  backgroundColor: replayGainEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: replayGainEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>ReplayGain normalization</div>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 1 }}>
-                  Normalize loudness across all tracks using EBU R128. Applies during server-side transcoding only.
-                </div>
-              </div>
+                description="Normalize loudness across all tracks using EBU R128. Applies during server-side transcoding only."
+              />
             </div>
           </div>
 
           {/* ── Track Transitions ──────────────────────────────────────── */}
+          <div id="advanced-transitions" style={P.advancedSectionTitle}>Track Transitions</div>
+
+          <div style={{
+            padding: '16px 20px', borderRadius: 8, marginBottom: 12,
+            backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
+          }}>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+              Control how tracks transition during playback. Override per-album or per-playlist via their context menus.
+            </div>
+
+            {/* Mode picker */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                Transition mode
+              </label>
+              <div style={hybridControlStyles.segmentedGroup}>
+                {([
+                  { value: 'off', label: 'Off' },
+                  { value: 'zerogap', label: 'Zero-gap' },
+                  { value: 'crossfade', label: 'Crossfade' },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={async () => {
+                      setCfMode(opt.value);
+                      setCfSaving(true);
+                      setCfResult(null);
+                      try {
+                        await api.settings.update({ crossfadeMode: opt.value });
+                        setCfResult('Saved');
+                      } catch { setCfResult('Error'); }
+                      setCfSaving(false);
+                      setTimeout(() => setCfResult(null), 2000);
+                    }}
+                    style={{
+                      ...hybridControlStyles.segment,
+                      ...(cfMode === opt.value ? hybridControlStyles.segmentActive : {}),
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Duration slider — visible only when crossfade mode */}
+            {cfMode === 'crossfade' && (
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  Crossfade duration: <strong style={{ color: 'var(--text)' }}>{cfDuration}s</strong>
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>1s</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={cfDuration}
+                    onChange={async e => {
+                      const val = Number(e.target.value);
+                      setCfDuration(val);
+                      setCfSaving(true);
+                      setCfResult(null);
+                      try {
+                        await api.settings.update({ crossfadeDuration: String(val) });
+                        setCfResult('Saved');
+                      } catch { setCfResult('Error'); }
+                      setCfSaving(false);
+                      setTimeout(() => setCfResult(null), 2000);
+                    }}
+                    style={{ flex: 1, accentColor: 'var(--accent)' }}
+                  />
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>10s</span>
+                </div>
+              </div>
+            )}
+
+            <InlineStatus busy={cfSaving} busyText="Saving…" result={cfResult} />
+          </div>
+
+          {/* ── BoogieMix ────────────────────────────────────────────────── */}
+          <div id="advanced-boogiemix" style={P.advancedSectionTitle}>BoogieMix</div>
+
           <div style={{
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
@@ -1708,7 +2070,7 @@ export default function SettingsPage({
             <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 10 }}>
               Admin override for rendered mix files. Leave blank to use the default folder inside the active database directory (`mix-outputs`).
             </div>
-            <div style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
+            <div style={{ fontSize: 14, color: 'var(--warning)', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
               BoogieMix is experimental and output quality may vary between runs.
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1717,20 +2079,10 @@ export default function SettingsPage({
                 value={boogiemixOutputFolder}
                 onChange={(e) => { setBoogiemixOutputFolder(e.target.value); setBoogiemixOutputFolderResult(null); }}
                 placeholder="Blank = <db-folder>\\mix-outputs"
-                style={{
-                  minWidth: 320,
-                  flex: 1,
-                  background: 'var(--bg)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--text)',
-                  borderRadius: 6,
-                  padding: '7px 10px',
-                  fontSize: 14,
-                  fontFamily: 'inherit',
-                  outline: 'none',
-                }}
+                style={{ ...hybridControlStyles.field, minWidth: 320, flex: 1, fontFamily: 'monospace' }}
               />
               <button
+                type="button"
                 disabled={boogiemixOutputFolderSaving}
                 onClick={async () => {
                   setBoogiemixOutputFolderSaving(true);
@@ -1744,19 +2096,11 @@ export default function SettingsPage({
                     setBoogiemixOutputFolderSaving(false);
                   }
                 }}
-                style={{
-                  padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                  background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
-                  opacity: boogiemixOutputFolderSaving ? 0.6 : 1,
-                }}
+                style={{ ...hybridControlStyles.primaryButton, ...(boogiemixOutputFolderSaving ? hybridControlStyles.disabled : {}) }}
               >
                 {boogiemixOutputFolderSaving ? 'Saving...' : 'Save Folder'}
               </button>
-              {boogiemixOutputFolderResult && (
-                <span style={{ fontSize: 14, color: boogiemixOutputFolderResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
-                  {boogiemixOutputFolderResult}
-                </span>
-              )}
+              <InlineStatus busy={false} busyText="" result={boogiemixOutputFolderResult} />
             </div>
           </div>
 
@@ -1774,7 +2118,7 @@ export default function SettingsPage({
               <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading deep analysis status...</div>
             ) : boogiemixDeepStatus ? (
               <div style={{ display: 'grid', gap: 10, fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                <div style={{ color: boogiemixDeepStatus.runtime?.enabled ? '#22c55e' : '#f59e0b', fontWeight: 600 }}>
+                <div style={{ color: boogiemixDeepStatus.runtime?.enabled ? 'var(--success)' : 'var(--warning)', fontWeight: 600 }}>
                   {boogiemixDeepStatus.runtime?.summary ?? 'Deep analysis runtime status unavailable.'}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
@@ -1792,8 +2136,8 @@ export default function SettingsPage({
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {boogiemixDeepStatus.queue.running > 0 && (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'rgba(34,197,94,0.15)', border: '1px solid #22c55e', borderRadius: 10, padding: '1px 8px', color: '#22c55e', fontWeight: 700, fontSize: 13 }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', display: 'inline-block', animation: 'bm-pulse 1.2s ease-in-out infinite' }} />
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'color-mix(in srgb, var(--success) 15%, transparent)', border: '1px solid var(--success)', borderRadius: 10, padding: '1px 8px', color: 'var(--success)', fontWeight: 700, fontSize: 13 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--success)', display: 'inline-block', animation: 'bm-pulse 1.2s ease-in-out infinite' }} />
                       ANALYZING
                     </span>
                   )}
@@ -1825,7 +2169,7 @@ export default function SettingsPage({
                     </select>
                   </label>
                   {boogiemixDeepBackgroundMode === 'all_music' && (
-                    <div style={{ color: '#f59e0b', fontWeight: 600 }}>
+                    <div style={{ color: 'var(--warning)', fontWeight: 600 }}>
                       Full-library deep analysis can take many hours and cause sustained CPU and disk activity.
                     </div>
                   )}
@@ -1855,10 +2199,9 @@ export default function SettingsPage({
                           })}
                           title="Queue every track in every library, not just the ones missing an analysis"
                           style={{
-                            alignSelf: 'flex-start', padding: '7px 12px', borderRadius: 6,
-                            border: '1px solid #ef4444', background: 'transparent', color: '#ef4444',
-                            fontSize: 14, cursor: totalTracks === 0 ? 'not-allowed' : 'pointer',
-                            opacity: totalTracks === 0 ? 0.55 : 1,
+                            ...hybridControlStyles.dangerButton,
+                            alignSelf: 'flex-start',
+                            ...(totalTracks === 0 ? hybridControlStyles.disabled : {}),
                           }}
                         >
                           Force Re-analyze Entire Collection
@@ -1901,7 +2244,7 @@ export default function SettingsPage({
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         <span style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Analysis model</span>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <div style={hybridControlStyles.segmentedGroup}>
                           {models.map(({ value, label, desc }) => {
                             const forced = !gpuAvailable;
                             const active = effectiveModel === value;
@@ -1909,6 +2252,7 @@ export default function SettingsPage({
                             return (
                               <button
                                 key={value}
+                                type="button"
                                 disabled={disabled}
                                 title={desc}
                                 onClick={() => {
@@ -1919,7 +2263,11 @@ export default function SettingsPage({
                                     return `Model set to ${label}`;
                                   });
                                 }}
-                                style={{ fontSize: 13, padding: '5px 10px', borderRadius: 6, border: active ? '1px solid var(--accent)' : '1px solid var(--border)', background: active ? 'color-mix(in srgb, var(--accent) 15%, var(--surface))' : 'var(--surface)', color: disabled ? 'var(--text-muted)' : 'var(--text)', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 }}
+                                style={{
+                                  ...hybridControlStyles.segment,
+                                  ...(active ? hybridControlStyles.segmentActive : {}),
+                                  ...(disabled ? hybridControlStyles.disabled : {}),
+                                }}
                               >
                                 {label}
                               </button>
@@ -1937,7 +2285,7 @@ export default function SettingsPage({
                       value={boogiemixDeepSelectedLibrary}
                       onChange={(e) => setBoogiemixDeepSelectedLibrary(e.target.value as ClientEntityId)}
                       aria-label="BoogieMix deep-analysis library"
-                      style={{ minWidth: 220, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 14 }}
+                      style={{ ...hybridControlStyles.select, minWidth: 220 }}
                     >
                       <option value="">Select library</option>
                       {libraries.map((library) => (
@@ -1945,16 +2293,18 @@ export default function SettingsPage({
                       ))}
                     </select>
                     <button
+                      type="button"
                       disabled={!boogiemixDeepSelectedLibrary || boogiemixDeepActionBusy === 'queue-library'}
                       onClick={() => runBoogieMixDeepAction('queue-library', async () => {
                         const result = await api.boogiemix.queueLibraryDeepAnalysis(boogiemixDeepSelectedLibrary);
                         return `Queued ${result.queued} tracks`;
                       })}
-                      style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: boogiemixDeepSelectedLibrary ? 'pointer' : 'not-allowed', opacity: !boogiemixDeepSelectedLibrary ? 0.55 : 1 }}
+                      style={{ ...hybridControlStyles.secondaryButton, ...(!boogiemixDeepSelectedLibrary ? hybridControlStyles.disabled : {}) }}
                     >
                       Analyze Library
                     </button>
                     <button
+                      type="button"
                       disabled={!boogiemixDeepSelectedLibrary || boogiemixDeepActionBusy === 'reanalyze-library'}
                       onClick={() => setPendingConfirm({
                         title: 'Re-analyze every track in this library?',
@@ -1968,11 +2318,12 @@ export default function SettingsPage({
                         }),
                       })}
                       title="Queue every track, not just the ones missing an analysis"
-                      style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: boogiemixDeepSelectedLibrary ? 'pointer' : 'not-allowed', opacity: !boogiemixDeepSelectedLibrary ? 0.55 : 1 }}
+                      style={{ ...hybridControlStyles.secondaryButton, ...(!boogiemixDeepSelectedLibrary ? hybridControlStyles.disabled : {}) }}
                     >
                       Re-analyze All
                     </button>
                     <button
+                      type="button"
                       onClick={() => runBoogieMixDeepAction('pause', async () => {
                         if (boogiemixDeepPauseBackground) {
                           await api.boogiemix.resumeDeepAnalysisBackground();
@@ -1984,11 +2335,12 @@ export default function SettingsPage({
                         return 'Background analysis paused';
                       })}
                       disabled={boogiemixDeepActionBusy === 'pause'}
-                      style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}
+                      style={hybridControlStyles.secondaryButton}
                     >
                       {boogiemixDeepPauseBackground ? 'Resume Background' : 'Pause Background'}
                     </button>
                     <button
+                      type="button"
                       onClick={() => setPendingConfirm({
                         title: 'Clear stored BoogieMix deep-analysis cache?',
                         message: 'Every track will need to be re-analyzed before its next BoogieMix.',
@@ -2000,110 +2352,17 @@ export default function SettingsPage({
                         }),
                       })}
                       disabled={boogiemixDeepActionBusy === 'clear-cache'}
-                      style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                      style={hybridControlStyles.dangerButton}
                     >
                       Clear Cache
                     </button>
                   </div>
-                  {boogiemixDeepActionResult && (
-                    <div style={{ color: boogiemixDeepActionResult.startsWith('Error') ? '#ef4444' : '#22c55e', fontWeight: 600 }}>
-                      {boogiemixDeepActionResult}
-                    </div>
-                  )}
+                  <InlineStatus busy={false} busyText="" result={boogiemixDeepActionResult} />
                 </div>
               </div>
             ) : (
-              <div style={{ fontSize: 13, color: '#f59e0b' }}>
+              <div style={{ fontSize: 13, color: 'var(--warning)' }}>
                 Deep analysis status unavailable. High Quality mixes will report fallback details when created.
-              </div>
-            )}
-          </div>
-
-          <div id="advanced-transitions" style={P.advancedSectionTitle}>Track Transitions</div>
-
-          <div style={{
-            padding: '16px 20px', borderRadius: 8, marginBottom: 12,
-            backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
-          }}>
-            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
-              Control how tracks transition during playback. Override per-album or per-playlist via their context menus.
-            </div>
-
-            {/* Mode picker — 3 pill buttons */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-                Transition mode
-              </label>
-              <div style={{ display: 'flex', gap: 0, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', width: 'fit-content' }}>
-                {([
-                  { value: 'off', label: 'Off' },
-                  { value: 'zerogap', label: 'Zero-gap' },
-                  { value: 'crossfade', label: 'Crossfade' },
-                ] as const).map(opt => (
-                  <button
-                    key={opt.value}
-                    onClick={async () => {
-                      setCfMode(opt.value);
-                      setCfSaving(true);
-                      setCfResult(null);
-                      try {
-                        await api.settings.update({ crossfadeMode: opt.value });
-                        setCfResult('Saved');
-                      } catch { setCfResult('Error'); }
-                      setCfSaving(false);
-                      setTimeout(() => setCfResult(null), 2000);
-                    }}
-                    style={{
-                      padding: '7px 16px', fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                      border: 'none', outline: 'none',
-                      backgroundColor: cfMode === opt.value ? 'var(--accent)' : 'var(--bg)',
-                      color: cfMode === opt.value ? '#fff' : 'var(--text)',
-                      transition: 'background 0.15s, color 0.15s',
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Duration slider — visible only when crossfade mode */}
-            {cfMode === 'crossfade' && (
-              <div style={{ marginBottom: 8 }}>
-                <label style={{ fontSize: 14, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-                  Crossfade duration: <strong style={{ color: 'var(--text)' }}>{cfDuration}s</strong>
-                </label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>1s</span>
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    step={1}
-                    value={cfDuration}
-                    onChange={async e => {
-                      const val = Number(e.target.value);
-                      setCfDuration(val);
-                      setCfSaving(true);
-                      setCfResult(null);
-                      try {
-                        await api.settings.update({ crossfadeDuration: String(val) });
-                        setCfResult('Saved');
-                      } catch { setCfResult('Error'); }
-                      setCfSaving(false);
-                      setTimeout(() => setCfResult(null), 2000);
-                    }}
-                    style={{ flex: 1, accentColor: 'var(--accent)' }}
-                  />
-                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>10s</span>
-                </div>
-              </div>
-            )}
-
-            {/* Save status */}
-            {(cfSaving || cfResult) && (
-              <div style={{ fontSize: 13, color: cfResult === 'Error' ? '#e74c3c' : 'var(--text-muted)', marginTop: 4 }}>
-                {cfSaving ? 'Saving…' : cfResult}
               </div>
             )}
           </div>
@@ -2115,70 +2374,29 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                  Generate waveform when missing
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  If enabled, BoogieBox starts waveform generation on playback for tracks that do not already
-                  have cached waveform data.
-                </div>
-              </div>
-              <div
-                onClick={async () => {
-                  const next = !waveformGenerateOnMissing;
-                  setWaveformGenerateOnMissing(next);
-                  await saveWaveformSettings({ waveformGenerateOnMissing: next ? 'true' : 'false' });
-                }}
-                title={waveformGenerateOnMissing ? 'On' : 'Off'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                  position: 'relative', flexShrink: 0, marginTop: 2,
-                  backgroundColor: waveformGenerateOnMissing ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: waveformGenerateOnMissing ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-            </div>
+            <ToggleRow
+              title="Generate waveform when missing"
+              ariaLabel="Generate waveform when missing"
+              checked={waveformGenerateOnMissing}
+              onChange={async () => {
+                const next = !waveformGenerateOnMissing;
+                setWaveformGenerateOnMissing(next);
+                await saveWaveformSettings({ waveformGenerateOnMissing: next ? 'true' : 'false' });
+              }}
+              description="If enabled, BoogieBox starts waveform generation on playback for tracks that do not already have cached waveform data."
+            />
 
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                  Enable waveform background mapping
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  Runs a scheduled background task that maps waveform data for tracks that are still missing it.
-                </div>
-              </div>
-              <div
-                onClick={async () => {
-                  const next = !waveformBackgroundEnabled;
-                  setWaveformBackgroundEnabled(next);
-                  await saveWaveformSettings({ waveformBackgroundEnabled: next ? 'true' : 'false' });
-                }}
-                title={waveformBackgroundEnabled ? 'On' : 'Off'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                  position: 'relative', flexShrink: 0, marginTop: 2,
-                  backgroundColor: waveformBackgroundEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: waveformBackgroundEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-            </div>
+            <ToggleRow
+              title="Enable waveform background mapping"
+              ariaLabel="Enable waveform background mapping"
+              checked={waveformBackgroundEnabled}
+              onChange={async () => {
+                const next = !waveformBackgroundEnabled;
+                setWaveformBackgroundEnabled(next);
+                await saveWaveformSettings({ waveformBackgroundEnabled: next ? 'true' : 'false' });
+              }}
+              description="Runs a scheduled background task that maps waveform data for tracks that are still missing it."
+            />
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -2191,11 +2409,7 @@ export default function SettingsPage({
                     await saveWaveformSettings({ waveformBackgroundFrequencyHours: String(next) });
                   }}
                   disabled={!waveformBackgroundEnabled}
-                  style={{
-                    background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                    borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit',
-                    opacity: waveformBackgroundEnabled ? 1 : 0.5,
-                  }}
+                  style={{ ...hybridControlStyles.select, ...(waveformBackgroundEnabled ? {} : hybridControlStyles.disabled) }}
                 >
                   {FREQ_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -2212,10 +2426,7 @@ export default function SettingsPage({
                     setWaveformBatchSize(next);
                     await saveWaveformSettings({ waveformBackgroundBatchSize: String(next) });
                   }}
-                  style={{
-                    background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                    borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit',
-                  }}
+                  style={hybridControlStyles.select}
                 >
                   {WAVEFORM_BATCH_OPTIONS.map((opt) => (
                     <option key={opt} value={opt}>{opt} tracks</option>
@@ -2223,19 +2434,7 @@ export default function SettingsPage({
                 </select>
               </div>
 
-              <button
-                onClick={runWaveformMappingNow}
-                style={{
-                  marginTop: 18,
-                  padding: '7px 14px',
-                  borderRadius: 6,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg)',
-                  color: 'var(--text)',
-                  fontSize: 14,
-                  cursor: 'pointer',
-                }}
-              >
+              <button type="button" onClick={runWaveformMappingNow} style={{ ...hybridControlStyles.secondaryButton, marginTop: 18 }}>
                 Run Mapping Now
               </button>
             </div>
@@ -2272,37 +2471,17 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                  Enable BPM background analysis
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  Runs BPM analysis on a schedule for tracks that are still missing BPM data.
-                </div>
-              </div>
-              <div
-                onClick={async () => {
-                  const next = !bpmBackgroundEnabled;
-                  setBpmBackgroundEnabled(next);
-                  await saveBpmSettings({ bpmBackgroundEnabled: next ? 'true' : 'false' });
-                }}
-                title={bpmBackgroundEnabled ? 'On' : 'Off'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                  position: 'relative', flexShrink: 0, marginTop: 2,
-                  backgroundColor: bpmBackgroundEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: bpmBackgroundEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-            </div>
+            <ToggleRow
+              title="Enable BPM background analysis"
+              ariaLabel="Enable BPM background analysis"
+              checked={bpmBackgroundEnabled}
+              onChange={async () => {
+                const next = !bpmBackgroundEnabled;
+                setBpmBackgroundEnabled(next);
+                await saveBpmSettings({ bpmBackgroundEnabled: next ? 'true' : 'false' });
+              }}
+              description="Runs BPM analysis on a schedule for tracks that are still missing BPM data."
+            />
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -2315,11 +2494,7 @@ export default function SettingsPage({
                     await saveBpmSettings({ bpmBackgroundFrequencyHours: String(next) });
                   }}
                   disabled={!bpmBackgroundEnabled}
-                  style={{
-                    background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-                    borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit',
-                    opacity: bpmBackgroundEnabled ? 1 : 0.5,
-                  }}
+                  style={{ ...hybridControlStyles.select, ...(bpmBackgroundEnabled ? {} : hybridControlStyles.disabled) }}
                 >
                   {FREQ_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -2339,6 +2514,7 @@ export default function SettingsPage({
                 </div>
               </div>
               <button
+                type="button"
                 onClick={async () => {
                   setBpmRunResult('Running...');
                   try {
@@ -2349,11 +2525,7 @@ export default function SettingsPage({
                     setBpmRunResult(`Error: ${e.message}`);
                   }
                 }}
-                style={{
-                  padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)',
-                  backgroundColor: 'var(--surface-hover)', color: 'var(--text)', fontSize: 14,
-                  cursor: 'pointer', whiteSpace: 'nowrap',
-                }}
+                style={{ ...hybridControlStyles.secondaryButton, whiteSpace: 'nowrap' }}
               >
                 Run BPM Analysis
               </button>
@@ -2390,35 +2562,13 @@ export default function SettingsPage({
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
-            {/* Enable toggle */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                  Enable DLNA server
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  Broadcast your music libraries on the local network so DLNA-compatible
-                  devices can discover and stream audio.
-                </div>
-              </div>
-              <div
-                onClick={() => setDlnaEnabled(!dlnaEnabled)}
-                title={dlnaEnabled ? 'DLNA enabled — click to disable' : 'DLNA disabled — click to enable'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                  position: 'relative', flexShrink: 0, marginTop: 2,
-                  backgroundColor: dlnaEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: dlnaEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-            </div>
+            <ToggleRow
+              title="Enable DLNA server"
+              ariaLabel="Enable DLNA server"
+              checked={dlnaEnabled}
+              onChange={() => setDlnaEnabled(!dlnaEnabled)}
+              description="Broadcast your music libraries on the local network so DLNA-compatible devices can discover and stream audio."
+            />
 
             {/* Friendly name */}
             <div style={{ marginBottom: 12 }}>
@@ -2463,7 +2613,7 @@ export default function SettingsPage({
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
                 <div style={{
                   width: 8, height: 8, borderRadius: '50%',
-                  backgroundColor: dlnaStatus.running ? '#22c55e' : 'var(--border)',
+                  backgroundColor: dlnaStatus.running ? 'var(--success)' : 'var(--border)',
                 }} />
                 <span style={{ fontSize: 14, color: 'var(--text-muted)' }}>
                   {dlnaStatus.running
@@ -2476,6 +2626,7 @@ export default function SettingsPage({
             {/* Save button */}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button
+                type="button"
                 disabled={dlnaSaving}
                 onClick={async () => {
                   setDlnaSaving(true);
@@ -2500,19 +2651,11 @@ export default function SettingsPage({
                     setDlnaSaving(false);
                   }
                 }}
-                style={{
-                  padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                  background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
-                  opacity: dlnaSaving ? 0.6 : 1,
-                }}
+                style={{ ...hybridControlStyles.primaryButton, ...(dlnaSaving ? hybridControlStyles.disabled : {}) }}
               >
                 {dlnaSaving ? 'Saving…' : 'Save DLNA Settings'}
               </button>
-              {dlnaResult && (
-                <span style={{ fontSize: 14, color: dlnaResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
-                  {dlnaResult}
-                </span>
-              )}
+              <InlineStatus busy={false} busyText="" result={dlnaResult} />
             </div>
           </div>
 
@@ -2524,104 +2667,62 @@ export default function SettingsPage({
             backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
           }}>
             {/* Scan debug */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                  Scan debug logging
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            <ToggleRow
+              title="Scan debug logging"
+              ariaLabel="Scan debug logging"
+              checked={scanDebugLoggingEnabled}
+              disabled={scanDebugSaving}
+              onChange={async () => {
+                if (scanDebugSaving) return;
+                const next = !scanDebugLoggingEnabled;
+                setScanDebugLoggingEnabled(next);
+                await saveScanDebugSettings(next);
+              }}
+              description={(
+                <>
                   Writes detailed scan and post-scan diagnostics — including metadata provider requests
                   (Discogs, Last.fm, Deezer, Spotify, LRCLIB, lyrics.ovh) and their results — to{' '}
                   <code style={{ color: 'var(--accent)' }}>scan-debug.log</code>. Takes effect immediately, no restart
                   needed. Leave this disabled unless you are troubleshooting large-library scans or stuck post-scan work.
-                </div>
-              </div>
-              <div
-                onClick={async () => {
-                  if (scanDebugSaving) return;
-                  const next = !scanDebugLoggingEnabled;
-                  setScanDebugLoggingEnabled(next);
-                  await saveScanDebugSettings(next);
-                }}
-                title={scanDebugLoggingEnabled ? 'On' : 'Off'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12,
-                  cursor: scanDebugSaving ? 'default' : 'pointer',
-                  position: 'relative', flexShrink: 0, marginTop: 2,
-                  opacity: scanDebugSaving ? 0.6 : 1,
-                  backgroundColor: scanDebugLoggingEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: scanDebugLoggingEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-            </div>
+                </>
+              )}
+            />
             <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
               Debug mode is <strong style={{ color: 'var(--text)' }}>{scanDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
               When enabled, scan queueing, file and batch checkpoints, follow-up job dispatch, worker progress, failures, and completion events are appended to the shared debug log.
             </div>
-            {(scanDebugSaving || scanDebugResult) && (
-              <div style={{ fontSize: 13, marginTop: 6, color: scanDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
-                {scanDebugSaving ? 'Saving…' : scanDebugResult}
-              </div>
-            )}
+            <InlineStatus busy={scanDebugSaving} busyText="Saving…" result={scanDebugResult} />
 
             <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '16px 0' }} />
 
             {/* Deep analysis debug */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-                  BoogieMix deep analysis debug logging
-                </div>
-                <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            <ToggleRow
+              title="BoogieMix deep analysis debug logging"
+              ariaLabel="BoogieMix deep analysis debug logging"
+              checked={deepmixDebugLoggingEnabled}
+              disabled={deepmixDebugSaving}
+              onChange={async () => {
+                if (deepmixDebugSaving) return;
+                const next = !deepmixDebugLoggingEnabled;
+                setDeepmixDebugLoggingEnabled(next);
+                await saveDeepmixDebugSettings(next);
+              }}
+              description={(
+                <>
                   Writes verbose deep analysis diagnostics to <code style={{ color: 'var(--accent)' }}>deep-analysis-debug.log</code>.
                   Logs every tick decision, Python runtime detection step (candidates, venv paths, version checks,
                   demucs/torch/CUDA probes), job claim, worker spawn, stdin write, process exit status, stdout/stderr,
                   JSON parse result, DB upsert outcome, and completion. Takes effect immediately, no restart needed.
                   Enable when deep analysis jobs are timing out or producing no output.
-                </div>
-              </div>
-              <div
-                onClick={async () => {
-                  if (deepmixDebugSaving) return;
-                  const next = !deepmixDebugLoggingEnabled;
-                  setDeepmixDebugLoggingEnabled(next);
-                  await saveDeepmixDebugSettings(next);
-                }}
-                title={deepmixDebugLoggingEnabled ? 'On' : 'Off'}
-                style={{
-                  width: 44, height: 24, borderRadius: 12,
-                  cursor: deepmixDebugSaving ? 'default' : 'pointer',
-                  position: 'relative', flexShrink: 0, marginTop: 2,
-                  opacity: deepmixDebugSaving ? 0.6 : 1,
-                  backgroundColor: deepmixDebugLoggingEnabled ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.2s',
-                }}
-              >
-                <div style={{
-                  position: 'absolute', top: 3,
-                  left: deepmixDebugLoggingEnabled ? 23 : 3,
-                  width: 18, height: 18, borderRadius: '50%', backgroundColor: '#fff',
-                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
-                }} />
-              </div>
-            </div>
+                </>
+              )}
+            />
             <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 4 }}>
               Deep analysis debug is <strong style={{ color: 'var(--text)' }}>{deepmixDebugLoggingEnabled ? 'enabled' : 'disabled'}</strong>.
               Logs appear in <code style={{ color: 'var(--accent)' }}>deep-analysis-debug.log</code> under the <code style={{ color: 'var(--accent)'}}>[boogiemix:deep]</code> prefix.
               Disable after investigation — the server's main log stays clean regardless.
             </div>
-            {(deepmixDebugSaving || deepmixDebugResult) && (
-              <div style={{ fontSize: 13, marginTop: 6, color: deepmixDebugResult?.startsWith('Error') ? '#ef4444' : 'var(--text-muted)' }}>
-                {deepmixDebugSaving ? 'Saving…' : deepmixDebugResult}
-              </div>
-            )}
+            <InlineStatus busy={deepmixDebugSaving} busyText="Saving…" result={deepmixDebugResult} />
 
             {(logFilePaths.server || logFilePaths.scan || logFilePaths.deep) && (
               <>
@@ -2658,7 +2759,7 @@ export default function SettingsPage({
                   Switch to a different database folder. The server will reload all settings from the new database.
                   If the folder does not contain a database yet, a fresh one will be created.
                 </div>
-                <div style={{ fontSize: 14, color: '#f59e0b', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
+                <div style={{ fontSize: 14, color: 'var(--warning)', lineHeight: 1.6, marginBottom: 10, fontWeight: 600 }}>
                   Warning: switching databases reloads the server state. You will be logged out and the page will reload.
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2675,15 +2776,14 @@ export default function SettingsPage({
                     }}
                   />
                   <button
+                    type="button"
                     onClick={() => setShowDbFolderPicker(true)}
-                    style={{
-                      padding: '7px 14px', borderRadius: 6, border: '1px solid var(--border)',
-                      background: 'var(--bg)', color: 'var(--text)', fontSize: 14, cursor: 'pointer',
-                    }}
+                    style={hybridControlStyles.secondaryButton}
                   >
                     Browse...
                   </button>
                   <button
+                    type="button"
                     disabled={switchDbSaving || !switchDbFolder.trim()}
                     onClick={() => setPendingConfirm({
                       title: 'Switch to a different database?',
@@ -2703,19 +2803,14 @@ export default function SettingsPage({
                       },
                     })}
                     style={{
-                      padding: '7px 20px', borderRadius: 6, border: '1px solid var(--accent)',
-                      background: 'var(--accent)', color: '#fff', fontSize: 14, cursor: 'pointer',
-                      opacity: (switchDbSaving || !switchDbFolder.trim()) ? 0.6 : 1,
+                      ...hybridControlStyles.dangerButton,
+                      ...((switchDbSaving || !switchDbFolder.trim()) ? hybridControlStyles.disabled : {}),
                     }}
                   >
                     {switchDbSaving ? 'Switching...' : 'Switch Database'}
                   </button>
                 </div>
-                {switchDbResult && (
-                  <div style={{ fontSize: 14, marginTop: 8, color: switchDbResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
-                    {switchDbResult}
-                  </div>
-                )}
+                <InlineStatus busy={false} busyText="" result={switchDbResult} />
               </div>
               {showDbFolderPicker && (
                 <FolderPickerModal
@@ -2734,63 +2829,47 @@ export default function SettingsPage({
         <div style={P.section}>
 
           {/* Discogs */}
-          <div style={P.sectionTitle}>Discogs</div>
-          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
-            Discogs is used to fetch album cover art when no local <code style={{ color: 'var(--accent)' }}>folder.jpg</code> is found.
-            A free personal access token is required.
-          </p>
-
-          <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
-            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
-              To get a free token:
-              &nbsp;<strong style={{ color: 'var(--text)' }}>1.</strong> Sign in at{' '}
-              <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noreferrer"
-                style={{ color: 'var(--accent)' }}>discogs.com/settings/developers</a>
-              &nbsp;<strong style={{ color: 'var(--text)' }}>2.</strong> Click <em>Generate new token</em>
-              &nbsp;<strong style={{ color: 'var(--text)' }}>3.</strong> Paste it below
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              <input
-                type="password"
-                placeholder="Paste your Discogs personal access token…"
-                value={discogsToken}
-                onChange={e => { setDiscogsToken(e.target.value); setDiscogsTestResult(null); }}
-                style={{
-                  flex: 1, minWidth: 240,
-                  backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-                  color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
-                }}
-              />
-              <button onClick={testDiscogsToken} disabled={discogsSaving} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
-                Test
-              </button>
-              <button onClick={saveDiscogsToken} disabled={discogsSaving} style={{ ...P.btnPrimary, whiteSpace: 'nowrap' }}>
-                {discogsSaving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-
-            {discogsTestResult && (
-              <div style={{
-                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 14,
-                backgroundColor: discogsTestResult.startsWith('✓') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-                border: `1px solid ${discogsTestResult.startsWith('✓') ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
-                color: discogsTestResult.startsWith('✓') ? '#86efac' : '#fca5a5',
-              }}>
-                {discogsTestResult}
-              </div>
-            )}
-          </div>
-
-          <div style={{ padding: '12px 16px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-            <strong style={{ color: 'var(--text)' }}>How cover art works:</strong><br />
-            When you open an album, BoogieBox checks the album's folder for a local image
-            (<code>folder.jpg</code>, <code>cover.jpg</code>, <code>front.jpg</code>, etc.).
-            If none is found and a Discogs token is configured, it searches Discogs and
-            displays the cover from there. Local images are always preferred and served
-            directly from your server — no data is sent to Discogs for those.
-          </div>
+          <IntegrationConnector
+            dotColor="#333"
+            name="Discogs"
+            description="Fetches album cover art when no local folder.jpg is found. Local images are always preferred and served directly from your server."
+            status={connectorStatus(!!discogsToken.trim(), discogsConnected)}
+            helpOpen={discogsHelpOpen}
+            onToggleHelp={() => setDiscogsHelpOpen((v) => !v)}
+            helpContent={
+              <>
+                <strong style={{ color: 'var(--text)' }}>1.</strong> Sign in at{' '}
+                <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+                  discogs.com/settings/developers
+                </a>{' '}
+                <strong style={{ color: 'var(--text)' }}>2.</strong> Click <em>Generate new token</em>{' '}
+                <strong style={{ color: 'var(--text)' }}>3.</strong> Paste it below.
+                <div style={{ marginTop: 8 }}>
+                  When you open an album, BoogieBox checks the album's folder for a local image
+                  (<code>folder.jpg</code>, <code>cover.jpg</code>, <code>front.jpg</code>, etc.).
+                  If none is found and a Discogs token is configured, it searches Discogs and
+                  displays the cover from there — no data is sent to Discogs for local images.
+                </div>
+              </>
+            }
+            onTest={testDiscogsToken}
+            onSave={saveDiscogsToken}
+            busy={discogsSaving}
+            errorMessage={connectorMessage(discogsTestResult)}
+          >
+            <input
+              type="password"
+              placeholder="Paste your Discogs personal access token…"
+              value={discogsToken}
+              onChange={e => { setDiscogsToken(e.target.value); setDiscogsTestResult(null); setDiscogsConnected(null); }}
+              style={{
+                flex: 1, minWidth: 240,
+                backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
+                color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
+                fontSize: 15, fontFamily: 'monospace', outline: 'none',
+              }}
+            />
+          </IntegrationConnector>
 
           {showGeniusIntegration && <div style={{ ...P.sectionTitle, marginTop: 32 }}>Lyrics: Genius</div>}
           {showGeniusIntegration && <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
@@ -2851,113 +2930,89 @@ export default function SettingsPage({
           </div>}
 
           {/* Last.fm */}
-          <div style={{ ...P.sectionTitle, marginTop: 32 }}>Last.fm</div>
-          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
-            Used to show artist biographies, album reviews, listener stats, and genre tags
-            on artist and album pages in the Browse view. Requires a free API key.
-          </p>
+          <div style={{ ...P.sectionTitle, marginTop: 24 }}>Last.fm</div>
+          <IntegrationConnector
+            dotColor="#d51007"
+            name="Last.fm"
+            description="Shows artist biographies, album reviews, listener stats, and genre tags on artist and album pages in Browse."
+            status={connectorStatus(!!lastfmKey.trim(), lastfmConnected)}
+            helpOpen={lastfmHelpOpen}
+            onToggleHelp={() => setLastfmHelpOpen((v) => !v)}
+            helpContent={
+              <>
+                <strong style={{ color: 'var(--text)' }}>1.</strong> Create an account at{' '}
+                <a href="https://www.last.fm/api/account/create" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+                  last.fm/api/account/create
+                </a>{' '}
+                <strong style={{ color: 'var(--text)' }}>2.</strong> Fill in the application form{' '}
+                <strong style={{ color: 'var(--text)' }}>3.</strong> Copy your API key and paste it below.
+              </>
+            }
+            onTest={testLastfmKey}
+            onSave={saveLastfmKey}
+            busy={lastfmSaving}
+            errorMessage={connectorMessage(lastfmResult)}
+          >
+            <input
+              type="password"
+              placeholder="Paste your Last.fm API key…"
+              value={lastfmKey}
+              onChange={e => { setLastfmKey(e.target.value); setLastfmResult(null); setLastfmConnected(null); }}
+              style={{
+                flex: 1, minWidth: 240,
+                backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
+                color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
+                fontSize: 15, fontFamily: 'monospace', outline: 'none',
+              }}
+            />
+          </IntegrationConnector>
 
-          <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
-            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
-              To get a free API key:
-              &nbsp;<strong style={{ color: 'var(--text)' }}>1.</strong> Create an account at{' '}
-              <a href="https://www.last.fm/api/account/create" target="_blank" rel="noreferrer"
-                style={{ color: 'var(--accent)' }}>last.fm/api/account/create</a>
-              &nbsp;<strong style={{ color: 'var(--text)' }}>2.</strong> Fill in the application form
-              &nbsp;<strong style={{ color: 'var(--text)' }}>3.</strong> Copy your API key and paste it below
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              <input
-                type="password"
-                placeholder="Paste your Last.fm API key…"
-                value={lastfmKey}
-                onChange={e => { setLastfmKey(e.target.value); setLastfmResult(null); }}
-                style={{
-                  flex: 1, minWidth: 240,
-                  backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-                  color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
-                }}
-              />
-              <button onClick={testLastfmKey} disabled={lastfmSaving} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
-                Test
-              </button>
-              <button onClick={saveLastfmKey} disabled={lastfmSaving} style={{ ...P.btnPrimary, whiteSpace: 'nowrap' }}>
-                {lastfmSaving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-
-            {lastfmResult && (
-              <div style={{
-                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 14,
-                backgroundColor: lastfmResult.startsWith('✓') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-                border: `1px solid ${lastfmResult.startsWith('✓') ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
-                color: lastfmResult.startsWith('✓') ? '#86efac' : '#fca5a5',
-              }}>
-                {lastfmResult}
-              </div>
-            )}
-          </div>
-
-          <div style={{ ...P.sectionTitle, marginTop: 32 }}>Artist Images: Deezer + Spotify Fallback</div>
-          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 20, lineHeight: 1.7 }}>
-            Artist photos now use Deezer first when no local image is available.
-            Discogs is used as secondary fallback (if token is configured), and Spotify is the final fallback.
-          </p>
-
-          <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)', marginBottom: 20 }}>
-            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
-              Create an app at{' '}
-              <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer"
-                style={{ color: 'var(--accent)' }}>developer.spotify.com/dashboard</a>
-              {' '}and copy the Client ID and Client Secret.
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              <input
-                type="text"
-                placeholder="Spotify Client ID..."
-                value={spotifyClientId}
-                onChange={e => { setSpotifyClientId(e.target.value); setSpotifyResult(null); }}
-                style={{
-                  flex: 1, minWidth: 220,
-                  backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-                  color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
-                }}
-              />
-              <input
-                type="password"
-                placeholder="Spotify Client Secret..."
-                value={spotifyClientSecret}
-                onChange={e => { setSpotifyClientSecret(e.target.value); setSpotifyResult(null); }}
-                style={{
-                  flex: 1, minWidth: 220,
-                  backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-                  color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                  fontSize: 15, fontFamily: 'monospace', outline: 'none',
-                }}
-              />
-              <button onClick={testSpotifyCreds} disabled={spotifySaving} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
-                Test
-              </button>
-              <button onClick={saveSpotifyCreds} disabled={spotifySaving} style={{ ...P.btnPrimary, whiteSpace: 'nowrap' }}>
-                {spotifySaving ? 'Saving...' : 'Save'}
-              </button>
-            </div>
-
-            {spotifyResult && (
-              <div style={{
-                marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 14,
-                backgroundColor: spotifyResult.startsWith('✓') ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-                border: `1px solid ${spotifyResult.startsWith('✓') ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
-                color: spotifyResult.startsWith('✓') ? '#86efac' : '#fca5a5',
-              }}>
-                {spotifyResult}
-              </div>
-            )}
-          </div>
+          <div style={{ ...P.sectionTitle, marginTop: 24 }}>Artist Images: Deezer + Spotify Fallback</div>
+          <IntegrationConnector
+            dotColor="#1db954"
+            name="Spotify"
+            description="Artist photos use Deezer first when no local image is available, Discogs as secondary fallback, and Spotify as the final fallback."
+            status={connectorStatus(hasSpotifyCredentials(spotifyClientId, spotifyClientSecret), spotifyConnected)}
+            helpOpen={spotifyHelpOpen}
+            onToggleHelp={() => setSpotifyHelpOpen((v) => !v)}
+            helpContent={
+              <>
+                Create an app at{' '}
+                <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+                  developer.spotify.com/dashboard
+                </a>{' '}and copy the Client ID and Client Secret.
+              </>
+            }
+            onTest={testSpotifyCreds}
+            onSave={saveSpotifyCreds}
+            busy={spotifySaving}
+            errorMessage={connectorMessage(spotifyResult)}
+          >
+            <input
+              type="text"
+              placeholder="Spotify Client ID..."
+              value={spotifyClientId}
+              onChange={e => { setSpotifyClientId(e.target.value); setSpotifyResult(null); setSpotifyConnected(null); }}
+              style={{
+                flex: 1, minWidth: 220,
+                backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
+                color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
+                fontSize: 15, fontFamily: 'monospace', outline: 'none',
+              }}
+            />
+            <input
+              type="password"
+              placeholder="Spotify Client Secret..."
+              value={spotifyClientSecret}
+              onChange={e => { setSpotifyClientSecret(e.target.value); setSpotifyResult(null); setSpotifyConnected(null); }}
+              style={{
+                flex: 1, minWidth: 220,
+                backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
+                color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
+                fontSize: 15, fontFamily: 'monospace', outline: 'none',
+              }}
+            />
+          </IntegrationConnector>
 
           {isAdmin && (
             <>
@@ -2975,8 +3030,15 @@ export default function SettingsPage({
                       Snapshot: {providerUsage ? fmtQueueTime(providerUsage.fetched_at) : 'Not loaded'}
                     </div>
                   </div>
-                  <button onClick={() => loadProviderUsage()} disabled={providerUsageLoading} style={{ ...P.btnSecondary, whiteSpace: 'nowrap' }}>
-                    {providerUsageLoading ? 'Refreshing…' : 'Refresh Usage'}
+                  <button
+                    type="button"
+                    onClick={() => loadProviderUsage()}
+                    disabled={providerUsageLoading}
+                    style={{ ...hybridControlStyles.iconButton, ...(providerUsageLoading ? { opacity: 0.6 } : {}) }}
+                    title={providerUsageLoading ? 'Refreshing…' : 'Refresh usage'}
+                    aria-label={providerUsageLoading ? 'Refreshing usage' : 'Refresh provider usage'}
+                  >
+                    <QueueIcon.refresh />
                   </button>
                 </div>
 
@@ -3013,10 +3075,16 @@ export default function SettingsPage({
                 {!!providerUsage?.rows.length && (
                   <div style={{ marginTop: 14 }}>
                     <button
+                      type="button"
                       onClick={() => setShowProviderUsageRows((value) => !value)}
-                      style={{ ...P.btnSecondary, padding: '7px 14px', fontSize: 14 }}
+                      style={{
+                        ...hybridControlStyles.iconButton,
+                        ...(showProviderUsageRows ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}),
+                      }}
+                      title={showProviderUsageRows ? 'Hide usage rows' : 'Show usage rows'}
+                      aria-label={showProviderUsageRows ? 'Hide usage rows' : 'Show usage rows'}
                     >
-                      {showProviderUsageRows ? 'Hide usage rows' : 'Show usage rows'}
+                      <QueueIcon.code />
                     </button>
                     {showProviderUsageRows && (
                       <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>

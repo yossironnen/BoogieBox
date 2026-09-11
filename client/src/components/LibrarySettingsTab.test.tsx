@@ -68,11 +68,11 @@ describe('LibrarySettingsTab', () => {
     expect(screen.getByText('No libraries added yet.')).toBeInTheDocument();
     const path = screen.getByPlaceholderText(/Folder path/i);
     fireEvent.change(path, { target: { value: ' /one ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Queue Folder' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Queue folder' }));
     expect(screen.getByText('/one')).toBeInTheDocument();
     fireEvent.change(path, { target: { value: '/two' } });
     fireEvent.change(screen.getByPlaceholderText(/Name \(optional\)/i), { target: { value: ' Collection ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add library' }));
     await waitFor(() => expect(apiMock.libraries.add).toHaveBeenCalledWith(['/one', '/two'], 'Collection'));
     expect(onRefresh).toHaveBeenCalled();
 
@@ -81,15 +81,15 @@ describe('LibrarySettingsTab', () => {
       .mockResolvedValueOnce({ exists: true, isDirectory: true, displayName: 'test' })
       .mockResolvedValueOnce({ exists: true, isDirectory: false, error: 'file' })
       .mockResolvedValueOnce({ exists: false, isDirectory: false, normalized: '/missing' });
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test path' }));
     expect(await screen.findByText(/Path OK/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test path' }));
     expect(await screen.findByText(/not a directory/)).toBeInTheDocument();
     expect(screen.getByText('file')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test path' }));
     expect(await screen.findByText(/Path not found/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Browse for folder' }));
     expect(screen.getByText('picker-/test')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'pick-folder' }));
     await waitFor(() => expect(path).toHaveValue('/picked/music'));
@@ -101,17 +101,17 @@ describe('LibrarySettingsTab', () => {
     render(<LibrarySettingsTab libraries={[]} />);
     const path = screen.getByPlaceholderText(/Folder path/i);
     fireEvent.change(path, { target: { value: '/queued' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Queue Folder' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Queue folder' }));
     fireEvent.click(screen.getByTitle('Remove queued folder'));
     expect(screen.queryByText('/queued')).not.toBeInTheDocument();
 
     fireEvent.change(path, { target: { value: '/bad' } });
     fireEvent.keyDown(path, { key: 'Enter' });
     expect(await screen.findByText('Add failed')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test path' }));
     expect(await screen.findByText('Test failed')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Browse for folder' }));
     fireEvent.click(screen.getByRole('button', { name: 'close-picker' }));
     expect(path).toHaveValue('/bad');
   });
@@ -121,10 +121,10 @@ describe('LibrarySettingsTab', () => {
     render(<LibrarySettingsTab libraries={[library]} onRefresh={onRefresh} />);
     await waitFor(() => expect(apiMock.scanJobs.active).toHaveBeenCalled());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename library' }));
     const name = screen.getByLabelText(/Library name for/i);
     fireEvent.change(name, { target: { value: ' ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save library name' }));
     expect(screen.getByText('Library name is required')).toBeInTheDocument();
     fireEvent.change(name, { target: { value: 'Renamed' } });
     fireEvent.keyDown(name, { key: 'Enter' });
@@ -148,7 +148,7 @@ describe('LibrarySettingsTab', () => {
 
     apiMock.libraries.addFolder.mockRejectedValueOnce(new Error('Folder failed'));
     fireEvent.change(folder, { target: { value: '/failed' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Folder' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
     expect(await screen.findByText('Folder failed')).toBeInTheDocument();
   });
 
@@ -156,10 +156,10 @@ describe('LibrarySettingsTab', () => {
     platformMock.isDesktop = true;
     platformMock.selectFolder.mockResolvedValue('/desktop/music');
     render(<LibrarySettingsTab libraries={[{ ...library, folders: undefined, folder_count: 1 }]} />);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Browse' })[1]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Browse for folder' })[1]);
     await waitFor(() => expect(platformMock.selectFolder).toHaveBeenCalled());
     expect(screen.getByPlaceholderText('Add another folder')).toHaveValue('/desktop/music');
-    fireEvent.click(screen.getByRole('button', { name: 'Scan' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Scan library' }));
     await waitFor(() => expect(apiMock.libraries.scan).toHaveBeenCalledWith('1'));
     expect(screen.getByText('Queued...')).toBeInTheDocument();
   });
@@ -210,12 +210,12 @@ describe('LibrarySettingsTab', () => {
     apiMock.libraries.scan.mockRejectedValue(new Error('Scan failed'));
     render(<LibrarySettingsTab libraries={[library]} />);
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Browse' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Browse for folder' })[0]);
     expect(await screen.findByText('Picker failed')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename library' }));
     fireEvent.change(screen.getByLabelText(/Library name for/i), { target: { value: 'Broken' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save library name' }));
     expect(await screen.findByText('Rename failed')).toBeInTheDocument();
     fireEvent.keyDown(screen.getByLabelText(/Library name for/i), { key: 'Escape' });
 
@@ -225,7 +225,7 @@ describe('LibrarySettingsTab', () => {
     fireEvent.click(screen.getByTitle('Remove library'));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Library' }));
     expect(await screen.findByText('Remove library failed')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Scan' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Scan library' }));
     expect(await screen.findByText('Scan failed')).toBeInTheDocument();
   });
 });

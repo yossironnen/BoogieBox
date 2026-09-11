@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
+import { hybridControlStyles } from '../hybridPreview';
 import type { AdminUser, AuthUser } from '../types';
 import type { EntityId } from '../entityId';
 import ConfirmModal from './ConfirmModal';
@@ -12,18 +13,31 @@ interface Props {
   currentUser: AuthUser;
 }
 
-const inputStyle: React.CSSProperties = {
-  background: 'var(--surface)', border: '1px solid var(--border)',
-  color: 'var(--text)', borderRadius: 6, padding: '6px 10px',
-  fontSize: 15, outline: 'none', width: '100%',
-};
+const inputStyle: React.CSSProperties = { ...hybridControlStyles.field, minHeight: 36, padding: '6px 10px', fontSize: 15, width: '100%' };
 
-const btnStyle = (variant: 'primary' | 'danger' | 'ghost' = 'primary'): React.CSSProperties => ({
-  padding: '6px 14px', borderRadius: 6, fontSize: 14, fontWeight: 600,
-  cursor: 'pointer', border: 'none',
-  background: variant === 'primary' ? 'var(--accent)' : variant === 'danger' ? '#ef4444' : 'var(--surface)',
-  color: variant === 'ghost' ? 'var(--text-muted)' : '#fff',
-});
+const Icon = {
+  Lock: () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 018 0v4" />
+    </svg>
+  ),
+  Key: () => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="8" cy="15" r="4" />
+      <path d="M10.5 12.5L20 3M20 3h-4M20 3v4" />
+    </svg>
+  ),
+  Trash: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4h6v2" />
+    </svg>
+  ),
+};
 
 function PinModal({ userId, username, onClose }: { userId: EntityId; username: string; onClose: () => void }) {
   const [pin, setPin] = useState(['', '', '', '']);
@@ -96,11 +110,11 @@ function PinModal({ userId, username, onClose }: { userId: EntityId; username: s
         <div style={{ fontSize: 17, fontWeight: 700 }}>Set PIN for {username}</div>
         <PinRow arr={pin} setArr={setPin} label="New PIN" refs2={refs} />
         <PinRow arr={confirm} setArr={setConfirm} label="Confirm PIN" refs2={crefs} />
-        {error && <div style={{ color: '#ef4444', fontSize: 14 }}>{error}</div>}
+        {error && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button style={btnStyle('ghost')} onClick={handleClear} disabled={saving}>Clear PIN</button>
-          <button style={btnStyle('ghost')} onClick={onClose} disabled={saving}>Cancel</button>
-          <button style={btnStyle('primary')} onClick={handleSave} disabled={saving}>Save</button>
+          <button type="button" style={hybridControlStyles.dangerButton} onClick={handleClear} disabled={saving}>Clear PIN</button>
+          <button type="button" style={hybridControlStyles.secondaryButton} onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" style={{ ...hybridControlStyles.primaryButton, ...(saving ? hybridControlStyles.disabled : {}) }} onClick={handleSave} disabled={saving}>Save</button>
         </div>
       </div>
     </div>
@@ -195,9 +209,14 @@ export default function UserManagement({ currentUser }: Props) {
     }
   };
 
-  const sectionHead: React.CSSProperties = { fontSize: 14, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 };
-  const permTag = (active: boolean, label: string) => (
-    <span style={{ fontSize: 12, padding: '2px 7px', borderRadius: 4, background: active ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)', color: active ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600 }}>
+  const sectionHead: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: 'var(--text)', marginBottom: 12 };
+  const permPill = (active: boolean, label: string) => (
+    <span style={{
+      fontSize: 12, padding: '2px 8px', borderRadius: 999, fontWeight: 600,
+      border: '1px solid var(--border)',
+      background: active ? 'var(--accent-soft)' : 'var(--surface-subtle)',
+      color: active ? 'var(--accent)' : 'var(--text-muted)',
+    }}>
       {label}
     </span>
   );
@@ -210,36 +229,75 @@ export default function UserManagement({ currentUser }: Props) {
         {loading ? (
           <div style={{ color: 'var(--text-muted)', fontSize: 15 }}>Loading...</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {users.map(user => (
-              <div key={user.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: 15, fontWeight: 600 }}>{user.username}</span>
+          <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+            {users.map((user, index) => (
+              <div
+                key={user.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+                  borderTop: index > 0 ? '1px solid var(--border)' : undefined,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{user.username}</span>
                   {user.id === currentUser.id && <span style={{ fontSize: 12, color: 'var(--accent)', marginLeft: 6 }}>(you)</span>}
                 </div>
-                <span style={{ fontSize: 12, padding: '2px 8px', borderRadius: 4, background: user.role === 'admin' ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.06)', color: user.role === 'admin' ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600 }}>
+                <span style={{
+                  fontSize: 12, padding: '2px 8px', borderRadius: 999, fontWeight: 600,
+                  border: '1px solid var(--border)',
+                  background: user.role === 'admin' ? 'var(--accent-soft)' : 'var(--surface-subtle)',
+                  color: user.role === 'admin' ? 'var(--accent)' : 'var(--text-muted)',
+                }}>
                   {user.role}
                 </span>
                 {user.role === 'user' && (
                   <>
-                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 12 }} title="Toggle libraries management permission" onClick={() => handleTogglePermission(user, 'canManageLibraries')}>
-                      {permTag(user.canManageLibraries, 'Libraries')}
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+                      title="Toggle libraries management permission"
+                      onClick={() => handleTogglePermission(user, 'canManageLibraries')}
+                    >
+                      {permPill(user.canManageLibraries, 'Libraries')}
                     </button>
-                    <button style={{ ...btnStyle('ghost'), padding: '3px 8px', fontSize: 12 }} title="Toggle metadata edit permission" onClick={() => handleTogglePermission(user, 'canEditMetadata')}>
-                      {permTag(user.canEditMetadata, 'Metadata')}
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+                      title="Toggle metadata edit permission"
+                      onClick={() => handleTogglePermission(user, 'canEditMetadata')}
+                    >
+                      {permPill(user.canEditMetadata, 'Metadata')}
                     </button>
                   </>
                 )}
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{user.hasPin ? '🔒 PIN' : 'No PIN'}</span>
-                <button style={btnStyle('ghost')} onClick={() => setPinModalUser(user)}>
-                  {user.hasPin ? 'Change PIN' : 'Set PIN'}
+                <span
+                  title={user.hasPin ? 'Has a PIN' : 'No PIN set'}
+                  style={{ display: 'inline-flex', alignItems: 'center', color: user.hasPin ? 'var(--accent)' : 'var(--text-muted)' }}
+                >
+                  <Icon.Lock />
+                </span>
+                <button
+                  type="button"
+                  style={hybridControlStyles.iconButton}
+                  title={user.hasPin ? 'Change PIN' : 'Set PIN'}
+                  aria-label={user.hasPin ? `Change PIN for ${user.username}` : `Set PIN for ${user.username}`}
+                  onClick={() => setPinModalUser(user)}
+                >
+                  <Icon.Key />
                 </button>
                 <button
-                  style={{ ...btnStyle('danger'), opacity: user.id === currentUser.id ? 0.4 : 1 }}
+                  type="button"
+                  style={{
+                    ...hybridControlStyles.iconButton,
+                    color: 'var(--danger)',
+                    ...(user.id === currentUser.id ? hybridControlStyles.disabled : {}),
+                  }}
                   disabled={user.id === currentUser.id}
+                  title="Delete user"
+                  aria-label={`Delete user ${user.username}`}
                   onClick={() => handleDelete(user)}
                 >
-                  Delete
+                  <Icon.Trash />
                 </button>
               </div>
             ))}
@@ -250,46 +308,48 @@ export default function UserManagement({ currentUser }: Props) {
       {/* Add user */}
       <div>
         <div style={sectionHead}>Add User</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input style={inputStyle} placeholder="Username" value={newUsername} onChange={e => { setNewUsername(e.target.value); setAddError(''); }} />
-          <div style={{ display: 'flex', gap: 8 }}>
-            <select
-              style={{ ...inputStyle, flex: 1 }}
-              value={newRole}
-              onChange={e => { setNewRole(e.target.value as 'user' | 'admin'); setNewCanManageLibraries(false); setNewCanEditMetadata(false); }}
-            >
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
-            <input
-              style={{ ...inputStyle, flex: 1 }}
-              placeholder="PIN (optional, 4 digits)"
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
-              value={newPin}
-              onChange={e => { setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4)); setAddError(''); }}
-            />
-          </div>
-          {newRole === 'user' && (
-            <div style={{ display: 'flex', gap: 16 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <input type="checkbox" style={checkboxStyle} checked={newCanManageLibraries} onChange={e => setNewCanManageLibraries(e.target.checked)} />
-                Allow libraries management
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                <input type="checkbox" style={checkboxStyle} checked={newCanEditMetadata} onChange={e => setNewCanEditMetadata(e.target.checked)} />
-                Allow metadata editing
-              </label>
+        <div style={{ padding: '16px 20px', borderRadius: 8, backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <input style={inputStyle} placeholder="Username" value={newUsername} onChange={e => { setNewUsername(e.target.value); setAddError(''); }} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <select
+                style={{ ...hybridControlStyles.select, flex: 1 }}
+                value={newRole}
+                onChange={e => { setNewRole(e.target.value as 'user' | 'admin'); setNewCanManageLibraries(false); setNewCanEditMetadata(false); }}
+              >
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+              <input
+                style={{ ...inputStyle, flex: 1 }}
+                placeholder="PIN (optional, 4 digits)"
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                value={newPin}
+                onChange={e => { setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4)); setAddError(''); }}
+              />
             </div>
-          )}
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            PINs travel to the server in plain HTTP requests. Use remote access only on trusted networks.
+            {newRole === 'user' && (
+              <div style={{ display: 'flex', gap: 16 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                  <input type="checkbox" style={checkboxStyle} checked={newCanManageLibraries} onChange={e => setNewCanManageLibraries(e.target.checked)} />
+                  Allow libraries management
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                  <input type="checkbox" style={checkboxStyle} checked={newCanEditMetadata} onChange={e => setNewCanEditMetadata(e.target.checked)} />
+                  Allow metadata editing
+                </label>
+              </div>
+            )}
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              PINs travel to the server in plain HTTP requests. Use remote access only on trusted networks.
+            </div>
+            {addError && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{addError}</div>}
+            <button type="button" style={{ ...hybridControlStyles.primaryButton, alignSelf: 'flex-start' }} onClick={handleAdd}>
+              Add User
+            </button>
           </div>
-          {addError && <div style={{ color: '#ef4444', fontSize: 14 }}>{addError}</div>}
-          <button style={{ ...btnStyle('primary'), alignSelf: 'flex-start' }} onClick={handleAdd}>
-            Add User
-          </button>
         </div>
       </div>
 

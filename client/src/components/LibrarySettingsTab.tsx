@@ -7,6 +7,7 @@ import { api } from '../api';
 import FolderPickerModal from './FolderPickerModal';
 import ConfirmModal from './ConfirmModal';
 import { platform } from '../platform';
+import { hybridControlStyles } from '../hybridPreview';
 import type { ClientEntityId, Library, LibraryFolder, ScanJob } from '../types';
 import { parseServerDate } from '../utils';
 
@@ -64,6 +65,44 @@ const Icon = {
       <path d="M9 6V4h6v2" />
     </svg>
   ),
+  FolderOpen: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v1H3V7z" />
+      <path d="M21 10l-1.5 9a2 2 0 01-2 1.7H6.5a2 2 0 01-2-1.7L3 10h18z" />
+    </svg>
+  ),
+  CheckCircle: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="8 12.5 11 15.5 16 9" />
+    </svg>
+  ),
+  ListPlus: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="3" y1="6" x2="14" y2="6" />
+      <line x1="3" y1="12" x2="14" y2="12" />
+      <line x1="3" y1="18" x2="10" y2="18" />
+      <line x1="19" y1="10" x2="19" y2="18" />
+      <line x1="15" y1="14" x2="23" y2="14" />
+    </svg>
+  ),
+  Edit: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+  ),
+  Check: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  ),
+  X: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  ),
 };
 
 const L = {
@@ -82,43 +121,9 @@ const L = {
     fontFamily: 'inherit',
     outline: 'none',
   },
-  btnPrimary: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'var(--accent)',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 6,
-    padding: '8px 16px',
-    cursor: 'pointer',
-    fontSize: 15,
-    fontFamily: 'inherit',
-    fontWeight: 600,
-  },
-  btnSecondary: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'var(--bg)',
-    color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
-    borderRadius: 6,
-    padding: '6px 12px',
-    cursor: 'pointer',
-    fontSize: 14,
-    fontFamily: 'inherit',
-  },
-  btnDanger: {
-    display: 'flex',
-    alignItems: 'center',
-    backgroundColor: 'transparent',
-    color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
-    borderRadius: 6,
-    padding: '6px 8px',
-    cursor: 'pointer',
-  },
+  iconBtn: { ...hybridControlStyles.iconButton },
+  iconBtnDanger: { ...hybridControlStyles.iconButton, color: 'var(--danger)' },
+  iconBtnAccent: { ...hybridControlStyles.iconButton, color: 'var(--accent)' },
   errorMsg: { color: '#ef4444', marginTop: 8, fontSize: 14 },
   helperCard: {
     marginTop: 8,
@@ -460,8 +465,10 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
           onKeyDown={(e) => e.key === 'Enter' && addLibrary()}
         />
         <button
-          style={L.btnSecondary}
+          style={L.iconBtn}
           type="button"
+          title="Browse"
+          aria-label="Browse for folder"
           onClick={async () => {
             try {
               const folder = await openBrowse(newPath.trim() || undefined);
@@ -471,16 +478,16 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
             }
           }}
         >
-          Browse
+          <Icon.FolderOpen />
         </button>
-        <button style={L.btnSecondary} onClick={testPath} type="button">
-          Test
+        <button style={L.iconBtn} onClick={testPath} type="button" title="Test path" aria-label="Test path">
+          <Icon.CheckCircle />
         </button>
-        <button style={L.btnSecondary} onClick={queueFolder} type="button">
-          Queue Folder
+        <button style={L.iconBtn} onClick={queueFolder} type="button" title="Queue folder" aria-label="Queue folder">
+          <Icon.ListPlus />
         </button>
-        <button style={L.btnPrimary} onClick={addLibrary} type="button">
-          <Icon.Plus /> Add
+        <button style={L.iconBtnAccent} onClick={addLibrary} type="button" title="Add library" aria-label="Add library">
+          <Icon.Plus />
         </button>
       </div>
       {pendingFolders.length > 0 && (
@@ -489,9 +496,10 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
             <div key={folder} style={L.folderRow}>
               <div style={L.folderPathText}>{folder}</div>
               <button
-                style={L.btnDanger}
+                style={L.iconBtnDanger}
                 type="button"
                 title="Remove queued folder"
+                aria-label="Remove queued folder"
                 onClick={() => setPendingFolders((prev) => prev.filter((candidate) => candidate !== folder))}
               >
                 <Icon.Trash />
@@ -544,11 +552,25 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                           if (e.key === 'Escape') cancelRename();
                         }}
                       />
-                      <button style={L.btnSecondary} type="button" onClick={() => void saveRename(library.id)} disabled={renameBusy}>
-                        {renameBusy ? 'Saving...' : 'Save'}
+                      <button
+                        style={L.iconBtnAccent}
+                        type="button"
+                        title={renameBusy ? 'Saving...' : 'Save'}
+                        aria-label="Save library name"
+                        onClick={() => void saveRename(library.id)}
+                        disabled={renameBusy}
+                      >
+                        <Icon.Check />
                       </button>
-                      <button style={L.btnSecondary} type="button" onClick={cancelRename} disabled={renameBusy}>
-                        Cancel
+                      <button
+                        style={L.iconBtn}
+                        type="button"
+                        title="Cancel"
+                        aria-label="Cancel rename"
+                        onClick={cancelRename}
+                        disabled={renameBusy}
+                      >
+                        <Icon.X />
                       </button>
                     </div>
                   ) : (
@@ -569,9 +591,10 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                         <div style={L.folderPathText}>{index === 0 ? `Primary: ${folder.path}` : folder.path}</div>
                         {folders.length > 1 ? (
                           <button
-                            style={L.btnDanger}
+                            style={L.iconBtnDanger}
                             type="button"
                             title="Remove folder"
+                            aria-label="Remove folder"
                             onClick={() => confirmRemoveFolder(library.id, folder.id)}
                           >
                             <Icon.Trash />
@@ -589,8 +612,10 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                       onKeyDown={(e) => e.key === 'Enter' && addFolderToLibrary(library.id)}
                     />
                     <button
-                      style={L.btnSecondary}
+                      style={L.iconBtn}
                       type="button"
+                      title="Browse"
+                      aria-label="Browse for folder"
                       onClick={async () => {
                         try {
                           const folder = await openBrowse(
@@ -602,32 +627,42 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                         }
                       }}
                     >
-                      Browse
+                      <Icon.FolderOpen />
                     </button>
-                    <button style={L.btnSecondary} type="button" onClick={() => addFolderToLibrary(library.id)}>
-                      Add Folder
+                    <button
+                      style={L.iconBtnAccent}
+                      type="button"
+                      title="Add folder"
+                      aria-label="Add folder"
+                      onClick={() => addFolderToLibrary(library.id)}
+                    >
+                      <Icon.Plus />
                     </button>
                   </div>
                 </div>
                 <div style={L.libActions}>
                   {editingLibraryId !== library.id ? (
                     <button
-                      style={L.btnSecondary}
+                      style={L.iconBtn}
                       onClick={() => startRename(library)}
                       type="button"
+                      title="Rename library"
+                      aria-label="Rename library"
                     >
-                      Rename
+                      <Icon.Edit />
                     </button>
                   ) : null}
                   <button
-                    style={L.btnSecondary}
+                    style={{ ...L.iconBtn, ...(job?.status === 'running' ? { opacity: 0.6 } : {}) }}
                     onClick={() => startScan(library)}
                     disabled={job?.status === 'running'}
                     type="button"
+                    title={job?.status === 'running' ? 'Scanning...' : 'Scan library'}
+                    aria-label={job?.status === 'running' ? 'Scanning' : 'Scan library'}
                   >
-                    <Icon.Scan /> {job?.status === 'running' ? 'Scanning...' : 'Scan'}
+                    <Icon.Scan />
                   </button>
-                  <button style={L.btnDanger} onClick={() => confirmRemoveLibrary(library.id)} type="button" title="Remove library">
+                  <button style={L.iconBtnDanger} onClick={() => confirmRemoveLibrary(library.id)} type="button" title="Remove library" aria-label="Remove library">
                     <Icon.Trash />
                   </button>
                 </div>

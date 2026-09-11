@@ -56,7 +56,7 @@ describe('UserManagement', () => {
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     expect(await screen.findByText('listener')).toBeInTheDocument();
     expect(screen.getByText('(you)')).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Delete' })[0]).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete user owner' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add User' }));
     expect(screen.getByText('Username required')).toBeInTheDocument();
@@ -118,13 +118,13 @@ describe('UserManagement', () => {
     expect(await screen.findByText('permission failed')).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'OK' }));
 
-    fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Delete user listener' }));
     expect(screen.getByText('Delete user "listener"?')).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
     expect(usersApi.remove).not.toHaveBeenCalled();
 
     usersApi.remove.mockRejectedValueOnce(new Error('delete failed'));
-    fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Delete user listener' }));
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText('delete failed')).toBeInTheDocument();
   });
@@ -132,7 +132,7 @@ describe('UserManagement', () => {
   it('validates, saves, clears, and cancels PIN changes', async () => {
     render(<UserManagement currentUser={currentUser} />);
     await screen.findByText('listener');
-    fireEvent.click(screen.getByRole('button', { name: 'Set PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set PIN for listener' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(screen.getByText('Enter a 4-digit PIN')).toBeInTheDocument();
@@ -155,11 +155,11 @@ describe('UserManagement', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(usersApi.setPin).toHaveBeenCalledWith('user-2', '1234'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Set PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set PIN for listener' }));
     fireEvent.click(screen.getByRole('button', { name: 'Clear PIN' }));
     await waitFor(() => expect(usersApi.setPin).toHaveBeenCalledWith('user-2', null));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Set PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set PIN for listener' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByText('Set PIN for listener')).not.toBeInTheDocument();
   });
@@ -168,7 +168,7 @@ describe('UserManagement', () => {
     usersApi.setPin.mockRejectedValueOnce(new Error('PIN service unavailable'));
     render(<UserManagement currentUser={currentUser} />);
     await screen.findByText('listener');
-    fireEvent.click(screen.getByRole('button', { name: 'Set PIN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set PIN for listener' }));
     fireEvent.click(screen.getByRole('button', { name: 'Clear PIN' }));
 
     expect(await screen.findByText('PIN service unavailable')).toBeInTheDocument();

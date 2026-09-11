@@ -339,31 +339,31 @@ describe('SettingsPage component flows', () => {
 
     fireEvent.change(screen.getByPlaceholderText(/Folder path/i), { target: { value: 'D:\\More' } });
     expect(screen.queryByRole('option', { name: 'Movies' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test path' }));
     await waitFor(() => expect(apiMock.debugTestPath).toHaveBeenCalledWith('D:\\More'));
     expect(await screen.findByText(/Path OK/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Queue Folder/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Queue folder/i }));
     fireEvent.change(screen.getByPlaceholderText(/Name \(optional\)/i), { target: { value: 'More' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Add$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Add library$/i }));
     await waitFor(() => expect(apiMock.libraries.add).toHaveBeenCalledWith(['D:\\More'], 'More'));
 
-    fireEvent.click(screen.getByRole('button', { name: /^Rename$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Rename library$/i }));
     fireEvent.change(screen.getByLabelText(/Library name for D:\\Music/i), { target: { value: 'Renamed Library' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Save library name$/i }));
     await waitFor(() => expect(apiMock.libraries.rename).toHaveBeenCalledWith('1', 'Renamed Library'));
 
     expect(screen.getByText(/Primary: D:\\Music/i)).toBeInTheDocument();
     expect(screen.getByText(/D:\\More Music/i)).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText(/Add another folder/i), { target: { value: 'D:\\Third' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Add Folder$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Add folder$/i }));
     await waitFor(() => expect(apiMock.libraries.addFolder).toHaveBeenCalledWith('1', 'D:\\Third'));
 
     fireEvent.click(screen.getAllByTitle('Remove folder')[0]);
     fireEvent.click(screen.getByRole('button', { name: 'Remove Folder' }));
     await waitFor(() => expect(apiMock.libraries.removeFolder).toHaveBeenCalledWith('1', 'f1'));
 
-    fireEvent.click(screen.getByRole('button', { name: /^Scan$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Scan library$/i }));
     await waitFor(() => expect(apiMock.libraries.scan).toHaveBeenCalledWith('1'));
 
     fireEvent.click(screen.getByTitle('Remove library'));
@@ -385,9 +385,9 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Libraries/i }));
     await waitFor(() => expect(apiMock.libraries.list).toHaveBeenCalled());
 
-    fireEvent.click(screen.getByRole('button', { name: /^Rename$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Rename library$/i }));
     fireEvent.change(screen.getByLabelText(/Library name for D:\\Music/i), { target: { value: 'Main Library' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Save library name$/i }));
 
     expect(await screen.findByText(/Library name already exists\. Please choose a unique name\./i)).toBeInTheDocument();
   });
@@ -417,7 +417,7 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(apiMock.schedules.upsert).toHaveBeenCalledWith('1', true, 12));
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh queue snapshot' }));
     await waitFor(() => expect(apiMock.admin.queues).toHaveBeenCalledTimes(2));
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop scan' }));
@@ -471,7 +471,7 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Clear Cache' }));
     await waitFor(() => expect(apiMock.boogiemix.clearDeepAnalysisCache).toHaveBeenCalledTimes(1));
 
-    const streamToggle = screen.getByTitle(/Transcoding enabled/i);
+    const streamToggle = screen.getByRole('switch', { name: 'Server-side transcoding' });
     fireEvent.click(streamToggle);
     expect(setStreamDirectMock).toHaveBeenCalledWith(true);
     expect(onStreamDirectChange).toHaveBeenCalledWith(true);
@@ -482,9 +482,7 @@ describe('SettingsPage component flows', () => {
       waveformBackgroundBatchSize: '250',
     }));
 
-    const debugCard = screen.getByText('Scan debug logging').closest('div')?.parentElement?.parentElement;
-    if (!debugCard) throw new Error('Scan debug logging card not found');
-    fireEvent.click(within(debugCard).getByTitle('Off'));
+    fireEvent.click(screen.getByRole('switch', { name: 'Scan debug logging' }));
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({
       scanDebugLoggingEnabled: 'true',
     }));
@@ -626,18 +624,17 @@ describe('SettingsPage component flows', () => {
 
     const discogsInput = screen.getByPlaceholderText(/Discogs personal access token/i);
     fireEvent.change(discogsInput, { target: { value: 'new-discogs-token' } });
-    const discogsCard = discogsInput.closest('div');
-    if (!discogsCard) throw new Error('Discogs section not found');
-    fireEvent.click(within(discogsCard.parentElement ?? discogsCard).getAllByRole('button', { name: 'Test' })[0]);
-    expect(await screen.findByText(/Discogs connection OK/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Test Discogs connection' }));
+    expect(await screen.findByText('Connected')).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('api.discogs.com/database/search'),
       expect.objectContaining({
         headers: expect.objectContaining({ 'User-Agent': 'BoogieBox/1.0' }),
       })
     ));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Setup instructions' })[0]);
     expect(screen.getByText(/When you open an album, BoogieBox checks the album's folder/i)).toBeInTheDocument();
-    fireEvent.click(within(discogsCard.parentElement ?? discogsCard).getAllByRole('button', { name: 'Save' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Discogs credentials' }));
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ discogsToken: 'new-discogs-token' }));
 
     expect(screen.queryByPlaceholderText(/Genius Client ID/i)).not.toBeInTheDocument();
@@ -645,9 +642,9 @@ describe('SettingsPage component flows', () => {
     expect(apiMock.integrations.geniusTest).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByPlaceholderText(/Last\.fm API key/i), { target: { value: 'lfm-2' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[1]);
-    expect(await screen.findByText(/Last\.fm connection OK/i)).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'Test Last.fm connection' }));
+    await waitFor(() => expect(screen.getAllByText('Connected').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Last.fm credentials' }));
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ lastfmKey: 'lfm-2' }));
 
     const lastfmHeading = screen.getAllByText('Last.fm', { selector: 'div' })[0];
@@ -656,9 +653,9 @@ describe('SettingsPage component flows', () => {
 
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client ID/i), { target: { value: 'id-2' } });
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client Secret/i), { target: { value: 'secret-2' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Test' })[2]);
+    fireEvent.click(screen.getByRole('button', { name: 'Test Spotify connection' }));
     await waitFor(() => expect(apiMock.integrations.spotifyTest).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[2]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Spotify credentials' }));
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({
       spotifyClientId: 'id-2',
       spotifyClientSecret: 'secret-2',
@@ -707,11 +704,11 @@ describe('SettingsPage component flows', () => {
     fireEvent.change(screen.getByPlaceholderText(/Last\.fm API key/i), { target: { value: 'bad' } });
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client ID/i), { target: { value: 'id' } });
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client Secret/i), { target: { value: 'secret' } });
-    for (const button of screen.getAllByRole('button', { name: 'Test' })) fireEvent.click(button);
+    for (const button of screen.getAllByRole('button', { name: /^Test .* connection$/ })) fireEvent.click(button);
     expect(await screen.findByText(/Discogs returned 401: bad token/i)).toBeInTheDocument();
     expect(await screen.findByText(/Last\.fm error/i)).toBeInTheDocument();
     expect(await screen.findByText(/spotify offline/i)).toBeInTheDocument();
-    for (const button of screen.getAllByRole('button', { name: 'Save' })) fireEvent.click(button);
+    for (const button of screen.getAllByRole('button', { name: /^Save .* credentials$/ })) fireEvent.click(button);
     expect(await screen.findAllByText(/save denied/i)).not.toHaveLength(0);
   });
 
@@ -841,7 +838,7 @@ describe('SettingsPage component flows', () => {
     fireEvent.change(crossfadeSlider, { target: { value: '7' } });
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ crossfadeDuration: '7' }));
 
-    fireEvent.click(screen.getAllByTitle('On')[0]);
+    fireEvent.click(screen.getByRole('switch', { name: 'Generate waveform when missing' }));
     expect(await screen.findByText(/Error: settings denied/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Run Mapping Now' }));
     expect(await screen.findByText(/Error: mapping denied/i)).toBeInTheDocument();

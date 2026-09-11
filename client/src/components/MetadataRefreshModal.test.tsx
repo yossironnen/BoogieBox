@@ -60,7 +60,6 @@ describe('MetadataRefreshModal', () => {
     await waitFor(() => expect(apiMock.updateAlbumMetadata).toHaveBeenCalledWith(
       'album-1',
       expect.objectContaining({ year: 2001 }),
-      true,
     ));
   });
 
@@ -97,7 +96,7 @@ describe('MetadataRefreshModal', () => {
     expect(screen.getByText('custom')).toBeInTheDocument();
     expect(screen.getAllByText(/result/).some((node) => node.textContent === '1 result')).toBe(true);
     fireEvent.click(screen.getAllByRole('button', { name: 'Apply' })[0]);
-    await waitFor(() => expect(apiMock.updateArtistMetadata).toHaveBeenCalledWith('artist-1', { name: 'New Artist' }, true));
+    await waitFor(() => expect(apiMock.updateArtistMetadata).toHaveBeenCalledWith('artist-1', { name: 'New Artist' }));
     expect(apiMock.refreshArtistPhoto).toHaveBeenCalledWith('artist-1');
     expect(onApplied).toHaveBeenCalledWith();
 
@@ -135,7 +134,7 @@ describe('MetadataRefreshModal', () => {
       discogsReleaseType: undefined,
       spotifyReleaseType: 'single',
       year: undefined,
-    }), true);
+    }));
   });
 
   it('shows a rate-limit message when a provider was rate limited', async () => {
