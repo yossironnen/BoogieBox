@@ -389,19 +389,70 @@ const Icon = {
 
 // ─── Stats Bar ────────────────────────────────────────────────────────────────
 
+function StatsBarTracksIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
+function StatsBarArtistsIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M20 21a8 8 0 0 0-16 0" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function StatsBarAlbumsIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+function StatsBarHoursIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l4 2" />
+    </svg>
+  );
+}
+
+function StatsBarStorageIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <rect x="3" y="4" width="18" height="7" rx="1.5" />
+      <rect x="3" y="13" width="18" height="7" rx="1.5" />
+      <circle cx="7" cy="7.5" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="16.5" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 function StatsBar({ stats }: { stats: Stats | null }) {
   const items = [
-    { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '–' },
-    { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '–' },
-    { label: 'Albums',  value: stats?.total_albums?.toLocaleString()  ?? '–' },
-    { label: 'Hours',   value: stats?.total_hours != null ? stats.total_hours.toLocaleString() : '–' },
-    { label: 'GB',      value: stats?.total_gb    != null ? String(stats.total_gb) : '–' },
+    { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '–', Icon: StatsBarTracksIcon },
+    { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '–', Icon: StatsBarArtistsIcon },
+    { label: 'Albums',  value: stats?.total_albums?.toLocaleString()  ?? '–', Icon: StatsBarAlbumsIcon },
+    { label: 'Hours',   value: stats?.total_hours != null ? stats.total_hours.toLocaleString() : '–', Icon: StatsBarHoursIcon },
+    { label: 'GB',      value: stats?.total_gb    != null ? String(stats.total_gb) : '–', Icon: StatsBarStorageIcon },
   ];
   return (
     <div style={S.statsBar}>
-      {items.map(({ label, value }) => (
+      {items.map(({ label, value, Icon }) => (
         <div key={label} style={S.statItem}>
-          <span style={S.statValue}>{value}</span>
+          <div style={S.statValueRow}>
+            <Icon size={16} style={S.statIcon} />
+            <span style={S.statValue}>{value}</span>
+          </div>
           <span style={S.statLabel}>{label}</span>
         </div>
       ))}
@@ -2067,6 +2118,8 @@ const S: Record<string, React.CSSProperties> = {
     padding: '14px 24px',
     borderRight: '1px solid color-mix(in srgb, var(--border) 58%, transparent)',
   },
+  statValueRow: { display: 'flex', alignItems: 'center', gap: 6 },
+  statIcon: { color: 'var(--accent)', opacity: 0.85, flexShrink: 0 },
   statValue: { fontWeight: 700, fontSize: 22, color: 'var(--text)', fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.4px' },
   statLabel: { fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.9, marginTop: 3 },
   filterBar: {

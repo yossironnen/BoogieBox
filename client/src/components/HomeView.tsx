@@ -142,23 +142,177 @@ function WidgetCard({ title, span, className, titleClassName, hybridDesign = fal
 
 // ─── Stats Widget ────────────────────────────────────────────────────────────
 
+function TrackStatIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
+function ArtistStatIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M20 21a8 8 0 0 0-16 0" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function AlbumStatIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+function StreakIcon({ size = 14, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M12 2c1 3-2 4-2 7a3 3 0 0 0 6 0c1 2-1 4-1 4a6 6 0 1 1-9-8c0 2 1 3 2 3-1-3 1-5 4-6z" />
+    </svg>
+  );
+}
+
+function ListeningTimeIcon({ size = 14, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l4 2" />
+    </svg>
+  );
+}
+
+function TopArtistIcon({ size = 14, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M12 2 14.4 8.6 21 9.3 16 13.6 17.5 20.2 12 16.7 6.5 20.2 8 13.6 3 9.3 9.6 8.6z" />
+    </svg>
+  );
+}
+
+function GenreIcon({ size = 14, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M20.6 12.4 12.6 20.4a2 2 0 0 1-2.8 0l-6.2-6.2a2 2 0 0 1 0-2.8L11.6 3.4a2 2 0 0 1 1.4-.6H19a2 2 0 0 1 2 2v6.2a2 2 0 0 1-.4 1.4z" />
+      <circle cx="16" cy="8" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function GenreCollage({ albumIds }: { albumIds: ClientEntityId[] }) {
+  const ids = albumIds.slice(0, 4);
+  const fallbackCount = Math.max(0, 4 - ids.length);
+  return (
+    <div style={H.autoDjGenreCollage}>
+      {ids.map((albumId) => (
+        <div key={albumId} style={H.autoDjGenreCollageTile}>
+          <ArtImage src={api.albumArtUrl(albumId, 300)} alt="" imgStyle={H.autoDjGenreCollageArt} />
+        </div>
+      ))}
+      {Array.from({ length: fallbackCount }, (_, index) => (
+        <div key={`fallback-${index}`} style={{ ...H.autoDjGenreCollageTile, ...H.autoDjGenreCollageFallback }} />
+      ))}
+    </div>
+  );
+}
+
+function AutoDjIcon({ size = 20, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M4 4h4l7 16h5" />
+      <path d="M4 20h4l3.5-8" />
+      <path d="M17 4h3l-2 2 2 2h-3" />
+    </svg>
+  );
+}
+
+function SettingsIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function PlusIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function ChevronUpIcon({ size = 14, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="m18 15-6-6-6 6" />
+    </svg>
+  );
+}
+
+function SearchIcon({ size = 14, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  );
+}
+
+function CrossfadeModeIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M3 12h4l2-9 4 18 2-9h6" />
+    </svg>
+  );
+}
+
+function ZeroGapModeIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <rect x="3" y="10" width="7" height="4" />
+      <rect x="14" y="10" width="7" height="4" />
+    </svg>
+  );
+}
+
+function OffModeIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <line x1="4" y1="4" x2="20" y2="20" />
+      <line x1="20" y1="4" x2="4" y2="20" />
+    </svg>
+  );
+}
+
 function StatsWidget({ stats }: { stats: Stats | null }) {
   const items = [
-    { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '--' },
-    { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '--' },
-    { label: 'Albums',  value: stats?.total_albums?.toLocaleString()  ?? '--' },
+    { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '--', Icon: TrackStatIcon },
+    { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '--', Icon: ArtistStatIcon },
+    { label: 'Albums',  value: stats?.total_albums?.toLocaleString()  ?? '--', Icon: AlbumStatIcon },
   ];
   return (
     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-      {items.map(({ label, value }) => (
+      {items.map(({ label, value, Icon }) => (
         <div key={label} style={{
           flex: '1 1 100px', textAlign: 'center', padding: '14px 8px',
           backgroundColor: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)',
         }}>
           <div style={{
-            fontSize: 30, fontWeight: 700, color: 'var(--accent)',
-            fontVariantNumeric: 'tabular-nums', lineHeight: 1.1,
-          }}>{value}</div>
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          }}>
+            <Icon size={18} style={{ color: 'var(--accent)', opacity: 0.85 }} />
+            <span style={{
+              fontSize: 30, fontWeight: 700, color: 'var(--accent)',
+              fontVariantNumeric: 'tabular-nums', lineHeight: 1.1,
+            }}>{value}</span>
+          </div>
           <div style={{
             fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase',
             letterSpacing: 1, marginTop: 6,
@@ -421,23 +575,21 @@ function TopRatedWidget({
   const renderThumb = ({
     alt,
     src,
-    shape = 'square',
     fallback,
   }: {
     alt: string;
     src: string | null;
-    shape?: 'square' | 'circle';
     fallback: string;
   }) => (
-    <div style={{ ...H.topRatedThumbWrap, borderRadius: shape === 'circle' ? '50%' : 8 }}>
+    <div style={{ ...H.topRatedThumbWrap, borderRadius: 8 }}>
       {src ? (
         <ArtImage
           src={src}
           alt={alt}
-          imgStyle={{ ...H.topRatedThumbImage, borderRadius: shape === 'circle' ? '50%' : 8 }}
+          imgStyle={{ ...H.topRatedThumbImage, borderRadius: 8 }}
         />
       ) : (
-        <div style={{ ...H.topRatedThumbFallback, borderRadius: shape === 'circle' ? '50%' : 8 }}>
+        <div style={{ ...H.topRatedThumbFallback, borderRadius: 8 }}>
           {fallback}
         </div>
       )}
@@ -463,7 +615,6 @@ function TopRatedWidget({
                 {renderThumb({
                   alt: artist.name,
                   src: api.artistPhotoUrl(artist.id, 300),
-                  shape: 'circle',
                   fallback: 'A',
                 })}
                 <div style={H.topRatedTextWrap}>
@@ -555,9 +706,50 @@ function HomeGenresWidget({
   onOpenGenre: (genre: string) => void;
   onBrowseMusic: () => void;
 }) {
+  const [genreAlbumId, setGenreAlbumId] = useState<Record<string, ClientEntityId | null>>({});
+  const fetchedGenreThumbLabels = useRef<Set<string>>(new Set());
+
+  // Memoized on `genres` (not recomputed to a fresh array reference every
+  // render): the effect below depends on this identity to know when the
+  // genre list has actually changed. HomeView re-renders often as its many
+  // widgets' independent fetches settle, and an unstable dependency here
+  // previously tore down and rebuilt the in-flight album-art fetch below on
+  // nearly every one of those re-renders — each rebuild saw the genre
+  // already marked "fetched" (that happens synchronously, before the fetch
+  // even starts) and skipped retrying, while the original fetch's result
+  // landed in an already-cancelled closure and was silently dropped. Net
+  // effect: the thumbnail never updated past its icon fallback.
+  const items = useMemo(() => selectTopGenres(genres, 6), [genres]);
+
+  // Sample a single random album cover per genre for the row thumbnail —
+  // fetched once per genre, not re-picked on every render.
+  useEffect(() => {
+    const pending = items.filter((item) => !fetchedGenreThumbLabels.current.has(item.label));
+    if (!pending.length) return;
+    for (const item of pending) fetchedGenreThumbLabels.current.add(item.label);
+    let cancelled = false;
+    Promise.all(pending.map(async (item) => {
+      try {
+        const albums = await api.albums({ genres: [item.label] });
+        if (!albums.length) return { label: item.label, id: null as ClientEntityId | null };
+        const pick = albums[Math.floor(Math.random() * albums.length)];
+        return { label: item.label, id: pick.id };
+      } catch {
+        return { label: item.label, id: null as ClientEntityId | null };
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      setGenreAlbumId((prev) => {
+        const next = { ...prev };
+        for (const { label, id } of entries) next[label] = id;
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [items]);
+
   if (genres.length === 0) return <div style={H.widgetEmpty}>No genre data yet</div>;
 
-  const items = selectTopGenres(genres, 6);
   const max = items[0]?.track_count || 1;
 
   return (
@@ -575,6 +767,11 @@ function HomeGenresWidget({
             title={`Browse ${item.label}`}
             aria-label={topGenreAriaLabel(item.label)}
           >
+            <div style={H.genreDiscoveryThumb}>
+              {genreAlbumId[item.label]
+                ? <ArtImage src={api.albumArtUrl(genreAlbumId[item.label]!, 300)} alt="" imgStyle={H.genreDiscoveryThumbImg} wrapperStyle={H.genreDiscoveryThumbWrap} />
+                : <GenreIcon size={16} style={H.genreDiscoveryIcon} />}
+            </div>
             <div style={H.genreDiscoveryText}>
               <div style={H.genreDiscoveryName}>{item.label}</div>
               <div style={H.genreDiscoveryMeta}>
@@ -619,10 +816,13 @@ function HomeAutoDjModule({
   const [autoDjStatus, setAutoDjStatus] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [genreSearch, setGenreSearch] = useState('');
   const [autoDjCfMode, setAutoDjCfMode] = useState<CrossfadeMode>('off');
   const [autoDjCfDuration, setAutoDjCfDuration] = useState(2);
   const [autoDjCfHasOverride, setAutoDjCfHasOverride] = useState(false);
   const [autoDjCfSaving, setAutoDjCfSaving] = useState(false);
+  const [genreAlbumIds, setGenreAlbumIds] = useState<Record<string, ClientEntityId[]>>({});
+  const fetchedGenreLabels = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     api.crossfade.config('autodj', '0').then((config) => {
@@ -632,13 +832,50 @@ function HomeAutoDjModule({
     }).catch(() => {});
   }, []);
 
-  const onAutoDjGenresChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const selected = Array.from(event.currentTarget.options)
-      .filter((option) => option.selected)
-      .map((option) => option.value);
-    setAutoDjGenres(selected);
+  // Sample up to 4 random album covers per quick genre for the card collage —
+  // fetched once per genre, not re-shuffled on every render.
+  useEffect(() => {
+    const pending = quickGenres.slice(0, 5).filter((genre) => !fetchedGenreLabels.current.has(genre.label));
+    if (!pending.length) return;
+    for (const genre of pending) fetchedGenreLabels.current.add(genre.label);
+    let cancelled = false;
+    Promise.all(pending.map(async (genre) => {
+      try {
+        const albums = await api.albums({ genres: [genre.label] });
+        const shuffled = [...albums];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return { label: genre.label, ids: shuffled.slice(0, 4).map((album) => album.id) };
+      } catch {
+        return { label: genre.label, ids: [] as ClientEntityId[] };
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      setGenreAlbumIds((prev) => {
+        const next = { ...prev };
+        for (const { label, ids } of entries) next[label] = ids;
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [quickGenres]);
+
+  const toggleAutoDjGenre = (genreName: string) => {
+    setAutoDjGenres((current) => (
+      current.includes(genreName)
+        ? current.filter((value) => value !== genreName)
+        : [...current, genreName]
+    ));
     setAutoDjStatus('');
   };
+
+  const filteredGenres = useMemo(() => {
+    const query = genreSearch.trim().toLowerCase();
+    if (!query) return allGenres;
+    return allGenres.filter((genre) => genre.genre.toLowerCase().includes(query));
+  }, [allGenres, genreSearch]);
 
   const launchAutoDj = async (selectedGenres: string[]) => {
     if (!selectedGenres.length) {
@@ -689,149 +926,212 @@ function HomeAutoDjModule({
     }
   };
 
+  const transitionTitle = autoDjCfMode === 'crossfade'
+    ? `Transition options (${autoDjCfDuration}s crossfade)`
+    : `Transition options (${autoDjCfMode})`;
+
   return (
     <div style={H.autoDjPanel}>
       <div style={H.autoDjPanelHead}>
-        <div style={H.autoDjWrap}>
-          <div style={H.autoDjLabel}>Auto DJ</div>
-          <div style={H.autoDjIntro}>Start from a genre, then let the queue keep moving.</div>
+        <div style={H.autoDjHeaderLeft}>
+          <div style={H.autoDjHeaderIconWrap}>
+            <AutoDjIcon size={20} />
+          </div>
+          <div>
+            <div style={H.autoDjLabel}>Auto DJ</div>
+            <div style={H.autoDjIntro}>Start from a genre, then let the queue keep moving.</div>
+          </div>
         </div>
         <button
           type="button"
-          style={H.autoDjSecondaryBtn}
-          onClick={() => setPickerOpen((value) => !value)}
-          aria-expanded={pickerOpen}
-          aria-label="Toggle more Home Auto DJ genres"
+          style={{ ...H.autoDjIconBtn, ...(optionsOpen ? H.autoDjIconBtnActive : {}) }}
+          onClick={() => setOptionsOpen((value) => !value)}
+          aria-expanded={optionsOpen}
+          aria-label="Toggle Home Auto DJ transition options"
+          title={transitionTitle}
         >
-          {pickerOpen ? 'Hide genres' : 'More genres'}
+          <SettingsIcon size={18} />
         </button>
       </div>
 
-      <div style={H.autoDjChipRow}>
-        {quickGenres.slice(0, 5).map((genre) => (
+      {!pickerOpen && (
+        <div style={H.autoDjQuickGrid}>
+          {quickGenres.slice(0, 5).map((genre) => (
+            <button
+              key={genre.canonical_key}
+              type="button"
+              onClick={() => launchAutoDj([genre.label])}
+              disabled={autoDjLoading}
+              style={H.autoDjGenreCard}
+              aria-label={`Start Home Auto DJ with ${genre.label}`}
+              title={`Start Auto DJ with ${genre.label}`}
+            >
+              {(() => {
+                const albumIds = genreAlbumIds[genre.label];
+                return albumIds?.length
+                  ? <GenreCollage albumIds={albumIds} />
+                  : <div style={H.autoDjGenreCardIcon}><GenreIcon size={18} /></div>;
+              })()}
+              <div style={H.autoDjGenreCardName}>{genre.label}</div>
+              <div style={H.autoDjGenreCardCount}>{genre.track_count.toLocaleString()} tracks</div>
+            </button>
+          ))}
           <button
-            key={genre.canonical_key}
             type="button"
-            onClick={() => launchAutoDj([genre.label])}
-            disabled={autoDjLoading}
-            style={H.autoDjChip}
-            aria-label={`Start Home Auto DJ with ${genre.label}`}
+            onClick={() => setPickerOpen(true)}
+            style={H.autoDjMoreCard}
+            aria-label="Browse all genres for Home Auto DJ"
+            title="Browse all genres"
           >
-            <span>{genre.label}</span>
-            <span style={H.autoDjChipCount}>{genre.track_count.toLocaleString()}</span>
-          </button>
-        ))}
-      </div>
-
-      {pickerOpen && (
-        <div style={H.autoDjPicker}>
-          <select
-            multiple
-            size={4}
-            aria-label="Home Auto DJ genre picker"
-            title="Select one or more genres for Auto DJ"
-            style={H.autoDjGenreSelect}
-            value={autoDjGenres}
-            onChange={onAutoDjGenresChange}
-          >
-            {allGenres.map((genre) => (
-              <option key={genre.genre} value={genre.genre}>{genre.genre} ({genre.track_count})</option>
-            ))}
-          </select>
-          <button
-            style={{ ...H.createPlaylistBtn, ...H.autoDjStartBtn, opacity: autoDjLoading ? 0.7 : 1 }}
-            onClick={() => launchAutoDj(autoDjGenres)}
-            disabled={autoDjLoading || allGenres.length === 0}
-            aria-label="Start Home Auto DJ from picker"
-            title="Build a random queue from selected genres"
-          >
-            {autoDjLoading ? 'Starting...' : 'Start selected genres'}
+            <div style={H.autoDjMoreCardIcon}><PlusIcon size={18} /></div>
+            <div style={H.autoDjGenreCardName}>More genres</div>
           </button>
         </div>
       )}
 
-      {autoDjStatus && <div style={H.autoDjStatus}>{autoDjStatus}</div>}
+      {pickerOpen && (
+        <>
+          <button
+            type="button"
+            onClick={() => { setPickerOpen(false); setGenreSearch(''); }}
+            style={H.autoDjBrowseToggle}
+            aria-expanded={pickerOpen}
+            aria-label="Hide genre browser"
+          >
+            <ChevronUpIcon size={14} />
+            Hide genre browser
+          </button>
 
-      <div style={H.autoDjTransitionWrap}>
-        <button
-          type="button"
-          onClick={() => setOptionsOpen((value) => !value)}
-          style={H.autoDjOptionsToggle}
-          aria-expanded={optionsOpen}
-          aria-label="Toggle Home Auto DJ options"
-        >
-          <span style={H.autoDjTransitionLabel}>Options</span>
-          <span style={H.autoDjOptionsMeta}>
-            {autoDjCfMode === 'crossfade' ? `${autoDjCfDuration}s crossfade` : autoDjCfMode}
-          </span>
-        </button>
-
-        {optionsOpen && (
-          <div style={H.autoDjOptionsPanel}>
-            <div style={H.autoDjModePill}>
-              {([
-                { value: 'off' as const, label: 'Off' },
-                { value: 'zerogap' as const, label: 'Zero-gap' },
-                { value: 'crossfade' as const, label: 'Crossfade' },
-              ]).map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => {
-                    setAutoDjCfMode(option.value);
-                    saveAutoDjCrossfadeOverride(option.value, autoDjCfDuration);
-                  }}
-                  style={{
-                    ...H.autoDjModeOption,
-                    ...(autoDjCfMode === option.value ? H.autoDjModeOptionActive : {}),
-                  }}
-                  aria-label={`Set Home Auto DJ transition mode ${option.label}`}
-                >
-                  {option.label}
-                </button>
-              ))}
+          <div style={H.autoDjPickerBox}>
+            <div style={H.autoDjPickerHead}>
+              <div style={H.autoDjSearchRow}>
+                <SearchIcon size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                <input
+                  type="text"
+                  value={genreSearch}
+                  onChange={(event) => setGenreSearch(event.target.value)}
+                  placeholder={`Search genres (${allGenres.length} total)`}
+                  style={H.autoDjSearchInput}
+                  aria-label="Search Home Auto DJ genres"
+                />
+              </div>
+              <span style={H.autoDjPickerCount}>
+                {autoDjGenres.length
+                  ? `${autoDjGenres.length} genre${autoDjGenres.length === 1 ? '' : 's'} selected`
+                  : 'Select one or more genres'}
+              </span>
+              <button
+                type="button"
+                onClick={() => launchAutoDj(autoDjGenres)}
+                disabled={autoDjLoading || autoDjGenres.length === 0}
+                style={{
+                  ...H.autoDjStartIconBtn,
+                  opacity: (autoDjLoading || autoDjGenres.length === 0) ? 0.5 : 1,
+                }}
+                aria-label="Start Home Auto DJ from picker"
+                title="Start Auto DJ"
+              >
+                <PlayIcon size={16} />
+              </button>
             </div>
 
-            {autoDjCfMode === 'crossfade' && (
-              <div style={H.autoDjDurationRow}>
-                <span style={H.autoDjDurationEdge}>1s</span>
-                <input
-                  type="range"
-                  min={1}
-                  max={10}
-                  step={1}
-                  value={autoDjCfDuration}
-                  onChange={(event) => {
-                    const nextDuration = Number(event.target.value);
-                    setAutoDjCfDuration(nextDuration);
-                    saveAutoDjCrossfadeOverride(autoDjCfMode, nextDuration);
-                  }}
-                  style={H.autoDjDurationSlider}
-                  aria-label="Home Auto DJ crossfade duration"
-                />
-                <span style={H.autoDjDurationEdge}>10s</span>
-                <span style={H.autoDjDurationValue}>{autoDjCfDuration}s</span>
-              </div>
-            )}
-
-            <div style={H.autoDjTransitionMeta}>
-              {autoDjCfHasOverride ? (
-                <button
-                  type="button"
-                  onClick={resetAutoDjCrossfadeOverride}
-                  style={H.autoDjResetBtn}
-                  aria-label="Reset Home Auto DJ transition override"
-                >
-                  Reset to default
-                </button>
-              ) : (
-                <span style={H.autoDjTransitionHint}>Using global default</span>
+            <div style={H.autoDjChipScroll}>
+              {filteredGenres.map((genre) => {
+                const selected = autoDjGenres.includes(genre.genre);
+                return (
+                  <button
+                    key={genre.genre}
+                    type="button"
+                    onClick={() => toggleAutoDjGenre(genre.genre)}
+                    style={{ ...H.autoDjPickChip, ...(selected ? H.autoDjPickChipSelected : {}) }}
+                    aria-pressed={selected}
+                    aria-label={`${selected ? 'Remove' : 'Add'} ${genre.genre} ${selected ? 'from' : 'to'} the Home Auto DJ selection`}
+                  >
+                    <span style={{ ...H.autoDjPickChipIcon, ...(selected ? H.autoDjPickChipIconSelected : {}) }}>
+                      <GenreIcon size={16} />
+                    </span>
+                    {genre.genre}
+                    <span style={H.autoDjPickChipCount}>{genre.track_count.toLocaleString()}</span>
+                  </button>
+                );
+              })}
+              {filteredGenres.length === 0 && (
+                <div style={H.widgetEmpty}>No genres match &quot;{genreSearch}&quot;</div>
               )}
-              {autoDjCfSaving && <span style={H.autoDjTransitionHint}>Saving...</span>}
             </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
+
+      {autoDjStatus && <div style={H.autoDjStatus}>{autoDjStatus}</div>}
+
+      {optionsOpen && (
+        <div style={H.autoDjOptionsPanel}>
+          <div style={H.autoDjModeRow}>
+            {([
+              { value: 'crossfade' as const, label: 'Crossfade', Icon: CrossfadeModeIcon },
+              { value: 'zerogap' as const, label: 'Zero-gap', Icon: ZeroGapModeIcon },
+              { value: 'off' as const, label: 'Off', Icon: OffModeIcon },
+            ]).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setAutoDjCfMode(option.value);
+                  saveAutoDjCrossfadeOverride(option.value, autoDjCfDuration);
+                }}
+                style={{
+                  ...H.autoDjModeBtn,
+                  ...(autoDjCfMode === option.value ? H.autoDjModeBtnActive : {}),
+                }}
+                aria-label={`Set Home Auto DJ transition mode ${option.label}`}
+                aria-pressed={autoDjCfMode === option.value}
+              >
+                <option.Icon size={16} />
+                <span>{option.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {autoDjCfMode === 'crossfade' && (
+            <div style={H.autoDjDurationRow}>
+              <span style={H.autoDjDurationEdge}>1s</span>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                step={1}
+                value={autoDjCfDuration}
+                onChange={(event) => {
+                  const nextDuration = Number(event.target.value);
+                  setAutoDjCfDuration(nextDuration);
+                  saveAutoDjCrossfadeOverride(autoDjCfMode, nextDuration);
+                }}
+                style={H.autoDjDurationSlider}
+                aria-label="Home Auto DJ crossfade duration"
+              />
+              <span style={H.autoDjDurationEdge}>10s</span>
+              <span style={H.autoDjDurationValue}>{autoDjCfDuration}s</span>
+            </div>
+          )}
+
+          <div style={H.autoDjTransitionMeta}>
+            {autoDjCfHasOverride ? (
+              <button
+                type="button"
+                onClick={resetAutoDjCrossfadeOverride}
+                style={H.autoDjResetBtn}
+                aria-label="Reset Home Auto DJ transition override"
+              >
+                Reset to default
+              </button>
+            ) : (
+              <span style={H.autoDjTransitionHint}>Using global default</span>
+            )}
+            {autoDjCfSaving && <span style={H.autoDjTransitionHint}>Saving...</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1300,64 +1600,76 @@ function RecentlyPlayedWidget({
 
       <div className="boogie-metrics-grid" style={H.boogieMetricsRow} data-testid="boogie-metrics">
         <div style={H.boogieMetricTile}>
-          <div style={H.boogieMetricLabel}>Current streak</div>
-          <div style={H.boogieMetricValue}>
-            <AnimatedMetricNumber
-              value={boogieSnapshot.currentStreak}
-              reducedMotion={reducedMotion}
-              formatter={(value) => `${value}`}
-              testId="boogie-current-streak"
-            />
-            <span style={H.boogieMetricUnit}>days</span>
-          </div>
-        </div>
-        <div style={H.boogieMetricTile}>
-          <div style={H.boogieMetricLabel}>Longest streak</div>
-          <div style={H.boogieMetricValue}>
-            <AnimatedMetricNumber
-              value={boogieSnapshot.longestStreak}
-              reducedMotion={reducedMotion}
-              formatter={(value) => `${value}`}
-              testId="boogie-longest-streak"
-            />
-            <span style={H.boogieMetricUnit}>days</span>
-          </div>
-        </div>
-        <div style={H.boogieMetricTile}>
-          <div style={H.boogieMetricLabel}>Listening time</div>
-          <div style={H.boogieMetricValue}>
-            <AnimatedMetricNumber
-              value={totalMinutes}
-              reducedMotion={reducedMotion}
-              formatter={formatMinutes}
-              testId="boogie-total-time"
-            />
-          </div>
-        </div>
-        <div style={H.boogieMetricTile}>
-          <div style={H.boogieMetricLabel}>Top artist</div>
-          {canOpenTopArtist ? (
-            <button
-              type="button"
-              style={{ ...H.boogieMetricArtistValue, ...H.boogieMetricArtistButton }}
-              title={`Open ${boogieSnapshot.topArtist}`}
-              aria-label={topArtistAriaLabel(boogieSnapshot.topArtist)}
-              onClick={openTopArtist}
-            >
-              {boogieSnapshot.topArtist}
-            </button>
-          ) : (
-            <div style={H.boogieMetricArtistValue} title={boogieSnapshot.topArtist}>
-              {boogieSnapshot.topArtist}
+          <StreakIcon size={28} style={H.boogieMetricIcon} />
+          <div style={H.boogieMetricBody}>
+            <div style={H.boogieMetricLabel}>Current streak</div>
+            <div style={H.boogieMetricValue}>
+              <AnimatedMetricNumber
+                value={boogieSnapshot.currentStreak}
+                reducedMotion={reducedMotion}
+                formatter={(value) => `${value}`}
+                testId="boogie-current-streak"
+              />
+              <span style={H.boogieMetricUnit}>days</span>
             </div>
-          )}
-          <div style={H.boogieMetricSubValue}>
-            <AnimatedMetricNumber
-              value={boogieSnapshot.topArtistPlays}
-              reducedMotion={reducedMotion}
-              formatter={(value) => `${value} plays`}
-              testId="boogie-top-artist-plays"
-            />
+          </div>
+        </div>
+        <div style={H.boogieMetricTile}>
+          <StreakIcon size={28} style={H.boogieMetricIcon} />
+          <div style={H.boogieMetricBody}>
+            <div style={H.boogieMetricLabel}>Longest streak</div>
+            <div style={H.boogieMetricValue}>
+              <AnimatedMetricNumber
+                value={boogieSnapshot.longestStreak}
+                reducedMotion={reducedMotion}
+                formatter={(value) => `${value}`}
+                testId="boogie-longest-streak"
+              />
+              <span style={H.boogieMetricUnit}>days</span>
+            </div>
+          </div>
+        </div>
+        <div style={H.boogieMetricTile}>
+          <ListeningTimeIcon size={28} style={H.boogieMetricIcon} />
+          <div style={H.boogieMetricBody}>
+            <div style={H.boogieMetricLabel}>Listening time</div>
+            <div style={H.boogieMetricValue}>
+              <AnimatedMetricNumber
+                value={totalMinutes}
+                reducedMotion={reducedMotion}
+                formatter={formatMinutes}
+                testId="boogie-total-time"
+              />
+            </div>
+          </div>
+        </div>
+        <div style={H.boogieMetricTile}>
+          <TopArtistIcon size={28} style={H.boogieMetricIcon} />
+          <div style={H.boogieMetricBody}>
+            <div style={H.boogieMetricLabel}>Top artist</div>
+            {canOpenTopArtist ? (
+              <button
+                type="button"
+                style={{ ...H.boogieMetricArtistValue, ...H.boogieMetricArtistButton }}
+                title={`Open ${boogieSnapshot.topArtist}`}
+                aria-label={topArtistAriaLabel(boogieSnapshot.topArtist)}
+                onClick={openTopArtist}
+              >
+                {boogieSnapshot.topArtist}
+              </button>
+            ) : (
+              <div style={H.boogieMetricArtistValue} title={boogieSnapshot.topArtist}>
+                {boogieSnapshot.topArtist}
+              </div>
+            )}
+            <div style={H.boogieMetricSubValue}>
+              <AnimatedMetricNumber
+                value={boogieSnapshot.topArtistPlays}
+                reducedMotion={reducedMotion}
+                formatter={(value) => `${value} plays`}
+                testId="boogie-top-artist-plays"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -1410,15 +1722,22 @@ function RecentlyPlayedWidget({
   );
 }
 
+function homePlaylistFallbackTiles(count: number): number[] {
+  return Array.from({ length: Math.max(0, 4 - count) }, (_, index) => index);
+}
+
 function QuickPlaylistsWidget({
   onOpenPlaylist,
+  onPlayTrack,
 }: {
   onOpenPlaylist: (playlistId: EntityId) => void;
+  onPlayTrack: (track: Track, allTracks?: Track[]) => void;
 }) {
-  const [playlists, setPlaylists] = useState<Array<Pick<Playlist, 'id' | 'name' | 'track_count' | 'art_album_ids'>>>([]);
+  const [playlists, setPlaylists] = useState<Array<Pick<Playlist, 'id' | 'name' | 'track_count' | 'total_duration' | 'art_album_ids'>>>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const [hoveredPlaylistId, setHoveredPlaylistId] = useState<EntityId | null>(null);
 
   useEffect(() => {
     api.playlists.list().then(setPlaylists).finally(() => setLoading(false));
@@ -1445,7 +1764,7 @@ function QuickPlaylistsWidget({
       }
       setPlaylists(prev => {
         if (prev.some(pl => pl.id === playlistId)) return prev;
-        return [{ id: playlistId, name: created.name || name, track_count: 0, art_album_ids: [] }, ...prev];
+        return [{ id: playlistId, name: created.name || name, track_count: 0, total_duration: 0, art_album_ids: [] }, ...prev];
       });
       onOpenPlaylist(playlistId);
     } catch (e: any) {
@@ -1455,82 +1774,111 @@ function QuickPlaylistsWidget({
     }
   };
 
-  const createBtn = (
+  const newPlaylistCard = (
     <button
-      style={{
-        ...H.createPlaylistBtn,
-        width: 34, height: 34, padding: 0,
-        opacity: creating ? 0.7 : 1,
-      }}
+      type="button"
       onClick={createPlaylist}
       disabled={creating}
+      style={{
+        flexShrink: 0, width: 150, border: '1px dashed color-mix(in srgb, var(--border) 90%, transparent)',
+        borderRadius: 8, background: 'transparent', overflow: 'hidden',
+        cursor: creating ? 'default' : 'pointer', padding: 0, textAlign: 'left',
+        fontFamily: 'inherit', color: 'var(--text-muted)', opacity: creating ? 0.7 : 1,
+      }}
       aria-label="Create playlist from home"
       title="Create playlist"
     >
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-      </svg>
+      <div style={{ ...H.recentAlbumArtWrap, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <PlusIcon size={26} />
+      </div>
+      <div style={{ padding: '8px 10px' }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-muted)' }}>New Playlist</div>
+      </div>
     </button>
   );
 
   if (loading) return <div style={H.widgetEmpty}>Loading...</div>;
-  if (playlists.length === 0) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {createBtn}
-        <div style={H.widgetEmpty}>No playlists yet.</div>
-        {error && <div style={H.errorText}>{error}</div>}
-      </div>
-    );
-  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {createBtn}
       {error && <div style={H.errorText}>{error}</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {playlists.map(pl => (
-        <button
-          key={pl.id}
-          type="button"
-          onClick={() => onOpenPlaylist(pl.id)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 12,
-            padding: '8px 12px', borderRadius: 6,
-            width: '100%',
-            border: 'none',
-            background: 'transparent',
-            textAlign: 'left',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
-          aria-label={`Open playlist ${pl.name}`}
-          title={pl.name}
-        >
-          <div style={H.playlistCardCollage} aria-label={`${pl.name} artwork`}>
-            {(typeof pl.art_album_ids === 'string'
-              ? (pl.art_album_ids as string).split(',').filter(Boolean)
-              : (pl.art_album_ids ?? [])
-            ).slice(0, 4).map((albumId, index) => (
-              <div key={`${pl.id}-art-${albumId}-${index}`} style={H.playlistCardCollageTile}>
-                <ArtImage src={api.albumArtUrl(albumId, 300)} alt="" imgStyle={H.playlistCardCollageArt} />
+      <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
+        {newPlaylistCard}
+        {playlists.map(pl => {
+          const artIds = (typeof pl.art_album_ids === 'string'
+            ? (pl.art_album_ids as string).split(',').filter(Boolean)
+            : (pl.art_album_ids ?? [])
+          ).slice(0, 4);
+          const metaText = [
+            `${pl.track_count} track${pl.track_count !== 1 ? 's' : ''}`,
+            pl.total_duration ? formatMinutes(Math.round(pl.total_duration / 60)) : '',
+          ].filter(Boolean).join(' · ');
+          return (
+            <button
+              key={pl.id}
+              type="button"
+              onClick={() => onOpenPlaylist(pl.id)}
+              onMouseEnter={() => setHoveredPlaylistId(pl.id)}
+              onMouseLeave={() => setHoveredPlaylistId((prev) => (prev === pl.id ? null : prev))}
+              aria-label={`Open playlist ${pl.name}`}
+              title={pl.name}
+              style={{
+                flexShrink: 0, width: 150, border: '1px solid',
+                borderColor: hoveredPlaylistId === pl.id ? 'color-mix(in srgb, var(--accent) 34%, var(--border))' : 'var(--border)',
+                borderRadius: 8,
+                backgroundColor: hoveredPlaylistId === pl.id ? 'color-mix(in srgb, var(--accent) 12%, var(--bg))' : 'var(--bg)',
+                overflow: 'hidden', cursor: 'pointer', padding: 0, textAlign: 'left',
+                fontFamily: 'inherit', color: 'inherit',
+              }}
+            >
+              <div style={H.recentAlbumArtWrap}>
+                <div style={H.homePlaylistCollage} aria-label={`${pl.name} artwork`}>
+                  {artIds.map((albumId, index) => (
+                    <div key={`${pl.id}-art-${albumId}-${index}`} style={H.playlistCardCollageTile}>
+                      <ArtImage src={api.albumArtUrl(albumId, 300)} alt="" imgStyle={H.playlistCardCollageArt} />
+                    </div>
+                  ))}
+                  {homePlaylistFallbackTiles(artIds.length).map((tile) => (
+                    <div
+                      key={`${pl.id}-fallback-${tile}`}
+                      style={{ ...H.playlistCardCollageTile, ...H.playlistCardCollageFallback }}
+                      aria-hidden
+                    />
+                  ))}
+                </div>
+                <span
+                  role="button"
+                  aria-label={`Play playlist ${pl.name}`}
+                  title="Play playlist"
+                  style={{
+                    ...H.recentAlbumPlayBtn,
+                    opacity: hoveredPlaylistId === pl.id ? 1 : 0,
+                    pointerEvents: hoveredPlaylistId === pl.id ? 'auto' : 'none',
+                  }}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const tracks = await api.playlists.tracks(pl.id);
+                    if (tracks.length > 0) onPlayTrack(tracks[0], tracks);
+                  }}
+                >
+                  <PlayIcon size={14} />
+                </span>
               </div>
-            ))}
-            {Array.from({ length: Math.max(0, 4 - Math.min(4, typeof pl.art_album_ids === 'string' ? (pl.art_album_ids as string).split(',').filter(Boolean).length : (pl.art_album_ids?.length ?? 0))) }, (_, index) => (
-              <div
-                key={`${pl.id}-fallback-${index}`}
-                style={{ ...H.playlistCardCollageTile, ...H.playlistCardCollageFallback }}
-                aria-hidden
-              />
-            ))}
-          </div>
-          <div style={{ flex: 1, fontSize: 15, color: 'var(--text)', fontWeight: 500 }}>{pl.name}</div>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            {pl.track_count} tracks
-          </div>
-        </button>
-      ))}
+              <div style={{ padding: '8px 10px' }}>
+                <div style={{
+                  fontSize: 14, fontWeight: 600, color: 'var(--text)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>{pl.name}</div>
+                <div style={{
+                  fontSize: 13, color: 'var(--text-muted)', marginTop: 2,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>{metaText}</div>
+              </div>
+            </button>
+          );
+        })}
       </div>
+      {playlists.length === 0 && <div style={H.widgetEmpty}>No playlists yet.</div>}
     </div>
   );
 }
@@ -1667,7 +2015,7 @@ export default function HomeView({
 
 
         <WidgetCard title="Playlists" span hybridDesign={hybridDesign}>
-          <QuickPlaylistsWidget onOpenPlaylist={onOpenPlaylist} />
+          <QuickPlaylistsWidget onOpenPlaylist={onOpenPlaylist} onPlayTrack={onPlayTrack} />
         </WidgetCard>
 
         <WidgetCard title="Top Rated" hybridDesign={hybridDesign}>
@@ -1896,6 +2244,15 @@ const H: Record<string, React.CSSProperties> = {
     letterSpacing: 0.3,
     fontFamily: 'inherit',
   },
+  homePlaylistCollage: {
+    width: '100%',
+    height: '100%',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gridTemplateRows: 'repeat(2, 1fr)',
+    gap: 1,
+    background: 'color-mix(in srgb, var(--surface) 86%, var(--bg))',
+  },
   playlistCardCollage: {
     width: 34,
     height: 34,
@@ -1923,11 +2280,6 @@ const H: Record<string, React.CSSProperties> = {
   },
   playlistCardCollageFallback: {
     background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)) 0%, color-mix(in srgb, var(--text-muted) 16%, var(--bg)) 100%)',
-  },
-  autoDjWrap: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
   },
   genreDiscoveryWrap: {
     display: 'flex',
@@ -1957,6 +2309,33 @@ const H: Record<string, React.CSSProperties> = {
     textAlign: 'left',
     fontFamily: 'inherit',
     color: 'var(--text)',
+  },
+  genreDiscoveryIcon: {
+    color: 'var(--accent)',
+    opacity: 0.85,
+    flexShrink: 0,
+  },
+  genreDiscoveryThumb: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    overflow: 'hidden',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'color-mix(in srgb, var(--accent) 16%, var(--bg))',
+  },
+  genreDiscoveryThumbImg: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    display: 'block',
+  },
+  genreDiscoveryThumbWrap: {
+    display: 'block',
+    width: '100%',
+    height: '100%',
   },
   genreDiscoveryText: {
     width: 132,
@@ -2019,114 +2398,254 @@ const H: Record<string, React.CSSProperties> = {
   },
   autoDjPanelHead: {
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
+  autoDjHeaderLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    minWidth: 0,
+  },
+  autoDjHeaderIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'color-mix(in srgb, var(--accent) 20%, var(--bg))',
+    color: 'var(--accent)',
+  },
   autoDjLabel: {
-    color: 'var(--text-muted)',
-    fontSize: 14,
-    letterSpacing: 0.2,
+    color: 'var(--text)',
+    fontSize: 16,
+    letterSpacing: -0.2,
     fontWeight: 700,
   },
   autoDjIntro: {
     color: 'var(--text-muted)',
-    fontSize: 14,
-    lineHeight: 1.45,
-    marginTop: 3,
-  },
-  autoDjSecondaryBtn: {
-    border: '1px solid color-mix(in srgb, var(--border) 82%, transparent)',
-    background: 'transparent',
-    color: 'var(--text)',
-    borderRadius: 999,
-    padding: '6px 10px',
-    cursor: 'pointer',
     fontSize: 13,
-    fontWeight: 700,
-    fontFamily: 'inherit',
-    whiteSpace: 'nowrap',
+    lineHeight: 1.4,
+    marginTop: 2,
   },
-  autoDjChipRow: {
-    display: 'flex',
-    gap: 8,
-    flexWrap: 'wrap',
-  },
-  autoDjChip: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    border: '1px solid color-mix(in srgb, var(--accent) 32%, var(--border))',
-    background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
-    color: 'var(--text)',
-    borderRadius: 999,
-    padding: '7px 12px',
-    cursor: 'pointer',
-    fontSize: 14,
-    fontWeight: 700,
-    fontFamily: 'inherit',
-  },
-  autoDjChipCount: {
+  autoDjIconBtn: {
+    width: 34,
+    height: 34,
+    flexShrink: 0,
+    borderRadius: 10,
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
     color: 'var(--text-muted)',
-    fontSize: 13,
-    fontWeight: 600,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
   },
-  autoDjPicker: {
+  autoDjIconBtnActive: {
+    color: 'var(--accent)',
+    borderColor: 'color-mix(in srgb, var(--accent) 60%, var(--border))',
+    background: 'color-mix(in srgb, var(--accent) 12%, var(--bg))',
+  },
+  autoDjQuickGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+    gap: 10,
+  },
+  autoDjGenreCard: {
     display: 'flex',
     flexDirection: 'column',
+    alignItems: 'center',
+    gap: 6,
+    padding: '14px 8px 10px',
+    borderRadius: 14,
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    textAlign: 'center',
+    fontFamily: 'inherit',
+  },
+  autoDjGenreCardIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'color-mix(in srgb, var(--accent) 16%, var(--bg))',
+    color: 'var(--accent)',
+  },
+  autoDjGenreCollage: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    overflow: 'hidden',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gridTemplateRows: 'repeat(2, 1fr)',
+    gap: 1,
+    background: 'color-mix(in srgb, var(--border) 60%, transparent)',
+  },
+  autoDjGenreCollageTile: {
+    minWidth: 0,
+    minHeight: 0,
+    background: 'color-mix(in srgb, var(--surface) 90%, var(--bg))',
+  },
+  autoDjGenreCollageArt: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    display: 'block',
+  },
+  autoDjGenreCollageFallback: {
+    background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)) 0%, color-mix(in srgb, var(--text-muted) 16%, var(--bg)) 100%)',
+  },
+  autoDjGenreCardName: {
+    fontSize: 13,
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    maxWidth: '100%',
+  },
+  autoDjGenreCardCount: {
+    fontSize: 11,
+    color: 'var(--text-muted)',
+  },
+  autoDjMoreCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: '14px 8px 10px',
+    borderRadius: 14,
+    border: '1px dashed color-mix(in srgb, var(--border) 90%, transparent)',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    textAlign: 'center',
+    fontFamily: 'inherit',
+  },
+  autoDjMoreCardIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'var(--text-muted)',
+  },
+  autoDjBrowseToggle: {
+    width: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
     padding: 10,
-    borderRadius: 10,
-    background: 'color-mix(in srgb, var(--surface) 72%, var(--bg))',
-    border: '1px solid color-mix(in srgb, var(--border) 72%, transparent)',
-  },
-  autoDjGenreSelect: {
-    backgroundColor: 'var(--bg)',
-    border: '1px solid var(--border)',
-    color: 'var(--text)',
-    borderRadius: 6,
-    padding: '6px 8px',
-    fontSize: 14,
+    borderRadius: 12,
+    border: '1px solid color-mix(in srgb, var(--accent) 45%, var(--border))',
+    background: 'transparent',
+    color: 'var(--accent)',
+    fontSize: 13,
+    fontWeight: 600,
     fontFamily: 'inherit',
-    minHeight: 94,
+    cursor: 'pointer',
   },
-  autoDjStartBtn: {
-    alignSelf: 'flex-start',
+  autoDjPickerBox: {
+    borderRadius: 14,
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    background: 'color-mix(in srgb, var(--surface) 60%, var(--bg))',
+    padding: 12,
+  },
+  autoDjPickerHead: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 10,
+    flexWrap: 'wrap',
+  },
+  autoDjSearchRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    background: 'color-mix(in srgb, var(--bg) 70%, var(--surface))',
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    borderRadius: 10,
+    padding: '7px 10px',
+    width: 280,
+    maxWidth: '100%',
+    flexShrink: 0,
+  },
+  autoDjSearchInput: {
+    background: 'none',
+    border: 'none',
+    outline: 'none',
+    color: 'var(--text)',
+    fontSize: 13,
+    width: '100%',
+    fontFamily: 'inherit',
+  },
+  autoDjPickerCount: {
+    fontSize: 12,
+    color: 'var(--text-muted)',
+    flex: 1,
+  },
+  autoDjStartIconBtn: {
+    width: 40,
+    height: 40,
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    borderRadius: 12,
+    border: 'none',
+    background: 'var(--accent)',
+    color: '#fff',
+    cursor: 'pointer',
+    boxShadow: '0 4px 12px color-mix(in srgb, var(--accent) 38%, transparent)',
+  },
+  autoDjChipScroll: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+    maxHeight: 220,
+    overflowY: 'auto',
+  },
+  autoDjPickChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '7px 10px 7px 8px',
+    borderRadius: 999,
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
+    color: 'var(--text)',
+    fontSize: 12.5,
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+  },
+  autoDjPickChipSelected: {
+    borderColor: 'color-mix(in srgb, var(--accent) 65%, var(--border))',
+    background: 'color-mix(in srgb, var(--accent) 18%, var(--bg))',
+  },
+  autoDjPickChipIcon: {
+    display: 'flex',
+    color: 'var(--text-muted)',
+  },
+  autoDjPickChipIconSelected: {
+    color: 'var(--accent)',
+  },
+  autoDjPickChipCount: {
+    color: 'var(--text-muted)',
   },
   autoDjStatus: {
     color: 'var(--text-muted)',
     fontSize: 13,
-  },
-  autoDjTransitionWrap: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    paddingTop: 2,
-  },
-  autoDjOptionsToggle: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    width: '100%',
-    border: '1px solid color-mix(in srgb, var(--border) 82%, transparent)',
-    background: 'transparent',
-    color: 'var(--text)',
-    borderRadius: 10,
-    padding: '8px 10px',
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  },
-  autoDjTransitionLabel: {
-    color: 'var(--text-muted)',
-    fontSize: 14,
-    letterSpacing: 0.2,
-    fontWeight: 700,
-  },
-  autoDjOptionsMeta: {
-    color: 'var(--text-muted)',
-    fontSize: 13,
-    textTransform: 'capitalize',
   },
   autoDjOptionsPanel: {
     display: 'flex',
@@ -2137,27 +2656,32 @@ const H: Record<string, React.CSSProperties> = {
     background: 'color-mix(in srgb, var(--surface) 72%, var(--bg))',
     border: '1px solid color-mix(in srgb, var(--border) 72%, transparent)',
   },
-  autoDjModePill: {
+  autoDjModeRow: {
     display: 'flex',
-    border: '1px solid var(--border)',
-    borderRadius: 7,
-    overflow: 'hidden',
-    width: 'fit-content',
+    alignItems: 'center',
+    gap: 8,
+    maxWidth: 420,
   },
-  autoDjModeOption: {
-    border: 'none',
-    borderRight: '1px solid var(--border)',
-    backgroundColor: 'var(--bg)',
-    color: 'var(--text)',
+  autoDjModeBtn: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 4,
+    padding: '10px 6px',
+    borderRadius: 12,
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
+    color: 'var(--text-muted)',
     cursor: 'pointer',
-    padding: '5px 10px',
-    fontSize: 13,
+    fontSize: 11.5,
     fontWeight: 600,
     fontFamily: 'inherit',
   },
-  autoDjModeOptionActive: {
-    backgroundColor: 'var(--accent)',
-    color: '#fff',
+  autoDjModeBtnActive: {
+    color: 'var(--accent)',
+    borderColor: 'color-mix(in srgb, var(--accent) 60%, var(--border))',
+    background: 'color-mix(in srgb, var(--accent) 14%, var(--bg))',
   },
   autoDjDurationRow: {
     display: 'flex',
@@ -2227,10 +2751,22 @@ const H: Record<string, React.CSSProperties> = {
   },
   boogieMetricTile: {
     minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
     border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
     backgroundColor: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
     borderRadius: 14,
     padding: '10px 12px',
+  },
+  boogieMetricBody: {
+    minWidth: 0,
+    flex: '1 1 auto',
+  },
+  boogieMetricIcon: {
+    color: 'var(--accent)',
+    opacity: 0.85,
+    flexShrink: 0,
   },
   boogieMetricLabel: {
     fontSize: 13,

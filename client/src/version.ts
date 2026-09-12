@@ -2,7 +2,7 @@
  * Exposes the current BoogieBox app version and version-test helper.
  */
 
-export const APP_VERSION = '0.8.294';
+export const APP_VERSION = '0.8.304';
 
 /** Returns the next patch version for a valid semantic version string. */
 export function bumpPatchVersion(version: string): string {

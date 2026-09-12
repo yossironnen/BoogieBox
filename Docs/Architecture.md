@@ -50,6 +50,10 @@ Important client modules:
 - `client/src/types/`: shared TypeScript payload types.
 - `client/src/version.ts`: app version displayed by the client.
 
+### UI Design Language
+
+The client uses an **icon-first design**: stat/metric boxes, tabs, and pill toggles all carry a small leading icon rather than bare text or numbers (see `App.tsx`'s `StatsBar`, `HomeView.tsx`'s `StatsWidget`/"Let's Boogie!" metrics, and the Browse page's Artists/Albums tabs). Icons are inline SVG (`viewBox="0 0 24 24"`, stroke-based, `currentColor`), sized ~14-20px inline or ~28-40px on cards/tiles; stat icons are tinted `var(--accent)`. Unbounded lists (e.g. genres) reuse one generic icon rather than a unique icon per item. New UI work should follow this convention — see `CLAUDE.md` for the full rule set.
+
 ## Desktop Shell
 
 The `desktop/` project is a Tauri 2 wrapper around the web client. It provides Windows desktop packaging, local server discovery, and optional control of a packaged BoogieBox server executable.

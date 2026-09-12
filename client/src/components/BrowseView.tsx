@@ -3298,7 +3298,7 @@ export default function BrowseView({
                 <div style={{ ...L.rootHeroTitle, ...(hybridPreview ? hybridBrowseStyles.heroTitle : {}) }}>Browse Music</div>
                 <div style={{ ...L.rootHeroBody, ...(hybridPreview ? hybridBrowseStyles.heroBody : {}) }}>
                   {tab === 'artists'
-                    ? 'Move through your library like a portrait wall instead of a utility list. Filters stay close, but the collection leads.'
+                    ? 'Dig deep into your collection.'
                     : 'Hey, those are not true vinyl albums, but they sure make a nice wall!'}
                 </div>
               </div>
@@ -3315,7 +3315,9 @@ export default function BrowseView({
                   key={t}
                   style={{ ...L.tab, ...(tab === t ? L.tabActive : {}) }}
                   onClick={() => setTab(t)}
+                  aria-pressed={tab === t}
                 >
+                  {t === 'artists' ? <ArtistIcon size={15} /> : <AlbumIcon />}
                   {t.charAt(0).toUpperCase() + t.slice(1)}
                 </button>
               ))}
@@ -3696,6 +3698,7 @@ const L: Record<string, React.CSSProperties> = {
     opacity: 0.5, cursor: 'not-allowed', boxShadow: 'none',
   },
   tab: {
+    display: 'flex', alignItems: 'center', gap: 7,
     padding: '10px 16px', background: 'rgba(255,255,255,0.03)', border: '1px solid color-mix(in srgb, var(--border) 74%, transparent)',
     color: 'var(--text-muted)', cursor: 'pointer', fontSize: 15,
     fontFamily: 'inherit', borderRadius: 999, fontWeight: 700,

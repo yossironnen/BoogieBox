@@ -85,6 +85,19 @@ routes/ — Axum route modules per domain (auth, settings, library, music, playl
 `platform/` — browser/desktop platform abstraction  
 `version.ts` — app version
 
+## UI Design Conventions (MANDATORY)
+
+The client follows an **icon-first design language**. Any new or redesigned UI surface (stat boxes, tabs, toggles, buttons, list rows, cards) MUST follow it:
+
+- Every stat/metric value gets a small leading icon (left of the number/label), not a bare number or text-only pill. See `client/src/App.tsx` `StatsBar`, `client/src/components/HomeView.tsx` `StatsWidget` and the "Let's Boogie!" metric tiles for the reference pattern.
+- Tabs and pill-style view toggles get an icon before the label (see Browse page Artists/Albums tabs), not text alone.
+- Icons are inline SVG, `viewBox="0 0 24 24"`, stroke-based (`stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"`, `fill="none"`) unless a filled glyph reads better small (e.g. a play triangle). Typical size 14–20px inline, 28–40px when it anchors a card/tile.
+- Stat/metric icons are colored `var(--accent)` at ~0.85 opacity; neutral chrome (tab icons, toggle icons) inherit `currentColor` from the button's own text color so active/inactive state is automatic.
+- For an unbounded or highly variable list (e.g. genres), do not invent a unique icon per item — reuse one consistent generic icon for the whole list instead.
+- Reuse an existing icon component in the same file before adding a new one; keep new icon components colocated near the components/styles that use them.
+- A primary call-to-action button (e.g. "Start", a play action) can be icon-only once the icon is unambiguous — carry the text via `title`/`aria-label` for accessibility, not as visible label text.
+- When replacing a native form control (`<select multiple>`, plain checkboxes) with a custom picker, prefer icon+label chips/cards over the native control, and add a search/filter input once the list can be long.
+
 ## Database
 
 SQLite at `boogiebox.db` inside the folder selected during first-run setup. Packaged server installs store the locator in `%PROGRAMDATA%\BoogieBox\boogiebox-config.json` for Windows or '/etc/boogiebox/boogiebox-config.json' on Linux; source-tree/dev runs use repo-root `boogiebox-config.json`.

@@ -59,6 +59,50 @@ pub fn coerce_entity_id(raw: &str) -> EntityId {
     }
 }
 
+/// Escapes `%`, `_`, and `\` so a value can be safely embedded in a SQL LIKE
+/// pattern bound as a parameter (paired with `ESCAPE '\'` in the query).
+fn like_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch == '\\' || ch == '%' || ch == '_' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Appends a tag-aware genre filter to `conditions`/`filter_params`.
+///
+/// Track genre tags are frequently stored as a comma-separated compound
+/// string (e.g. "Rock, Alternative"), while every genre picker in the app
+/// (Home genre summaries, Browse, Auto DJ) works with individual genre
+/// names split out of that string — see `build_home_genre_summaries`. A
+/// plain `t.genre = ?` / `IN (...)` exact match therefore misses every
+/// track whose genre column isn't a single clean value. This instead
+/// checks each requested genre against the comma-delimited tag list,
+/// matched on tag boundaries (so "Rock" doesn't also match "Prog Rock").
+fn push_genre_filter(
+    conditions: &mut Vec<String>,
+    filter_params: &mut Vec<Value>,
+    genres: &[String],
+) {
+    if genres.is_empty() {
+        return;
+    }
+    const NORMALIZED_TAGS: &str =
+        "(',' || LOWER(REPLACE(REPLACE(TRIM(COALESCE(t.genre,'')), ', ', ','), ' ,', ',')) || ',')";
+    let per_genre = genres
+        .iter()
+        .map(|_| format!("{NORMALIZED_TAGS} LIKE ('%,' || ? || ',%') ESCAPE '\\'"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    conditions.push(format!("({per_genre})"));
+    for g in genres {
+        filter_params.push(Value::Text(like_escape(&g.trim().to_lowercase())));
+    }
+}
+
 fn id_to_value(id: &EntityId) -> Value {
     match id {
         EntityId::Int(n) => Value::Integer(*n),
@@ -759,13 +803,7 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
             filter_params.push(id_to_value(id));
         }
     }
-    if !p.genres.is_empty() {
-        let ph = p.genres.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        conditions.push(format!("LOWER(TRIM(COALESCE(t.genre,''))) IN ({ph})"));
-        for g in p.genres {
-            filter_params.push(Value::Text(g.to_lowercase()));
-        }
-    }
+    push_genre_filter(&mut conditions, &mut filter_params, p.genres);
     if let Some(sw) = p.starts_with {
         conditions.push("UPPER(SUBSTR(TRIM(COALESCE(ar.name,'')),1,1)) = ?".into());
         filter_params.push(Value::Text(sw.to_uppercase()));
@@ -1755,13 +1793,7 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
             filter_params.push(id_to_value(id));
         }
     }
-    if !p.genres.is_empty() {
-        let ph = p.genres.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        conditions.push(format!("LOWER(TRIM(COALESCE(t.genre,''))) IN ({ph})"));
-        for g in p.genres {
-            filter_params.push(Value::Text(g.to_lowercase()));
-        }
-    }
+    push_genre_filter(&mut conditions, &mut filter_params, p.genres);
     if p.sonic_fingerprint_only {
         conditions
             .push("EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".into());
@@ -2648,13 +2680,7 @@ pub fn list_auto_dj_candidates(
         params.push(id_to_value(lid));
     }
 
-    if !genres.is_empty() {
-        let ph = genres.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        conditions.push(format!("LOWER(TRIM(COALESCE(t.genre,''))) IN ({ph})"));
-        for g in genres {
-            params.push(Value::Text(g.to_lowercase()));
-        }
-    }
+    push_genre_filter(&mut conditions, &mut params, genres);
 
     params.push(Value::Integer(candidate_limit));
 
@@ -3634,6 +3660,58 @@ mod tests {
             .expect("changed grouped album");
         assert_eq!(shared.track_count, 2);
         assert_eq!(shared.total_duration, Some(420.0));
+    }
+
+    #[test]
+    fn list_albums_genre_filter_matches_a_tag_inside_a_compound_genre_string() {
+        // Regression guard: a track's genre column is often a comma-separated
+        // compound string (e.g. "Rock, Alternative"), the same shape
+        // `build_home_genre_summaries` already splits into individual genres
+        // for the Home genre list. Filtering by one of those split-out names
+        // must still match — an exact whole-column match would miss every
+        // compound-tagged track.
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch(
+            "
+            INSERT INTO libraries (id, name) VALUES ('library-1', 'Home Library');
+            INSERT INTO artists (id, name) VALUES ('artist-1', 'Artist One');
+            INSERT INTO albums (id, title, album_artist, artist_id) VALUES
+                ('album-1', 'Compound Genre Album', 'Artist One', 'artist-1'),
+                ('album-2', 'Prog Rock Album', 'Artist One', 'artist-1'),
+                ('album-3', 'Clean Genre Album', 'Artist One', 'artist-1');
+            INSERT INTO tracks (
+                id, library_id, artist_id, album_id, title, file_name, genre, scanned_at
+            ) VALUES
+                ('track-1', 'library-1', 'artist-1', 'album-1', 'Compound Track', 'compound.flac', 'Rock, Alternative', '2026-08-10'),
+                ('track-2', 'library-1', 'artist-1', 'album-2', 'Prog Rock Track', 'prog.flac', 'Prog Rock', '2026-08-10'),
+                ('track-3', 'library-1', 'artist-1', 'album-3', 'Clean Track', 'clean.flac', 'Rock', '2026-08-10');
+            ",
+        )
+        .unwrap();
+
+        let rows = list_albums(
+            &conn,
+            ListAlbumsParams {
+                user_id: "user-1",
+                library_ids: &[],
+                genres: &["Rock".to_string()],
+                by_album_artist: true,
+                sonic_fingerprint_only: false,
+                after_album_rowid: None,
+                through_album_rowid: None,
+            },
+        )
+        .unwrap();
+
+        // Matches the compound-tagged album and the cleanly-tagged album, but
+        // not "Prog Rock" — the match is tag-boundary-safe, not a substring.
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.title.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["Compound Genre Album", "Clean Genre Album"])
+        );
     }
 
     #[test]

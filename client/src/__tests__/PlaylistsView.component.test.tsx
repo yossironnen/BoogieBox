@@ -169,36 +169,42 @@ describe('PlaylistsView integration flows', () => {
     vi.useRealTimers();
   });
 
-  it('shares header artwork with sidebar rows without extra track fetches', async () => {
+  it('shares grid card artwork with the opened playlist header without extra track fetches', async () => {
     apiMock.playlists.list.mockResolvedValue([playlist, { ...playlist, id: '2', name: 'Focus', art_album_ids: ['501'] }]);
-    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
-    await screen.findByText('Alpha One');
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} />);
+    await screen.findByText('Road Trip');
     const sources = (node: HTMLElement) => Array.from(node.querySelectorAll('img')).map(img => img.getAttribute('src'));
-    const row = screen.getByRole('button', { name: /Road Trip.*2 tracks/ });
-    expect(sources(row)).toEqual(sources(screen.getByLabelText('Road Trip artwork')));
-    expect(sources(row)).toEqual(['/api/albums/401/art?size=300', '/api/albums/402/art?size=300']);
+    const card = screen.getByRole('button', { name: /Road Trip.*2 tracks/ });
+    expect(sources(card)).toEqual(['/api/albums/401/art?size=300', '/api/albums/402/art?size=300']);
     expect(sources(screen.getByRole('button', { name: /Focus.*2 tracks/ }))).toEqual(['/api/albums/501/art?size=300']);
-    expect(apiMock.playlists.tracks).toHaveBeenCalledTimes(1);
+    expect(apiMock.playlists.tracks).not.toHaveBeenCalled();
     expect(apiMock.playlists.list).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(card);
+    await screen.findByText('Alpha One');
+    expect(sources(screen.getByLabelText('Road Trip artwork'))).toEqual(sources(card));
+    expect(apiMock.playlists.tracks).toHaveBeenCalledTimes(1);
   });
 
-  it('opens another playlist options without switching selection and deletes only that playlist', async () => {
+  it('opens a playlist\'s options from the grid without opening it, and deletes only that playlist', async () => {
     apiMock.playlists.list.mockResolvedValue([playlist, { ...playlist, id: '2', name: 'Focus' }]);
-    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
-    await screen.findByText('Alpha One');
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} />);
+    await screen.findByText('Road Trip');
     const row = screen.getByRole('button', { name: /Focus.*2 tracks/ }).parentElement!;
     fireEvent.click(within(row).getByRole('button', { name: 'More actions' }));
     expect(screen.getByRole('dialog', { name: 'Focus' })).toBeInTheDocument();
     await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledWith('playlist', '2'));
-    expect(screen.getByRole('button', { name: /Road Trip.*2 tracks/ })).toHaveAttribute('aria-current', 'true');
-    expect(apiMock.playlists.tracks).toHaveBeenCalledTimes(1);
+    // Opening another playlist's options from the grid doesn't navigate into it.
+    expect(screen.queryByText('Alpha One')).not.toBeInTheDocument();
+    expect(apiMock.playlists.tracks).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTitle('Delete playlist'));
     expect(apiMock.playlists.remove).not.toHaveBeenCalled();
     apiMock.playlists.list.mockResolvedValue([playlist]);
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(apiMock.playlists.remove).toHaveBeenCalledWith('2'));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByText('Alpha One')).toBeInTheDocument();
+    expect(screen.getByText('Road Trip')).toBeInTheDocument();
+    expect(screen.queryByText('Focus')).not.toBeInTheDocument();
   });
 
   it('disables empty playlist actions and renders shared fallback artwork', async () => {
@@ -258,9 +264,7 @@ describe('PlaylistsView integration flows', () => {
     await waitFor(() => expect(apiMock.playlists.list).toHaveBeenCalled());
     await waitFor(() => expect(apiMock.playlists.tracks).toHaveBeenCalledWith('1'));
     expect(container.firstElementChild).toHaveAttribute('data-ui-design', 'hybrid');
-    expect(container.querySelector('[data-ui-region="playlist-sidebar"]')).toBeInTheDocument();
     expect(container.querySelector('[data-ui-region="playlist-detail"]')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Road Trip.*2 tracks/i })).toHaveAttribute('aria-current', 'true');
     expect(screen.getAllByText('Road Trip').length).toBeGreaterThan(0);
     expect(screen.getByText('Alpha One')).toBeInTheDocument();
     expect(screen.getByText('Alpha Two')).toBeInTheDocument();

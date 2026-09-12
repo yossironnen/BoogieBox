@@ -78,6 +78,7 @@ const GripIcon    = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="
 const SearchIcon  = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
 const ListIcon    = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>;
 const XIcon       = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+const ChevronLeftIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>;
 const QueueIcon   = ({ size = 12 }: { size?: number }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
 // Same crossing-arrows glyph as the album/artist Shuffle Play icon and the
 // player's own shuffle button, for consistency.
@@ -97,10 +98,14 @@ const MIX_STEP_LABEL: Record<string, string> = {
 
 
 /** Shared artwork for the playlist header and sidebar; no per-row track fetches. */
-function PlaylistArtwork({ albumIds, compact = false }: { albumIds: ClientEntityId[]; compact?: boolean }) {
+function PlaylistArtwork({ albumIds, compact = false, responsive = false }: { albumIds: ClientEntityId[]; compact?: boolean; responsive?: boolean }) {
   const ids = albumIds.slice(0, 4);
   return (
-    <div style={{ ...PD.collage, ...(compact ? { width: 70, padding: 3, gap: 3, borderRadius: 8 } : {}) }}>
+    <div style={{
+      ...PD.collage,
+      ...(compact ? { width: 70, padding: 3, gap: 3, borderRadius: 8 } : {}),
+      ...(responsive ? { width: '100%', aspectRatio: '1 / 1' } : {}),
+    }}>
       {ids.map(id => (
         <div key={id} style={{ ...PD.collageTile, ...(compact ? { borderRadius: 4 } : {}) }}>
           <ArtImage src={api.albumArtUrl(id, 300)} alt="" imgStyle={PD.collageArt} />
@@ -713,12 +718,13 @@ function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
 }
 
 function PlaylistDetail({
-  playlist, onUpdate, onOptions,
+  playlist, onUpdate, onOptions, onBack,
   playTrack, addToQueue, onOpenAlbum, onOpenArtist,
 }: {
   playlist: Playlist;
   onUpdate: () => void;
   onOptions: () => void;
+  onBack: () => void;
   playTrack: (track: Track, all?: Track[], source?: import('../types').QueueSource) => void;
   addToQueue: (track: Track) => void;
   onOpenAlbum: (album: import('../types').Album) => void;
@@ -997,6 +1003,9 @@ function PlaylistDetail({
 
   return (
     <div data-ui-region="playlist-detail" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+      <button type="button" style={PD.backBtn} onClick={onBack} aria-label="Back to Playlists">
+        <ChevronLeftIcon /> Playlists
+      </button>
       {/* Header */}
       <div style={PD.header}>
         <div aria-label={`${playlist.name} artwork`}><PlaylistArtwork albumIds={headerCollageAlbumIds} /></div>
@@ -1286,6 +1295,11 @@ function PlaylistDetail({
 }
 
 const PD: Record<string, React.CSSProperties> = {
+  backBtn: {
+    display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+    margin: '16px 28px 0', padding: '4px 2px', border: 'none', background: 'transparent',
+    color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer', flexShrink: 0,
+  },
   header: { ...phase2.desktopHero, display: 'flex', alignItems: 'flex-start', flexShrink: 0, flexWrap: 'wrap', ...hybridPlaylistStyles.detailHeader },
   collage: {
     width: 136,
@@ -1441,60 +1455,138 @@ function DeepAnalysisProgressPanel({
   );
 }
 
-// ─── Sidebar: Playlist List ───────────────────────────────────────────────────
+// ─── Playlists Grid (full-page browse, like Browse's album grid) ─────────────
 
-function PlaylistSidebar({
-  playlists, selectedId, onSelect, onCreate, onOptions,
+function PlaylistsGridSearchIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
+
+function PlaylistsGrid({
+  playlists, onOpen, onOptions, onCreate,
 }: {
   playlists: Playlist[];
-  selectedId: EntityId | null;
-  onSelect: (p: Playlist) => void;
+  onOpen: (p: Playlist) => void;
   onOptions: (p: Playlist) => void;
   onCreate: () => void;
 }) {
+  const [search, setSearch] = useState('');
+  const query = search.trim().toLowerCase();
+  const filtered = query ? playlists.filter(pl => pl.name.toLowerCase().includes(query)) : playlists;
+
   return (
-    <div data-ui-region="playlist-sidebar" style={SB.sidebar}>
-      <div style={SB.header}>
-        <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text)' }}>Playlists</span>
-        <button type="button" aria-label="New playlist" style={SB.newBtn} onClick={onCreate} title="New playlist">
-          <PlusIcon />
+    <div data-ui-region="playlists-grid" style={PG.root}>
+      <div style={PG.hero}>
+        <div style={PG.heroInner}>
+          <div style={{ minWidth: 0 }}>
+            <div style={PG.heroEyebrow}>Collection</div>
+            <div style={PG.heroTitle}>Playlists</div>
+            <div style={PG.heroBody}>Every mix and manual playlist in one wall. Click a cover to open it.</div>
+          </div>
+          <div style={PG.heroStats}>
+            <div style={PG.heroStat}>{playlists.length} playlist{playlists.length !== 1 ? 's' : ''}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={PG.toolbar}>
+        <div style={PG.searchBox}>
+          <PlaylistsGridSearchIcon />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search playlists"
+            style={PG.searchInput}
+            aria-label="Search playlists"
+          />
+        </div>
+        <button type="button" aria-label="New playlist" style={PG.newBtn} onClick={onCreate} title="New playlist">
+          <PlusIcon size={16} />
         </button>
       </div>
-      <div style={SB.list}>
-        {playlists.length === 0 && (
-          <div style={SB.empty}>It's lonely here. Click + to create a new playlist.</div>
-        )}
-        {playlists.map(pl => (
-          <div key={pl.id} style={{ ...SB.item, display: 'flex', alignItems: 'center', gap: 8, ...(selectedId === pl.id ? SB.itemActive : {}) }}>
-            <button type="button" style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0, padding: 0, border: 0, background: 'transparent', textAlign: 'left', font: 'inherit', cursor: 'pointer' }}
-              onClick={() => onSelect(pl)} aria-current={selectedId === pl.id ? 'true' : undefined}>
-              <span aria-hidden="true"><PlaylistArtwork albumIds={pl.art_album_ids ?? []} compact /></span>
-              <span style={{ minWidth: 0 }}>
-                <span style={{ ...SB.itemName, display: 'block' }}>{pl.name}</span>
-                <span style={SB.itemMeta}>
-                  {pl.track_count} track{pl.track_count !== 1 ? 's' : ''}
-                  {pl.total_duration ? ` · ${fmtDur(pl.total_duration)}` : ''}
-                </span>
-              </span>
-            </button>
-            <PlaylistKebab onClick={() => onOptions(pl)} />
-          </div>
-        ))}
-      </div>
+
+      {playlists.length === 0 && (
+        <div style={PG.empty}>
+          <div>It's lonely here. Click + to create a new playlist.</div>
+          <button type="button" style={{ ...PD.btnPrimary, marginTop: 14 }} onClick={onCreate}>
+            <PlusIcon /> New Playlist
+          </button>
+        </div>
+      )}
+      {playlists.length > 0 && (
+        <div style={PG.grid}>
+          {filtered.map(pl => {
+            const metaText = [
+              `${pl.track_count} track${pl.track_count !== 1 ? 's' : ''}`,
+              pl.total_duration ? fmtDur(pl.total_duration) : '',
+            ].filter(Boolean).join(' · ');
+            return (
+              <div key={pl.id} style={PG.card} className="home-list-hover">
+                <button
+                  type="button"
+                  style={PG.cardBtn}
+                  onClick={() => onOpen(pl)}
+                  aria-label={`${pl.name} — ${metaText}`}
+                  title={`Open ${pl.name}`}
+                >
+                  <span aria-hidden="true" style={PG.art}><PlaylistArtwork albumIds={pl.art_album_ids ?? []} responsive /></span>
+                  <span style={PG.cardTitle}>{pl.name}</span>
+                  <span style={PG.cardMeta}>{metaText}</span>
+                </button>
+                <div style={PG.cardKebabWrap}>
+                  <PlaylistKebab onClick={() => onOptions(pl)} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {playlists.length > 0 && filtered.length === 0 && (
+        <div style={PG.empty}>No playlists match &quot;{search}&quot;</div>
+      )}
     </div>
   );
 }
 
-const SB: Record<string, React.CSSProperties> = {
-  sidebar: { display: 'flex', flexDirection: 'column', flexShrink: 0, ...hybridPlaylistStyles.sidebar, width: 296 },
-  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, ...hybridPlaylistStyles.sidebarHeader },
+const PG: Record<string, React.CSSProperties> = {
+  root: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', padding: '24px 28px 32px' },
+  hero: { borderBottom: '1px solid color-mix(in srgb, var(--border) 60%, transparent)', paddingBottom: 20, marginBottom: 18, flexShrink: 0 },
+  heroInner: { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' },
+  heroEyebrow: { fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: 700 },
+  heroTitle: { fontSize: 28, fontWeight: 800, letterSpacing: -0.5, color: 'var(--text)', marginTop: 4 },
+  heroBody: { fontSize: 14, color: 'var(--text-muted)', marginTop: 6, maxWidth: 520, lineHeight: 1.5 },
+  heroStats: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 },
+  heroStat: { fontSize: 15, fontWeight: 700, color: 'var(--text)' },
+  toolbar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 18, flexWrap: 'wrap', flexShrink: 0 },
+  searchBox: {
+    display: 'flex', alignItems: 'center', gap: 8, width: 260, maxWidth: '100%',
+    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    borderRadius: 10, padding: '8px 12px', color: 'var(--text-muted)',
+  },
+  searchInput: { background: 'none', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 13, width: '100%', fontFamily: 'inherit' },
   newBtn: { ...hybridControlStyles.iconButton, width: 34, minWidth: 34, height: 34, background: 'var(--accent)', color: 'var(--on-accent)' },
-  list: { flex: 1, overflowY: 'auto', paddingBottom: 0 },
   empty: { padding: '28px 16px', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.7, textAlign: 'center' },
-  item: { display: 'block', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.12s, color 0.12s', ...hybridPlaylistStyles.sidebarItem },
-  itemActive: { ...hybridPlaylistStyles.sidebarItemActive },
-  itemName: { fontSize: 16, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 4 },
-  itemMeta: { fontSize: 13, color: 'var(--text-muted)' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 18 },
+  card: { position: 'relative', minWidth: 0 },
+  cardBtn: {
+    display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0,
+    background: 'var(--browse-card-background, var(--surface))',
+    border: '1px solid var(--browse-card-border-color, var(--border))',
+    borderRadius: 'var(--browse-card-radius, 10px)',
+    padding: 10, cursor: 'pointer', color: 'var(--text)', textAlign: 'left', fontFamily: 'inherit',
+  },
+  art: { display: 'block', width: '100%' },
+  cardTitle: { marginTop: 8, fontSize: 14, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  cardMeta: { marginTop: 2, fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  cardKebabWrap: {
+    position: 'absolute', top: 16, right: 16, borderRadius: 8,
+    background: 'color-mix(in srgb, black 45%, transparent)',
+  },
 };
 
 // ─── Top-level PlaylistsView ──────────────────────────────────────────────────
@@ -1564,38 +1656,27 @@ export default function PlaylistsView({
       data-ui-design="hybrid"
       style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden', ...hybridPlaylistStyles.root }}
     >
-      <PlaylistSidebar
-        playlists={playlists}
-        selectedId={selected?.id ?? null}
-        onSelect={pl => setSelected(pl)}
-        onOptions={setOptionsPlaylist}
-        onCreate={() => { setCreateError(''); setShowCreate(true); }}
-      />
-
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-        {!selected && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 16, color: 'var(--text-muted)' }}>
-            <ListIcon />
-            <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--text)' }}>Select a playlist</div>
-            <div style={{ fontSize: 14 }}>Or create a new one with the + button</div>
-            <button type="button" style={PD.btnPrimary} onClick={() => { setCreateError(''); setShowCreate(true); }}>
-              <PlusIcon /> New Playlist
-            </button>
-          </div>
-        )}
-        {selected && (
-          <PlaylistDetail
-            key={selected.id}
-            playlist={selected}
-            onUpdate={loadPlaylists}
-            onOptions={() => setOptionsPlaylist(selected)}
-            playTrack={playTrack}
-            addToQueue={addToQueue}
-            onOpenAlbum={onOpenAlbum}
-            onOpenArtist={onOpenArtist}
-          />
-        )}
-      </div>
+      {!selected && (
+        <PlaylistsGrid
+          playlists={playlists}
+          onOpen={pl => setSelected(pl)}
+          onOptions={setOptionsPlaylist}
+          onCreate={() => { setCreateError(''); setShowCreate(true); }}
+        />
+      )}
+      {selected && (
+        <PlaylistDetail
+          key={selected.id}
+          playlist={selected}
+          onUpdate={loadPlaylists}
+          onOptions={() => setOptionsPlaylist(selected)}
+          onBack={() => setSelected(null)}
+          playTrack={playTrack}
+          addToQueue={addToQueue}
+          onOpenAlbum={onOpenAlbum}
+          onOpenArtist={onOpenArtist}
+        />
+      )}
 
       {optionsPlaylist && (
         <PlaylistOptions key={optionsPlaylist.id} playlist={optionsPlaylist} onUpdate={loadPlaylists}

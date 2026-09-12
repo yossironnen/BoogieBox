@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import HomeView from '../components/HomeView';
 import type { Artist, ClientEntityId, Stats } from '../types';
@@ -17,6 +17,7 @@ const { apiMock } = vi.hoisted(() => ({
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number) => `/api/albums/${albumId}/art?size=${size}`),
     artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number) => `/api/artists/${artistId}/photo?size=${size}`) ,
     genres: vi.fn(),
+    albums: vi.fn(),
     recentlyPlayed: vi.fn(),
     topPlayedTracks: vi.fn(),
     mostPlayedArtists: vi.fn(),
@@ -92,6 +93,7 @@ describe('HomeView playback activity tabs', () => {
     apiMock.homeTopRated.mockResolvedValue({ artists: [], albums: [], tracks: [] });
     apiMock.homeGenres.mockResolvedValue([]);
     apiMock.genres.mockResolvedValue([]);
+    apiMock.albums.mockResolvedValue([]);
     apiMock.recentlyPlayed.mockResolvedValue([]);
     apiMock.topPlayedTracks.mockResolvedValue([]);
     apiMock.mostPlayedArtists.mockResolvedValue([]);
@@ -280,6 +282,21 @@ describe('HomeView playback activity tabs', () => {
     promptSpy.mockRestore();
   });
 
+  it('shows a genre\'s sampled album covers as a collage on its Auto DJ quick card', async () => {
+    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
+    apiMock.albums.mockResolvedValue([
+      { id: '301', title: 'A', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 },
+      { id: '302', title: 'B', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 },
+    ]);
+
+    renderHome();
+
+    await waitFor(() => expect(apiMock.albums).toHaveBeenCalledWith({ genres: ['Rock'] }));
+    const card = await screen.findByRole('button', { name: 'Start Home Auto DJ with Rock' });
+    const sources = within(card).getAllByRole('presentation').map((img) => img.getAttribute('src'));
+    expect(sources.sort()).toEqual(['/api/albums/301/art?size=300', '/api/albums/302/art?size=300']);
+  });
+
   it('starts Auto DJ from the Let\'s Boogie quick genre chips', async () => {
     const onStartAutoDj = vi.fn(async () => 12);
     apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
@@ -298,16 +315,60 @@ describe('HomeView playback activity tabs', () => {
 
     renderHome(undefined, onStartAutoDj);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Toggle more Home Auto DJ genres' }));
-    const genreSelect = await screen.findByLabelText('Home Auto DJ genre picker') as HTMLSelectElement;
-    const rockOption = Array.from(genreSelect.options).find((option) => option.value === 'Rock');
-    expect(rockOption).toBeTruthy();
-    if (!rockOption) throw new Error('Rock option missing for Home Auto DJ picker');
-    rockOption.selected = true;
-    fireEvent.change(genreSelect);
+    fireEvent.click(await screen.findByRole('button', { name: 'Browse all genres for Home Auto DJ' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Rock to the Home Auto DJ selection' }));
     fireEvent.click(screen.getByRole('button', { name: 'Start Home Auto DJ from picker' }));
 
     await waitFor(() => expect(onStartAutoDj).toHaveBeenCalledWith(['Rock']));
+  });
+
+  it('shows a random sampled album cover as the Genres panel row thumbnail', async () => {
+    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
+    apiMock.albums.mockResolvedValue([
+      { id: '301', title: 'A', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 },
+    ]);
+
+    renderHome();
+
+    await waitFor(() => expect(apiMock.albums).toHaveBeenCalledWith({ genres: ['Rock'] }));
+    const row = await screen.findByRole('button', { name: 'Open genre Rock' });
+    expect(within(row).getByRole('presentation')).toHaveAttribute('src', '/api/albums/301/art?size=300');
+  });
+
+  it('keeps the Genres panel album-art fetch alive across an unrelated Home re-render', async () => {
+    // Regression guard: HomeView re-renders whenever any of its many
+    // independent top-level fetches settle (e.g. `allGenres` here), which
+    // cascades down to HomeGenresWidget. The genre-thumbnail effect must not
+    // be keyed on a value that gets a fresh identity on every such render —
+    // if it were, an unrelated re-render landing while the album fetch is
+    // still in flight would tear down and rebuild that effect, silently
+    // dropping the in-flight fetch's result.
+    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
+
+    let resolveAlbums!: (albums: unknown[]) => void;
+    apiMock.albums.mockReturnValue(new Promise((resolve) => { resolveAlbums = resolve; }));
+    let resolveAllGenres!: (genres: unknown[]) => void;
+    apiMock.genres.mockReturnValue(new Promise((resolve) => { resolveAllGenres = resolve; }));
+
+    renderHome();
+
+    await waitFor(() => expect(apiMock.albums).toHaveBeenCalledWith({ genres: ['Rock'] }));
+
+    // An unrelated top-level Home fetch (allGenres) resolves while the genre
+    // album-art fetch above is still pending, forcing a HomeView re-render.
+    // Wrapped in act so the resulting state update/re-render is fully
+    // flushed before we resolve the album fetch below — a bare `await
+    // Promise.resolve()` isn't a strong enough guarantee.
+    await act(async () => {
+      resolveAllGenres([{ genre: 'Rock', track_count: 3 }]);
+      await Promise.resolve();
+    });
+
+    // The album-art fetch resolves afterwards; its result must still land.
+    resolveAlbums([{ id: '301', title: 'A', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 }]);
+
+    const row = await screen.findByRole('button', { name: 'Open genre Rock' });
+    await waitFor(() => expect(within(row).getByRole('presentation')).toHaveAttribute('src', '/api/albums/301/art?size=300'));
   });
 
   it('opens music browse from the new Genres footer CTA', async () => {
@@ -436,7 +497,7 @@ describe('HomeView playback activity tabs', () => {
     renderHome();
 
     await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledWith('autodj', '0'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Toggle Home Auto DJ options' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Toggle Home Auto DJ transition options' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Set Home Auto DJ transition mode Crossfade' }));
 
     await waitFor(() => expect(apiMock.crossfade.upsertOverride).toHaveBeenCalledWith({
@@ -465,7 +526,7 @@ describe('HomeView playback activity tabs', () => {
 
     renderHome();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Toggle Home Auto DJ options' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Toggle Home Auto DJ transition options' }));
     const resetButton = await screen.findByRole('button', { name: 'Reset Home Auto DJ transition override' });
     fireEvent.click(resetButton);
 
@@ -562,11 +623,10 @@ describe('HomeView playback activity tabs', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Start Home Auto DJ with Rock' }));
     expect(await screen.findByText('Failed to start Auto DJ.')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle more Home Auto DJ genres' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Start Home Auto DJ from picker' }));
-    expect(screen.getByText('Select at least one genre for Auto DJ.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Browse all genres for Home Auto DJ' }));
+    expect(screen.getByRole('button', { name: 'Start Home Auto DJ from picker' })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle Home Auto DJ options' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle Home Auto DJ transition options' }));
     fireEvent.click(screen.getByRole('button', { name: 'Set Home Auto DJ transition mode Zero-gap' }));
     await waitFor(() => expect(apiMock.crossfade.upsertOverride).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Reset Home Auto DJ transition override' }));
