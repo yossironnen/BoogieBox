@@ -708,17 +708,19 @@ function HomeGenresWidget({
 }) {
   const [genreAlbumId, setGenreAlbumId] = useState<Record<string, ClientEntityId | null>>({});
   const fetchedGenreThumbLabels = useRef<Set<string>>(new Set());
+  // Guards the state update below against only a genuine unmount — NOT
+  // against this effect merely re-running. HomeView's own top-level mount
+  // effect legitimately fetches `homeGenres` twice in quick succession (an
+  // initial load, then once more right after its own post-mount system
+  // refresh), each producing a brand-new array — a real data reload, not a
+  // spurious re-render. A per-effect-run `cancelled` flag (torn down and
+  // recreated on every such reload) discarded the first run's in-flight
+  // album-art fetch before it could resolve, and nothing ever retried since
+  // `fetchedGenreThumbLabels` had already marked those genres as fetched.
+  // Once a per-genre fetch starts, it must always be allowed to land.
+  const isMountedRef = useRef(true);
+  useEffect(() => () => { isMountedRef.current = false; }, []);
 
-  // Memoized on `genres` (not recomputed to a fresh array reference every
-  // render): the effect below depends on this identity to know when the
-  // genre list has actually changed. HomeView re-renders often as its many
-  // widgets' independent fetches settle, and an unstable dependency here
-  // previously tore down and rebuilt the in-flight album-art fetch below on
-  // nearly every one of those re-renders — each rebuild saw the genre
-  // already marked "fetched" (that happens synchronously, before the fetch
-  // even starts) and skipped retrying, while the original fetch's result
-  // landed in an already-cancelled closure and was silently dropped. Net
-  // effect: the thumbnail never updated past its icon fallback.
   const items = useMemo(() => selectTopGenres(genres, 6), [genres]);
 
   // Sample a single random album cover per genre for the row thumbnail —
@@ -727,7 +729,6 @@ function HomeGenresWidget({
     const pending = items.filter((item) => !fetchedGenreThumbLabels.current.has(item.label));
     if (!pending.length) return;
     for (const item of pending) fetchedGenreThumbLabels.current.add(item.label);
-    let cancelled = false;
     Promise.all(pending.map(async (item) => {
       try {
         const albums = await api.albums({ genres: [item.label] });
@@ -738,14 +739,13 @@ function HomeGenresWidget({
         return { label: item.label, id: null as ClientEntityId | null };
       }
     })).then((entries) => {
-      if (cancelled) return;
+      if (!isMountedRef.current) return;
       setGenreAlbumId((prev) => {
         const next = { ...prev };
         for (const { label, id } of entries) next[label] = id;
         return next;
       });
     });
-    return () => { cancelled = true; };
   }, [items]);
 
   if (genres.length === 0) return <div style={H.widgetEmpty}>No genre data yet</div>;
@@ -823,6 +823,13 @@ function HomeAutoDjModule({
   const [autoDjCfSaving, setAutoDjCfSaving] = useState(false);
   const [genreAlbumIds, setGenreAlbumIds] = useState<Record<string, ClientEntityId[]>>({});
   const fetchedGenreLabels = useRef<Set<string>>(new Set());
+  // Guards the state update below against only a genuine unmount, not just
+  // this effect re-running — see the matching note in HomeGenresWidget.
+  // HomeView legitimately re-fetches `homeGenres` (thus a new `quickGenres`
+  // reference) a second time right after mount; a per-run `cancelled` flag
+  // discarded the first run's in-flight fetches before they resolved.
+  const isMountedRef = useRef(true);
+  useEffect(() => () => { isMountedRef.current = false; }, []);
 
   useEffect(() => {
     api.crossfade.config('autodj', '0').then((config) => {
@@ -838,7 +845,6 @@ function HomeAutoDjModule({
     const pending = quickGenres.slice(0, 5).filter((genre) => !fetchedGenreLabels.current.has(genre.label));
     if (!pending.length) return;
     for (const genre of pending) fetchedGenreLabels.current.add(genre.label);
-    let cancelled = false;
     Promise.all(pending.map(async (genre) => {
       try {
         const albums = await api.albums({ genres: [genre.label] });
@@ -852,14 +858,13 @@ function HomeAutoDjModule({
         return { label: genre.label, ids: [] as ClientEntityId[] };
       }
     })).then((entries) => {
-      if (cancelled) return;
+      if (!isMountedRef.current) return;
       setGenreAlbumIds((prev) => {
         const next = { ...prev };
         for (const { label, ids } of entries) next[label] = ids;
         return next;
       });
     });
-    return () => { cancelled = true; };
   }, [quickGenres]);
 
   const toggleAutoDjGenre = (genreName: string) => {
