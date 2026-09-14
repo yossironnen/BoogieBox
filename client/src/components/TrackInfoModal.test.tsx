@@ -56,7 +56,7 @@ describe('TrackInfoModal', () => {
   it('loads and displays read-only track detail', async () => {
     render(<TrackInfoModal trackId="track-1" onClose={vi.fn()} onSaved={vi.fn()} />);
 
-    expect(await screen.findByText('D:\\Music\\deadmau5\\Strobe.flac')).toBeInTheDocument();
+    expect(await screen.findByDisplayValue('D:\\Music\\deadmau5\\Strobe.flac')).toBeInTheDocument();
     expect(screen.getByText('flac')).toBeInTheDocument();
     expect(screen.getByText('Home Library')).toBeInTheDocument();
     expect(screen.getByText('47')).toBeInTheDocument();
@@ -105,7 +105,7 @@ describe('TrackInfoModal', () => {
     render(<TrackInfoModal trackId="track-1" onClose={vi.fn()} onSaved={vi.fn()} />);
 
     await screen.findByDisplayValue('Strobe');
-    expect(screen.queryByText(/D:\\Music/)).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue(/D:\\Music/)).not.toBeInTheDocument();
   });
 
   it('falls back to "Never" and 0 for a never-played track', async () => {
@@ -117,15 +117,11 @@ describe('TrackInfoModal', () => {
     expect(screen.getByText('0')).toBeInTheDocument();
   });
 
-  it('copies the file path to the clipboard', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
+  it('shows the full file path in a read-only, selectable input', async () => {
     render(<TrackInfoModal trackId="track-1" onClose={vi.fn()} onSaved={vi.fn()} />);
 
-    await screen.findByText('D:\\Music\\deadmau5\\Strobe.flac');
-    fireEvent.click(screen.getByRole('button', { name: /Copy/ }));
-    expect(writeText).toHaveBeenCalledWith('D:\\Music\\deadmau5\\Strobe.flac');
-    expect(await screen.findByRole('button', { name: /Copied/ })).toBeInTheDocument();
+    const pathInput = await screen.findByDisplayValue('D:\\Music\\deadmau5\\Strobe.flac') as HTMLInputElement;
+    expect(pathInput).toHaveAttribute('readonly');
   });
 
   it('closes on Escape and backdrop click, but not on inner clicks', async () => {

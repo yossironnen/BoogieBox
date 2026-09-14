@@ -71,15 +71,6 @@ function KV({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function CopyIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
-      <rect x="9" y="9" width="13" height="13" rx="2"/>
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-    </svg>
-  );
-}
-
 function fmtDateTime(value?: string | null): string {
   const parsed = parseTrackTimestamp(value ?? null);
   return parsed ? parsed.toLocaleString() : (value?.trim() || '—');
@@ -104,7 +95,6 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
   const [allGenres, setAllGenres] = useState<string[]>([]);
   const [saving, setSaving]       = useState(false);
   const [error, setError]         = useState<string | null>(null);
-  const [copied, setCopied]       = useState(false);
   // Artist consolidation (§8 decision #2): warn, don't block, when renaming
   // this field would detach the track from a merged artist identity — see
   // wip/artist-consolidation-implementation-plan.md.
@@ -166,14 +156,6 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
-
-  const handleCopyPath = () => {
-    if (!track?.file_path) return;
-    navigator.clipboard?.writeText(track.file_path).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
-  };
 
   const handleSave = async () => {
     if (!title.trim()) { setError('Title is required'); return; }
@@ -250,21 +232,17 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
             <div>
               <SectionLabel>File</SectionLabel>
               {track.file_path && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 7,
-                  padding: '9px 12px', marginBottom: 14,
-                }}>
-                  <span style={{ flex: 1, fontSize: 14, fontFamily: 'var(--font), monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {track.file_path}
-                  </span>
-                  <button
-                    onClick={handleCopyPath}
-                    style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 12.5, padding: '4px 8px', cursor: 'pointer', fontFamily: 'var(--font), monospace', flexShrink: 0 }}
-                  >
-                    <CopyIcon /> {copied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
+                <input
+                  readOnly
+                  value={track.file_path}
+                  onFocus={e => e.currentTarget.select()}
+                  style={{
+                    display: 'block', width: '100%', boxSizing: 'border-box',
+                    background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 7,
+                    padding: '9px 12px', marginBottom: 14,
+                    fontSize: 14, fontFamily: 'var(--font), monospace', color: 'var(--text)',
+                  }}
+                />
               )}
               <div style={kvGridStyle}>
                 <KV label="File Name" value={track.file_name} />
