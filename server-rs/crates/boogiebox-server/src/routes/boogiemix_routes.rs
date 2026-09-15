@@ -5,18 +5,19 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use boogiebox_db::{
     boogiemix::{
         cancel_mix_job, clear_deep_analysis_cache, count_playlist_deep_analysis_ready,
-        enqueue_mix_job, get_deep_analysis_cache_status, get_deep_analysis_queue_status,
-        get_latest_mix_job_for_playlist, get_mix_job, get_mix_job_logs, get_mix_output_file,
-        get_mix_transitions, get_playlist_deep_analysis_progress, get_setting, list_mix_outputs,
+        delete_mix_output, enqueue_mix_job, get_deep_analysis_cache_status,
+        get_deep_analysis_queue_status, get_latest_mix_job_for_playlist, get_mix_job,
+        get_mix_job_logs, get_mix_output_file, get_mix_transitions,
+        get_playlist_deep_analysis_progress, get_setting, list_all_mix_outputs, list_mix_outputs,
         queue_all_deep_analysis, queue_library_deep_analysis, queue_playlist_deep_analysis,
-        DeepAnalysisCacheStatus, DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow,
-        MixTransitionRow,
+        rename_mix_output, DeepAnalysisCacheStatus, DeepAnalysisQueueStatus, MixJobLogRow,
+        MixJobRow, MixTransitionRow,
     },
     jobs::JobError,
     music::coerce_entity_id,
@@ -55,6 +56,14 @@ struct EnqueueRequest {
     default_crossfade_sec: Option<i64>,
     #[serde(default, alias = "order_mode")]
     order_mode: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// Body of `PATCH /api/boogiemix/outputs/{outputId}`.
+#[derive(Debug, Deserialize)]
+struct RenameOutputRequest {
+    name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -121,6 +130,11 @@ pub fn boogiemix_router(state: SharedState) -> Router {
         .route(
             "/api/playlists/{id}/boogiemix/latest-job",
             get(latest_job_for_playlist_handler),
+        )
+        .route("/api/boogiemix/outputs", get(list_all_outputs_handler))
+        .route(
+            "/api/boogiemix/outputs/{outputId}",
+            patch(rename_output_handler).delete(delete_output_handler),
         )
         .route(
             "/api/boogiemix/outputs/{outputId}/file",
@@ -254,6 +268,7 @@ async fn enqueue_for_playlist_handler(
             style,
             quality,
             order_mode,
+            body.name.as_deref(),
         ) {
             Ok(job_id) => (
                 StatusCode::CREATED,
@@ -324,6 +339,7 @@ async fn create_handler(
             style,
             quality,
             order_mode,
+            body.name.as_deref(),
         ) {
             Ok(job_id) => (
                 StatusCode::CREATED,
@@ -355,17 +371,25 @@ async fn create_handler(
 /// Builds the full job response (transitions, logs, plan summary, deep-analysis
 /// counts) shared by the by-id and latest-for-playlist lookups.
 fn full_job_response(conn: &rusqlite::Connection, job: MixJobRow) -> Response {
-    let deep_counts = count_playlist_deep_analysis_ready(conn, &job.playlist_id).unwrap_or((0, 0));
+    let deep_counts = job
+        .playlist_id
+        .as_ref()
+        .and_then(|pid| count_playlist_deep_analysis_ready(conn, pid).ok())
+        .unwrap_or((0, 0));
     let transitions = get_mix_transitions(conn, &job.id).unwrap_or_default();
     let logs = get_mix_job_logs(conn, &job.id).unwrap_or_default();
-    let plan_summary: Option<serde_json::Value> = conn
-        .query_row(
-            "SELECT normalized_plan FROM boogiemix_plans \
-             WHERE playlist_id=?1 ORDER BY id DESC LIMIT 1",
-            rusqlite::params![job.playlist_id],
-            |r| r.get::<_, String>(0),
-        )
-        .ok()
+    let plan_summary: Option<serde_json::Value> = job
+        .playlist_id
+        .as_ref()
+        .and_then(|pid| {
+            conn.query_row(
+                "SELECT normalized_plan FROM boogiemix_plans \
+                 WHERE playlist_id=?1 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![pid],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        })
         .and_then(|raw| {
             let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
             let plan = &parsed["plan"];
@@ -501,21 +525,87 @@ async fn list_outputs_handler(
     result
 }
 
-/// Looks up a mix output's file path + name for `user_id`, and verifies the
-/// resolved path lives inside the configured mix-output folder. Shared by the
-/// download and inline-play handlers so both enforce the same ownership and
-/// containment checks.
+async fn list_all_outputs_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let user_id = coerce_entity_id(&user.id);
+    let result = match db.lock() {
+        Ok(conn) => match list_all_mix_outputs(&conn, &user_id) {
+            Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+            Err(e) => internal_error(&e.to_string()),
+        },
+        Err(_) => internal_error("DB lock failed"),
+    };
+    result
+}
+
+async fn rename_output_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(output_id_raw): Path<String>,
+    Json(body): Json<RenameOutputRequest>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let output_id = coerce_entity_id(&output_id_raw);
+    let user_id = coerce_entity_id(&user.id);
+    let result = match db.lock() {
+        Ok(conn) => match rename_mix_output(&conn, &output_id, &user_id, &body.name) {
+            Ok(true) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
+            Ok(false) => not_found("Output not found"),
+            Err(e) => internal_error(&e.to_string()),
+        },
+        Err(_) => internal_error("DB lock failed"),
+    };
+    result
+}
+
+async fn delete_output_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(output_id_raw): Path<String>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let output_id = coerce_entity_id(&output_id_raw);
+    let user_id = coerce_entity_id(&user.id);
+    let file_path = match db.lock() {
+        Ok(conn) => match delete_mix_output(&conn, &output_id, &user_id) {
+            Ok(Some(path)) => path,
+            Ok(None) => return not_found("Output not found"),
+            Err(e) => return internal_error(&e.to_string()),
+        },
+        Err(_) => return internal_error("DB lock failed"),
+    };
+    // Best-effort file removal — a missing file on disk (already cleaned up,
+    // manually removed, etc.) doesn't block the DB row from being deleted.
+    let _ = tokio::fs::remove_file(&file_path).await;
+    (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+}
+
+/// Looks up a mix output's file path + name for `user_id`. Shared by the
+/// download and inline-play handlers so both enforce the same ownership
+/// check.
+///
+/// Deliberately does NOT require the resolved path to sit inside the
+/// *currently* configured mix-output folder: `file_path` is entirely
+/// server-generated at render time (never client-supplied), so re-validating
+/// it against today's setting adds no safety — it only breaks playback for
+/// mixes rendered before an admin last changed "BoogieMix output folder" in
+/// Settings, even though the file is untouched at the path the DB recorded.
+/// Both callers already treat a genuinely missing file as 404 on open, which
+/// is the actual failure mode that matters here.
 async fn resolve_output_for_serving(
-    state: &SharedState,
     db: &DbPool,
     output_id_raw: &str,
     user_id_raw: &str,
 ) -> Result<(PathBuf, String), Response> {
-    let db_folder = {
-        let s = state.read().unwrap_or_else(|p| p.into_inner());
-        s.db_folder.clone()
-    };
-
     let output_id = coerce_entity_id(output_id_raw);
     let user_id = coerce_entity_id(user_id_raw);
 
@@ -530,26 +620,6 @@ async fn resolve_output_for_serving(
         Err(e) => return Err(internal_error(&e.to_string())),
     };
 
-    // Security: output must be inside the known mix-output folder
-    let configured = match db.lock() {
-        Ok(conn) => boogiebox_db::boogiemix::get_mix_output_dir_from_db(&conn),
-        Err(_) => None,
-    };
-    let out_dir = resolve_output_dir(configured, db_folder.as_ref());
-    let canonical_out = std::fs::canonicalize(&out_dir).unwrap_or(out_dir);
-    let canonical_file =
-        std::fs::canonicalize(&file_path).unwrap_or_else(|_| PathBuf::from(&file_path));
-    if !canonical_file.starts_with(&canonical_out) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Output file is outside the BoogieMix output folder".into(),
-                setup_required: None,
-            }),
-        )
-            .into_response());
-    }
-
     Ok((PathBuf::from(file_path), file_name))
 }
 
@@ -563,7 +633,7 @@ async fn download_output_handler(
     };
 
     let (file_path, file_name) =
-        match resolve_output_for_serving(&state, &db, &output_id_raw, &user.id).await {
+        match resolve_output_for_serving(&db, &output_id_raw, &user.id).await {
             Ok(v) => v,
             Err(resp) => return resp,
         };
@@ -602,7 +672,7 @@ async fn play_output_handler(
     };
 
     let (file_path, _file_name) =
-        match resolve_output_for_serving(&state, &db, &output_id_raw, &user.id).await {
+        match resolve_output_for_serving(&db, &output_id_raw, &user.id).await {
             Ok(v) => v,
             Err(resp) => return resp,
         };
@@ -879,29 +949,6 @@ async fn clear_deep_analysis_cache_handler(
         Err(_) => internal_error("DB lock failed"),
     };
     result
-}
-
-fn resolve_output_dir(
-    configured: Option<String>,
-    db_folder: Option<&std::path::PathBuf>,
-) -> std::path::PathBuf {
-    if let Some(dir) = configured {
-        let dir = dir.trim().to_string();
-        if !dir.is_empty() {
-            let p = std::path::PathBuf::from(&dir);
-            if p.is_absolute() {
-                return p;
-            }
-            if let Some(base) = db_folder {
-                return base.join(p);
-            }
-            return p;
-        }
-    }
-    if let Some(base) = db_folder {
-        return base.join("mix-outputs");
-    }
-    std::path::PathBuf::from("mix-outputs")
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -1374,7 +1421,7 @@ mod tests {
     fn boogiemix_job_response_is_flat_client_contract() {
         let job = MixJobRow {
             id: EntityId::Str("job-1".to_string()),
-            playlist_id: EntityId::Str("playlist-1".to_string()),
+            playlist_id: Some(EntityId::Str("playlist-1".to_string())),
             user_id: EntityId::Str("user-1".to_string()),
             status: "pending".to_string(),
             progress_percent: 0,
@@ -1390,6 +1437,7 @@ mod tests {
             deep_analysis_status: None,
             cancel_requested: false,
             output_id: None,
+            requested_name: None,
             started_at: None,
             finished_at: None,
             created_at: Some("2026-05-24 12:00:00".to_string()),
@@ -1423,7 +1471,7 @@ mod tests {
     fn high_quality_fallback_reason_mentions_standard_path() {
         let job = MixJobRow {
             id: EntityId::Str("job-1".to_string()),
-            playlist_id: EntityId::Str("playlist-1".to_string()),
+            playlist_id: Some(EntityId::Str("playlist-1".to_string())),
             user_id: EntityId::Str("user-1".to_string()),
             status: "done".to_string(),
             progress_percent: 100,
@@ -1439,6 +1487,7 @@ mod tests {
             deep_analysis_status: Some("fallback_standard".to_string()),
             cancel_requested: false,
             output_id: None,
+            requested_name: None,
             started_at: None,
             finished_at: None,
             created_at: None,
@@ -1875,6 +1924,205 @@ mod route_tests {
                 .unwrap(),
             "bytes 0-99/1000"
         );
+
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    /// Regression test: an admin changing the "BoogieMix output folder"
+    /// setting must not break playback/download of mixes rendered under the
+    /// *previous* folder. `resolve_output_for_serving` used to re-derive the
+    /// trusted directory from the live setting and reject anything outside
+    /// it — so this file, sitting untouched at its original recorded path,
+    /// would 400 the instant the setting changed even though nothing about
+    /// the file itself was wrong.
+    #[tokio::test]
+    async fn play_and_download_still_work_after_the_output_folder_setting_changes() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-folder-relocated");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        // File physically lives under `old_dir` — the folder that was
+        // configured when the mix was rendered.
+        let old_dir = std::env::temp_dir().join(format!("boogiemix-old-out-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let file_path = old_dir.join("mix.mp3");
+        std::fs::write(&file_path, vec![0u8; 500]).unwrap();
+
+        let output_id = Uuid::now_v7().to_string();
+        let job_id = Uuid::now_v7().to_string();
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mix_jobs(id, playlist_id, user_id, status, default_crossfade_sec, mix_style, mix_quality) \
+                 VALUES (?, ?, 'u1', 'done', 8, 'club_blend', 'standard')",
+                params![job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, duration_sec, file_size_bytes) \
+                 VALUES (?, ?, ?, 'u1', ?, 'mix.mp3', 60.0, 500)",
+                params![
+                    output_id,
+                    job_id,
+                    playlist_id,
+                    file_path.to_string_lossy().to_string()
+                ],
+            )
+            .unwrap();
+            // Admin then repoints the setting at a *different* folder — the
+            // file itself never moved.
+            let new_dir =
+                std::env::temp_dir().join(format!("boogiemix-new-out-{}", Uuid::now_v7()));
+            std::fs::create_dir_all(&new_dir).unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES ('boogiemixOutputFolder', ?)",
+                params![new_dir.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        }
+
+        let (play_status, _, play_body) = crate::test_support::send_full(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/play"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(play_status, StatusCode::OK);
+        assert_eq!(play_body.len(), 500);
+
+        let (download_status, _, download_body) = crate::test_support::send_full(
+            app,
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/file"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(download_status, StatusCode::OK);
+        assert_eq!(download_body.len(), 500);
+
+        std::fs::remove_dir_all(&old_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn mix_output_survives_playlist_deletion_and_is_listed_in_outputs() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-survives-playlist-delete");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let output_id = Uuid::now_v7().to_string();
+        let job_id = Uuid::now_v7().to_string();
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mix_jobs(id, playlist_id, user_id, status, default_crossfade_sec, mix_style, mix_quality) \
+                 VALUES (?, ?, 'u1', 'done', 8, 'club_blend', 'standard')",
+                params![job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, source_playlist_name, duration_sec, file_size_bytes) \
+                 VALUES (?, ?, ?, 'u1', '/tmp/mix.mp3', 'mix.mp3', 'My Mix', 'Mix Source', 60.0, 1000)",
+                params![output_id, job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute("DELETE FROM playlists WHERE id=?1", params![playlist_id])
+                .unwrap();
+        }
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri("/api/boogiemix/outputs")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = json_body(&body);
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], output_id);
+        assert_eq!(rows[0]["name"], "My Mix");
+        assert_eq!(rows[0]["playlist_id"], serde_json::Value::Null);
+        assert_eq!(rows[0]["playlist_name"], "Mix Source");
+    }
+
+    #[tokio::test]
+    async fn rename_and_delete_output_handlers_work_and_are_ownership_scoped() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-rename-delete-output");
+        let cookie = seed_user_session(&pool, "u1");
+        let other_cookie = seed_user_session(&pool, "u2");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let out_dir =
+            std::env::temp_dir().join(format!("boogiemix-rename-delete-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let file_path = out_dir.join("mix.mp3");
+        std::fs::write(&file_path, vec![0u8; 10]).unwrap();
+
+        let output_id = Uuid::now_v7().to_string();
+        let job_id = Uuid::now_v7().to_string();
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mix_jobs(id, playlist_id, user_id, status, default_crossfade_sec, mix_style, mix_quality) \
+                 VALUES (?, ?, 'u1', 'done', 8, 'club_blend', 'standard')",
+                params![job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, duration_sec, file_size_bytes) \
+                 VALUES (?, ?, ?, 'u1', ?, 'mix.mp3', 'Old Name', 60.0, 1000)",
+                params![output_id, job_id, playlist_id, file_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        }
+
+        // Another user can't rename it.
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/boogiemix/outputs/{output_id}"))
+                .header("cookie", other_cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Hijacked"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::NOT_FOUND);
+
+        let (rename_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/boogiemix/outputs/{output_id}"))
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"New Name"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(rename_status, StatusCode::OK);
+
+        let (delete_status, _) = send(
+            app,
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/boogiemix/outputs/{output_id}"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(delete_status, StatusCode::OK);
+        assert!(!file_path.exists());
 
         std::fs::remove_dir_all(&out_dir).ok();
     }

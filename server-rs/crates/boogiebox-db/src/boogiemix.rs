@@ -80,8 +80,9 @@ pub struct TrackMixAnalysis {
 pub struct MixJobRow {
     /// Documents the Id public API surface.
     pub id: EntityId,
-    /// Documents the Playlist Id public API surface.
-    pub playlist_id: EntityId,
+    /// Documents the Playlist Id public API surface. `None` once the source
+    /// playlist has been deleted (`ON DELETE SET NULL`).
+    pub playlist_id: Option<EntityId>,
     /// Documents the User Id public API surface.
     pub user_id: EntityId,
     /// Documents the Status public API surface.
@@ -112,6 +113,9 @@ pub struct MixJobRow {
     pub cancel_requested: bool,
     /// Documents the Output Id public API surface.
     pub output_id: Option<EntityId>,
+    /// User-supplied mix name from the start popup; `None`/empty falls back
+    /// to a server-computed default at output-creation time.
+    pub requested_name: Option<String>,
     /// Documents the Started At public API surface.
     pub started_at: Option<String>,
     /// Documents the Finished At public API surface.
@@ -129,10 +133,21 @@ pub struct MixOutputRow {
     pub id: EntityId,
     /// Documents the Job Id public API surface.
     pub job_id: EntityId,
-    /// Documents the Playlist Id public API surface.
-    pub playlist_id: EntityId,
+    /// Documents the Playlist Id public API surface. `None` once the source
+    /// playlist has been deleted (`ON DELETE SET NULL`) — the client uses
+    /// this to decide whether `playlist_name` is a clickable live link or
+    /// plain snapshot text.
+    pub playlist_id: Option<EntityId>,
     /// Documents the File Name public API surface.
     pub file_name: String,
+    /// User-facing mix name, editable after creation.
+    pub name: String,
+    /// Resolved playlist label: a live join when `playlist_id` is still
+    /// set, otherwise the `source_playlist_name` snapshot.
+    pub playlist_name: Option<String>,
+    /// JSON array (up to 4) of album ids used to render the 2x2 collage
+    /// cover, snapshotted at mix-creation time. `None` for pre-existing rows.
+    pub cover_album_ids: Option<String>,
     /// Documents the Duration Sec public API surface.
     pub duration_sec: f64,
     /// Documents the File Size Bytes public API surface.
@@ -506,6 +521,7 @@ pub const DEEP_ANALYSIS_PRIORITY_PLAYLIST_MIX: i64 = 90;
 // ── Mix Job CRUD ──────────────────────────────────────────────────────────────
 
 /// Documents the Enqueue Mix Job public API surface.
+#[allow(clippy::too_many_arguments)]
 pub fn enqueue_mix_job(
     conn: &Connection,
     playlist_id: &EntityId,
@@ -514,6 +530,7 @@ pub fn enqueue_mix_job(
     mix_style: &str,
     mix_quality: &str,
     order_mode: &str,
+    requested_name: Option<&str>,
 ) -> Result<EntityId, JobError> {
     let playlist = conn
         .query_row(
@@ -552,10 +569,14 @@ pub fn enqueue_mix_job(
     } else {
         "style"
     };
+    let name = requested_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     conn.execute(
         "INSERT INTO mix_jobs(id, playlist_id, user_id, status, progress_percent, current_step,
-          default_crossfade_sec, mix_style, mix_quality, order_mode, cancel_requested)
-         VALUES(?1, ?2, ?3, 'pending', 0, 'queued', ?4, ?5, ?6, ?7, 0)",
+          default_crossfade_sec, mix_style, mix_quality, order_mode, cancel_requested, requested_name)
+         VALUES(?1, ?2, ?3, 'pending', 0, 'queued', ?4, ?5, ?6, ?7, 0, ?8)",
         params![
             job_id,
             playlist_id,
@@ -563,7 +584,8 @@ pub fn enqueue_mix_job(
             crossfade,
             style,
             quality,
-            order
+            order,
+            name,
         ],
     )?;
     Ok(coerce_entity_id(&job_id))
@@ -638,13 +660,13 @@ pub fn get_mix_job(
         "SELECT id, playlist_id, user_id, status, progress_percent, current_step, last_message,
                 default_crossfade_sec, mix_style, mix_quality, order_mode, mix_strategy,
                 planner_provider, used_deep_analysis, deep_analysis_status, cancel_requested,
-                output_id, started_at, finished_at, created_at, updated_at
+                output_id, requested_name, started_at, finished_at, created_at, updated_at
          FROM mix_jobs WHERE id=?1 AND user_id=?2",
         params![job_id, user_id],
         |r| {
             Ok(MixJobRow {
                 id: coerce_entity_id(&r.get::<_, String>(0)?),
-                playlist_id: coerce_entity_id(&r.get::<_, String>(1)?),
+                playlist_id: r.get::<_, Option<String>>(1)?.map(|s| coerce_entity_id(&s)),
                 user_id: coerce_entity_id(&r.get::<_, String>(2)?),
                 status: r.get(3)?,
                 progress_percent: r.get(4)?,
@@ -662,10 +684,11 @@ pub fn get_mix_job(
                 output_id: r
                     .get::<_, Option<String>>(16)?
                     .map(|s| coerce_entity_id(&s)),
-                started_at: r.get(17)?,
-                finished_at: r.get(18)?,
-                created_at: r.get(19)?,
-                updated_at: r.get(20)?,
+                requested_name: r.get(17)?,
+                started_at: r.get(18)?,
+                finished_at: r.get(19)?,
+                created_at: r.get(20)?,
+                updated_at: r.get(21)?,
             })
         },
     )
@@ -685,7 +708,7 @@ pub fn get_latest_mix_job_for_playlist(
         "SELECT id, playlist_id, user_id, status, progress_percent, current_step, last_message,
                 default_crossfade_sec, mix_style, mix_quality, order_mode, mix_strategy,
                 planner_provider, used_deep_analysis, deep_analysis_status, cancel_requested,
-                output_id, started_at, finished_at, created_at, updated_at
+                output_id, requested_name, started_at, finished_at, created_at, updated_at
          FROM mix_jobs WHERE playlist_id=?1 AND user_id=?2
          -- rowid, not created_at: two jobs enqueued within the same second (or
          -- even the same UUIDv7 millisecond, whose low bits aren't guaranteed
@@ -695,7 +718,7 @@ pub fn get_latest_mix_job_for_playlist(
         |r| {
             Ok(MixJobRow {
                 id: coerce_entity_id(&r.get::<_, String>(0)?),
-                playlist_id: coerce_entity_id(&r.get::<_, String>(1)?),
+                playlist_id: r.get::<_, Option<String>>(1)?.map(|s| coerce_entity_id(&s)),
                 user_id: coerce_entity_id(&r.get::<_, String>(2)?),
                 status: r.get(3)?,
                 progress_percent: r.get(4)?,
@@ -713,10 +736,11 @@ pub fn get_latest_mix_job_for_playlist(
                 output_id: r
                     .get::<_, Option<String>>(16)?
                     .map(|s| coerce_entity_id(&s)),
-                started_at: r.get(17)?,
-                finished_at: r.get(18)?,
-                created_at: r.get(19)?,
-                updated_at: r.get(20)?,
+                requested_name: r.get(17)?,
+                started_at: r.get(18)?,
+                finished_at: r.get(19)?,
+                created_at: r.get(20)?,
+                updated_at: r.get(21)?,
             })
         },
     )
@@ -966,14 +990,17 @@ pub fn create_mix_output(
     user_id: &EntityId,
     file_path: &str,
     file_name: &str,
+    name: &str,
+    cover_album_ids: Option<&str>,
+    source_playlist_name: &str,
     duration_sec: f64,
     file_size_bytes: u64,
 ) -> Result<EntityId, JobError> {
     let output_id = new_id();
     conn.execute(
         "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name,
-          duration_sec, file_size_bytes, format)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'mp3')",
+          name, cover_album_ids, source_playlist_name, duration_sec, file_size_bytes, format)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'mp3')",
         params![
             output_id,
             job_id,
@@ -981,11 +1008,36 @@ pub fn create_mix_output(
             user_id,
             file_path,
             file_name,
+            name,
+            cover_album_ids,
+            source_playlist_name,
             duration_sec,
             file_size_bytes as i64
         ],
     )?;
     Ok(coerce_entity_id(&output_id))
+}
+
+const MIX_OUTPUT_SELECT: &str = "SELECT mo.id, mo.job_id, mo.playlist_id, mo.file_name, mo.name,
+          CASE WHEN mo.playlist_id IS NOT NULL THEN p.name ELSE NULLIF(mo.source_playlist_name, '') END,
+          mo.cover_album_ids, mo.duration_sec, mo.file_size_bytes, mo.format, mo.created_at
+         FROM mix_outputs mo
+         LEFT JOIN playlists p ON p.id = mo.playlist_id";
+
+fn map_mix_output_row(r: &rusqlite::Row) -> rusqlite::Result<MixOutputRow> {
+    Ok(MixOutputRow {
+        id: coerce_entity_id(&r.get::<_, String>(0)?),
+        job_id: coerce_entity_id(&r.get::<_, String>(1)?),
+        playlist_id: r.get::<_, Option<String>>(2)?.map(|s| coerce_entity_id(&s)),
+        file_name: r.get(3)?,
+        name: r.get(4)?,
+        playlist_name: r.get(5)?,
+        cover_album_ids: r.get(6)?,
+        duration_sec: r.get(7)?,
+        file_size_bytes: r.get(8)?,
+        format: r.get(9)?,
+        created_at: r.get(10)?,
+    })
 }
 
 /// Documents the List Mix Outputs public API surface.
@@ -994,23 +1046,68 @@ pub fn list_mix_outputs(
     playlist_id: &EntityId,
     user_id: &EntityId,
 ) -> Result<Vec<MixOutputRow>, JobError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, job_id, playlist_id, file_name, duration_sec, file_size_bytes, format, created_at
-         FROM mix_outputs WHERE playlist_id=?1 AND user_id=?2 ORDER BY created_at DESC",
-    )?;
-    let rows = stmt.query_map(params![playlist_id, user_id], |r| {
-        Ok(MixOutputRow {
-            id: coerce_entity_id(&r.get::<_, String>(0)?),
-            job_id: coerce_entity_id(&r.get::<_, String>(1)?),
-            playlist_id: coerce_entity_id(&r.get::<_, String>(2)?),
-            file_name: r.get(3)?,
-            duration_sec: r.get(4)?,
-            file_size_bytes: r.get(5)?,
-            format: r.get(6)?,
-            created_at: r.get(7)?,
-        })
-    })?;
+    let sql = format!(
+        "{MIX_OUTPUT_SELECT} WHERE mo.playlist_id=?1 AND mo.user_id=?2 ORDER BY mo.created_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![playlist_id, user_id], map_mix_output_row)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Lists all of a user's rendered mixes, regardless of source playlist —
+/// unscoped counterpart of `list_mix_outputs`, backing the Mixes library.
+pub fn list_all_mix_outputs(
+    conn: &Connection,
+    user_id: &EntityId,
+) -> Result<Vec<MixOutputRow>, JobError> {
+    let sql = format!("{MIX_OUTPUT_SELECT} WHERE mo.user_id=?1 ORDER BY mo.created_at DESC");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![user_id], map_mix_output_row)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Renames a mix output. Returns `false` if no matching row exists for this
+/// user (not found / not owned).
+pub fn rename_mix_output(
+    conn: &Connection,
+    output_id: &EntityId,
+    user_id: &EntityId,
+    name: &str,
+) -> Result<bool, JobError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(false);
+    }
+    let changed = conn.execute(
+        "UPDATE mix_outputs SET name=?1 WHERE id=?2 AND user_id=?3",
+        params![name, output_id, user_id],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Deletes a mix output row and returns its `file_path` so the caller can
+/// remove the rendered file from disk. Returns `None` if no matching row
+/// exists for this user.
+pub fn delete_mix_output(
+    conn: &Connection,
+    output_id: &EntityId,
+    user_id: &EntityId,
+) -> Result<Option<String>, JobError> {
+    let file_path: Option<String> = conn
+        .query_row(
+            "SELECT file_path FROM mix_outputs WHERE id=?1 AND user_id=?2",
+            params![output_id, user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(file_path) = file_path else {
+        return Ok(None);
+    };
+    conn.execute(
+        "DELETE FROM mix_outputs WHERE id=?1 AND user_id=?2",
+        params![output_id, user_id],
+    )?;
+    Ok(Some(file_path))
 }
 
 /// Documents the Get Mix Output File public API surface.
@@ -1026,6 +1123,37 @@ pub fn get_mix_output_file(
     )
     .optional()
     .map_err(JobError::Db)
+}
+
+/// Resolves up to 4 distinct `album_id`s for the given track ids, preserving
+/// input order and skipping tracks with no album — mirrors the client's
+/// `buildPlaylistCollageAlbumIds` (`PlaylistsView.tsx`) so a rendered mix's
+/// collage matches the tracks that were actually mixed.
+pub fn collage_album_ids_for_tracks(
+    conn: &Connection,
+    track_ids: &[EntityId],
+) -> Result<Vec<EntityId>, JobError> {
+    let mut out: Vec<EntityId> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for track_id in track_ids {
+        if out.len() >= 4 {
+            break;
+        }
+        let album_id: Option<String> = conn
+            .query_row(
+                "SELECT album_id FROM tracks WHERE id=?1",
+                params![track_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(album_id) = album_id {
+            if seen.insert(album_id.clone()) {
+                out.push(coerce_entity_id(&album_id));
+            }
+        }
+    }
+    Ok(out)
 }
 
 // ── Playlist Tracks for Mix ───────────────────────────────────────────────────
@@ -2786,7 +2914,8 @@ mod tests {
               mix_style TEXT,
               mix_quality TEXT,
               order_mode TEXT,
-              cancel_requested INTEGER
+              cancel_requested INTEGER,
+              requested_name TEXT
             );
             "#,
         )
@@ -2808,6 +2937,7 @@ mod tests {
             "long_build",
             "high_quality",
             "style",
+            None,
         )
         .unwrap();
         let stored: i64 = conn
@@ -2831,6 +2961,7 @@ mod tests {
             "club_blend",
             "standard",
             "playlist",
+            None,
         )
         .unwrap();
         let stored: i64 = conn
@@ -2854,6 +2985,7 @@ mod tests {
             "club_blend",
             "standard",
             "bogus",
+            Some("My Mix"),
         )
         .unwrap();
         let stored: String = conn

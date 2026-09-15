@@ -14,6 +14,7 @@ import Player, { type PlaybackSnapshot, type PlayerState } from './components/Pl
 import SettingsPage from './components/SettingsPage';
 import BrowseView from './components/BrowseView';
 import PlaylistsView from './components/PlaylistsView';
+import MixesView from './components/MixesView';
 import HomeView from './components/HomeView';
 import SetupView from './components/SetupView';
 import LoginScreen from './components/LoginScreen';
@@ -324,6 +325,12 @@ const Icon = {
       <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
       <line x1="8" y1="18" x2="21" y2="18"/>
       <path d="M3 6h.01M3 12h.01M3 18h.01"/>
+    </svg>
+  ),
+  Mixes: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="12" height="4" rx="1"/>
+      <rect x="3" y="16" width="15" height="4" rx="1"/>
     </svg>
   ),
   Galaxy: () => (
@@ -1019,7 +1026,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
 
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
-type View = 'home' | 'search' | 'browse' | 'settings' | 'playlists';
+type View = 'home' | 'search' | 'browse' | 'settings' | 'playlists' | 'mixes';
 type PlaybackMode = 'standard' | 'vinyl';
 const VINYL_PLAYBACK_MODE_STORAGE_KEY = 'boogiebox.playback.vinyl.v1';
 const VINYL_PREFS_STORAGE_KEY = 'boogiebox.playback.vinylPrefs.v1';
@@ -1105,6 +1112,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
   const [activeSidebarLibraryId, setActiveSidebarLibraryId] = useState<ClientEntityId | null>(null);
   const [browseResetRequest, setBrowseResetRequest] = useState<number | null>(null);
+  const [playlistsResetRequest, setPlaylistsResetRequest] = useState<number | null>(null);
   const [hoveredSidebarLibraryId, setHoveredSidebarLibraryId] = useState<ClientEntityId | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [stats, setStats]       = useState<Stats | null>(null);
@@ -1130,6 +1138,8 @@ export default function App() {
     useState<{ genre: string; token: number } | null>(null);
   const [openPlaylistRequest, setOpenPlaylistRequest] =
     useState<{ playlistId: EntityId; token: number } | null>(null);
+  const [openMixesRequest, setOpenMixesRequest] =
+    useState<{ playlistName: string; token: number } | null>(null);
   const [infoTrackId, setInfoTrackId] = useState<ClientEntityId | null>(null);
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(null);
   const lastRecordedPlayKeyRef = useRef<string>('');
@@ -1463,6 +1473,7 @@ export default function App() {
     { id: 'search',       label: 'Search',       icon: <Icon.Search /> },
     { id: 'browse',       label: 'Browse Music', icon: <Icon.Browse /> },
     { id: 'playlists',    label: 'Playlists',    icon: <Icon.Playlist /> },
+    { id: 'mixes',        label: 'Mixes',        icon: <Icon.Mixes /> },
     { id: 'settings',     label: 'Settings',     icon: <Icon.Settings /> },
   ];
 
@@ -1485,6 +1496,9 @@ export default function App() {
       setBrowseResetRequest(Date.now());
     } else {
       clearSidebarLibrarySelection();
+    }
+    if (nextView === 'playlists') {
+      setPlaylistsResetRequest(Date.now());
     }
     setView(nextView);
   }, [clearSidebarLibrarySelection]);
@@ -1736,7 +1750,7 @@ export default function App() {
 
         {/* Main */}
         <main style={{ ...S.main, ...(hybridDesignActive ? hybridShellStyles.main : {}) }}>
-          {view !== 'settings' && view !== 'playlists' && view !== 'home' && <StatsBar stats={stats} />}
+          {view !== 'settings' && view !== 'playlists' && view !== 'home' && view !== 'mixes' && <StatsBar stats={stats} />}
           {view === 'home'      && (
             <HomeView
               stats={stats}
@@ -1825,6 +1839,18 @@ export default function App() {
               initialPlaylistId={openPlaylistRequest?.playlistId ?? null}
               onOpenArtist={artist => { setBrowseOpenArtistRequest({ artist, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
               onOpenAlbum={album   => { setBrowseOpenAlbumRequest({ album, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
+              onOpenMixes={playlistName => { setOpenMixesRequest({ playlistName, token: Date.now() }); setView('mixes'); }}
+              resetRequest={playlistsResetRequest}
+            />
+          )}
+          {view === 'mixes' && (
+            <MixesView
+              playTrack={playTrack}
+              openRequest={openMixesRequest}
+              onOpenPlaylist={(playlistId) => {
+                setOpenPlaylistRequest({ playlistId, token: Date.now() });
+                setView('playlists');
+              }}
             />
           )}
           {view === 'settings'  && (

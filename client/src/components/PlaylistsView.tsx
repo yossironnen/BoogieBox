@@ -89,6 +89,7 @@ const NoteIcon        = () => <svg width="13" height="13" viewBox="0 0 24 24" fi
 const SpinnerIcon    = () => <svg className="sidebar-scan-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M18.2 17.2A8 8 0 1 1 20 12"/></svg>;
 const CheckIcon      = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>;
 const AlertIcon      = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>;
+const ArrowRightIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>;
 
 /** Job statuses where a BoogieMix render is still actively working. */
 const MIX_ACTIVE_STATUSES: BoogieMixJob['status'][] = ['pending', 'analyzing', 'planning', 'rendering'];
@@ -98,7 +99,7 @@ const MIX_STEP_LABEL: Record<string, string> = {
 
 
 /** Shared artwork for the playlist header and sidebar; no per-row track fetches. */
-function PlaylistArtwork({ albumIds, compact = false, responsive = false }: { albumIds: ClientEntityId[]; compact?: boolean; responsive?: boolean }) {
+export function PlaylistArtwork({ albumIds, compact = false, responsive = false }: { albumIds: ClientEntityId[]; compact?: boolean; responsive?: boolean }) {
   const ids = albumIds.slice(0, 4);
   return (
     <div style={{
@@ -209,8 +210,21 @@ function PlaylistToolbar({
  * colliding with real library track ids anywhere `track.id` is used as a DB
  * lookup key; `stream_url_override` is what `getPreferredTrackStreamUrl`
  * picks up in Player.tsx. Title format must stay in sync with the ID3 title
- * `render_mix` stamps into the file itself (mix_worker.rs). */
+ * `render_mix` stamps into the file itself (mix_worker.rs).
+ *
+ * `cover_album_ids` carries the mix's full collage snapshot (same source as
+ * the Mixes-library collage) so the now-playing bar can render the actual
+ * 2x2 collage instead of one album's art; `album_id` is set to the first
+ * entry as a single-image fallback for surfaces that only render one image
+ * (vinyl turntable, adaptive-accent color extraction, queue-panel rows). */
 export function mixOutputToTrack(output: BoogieMixOutput, playlistName: string): Track {
+  let coverAlbumIds: ClientEntityId[] = [];
+  if (output.cover_album_ids) {
+    try {
+      const parsed = JSON.parse(output.cover_album_ids);
+      if (Array.isArray(parsed)) coverAlbumIds = parsed;
+    } catch { /* malformed/legacy row — fall through with no art */ }
+  }
   return {
     id: `boogiemix:${output.id}`,
     file_name: output.file_name,
@@ -220,7 +234,7 @@ export function mixOutputToTrack(output: BoogieMixOutput, playlistName: string):
     bitrate: null,
     sample_rate: null,
     channels: null,
-    title: `${playlistName} — BoogieMix`,
+    title: output.name || `${playlistName} — BoogieMix`,
     artist: 'BoogieBox BoogieMix',
     album: playlistName,
     library_name: null,
@@ -231,6 +245,8 @@ export function mixOutputToTrack(output: BoogieMixOutput, playlistName: string):
     composer: null,
     comment: null,
     bpm: null,
+    album_id: coverAlbumIds[0] ?? null,
+    cover_album_ids: coverAlbumIds.length > 0 ? coverAlbumIds : null,
     scanned_at: output.created_at,
     stream_url_override: api.boogiemix.playUrl(output.id),
   };
@@ -717,9 +733,14 @@ function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
   );
 }
 
+/** Default mix name — "Mix — Sep 15" — computed client-side, editable before Start. */
+function defaultMixName(): string {
+  return `Mix — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+}
+
 function PlaylistDetail({
   playlist, onUpdate, onOptions, onBack,
-  playTrack, addToQueue, onOpenAlbum, onOpenArtist,
+  playTrack, addToQueue, onOpenAlbum, onOpenArtist, onOpenMixes,
 }: {
   playlist: Playlist;
   onUpdate: () => void;
@@ -729,6 +750,7 @@ function PlaylistDetail({
   addToQueue: (track: Track) => void;
   onOpenAlbum: (album: import('../types').Album) => void;
   onOpenArtist: (artist: import('../types').Artist) => void;
+  onOpenMixes: (playlistName: string) => void;
 }) {
   const [tracks, setTracks]       = useState<PlaylistTrack[]>([]);
   const [loading, setLoading]     = useState(true);
@@ -755,6 +777,7 @@ function PlaylistDetail({
   const [mixQuality, setMixQuality] = useState<'standard' | 'high_quality'>('high_quality');
   const [mixCrossfade, setMixCrossfade] = useState(16);
   const [mixOrderMode, setMixOrderMode] = useState<'style' | 'playlist'>('style');
+  const [mixName, setMixName] = useState(defaultMixName());
   const [deepStatus, setDeepStatus] = useState<BoogieMixDeepAnalysisStatus | null>(null);
   const [deepRunning, setDeepRunning] = useState(false);
   const [deepProgress, setDeepProgress] = useState<PlaylistDeepAnalysisProgress | null>(null);
@@ -923,7 +946,7 @@ function PlaylistDetail({
   } else if (mixJob?.status === 'canceled') {
     statusLine = { tone: 'warn', text: 'BoogieMix canceled' };
   } else if (mixJob?.status === 'done' || mixOutputs[0]) {
-    statusLine = { tone: 'done', text: mixOutputs[0] ? `BoogieMix ready — ${mixOutputs[0].file_name}` : 'BoogieMix ready' };
+    statusLine = { tone: 'done', text: mixOutputs[0] ? `BoogieMix ready — ${mixOutputs[0].name}` : 'BoogieMix ready' };
   } else if (deepProgress) {
     statusLine = { tone: 'done', text: `Deep analysis complete — ${deepDoneCount}/${deepTotalCount} tracks` };
   } else if (deepFallbackMessage) {
@@ -938,7 +961,7 @@ function PlaylistDetail({
     try {
       if (!api.boogiemix) return;
       setMixError('');
-      const created = await api.boogiemix.createJob(playlist.id, mixStyle, mixQuality, mixCrossfade, mixOrderMode);
+      const created = await api.boogiemix.createJob(playlist.id, mixStyle, mixQuality, mixCrossfade, mixOrderMode, mixName);
       setMixJobId(created.jobId);
       setMixJob(await api.boogiemix.getJob(created.jobId));
     } catch (e: any) {
@@ -1044,7 +1067,7 @@ function PlaylistDetail({
               type="button"
               aria-haspopup="dialog"
               style={PD.iconBtn}
-              onClick={() => { setShowAnalyzeWarning(false); setShowMix(true); setHasOpenedMix(true); }}
+              onClick={() => { setShowAnalyzeWarning(false); setShowMix(true); setHasOpenedMix(true); setMixName(defaultMixName()); }}
               title="BoogieMix (Experimental) — AI-planned transitions for this playlist"
               aria-label="BoogieMix (Experimental)"
             >
@@ -1086,6 +1109,21 @@ function PlaylistDetail({
         <PlaylistPopup title="BoogieMix (Experimental)" onClose={() => setShowMix(false)}>
           <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>BoogieMix is experimental and may produce inconsistent results.</div>
           {deepFallbackMessage && <div style={{ fontSize: 14, color: 'var(--warning)' }}>{deepFallbackMessage}</div>}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
+            <span id="boogiemix-name-label">Mix name</span>
+            <input
+              type="text"
+              value={mixName}
+              onChange={(e) => setMixName(e.target.value)}
+              placeholder={defaultMixName()}
+              aria-labelledby="boogiemix-name-label"
+              aria-describedby="boogiemix-name-hint"
+              style={PD.select}
+            />
+            <span id="boogiemix-name-hint" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Example default: &ldquo;Mix&rdquo; + today&rsquo;s date. You can rename it later from Mixes.
+            </span>
+          </label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
             <span id="boogiemix-order-mode-label">Track order</span>
             <div role="group" aria-labelledby="boogiemix-order-mode-label" style={{ ...PD.segmentedGroup, display: 'flex' }}>
@@ -1218,24 +1256,21 @@ function PlaylistDetail({
                 <span style={{ fontSize: 14, fontWeight: 600, color: statusToneColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {statusLine.text}
                 </span>
-                {mixOutputs[0] && statusLine.tone === 'done' && <MixOutputActions output={mixOutputs[0]} playlistName={playlist.name} playTrack={playTrack} />}
+                {mixOutputs[0] && statusLine.tone === 'done' && (
+                  <button
+                    type="button"
+                    style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                    onClick={() => onOpenMixes(playlist.name)}
+                  >
+                    View in Mixes <ArrowRightIcon />
+                  </button>
+                )}
                 {mixCancelable && (
                   <button style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 13 }} onClick={cancelBoogieMix}>
                     Cancel
                   </button>
                 )}
               </div>
-              {/* A previous mix is still around while this one is active/errored/canceled —
-                  a separate, clearly-labeled line so Play/Download can't be mistaken for the
-                  in-progress job's output. */}
-              {mixOutputs[0] && statusLine.tone !== 'done' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                    Previous mix — {mixOutputs[0].file_name}
-                  </span>
-                  <MixOutputActions output={mixOutputs[0]} playlistName={playlist.name} playTrack={playTrack} />
-                </div>
-              )}
               {statusHover && (
                 <div style={PD.statusPopover}>
                   <div style={{ fontSize: 13, color: 'var(--warning)', fontWeight: 650, marginBottom: 6 }}>
@@ -1396,34 +1431,6 @@ const PD: Record<string, React.CSSProperties> = {
 };
 
 // ─── Deep Analysis Progress Panel ────────────────────────────────────────────
-
-/** Play/Download controls for one rendered BoogieMix output — shared by the
- * status line (current job's own output) and the "previous mix" line (an
- * older output kept visible while a new job is active). */
-function MixOutputActions({
-  output, playlistName, playTrack,
-}: {
-  output: BoogieMixOutput;
-  playlistName: string;
-  playTrack: (track: Track, all?: Track[], source?: import('../types').QueueSource) => void;
-}) {
-  return (
-    <>
-      <button
-        style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 13 }}
-        onClick={() => {
-          const mixTrack = mixOutputToTrack(output, playlistName);
-          playTrack(mixTrack, [mixTrack]);
-        }}
-      >
-        Play
-      </button>
-      <a href={api.boogiemix ? api.boogiemix.outputDownloadUrl(output.id) : '#'} style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: 13 }}>
-        Download
-      </a>
-    </>
-  );
-}
 
 function DeepAnalysisProgressPanel({
   progress,
@@ -1642,12 +1649,19 @@ interface Props {
   initialPlaylistId?: EntityId | null;
   onOpenAlbum?: (album: import('../types').Album) => void;
   onOpenArtist?: (artist: import('../types').Artist) => void;
+  /** Deep-links to the Mixes library, prefilling its search with `playlistName`. */
+  onOpenMixes?: (playlistName: string) => void;
+  /** Bumped (e.g. `Date.now()`) to return to the playlist list from a drilled-in
+   * playlist — same "sidebar nav item while already on this view" behavior as
+   * BrowseView's `resetRequest`. */
+  resetRequest?: number | null;
 }
 
 /** Playlists View is part of this module's public API. */
 export default function PlaylistsView({
   playTrack, addToQueue, initialPlaylistId,
-  onOpenAlbum = () => {}, onOpenArtist = () => {},
+  onOpenAlbum = () => {}, onOpenArtist = () => {}, onOpenMixes = () => {},
+  resetRequest,
 }: Props) {
   const [playlists, setPlaylists]   = useState<Playlist[]>([]);
   const [selected, setSelected]     = useState<Playlist | null>(null);
@@ -1672,6 +1686,20 @@ export default function PlaylistsView({
     const pl = playlists.find(p => p.id === initialPlaylistId);
     if (pl) { appliedInitialId.current = initialPlaylistId; setSelected(pl); }
   }, [initialPlaylistId, playlists]);
+
+  // Allow external navigation (sidebar "Playlists" click while drilled into a
+  // playlist) to return to the list — mirrors BrowseView's resetRequest.
+  // Seeded with the mount-time value so a stale token left over from an
+  // earlier sidebar click doesn't fire on remount and clobber an
+  // initialPlaylistId deep-link navigating into a specific playlist in this
+  // same mount.
+  const seenResetRequestRef = useRef(resetRequest);
+  useEffect(() => {
+    if (resetRequest == null) return;
+    if (seenResetRequestRef.current === resetRequest) return;
+    seenResetRequestRef.current = resetRequest;
+    setSelected(null);
+  }, [resetRequest]);
 
   const handleCreate = async (name: string, description: string) => {
     const normalizedName = normalizePlaylistName(name);
@@ -1720,6 +1748,7 @@ export default function PlaylistsView({
           addToQueue={addToQueue}
           onOpenAlbum={onOpenAlbum}
           onOpenArtist={onOpenArtist}
+          onOpenMixes={onOpenMixes}
         />
       )}
 

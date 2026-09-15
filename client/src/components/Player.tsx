@@ -9,6 +9,7 @@ import { api } from '../api';
 import WaveformBar, { type WaveformBarStatus } from './WaveformBar';
 import SonicFingerprintPanel from './SonicFingerprintPanel';
 import VinylTurntable from './VinylTurntable';
+import { PlaylistArtwork } from './PlaylistsView';
 import { playNeedleDrop, preloadVinylFx } from '../audio/VinylFxEngine';
 import {
   isBuiltinEqProfileName, parseStoredEqProfiles, parseStoredEqGains,
@@ -1822,6 +1823,12 @@ export default function Player({
   const currentTrack = queue[currentIndex] ?? null;
   const currentTrackMeta = getTrackMetaDisplay(currentTrack);
   const currentTrackAlbumArt = currentTrack?.album_id ? api.albumArtUrl(currentTrack.album_id, 300) : null;
+  // BoogieMix tracks carry a multi-album collage snapshot (mixOutputToTrack)
+  // instead of one album's art — show the actual 2x2 collage in the playbar
+  // rather than falling back to a single album image.
+  const currentTrackCoverAlbumIds = (currentTrack?.cover_album_ids?.length ?? 0) >= 2
+    ? currentTrack!.cover_album_ids!
+    : null;
   const currentTrackTitle = truncateTrackTitle(
     currentTrack?.title || currentTrack?.file_name || '-',
     PLAYER_LAYOUT.trackTitleMaxChars,
@@ -2859,7 +2866,9 @@ export default function Player({
           ...P.albumArtWrap,
           ...(hybridPreview ? hybridPlayerStyles.albumArtWrap : {}),
         }}>
-          {currentTrackAlbumArt ? (
+          {currentTrackCoverAlbumIds ? (
+            <PlaylistArtwork albumIds={currentTrackCoverAlbumIds} compact responsive />
+          ) : currentTrackAlbumArt ? (
             <img
               src={currentTrackAlbumArt}
               alt={currentTrackMeta.album ? `${currentTrackMeta.album} cover` : 'Album cover'}

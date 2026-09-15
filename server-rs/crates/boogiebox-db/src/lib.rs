@@ -763,6 +763,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-09-15-boogiemix-order-mode",
             apply: ensure_boogiemix_order_mode_column,
         },
+        Migration {
+            id: "2026-09-15-mix-outputs-named-and-survives-playlist-deletion",
+            apply: ensure_mix_outputs_named_and_survives_playlist_deletion,
+        },
     ];
 
     for migration in migrations {
@@ -2833,6 +2837,110 @@ fn ensure_boogiemix_order_mode_column(connection: &Connection) -> Result<(), rus
         )?;
     }
     Ok(())
+}
+
+/// Rebuilds `mix_jobs`/`mix_outputs` so `playlist_id` is `ON DELETE SET NULL`
+/// instead of `CASCADE` (mixes must survive their source playlist being
+/// deleted), and adds `mix_outputs.name`/`cover_album_ids`/
+/// `source_playlist_name`. Split into a new migration id rather than
+/// editing `ensure_boogiemix_schema`'s body — that migration id has already
+/// run on every pre-existing database, so only a new id reaches them.
+fn ensure_mix_outputs_named_and_survives_playlist_deletion(
+    connection: &Connection,
+) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "mix_jobs") || !table_exists(connection, "mix_outputs") {
+        return Ok(());
+    }
+
+    connection.execute_batch(
+        r#"
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE mix_jobs_migrated (
+          id                   TEXT PRIMARY KEY,
+          playlist_id          TEXT REFERENCES playlists(id) ON DELETE SET NULL,
+          user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          status               TEXT NOT NULL DEFAULT 'pending',
+          progress_percent     INTEGER NOT NULL DEFAULT 0,
+          current_step         TEXT NOT NULL DEFAULT 'queued',
+          last_message         TEXT,
+          default_crossfade_sec INTEGER NOT NULL DEFAULT 8,
+          mix_style            TEXT NOT NULL DEFAULT 'club_blend',
+          mix_quality          TEXT NOT NULL DEFAULT 'standard',
+          order_mode           TEXT NOT NULL DEFAULT 'style',
+          mix_strategy         TEXT,
+          planner_provider     TEXT,
+          used_deep_analysis   INTEGER NOT NULL DEFAULT 0,
+          deep_analysis_status TEXT,
+          cancel_requested     INTEGER NOT NULL DEFAULT 0,
+          output_id            TEXT,
+          requested_name       TEXT,
+          started_at           TEXT,
+          finished_at          TEXT,
+          created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO mix_jobs_migrated(
+          id, playlist_id, user_id, status, progress_percent, current_step, last_message,
+          default_crossfade_sec, mix_style, mix_quality, order_mode, mix_strategy,
+          planner_provider, used_deep_analysis, deep_analysis_status, cancel_requested,
+          output_id, started_at, finished_at, created_at, updated_at
+        )
+        SELECT
+          id, playlist_id, user_id, status, progress_percent, current_step, last_message,
+          default_crossfade_sec, mix_style, mix_quality, order_mode, mix_strategy,
+          planner_provider, used_deep_analysis, deep_analysis_status, cancel_requested,
+          output_id, started_at, finished_at, created_at, updated_at
+        FROM mix_jobs;
+        DROP TABLE mix_jobs;
+        ALTER TABLE mix_jobs_migrated RENAME TO mix_jobs;
+        CREATE INDEX IF NOT EXISTS idx_mix_jobs_playlist
+          ON mix_jobs(playlist_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mix_jobs_user
+          ON mix_jobs(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mix_jobs_status
+          ON mix_jobs(status, created_at);
+
+        CREATE TABLE mix_outputs_migrated (
+          id                   TEXT PRIMARY KEY,
+          job_id               TEXT NOT NULL UNIQUE REFERENCES mix_jobs(id) ON DELETE CASCADE,
+          playlist_id          TEXT REFERENCES playlists(id) ON DELETE SET NULL,
+          user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          file_path            TEXT NOT NULL,
+          file_name            TEXT NOT NULL,
+          name                 TEXT NOT NULL DEFAULT '',
+          cover_album_ids      TEXT,
+          source_playlist_name TEXT NOT NULL DEFAULT '',
+          duration_sec         REAL NOT NULL DEFAULT 0,
+          file_size_bytes      INTEGER NOT NULL DEFAULT 0,
+          format                TEXT NOT NULL DEFAULT 'mp3',
+          created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO mix_outputs_migrated(
+          id, job_id, playlist_id, user_id, file_path, file_name, name, cover_album_ids,
+          source_playlist_name, duration_sec, file_size_bytes, format, created_at
+        )
+        SELECT
+          mo.id, mo.job_id, mo.playlist_id, mo.user_id, mo.file_path, mo.file_name,
+          CASE
+            WHEN mo.file_name LIKE '%.' || mo.format
+              THEN substr(mo.file_name, 1, length(mo.file_name) - length(mo.format) - 1)
+            ELSE mo.file_name
+          END,
+          NULL,
+          COALESCE((SELECT p.name FROM playlists p WHERE p.id = mo.playlist_id), ''),
+          mo.duration_sec, mo.file_size_bytes, mo.format, mo.created_at
+        FROM mix_outputs mo;
+        DROP TABLE mix_outputs;
+        ALTER TABLE mix_outputs_migrated RENAME TO mix_outputs;
+        CREATE INDEX IF NOT EXISTS idx_mix_outputs_playlist
+          ON mix_outputs(playlist_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mix_outputs_user
+          ON mix_outputs(user_id, created_at DESC);
+
+        PRAGMA foreign_keys = ON;
+        "#,
+    )
 }
 
 pub mod boogiemix;

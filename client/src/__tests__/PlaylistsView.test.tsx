@@ -139,6 +139,9 @@ describe('PlaylistsView', () => {
         job_id: 'job1',
         playlist_id: '1',
         file_name: 'road-trip-mix.mp3',
+        name: 'Road Trip — BoogieMix',
+        playlist_name: 'Road Trip',
+        cover_album_ids: null,
         duration_sec: 245,
         file_size_bytes: 4_200_000,
         format: 'mp3',
@@ -173,6 +176,9 @@ describe('PlaylistsView', () => {
         job_id: 'job2',
         playlist_id: '1',
         file_name: 'mystery-mix.mp3',
+        name: 'Mix — Mar 2',
+        playlist_name: 'Unnamed',
+        cover_album_ids: null,
         duration_sec: null,
         file_size_bytes: null,
         format: 'mp3',
@@ -184,5 +190,92 @@ describe('PlaylistsView', () => {
     expect(track.id).toBe('boogiemix:out2');
     expect(track.duration).toBeNull();
     expect(track.file_size).toBeNull();
+    expect(track.album_id).toBeNull();
+  });
+
+  it('carries the full collage plus a single-image fallback so both the playbar collage and single-image surfaces (vinyl turntable, queue rows) work', () => {
+    const track = mixOutputToTrack(
+      {
+        id: 'out3',
+        job_id: 'job3',
+        playlist_id: '1',
+        file_name: 'club-mix.mp3',
+        name: 'Club Night',
+        playlist_name: 'Electronic',
+        cover_album_ids: '["album-a","album-b","album-c","album-d"]',
+        duration_sec: 300,
+        file_size_bytes: 5_000_000,
+        format: 'mp3',
+        created_at: '2026-03-03T00:00:00Z',
+      },
+      'Electronic',
+    );
+
+    expect(track.album_id).toBe('album-a');
+    expect(track.cover_album_ids).toEqual(['album-a', 'album-b', 'album-c', 'album-d']);
+  });
+
+  it('leaves album_id null when cover_album_ids is malformed or empty', () => {
+    const malformed = mixOutputToTrack(
+      {
+        id: 'out4',
+        job_id: 'job4',
+        playlist_id: '1',
+        file_name: 'broken-mix.mp3',
+        name: 'Broken',
+        playlist_name: 'Electronic',
+        cover_album_ids: 'not-json',
+        duration_sec: 300,
+        file_size_bytes: 5_000_000,
+        format: 'mp3',
+        created_at: '2026-03-04T00:00:00Z',
+      },
+      'Electronic',
+    );
+    expect(malformed.album_id).toBeNull();
+    expect(malformed.cover_album_ids).toBeNull();
+
+    const empty = mixOutputToTrack(
+      {
+        id: 'out5',
+        job_id: 'job5',
+        playlist_id: '1',
+        file_name: 'empty-mix.mp3',
+        name: 'Empty',
+        playlist_name: 'Electronic',
+        cover_album_ids: '[]',
+        duration_sec: 300,
+        file_size_bytes: 5_000_000,
+        format: 'mp3',
+        created_at: '2026-03-05T00:00:00Z',
+      },
+      'Electronic',
+    );
+    expect(empty.album_id).toBeNull();
+    expect(empty.cover_album_ids).toBeNull();
+  });
+
+  it('does not render the playbar collage for a single-album mix, only the single-image fallback', () => {
+    const track = mixOutputToTrack(
+      {
+        id: 'out6',
+        job_id: 'job6',
+        playlist_id: '1',
+        file_name: 'one-album-mix.mp3',
+        name: 'One Album',
+        playlist_name: 'Electronic',
+        cover_album_ids: '["album-a"]',
+        duration_sec: 300,
+        file_size_bytes: 5_000_000,
+        format: 'mp3',
+        created_at: '2026-03-06T00:00:00Z',
+      },
+      'Electronic',
+    );
+    // Player.tsx only switches to the collage renderer at >= 2 album ids —
+    // a single-entry array should still populate album_id for the
+    // single-image fallback, which is what this asserts indirectly.
+    expect(track.album_id).toBe('album-a');
+    expect(track.cover_album_ids).toEqual(['album-a']);
   });
 });

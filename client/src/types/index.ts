@@ -58,6 +58,10 @@ export interface Track {
   bpm_source?: string | null;
   bpm_confidence?: number | null;
   album_id?: ClientEntityId | null;
+  /** Up to 4 album ids for a 2x2 collage cover — set only on synthesized
+   * BoogieMix tracks (see `mixOutputToTrack` in PlaylistsView.tsx), where a
+   * single `album_id` can't represent a mix spanning several albums. */
+  cover_album_ids?: ClientEntityId[] | null;
   scanned_at: string;
   last_played_at?: string | null;
   play_count?: number | null;
@@ -435,8 +439,10 @@ export interface BoogieMixLog {
 /** Boogie Mix Job is part of this module's public API. */
 export interface BoogieMixJob {
   id: ClientEntityId;
-  playlist_id: EntityId;
+  /** `null` once the source playlist has been deleted. */
+  playlist_id: EntityId | null;
   user_id: EntityId;
+  requested_name?: string | null;
   status: 'pending' | 'analyzing' | 'planning' | 'rendering' | 'done' | 'failed' | 'canceled';
   progress_percent: number;
   current_step: string;
@@ -472,8 +478,15 @@ export interface BoogieMixJob {
 export interface BoogieMixOutput {
   id: ClientEntityId;
   job_id: ClientEntityId;
-  playlist_id: EntityId;
+  /** `null` once the source playlist has been deleted (mix survives it). */
+  playlist_id: EntityId | null;
   file_name: string;
+  /** User-facing, editable mix name. */
+  name: string;
+  /** Live playlist name when `playlist_id` is set, else a durable snapshot. */
+  playlist_name: string | null;
+  /** JSON array (up to 4) of album ids for the 2x2 collage cover, or null. */
+  cover_album_ids: string | null;
   duration_sec: number | null;
   file_size_bytes: number | null;
   format: string;

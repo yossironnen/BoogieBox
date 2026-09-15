@@ -198,6 +198,40 @@ describe('Player comprehensive behavior', () => {
     expect(context.resume).toHaveBeenCalled();
   });
 
+  it('renders a multi-tile collage in the playbar for a BoogieMix track, and a single image for a normal track', () => {
+    const collageTrack = track('mix1', {
+      album_id: 'album-a',
+      cover_album_ids: ['album-a', 'album-b', 'album-c', 'album-d'],
+      album: 'Friday Warmup',
+    });
+    const { unmount } = render(
+      <Player
+        state={{ queue: [collageTrack], currentIndex: 0, isPlaying: false, playToken: 1 }}
+        onStateChange={vi.fn()}
+        ffmpegAvailable
+      />,
+    );
+    // The collage renders 4 art tiles with empty alt text (PlaylistArtwork's
+    // own convention); the single-image fallback (alt="<album> cover") must
+    // not be present alongside it.
+    expect(screen.queryByAltText('Friday Warmup cover')).not.toBeInTheDocument();
+    // Images with alt="" (PlaylistArtwork's collage tiles) are exposed as
+    // role "presentation", not "img" — query by src pattern instead.
+    const collageImgs = Array.from(document.querySelectorAll('img[src*="/art?size="]'));
+    expect(collageImgs.length).toBe(4);
+    unmount();
+
+    const singleTrack = track('normal1', { album_id: 'album-x', cover_album_ids: null, album: 'Solo Album' });
+    render(
+      <Player
+        state={{ queue: [singleTrack], currentIndex: 0, isPlaying: false, playToken: 1 }}
+        onStateChange={vi.fn()}
+        ffmpegAvailable
+      />,
+    );
+    expect(screen.getByAltText('Solo Album cover')).toBeInTheDocument();
+  });
+
   it('covers transport, queue, settings, seek, lyrics, fingerprint, and audio error paths', async () => {
     delete (window as any).AudioContext;
     setStreamDirect(true);

@@ -344,7 +344,7 @@ export default function MobileBoogieMixPanel({
                 <div style={S.outputCard}>
                   <div>
                     <div style={S.sectionTitle}>Latest mix</div>
-                    <div style={S.meta}>{latestOutput.file_name}</div>
+                    <div style={S.meta}>{latestOutput.name}</div>
                   </div>
                   <a
                     href={boogieMix.outputDownloadUrl(latestOutput.id)}

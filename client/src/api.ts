@@ -539,12 +539,14 @@ export const api = {
       quality: 'standard' | 'high_quality' = 'high_quality',
       crossfadeSec?: number,
       orderMode: 'style' | 'playlist' = 'style',
+      name?: string,
     ) =>
       post<{ jobId: ApiEntityId }>(`/playlists/${playlistId}/boogiemix/jobs`, {
         style,
         quality,
         default_crossfade_sec: crossfadeSec,
         order_mode: orderMode,
+        name,
       }),
     getJob: (jobId: ApiEntityId) =>
       get<BoogieMixJob>(`/boogiemix/jobs/${jobId}`),
@@ -579,6 +581,12 @@ export const api = {
       post<{ ok: boolean; deletedCacheRows: number; deletedJobRows: number }>('/boogiemix/deep-analysis/cache/clear'),
     listOutputs: (playlistId: EntityId) =>
       get<BoogieMixOutput[]>(`/playlists/${playlistId}/boogiemix/outputs`),
+    listAllOutputs: () =>
+      get<BoogieMixOutput[]>('/boogiemix/outputs'),
+    renameOutput: (outputId: ApiEntityId, name: string) =>
+      patch<{ ok: boolean }>(`/boogiemix/outputs/${outputId}`, { name }),
+    deleteOutput: (outputId: ApiEntityId) =>
+      del<{ ok: boolean }>(`/boogiemix/outputs/${outputId}`),
     outputDownloadUrl: (outputId: ApiEntityId) =>
       `${BASE}/api/boogiemix/outputs/${outputId}/file`,
     playUrl: (outputId: ApiEntityId) =>

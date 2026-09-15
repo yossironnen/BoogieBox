@@ -8,13 +8,13 @@ use crate::{
 };
 use boogiebox_db::{
     boogiemix::{
-        append_mix_job_log, claim_next_mix_job, complete_mix_job, count_deep_analysis_ready,
-        create_mix_output, fail_mix_job, get_cached_mix_analysis, get_mix_output_dir_from_db,
-        get_setting, is_mix_job_canceled, load_deep_track_features, load_playlist_tracks_for_mix,
-        persist_mix_plan, persist_mix_transitions, queue_missing_deep_analysis_for_tracks,
-        set_mix_job_status, touch_deep_analysis_last_used, update_mix_job_plan_info,
-        update_mix_job_progress, upsert_mix_analysis, DeepTrackFeatures, MixTrackInput,
-        MixTransitionRow, TrackMixAnalysis, TransitionWindow,
+        append_mix_job_log, claim_next_mix_job, collage_album_ids_for_tracks, complete_mix_job,
+        count_deep_analysis_ready, create_mix_output, fail_mix_job, get_cached_mix_analysis,
+        get_mix_output_dir_from_db, get_setting, is_mix_job_canceled, load_deep_track_features,
+        load_playlist_tracks_for_mix, persist_mix_plan, persist_mix_transitions,
+        queue_missing_deep_analysis_for_tracks, set_mix_job_status, touch_deep_analysis_last_used,
+        update_mix_job_plan_info, update_mix_job_progress, upsert_mix_analysis, DeepTrackFeatures,
+        MixTrackInput, MixTransitionRow, TrackMixAnalysis, TransitionWindow,
     },
     music::{coerce_entity_id, EntityId},
 };
@@ -135,7 +135,15 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
     let ffprobe = resolve_ffprobe();
 
     // ── Read job info ─────────────────────────────────────────────────────────
-    let (playlist_id_str, user_id_str, crossfade_sec, mix_style, mix_quality, order_mode) = {
+    let (
+        playlist_id_str,
+        user_id_str,
+        crossfade_sec,
+        mix_style,
+        mix_quality,
+        order_mode,
+        requested_name,
+    ) = {
         let conn = lock_db(&state.db)?;
         if is_mix_job_canceled(&conn, job_id).map_err(|e| e.to_string())? {
             set_mix_job_status(&conn, job_id, "canceled", "canceled").ok();
@@ -144,7 +152,7 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
         conn.query_row(
             "SELECT playlist_id, user_id, default_crossfade_sec,
                     COALESCE(mix_style,'club_blend'), COALESCE(mix_quality,'standard'),
-                    COALESCE(order_mode,'style')
+                    COALESCE(order_mode,'style'), requested_name
              FROM mix_jobs WHERE id=?1",
             rusqlite::params![job_id],
             |r| {
@@ -155,6 +163,7 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
                     r.get::<_, String>(5)?,
+                    r.get::<_, Option<String>>(6)?,
                 ))
             },
         )
@@ -581,8 +590,24 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
             .sum::<f64>();
 
     // ── Complete ──────────────────────────────────────────────────────────────
+    let mix_name = requested_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_mix_name(&rendered_date));
     {
         let conn = lock_db(&state.db)?;
+        let cover_album_ids = collage_album_ids_for_tracks(
+            &conn,
+            &ordered_tracks
+                .iter()
+                .map(|t| t.track_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .ok()
+        .filter(|ids| !ids.is_empty())
+        .map(|ids| serde_json::to_string(&ids).unwrap_or_default());
         let output_id = create_mix_output(
             &conn,
             job_id,
@@ -590,6 +615,9 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
             &user_id,
             output_path.to_str().unwrap_or(""),
             &output_name,
+            &mix_name,
+            cover_album_ids.as_deref(),
+            &playlist_name,
             duration_sec.max(1.0),
             file_size,
         )
@@ -3646,6 +3674,33 @@ fn unix_millis_to_ymd(millis: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Server-side fallback mix name (`"Mix — Sep 15"`) so the API never stores
+/// an unnamed output when the client submits an empty/missing name — mirrors
+/// the client's own default in `PlaylistsView.tsx`. Takes the `YYYY-MM-DD`
+/// string `unix_millis_to_ymd` already produces for this render.
+fn default_mix_name(ymd: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let parts: Vec<&str> = ymd.split('-').collect();
+    if parts.len() != 3 {
+        return "Mix".to_string();
+    }
+    let month_idx = parts[1]
+        .parse::<usize>()
+        .ok()
+        .filter(|m| (1..=12).contains(m));
+    let day = parts[2].trim_start_matches('0');
+    match month_idx {
+        Some(m) => format!(
+            "Mix — {} {}",
+            MONTHS[m - 1],
+            if day.is_empty() { "0" } else { day }
+        ),
+        None => "Mix".to_string(),
+    }
 }
 
 /// Builds the `ffmpeg` `-map_metadata`/`-metadata` argument pairs that stamp a
