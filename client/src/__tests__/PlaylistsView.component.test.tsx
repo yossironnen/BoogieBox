@@ -428,7 +428,7 @@ describe('PlaylistsView integration flows', () => {
     expect(screen.getByText(/hasn.t been deep-analyzed yet/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue Without Analysis' }));
-    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'club_blend', 'standard', 16));
+    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'club_blend', 'high_quality', 16, 'style'));
     expect(apiMock.boogiemix.queuePlaylistDeepAnalysis).not.toHaveBeenCalled();
   });
 
@@ -440,7 +440,24 @@ describe('PlaylistsView integration flows', () => {
     openMix();
     fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
     expect(screen.queryByText(/hasn.t been deep-analyzed yet/i)).not.toBeInTheDocument();
-    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'club_blend', 'standard', 16));
+    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'club_blend', 'high_quality', 16, 'style'));
+  });
+
+  it('locks the mix to playlist order, disabling the style select and passing order_mode to createJob', async () => {
+    apiMock.playlists.tracks.mockResolvedValue([{ ...trackA, has_deep_analysis: true }, { ...trackB, has_deep_analysis: true }]);
+    render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+
+    openMix();
+    expect(screen.getByTitle('BoogieMix style')).not.toBeDisabled();
+    expect(screen.queryByText(/Order locked to playlist/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Playlist order' }));
+    expect(screen.getByTitle('Transition style')).toBeDisabled();
+    expect(screen.getByText(/Order locked to playlist/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
+    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'club_blend', 'high_quality', 16, 'playlist'));
   });
 
   it('searches and adds tracks from the Add Tracks panel', async () => {
@@ -551,7 +568,7 @@ describe('PlaylistsView integration flows', () => {
     fireEvent.change(screen.getByTitle('BoogieMix quality'), { target: { value: 'high_quality' } });
     fireEvent.change(screen.getByTitle('Transition length'), { target: { value: '45' } });
     fireEvent.click(screen.getByTitle('BoogieMix is experimental'));
-    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'chill_blend', 'high_quality', 45));
+    await waitFor(() => expect(apiMock.boogiemix.createJob).toHaveBeenCalledWith('1', 'chill_blend', 'high_quality', 45, 'style'));
     // The compact status line shows just the step; strategy/energy-curve/anthem detail is hover-only.
     expect(await screen.findByText('BoogieMix — AI plan 50%')).toBeInTheDocument();
     fireEvent.mouseEnter(screen.getByTestId('boogiemix-status'));
@@ -610,8 +627,13 @@ describe('PlaylistsView integration flows', () => {
       expect(screen.queryByTitle('Sonic Fingerprint available — AI stem analysis complete')).not.toBeInTheDocument();
 
       // The poll interval tick sees the completed count rise and silently
-      // refetches the track list — this is the fix under test.
+      // refetches the track list — this is the fix under test. That refetch
+      // is a fire-and-forget `.then()` the interval callback doesn't await,
+      // so it can still be settling after advanceTimersByTimeAsync(2000)
+      // returns; one more zero-length advance flushes its pending microtasks
+      // (and the resulting setTracks/re-render) before asserting on the DOM.
       await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(0);
       expect(apiMock.playlists.tracks).toHaveBeenCalledTimes(2);
       expect(screen.getByTitle('Sonic Fingerprint available — AI stem analysis complete')).toBeInTheDocument();
     } finally {

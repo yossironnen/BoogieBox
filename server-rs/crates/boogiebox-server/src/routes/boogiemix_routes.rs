@@ -53,6 +53,8 @@ struct EnqueueRequest {
     quality: Option<String>,
     #[serde(default, alias = "default_crossfade_sec")]
     default_crossfade_sec: Option<i64>,
+    #[serde(default, alias = "order_mode")]
+    order_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,6 +219,14 @@ fn resolve_quality(s: Option<&str>) -> &'static str {
     }
 }
 
+fn resolve_order_mode(s: Option<&str>) -> &'static str {
+    if s == Some("playlist") {
+        "playlist"
+    } else {
+        "style"
+    }
+}
+
 // -- Handlers ------------------------------------------------------------------
 
 async fn enqueue_for_playlist_handler(
@@ -233,10 +243,18 @@ async fn enqueue_for_playlist_handler(
     let crossfade = body.default_crossfade_sec.unwrap_or(8).clamp(4, 60);
     let style = resolve_style(body.style.as_deref());
     let quality = resolve_quality(body.quality.as_deref());
+    let order_mode = resolve_order_mode(body.order_mode.as_deref());
 
     let result = match db.lock() {
-        Ok(conn) => match enqueue_mix_job(&conn, &playlist_id, &user_id, crossfade, style, quality)
-        {
+        Ok(conn) => match enqueue_mix_job(
+            &conn,
+            &playlist_id,
+            &user_id,
+            crossfade,
+            style,
+            quality,
+            order_mode,
+        ) {
             Ok(job_id) => (
                 StatusCode::CREATED,
                 Json(serde_json::json!({ "jobId": job_id })),
@@ -295,10 +313,18 @@ async fn create_handler(
     let crossfade = body.default_crossfade_sec.unwrap_or(8).clamp(4, 60);
     let style = resolve_style(body.style.as_deref());
     let quality = resolve_quality(body.quality.as_deref());
+    let order_mode = resolve_order_mode(body.order_mode.as_deref());
 
     let result = match db.lock() {
-        Ok(conn) => match enqueue_mix_job(&conn, &playlist_id, &user_id, crossfade, style, quality)
-        {
+        Ok(conn) => match enqueue_mix_job(
+            &conn,
+            &playlist_id,
+            &user_id,
+            crossfade,
+            style,
+            quality,
+            order_mode,
+        ) {
             Ok(job_id) => (
                 StatusCode::CREATED,
                 Json(serde_json::json!({ "jobId": job_id })),
@@ -1325,6 +1351,26 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_request_accepts_snake_and_camel_order_mode() {
+        let snake: EnqueueRequest = serde_json::from_str(r#"{"order_mode":"playlist"}"#).unwrap();
+        assert_eq!(snake.order_mode.as_deref(), Some("playlist"));
+
+        let camel: EnqueueRequest = serde_json::from_str(r#"{"orderMode":"playlist"}"#).unwrap();
+        assert_eq!(camel.order_mode.as_deref(), Some("playlist"));
+
+        let omitted: EnqueueRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.order_mode, None);
+    }
+
+    #[test]
+    fn resolve_order_mode_whitelists_playlist_and_defaults_to_style() {
+        assert_eq!(resolve_order_mode(Some("playlist")), "playlist");
+        assert_eq!(resolve_order_mode(Some("style")), "style");
+        assert_eq!(resolve_order_mode(Some("bogus")), "style");
+        assert_eq!(resolve_order_mode(None), "style");
+    }
+
+    #[test]
     fn boogiemix_job_response_is_flat_client_contract() {
         let job = MixJobRow {
             id: EntityId::Str("job-1".to_string()),
@@ -1337,6 +1383,7 @@ mod tests {
             default_crossfade_sec: 8,
             mix_style: "club_blend".to_string(),
             mix_quality: "standard".to_string(),
+            order_mode: "style".to_string(),
             mix_strategy: None,
             planner_provider: None,
             used_deep_analysis: false,
@@ -1385,6 +1432,7 @@ mod tests {
             default_crossfade_sec: 8,
             mix_style: "club_blend".to_string(),
             mix_quality: "high_quality".to_string(),
+            order_mode: "style".to_string(),
             mix_strategy: None,
             planner_provider: None,
             used_deep_analysis: false,

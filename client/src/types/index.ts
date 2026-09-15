@@ -446,6 +446,7 @@ export interface BoogieMixJob {
   output_id: ClientEntityId | null;
   mix_style?: 'chill_blend' | 'club_blend' | 'long_build' | 'safe_mix';
   mix_quality?: 'standard' | 'high_quality';
+  order_mode?: 'style' | 'playlist';
   used_deep_analysis?: boolean | number;
   deep_analysis_status?: string | null;
   deep_analysis_ready_count?: number;

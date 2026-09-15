@@ -135,7 +135,7 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
     let ffprobe = resolve_ffprobe();
 
     // ── Read job info ─────────────────────────────────────────────────────────
-    let (playlist_id_str, user_id_str, crossfade_sec, mix_style, mix_quality) = {
+    let (playlist_id_str, user_id_str, crossfade_sec, mix_style, mix_quality, order_mode) = {
         let conn = lock_db(&state.db)?;
         if is_mix_job_canceled(&conn, job_id).map_err(|e| e.to_string())? {
             set_mix_job_status(&conn, job_id, "canceled", "canceled").ok();
@@ -143,7 +143,8 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
         }
         conn.query_row(
             "SELECT playlist_id, user_id, default_crossfade_sec,
-                    COALESCE(mix_style,'club_blend'), COALESCE(mix_quality,'standard')
+                    COALESCE(mix_style,'club_blend'), COALESCE(mix_quality,'standard'),
+                    COALESCE(order_mode,'style')
              FROM mix_jobs WHERE id=?1",
             rusqlite::params![job_id],
             |r| {
@@ -153,6 +154,7 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
                     r.get::<_, i64>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
                 ))
             },
         )
@@ -381,6 +383,7 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
         &deep_features,
         crossfade,
         &mix_style,
+        &order_mode,
         debug_candidates_enabled,
     )
     .await;
@@ -2312,13 +2315,14 @@ fn deterministic_plan(
     deep_features: &HashMap<String, DeepTrackFeatures>,
     default_crossfade: f64,
     style: &str,
+    force_input_order: bool,
     collect_debug: bool,
     debug_steps: &mut Vec<TransitionStepDebug>,
 ) -> MixPlan {
     let preset = style_preset(style);
     let n = tracks.len();
 
-    let (ordered_indices, anthem_pos) = if preset.allow_resequence && n > 3 {
+    let (ordered_indices, anthem_pos) = if !force_input_order && preset.allow_resequence && n > 3 {
         reorder_for_curve(tracks, analyses, deep_features, &preset)
     } else {
         let anthem = n.saturating_sub(1);
@@ -2409,14 +2413,23 @@ async fn create_plan(
     deep_features: &HashMap<String, DeepTrackFeatures>,
     default_crossfade: f64,
     style: &str,
+    order_mode: &str,
     collect_debug: bool,
 ) -> (MixPlan, String, String, Vec<TransitionStepDebug>) {
-    let (gemini_key, openrouter_key) = match state.db.lock() {
-        Ok(conn) => (
-            get_setting(&conn, "boogiemixGeminiApiKey").unwrap_or_default(),
-            get_setting(&conn, "boogiemixOpenRouterApiKey").unwrap_or_default(),
-        ),
-        Err(_) => (String::new(), String::new()),
+    // Playlist-order mode keeps the given track order verbatim, but the AI
+    // planner is free to return its own `orderedTrackIds` regardless of style
+    // preset — so it's skipped entirely here rather than asked to preserve
+    // order, which would need trusting an LLM not to reorder anyway.
+    let (gemini_key, openrouter_key) = if order_mode == "playlist" {
+        (String::new(), String::new())
+    } else {
+        match state.db.lock() {
+            Ok(conn) => (
+                get_setting(&conn, "boogiemixGeminiApiKey").unwrap_or_default(),
+                get_setting(&conn, "boogiemixOpenRouterApiKey").unwrap_or_default(),
+            ),
+            Err(_) => (String::new(), String::new()),
+        }
     };
 
     let gemini_key = gemini_key.trim().to_string();
@@ -2473,6 +2486,7 @@ async fn create_plan(
         deep_features,
         default_crossfade,
         style,
+        order_mode == "playlist",
         collect_debug,
         &mut debug_steps,
     );
@@ -5608,6 +5622,7 @@ mod tests {
             &deep_features,
             12.0,
             "club_blend",
+            false,
             true,
             &mut debug,
         );
@@ -5639,9 +5654,39 @@ mod tests {
             12.0,
             "safe_mix",
             false,
+            false,
             &mut debug,
         );
         assert!(debug.is_empty());
+    }
+
+    #[test]
+    fn deterministic_plan_force_input_order_skips_reordering() {
+        // club_blend normally resequences (n > 3) toward the highest-energy
+        // track landing near the anthem slot — force_input_order=true is
+        // "playlist order" mode's override, and must keep the given track
+        // order verbatim regardless of style/energy.
+        let tracks: Vec<MixTrackInput> = (0..5).map(|i| input_track(&i.to_string())).collect();
+        let mut analyses: Vec<TrackMixAnalysis> =
+            (0..5).map(|i| analysis(&i.to_string(), 120.0)).collect();
+        analyses[3].loudness_lufs = Some(-4.0); // loudest track, would normally get resequenced
+        let deep_features: HashMap<String, DeepTrackFeatures> = HashMap::new();
+        let mut debug = Vec::new();
+
+        let plan = deterministic_plan(
+            &EntityId::Str("p1".into()),
+            &tracks,
+            &analyses,
+            &deep_features,
+            8.0,
+            "club_blend",
+            true,
+            false,
+            &mut debug,
+        );
+
+        let expected: Vec<EntityId> = (0..5).map(|i| EntityId::Str(i.to_string())).collect();
+        assert_eq!(plan.ordered_track_ids, expected);
     }
 
     // -- Phase 5 additions: pure-logic helpers, AI-plan parsing, job/db plumbing --

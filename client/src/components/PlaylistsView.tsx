@@ -738,6 +738,13 @@ function PlaylistDetail({
   const [dragOver, setDragOver]   = useState<number | null>(null);
   const rememberProgress = !!playlist.remember_progress;
   const [showMix, setShowMix] = useState(false);
+  // High Quality now defaults on, so the "needs deep analysis" fallback
+  // warning would otherwise show on the main status line for every playlist
+  // on any machine lacking deep-analysis deps, even if BoogieMix was never
+  // opened. Gate it behind having opened the popup at least once this
+  // session, so it still greets the user there before they hit Start, but
+  // doesn't become an ambient warning across the whole app.
+  const [hasOpenedMix, setHasOpenedMix] = useState(false);
   const [mixStarting, setMixStarting] = useState(false);
   const [hoveredTrackId, setHoveredTrackId] = useState<ClientEntityId | null>(null);
   const [mixJobId, setMixJobId] = useState<ClientEntityId | null>(null);
@@ -745,8 +752,9 @@ function PlaylistDetail({
   const [mixOutputs, setMixOutputs] = useState<any[]>([]);
   const [mixError, setMixError] = useState('');
   const [mixStyle, setMixStyle] = useState<'chill_blend' | 'club_blend' | 'long_build' | 'safe_mix'>('club_blend');
-  const [mixQuality, setMixQuality] = useState<'standard' | 'high_quality'>('standard');
+  const [mixQuality, setMixQuality] = useState<'standard' | 'high_quality'>('high_quality');
   const [mixCrossfade, setMixCrossfade] = useState(16);
+  const [mixOrderMode, setMixOrderMode] = useState<'style' | 'playlist'>('style');
   const [deepStatus, setDeepStatus] = useState<BoogieMixDeepAnalysisStatus | null>(null);
   const [deepRunning, setDeepRunning] = useState(false);
   const [deepProgress, setDeepProgress] = useState<PlaylistDeepAnalysisProgress | null>(null);
@@ -879,7 +887,7 @@ function PlaylistDetail({
   const headerCollageAlbumIds = playlist.art_album_ids ?? collageAlbumIds;
   const deepFallbackMessage = formatBoogieMixFallbackMessage(
     mixJob,
-    mixQuality === 'high_quality' ? deepStatus : null,
+    mixQuality === 'high_quality' && hasOpenedMix ? deepStatus : null,
   );
   const analyzedTrackCount = tracks.filter(t => t.has_deep_analysis).length;
   const playlistNotAnalyzed = tracks.length > 0 && analyzedTrackCount === 0;
@@ -930,7 +938,7 @@ function PlaylistDetail({
     try {
       if (!api.boogiemix) return;
       setMixError('');
-      const created = await api.boogiemix.createJob(playlist.id, mixStyle, mixQuality, mixCrossfade);
+      const created = await api.boogiemix.createJob(playlist.id, mixStyle, mixQuality, mixCrossfade, mixOrderMode);
       setMixJobId(created.jobId);
       setMixJob(await api.boogiemix.getJob(created.jobId));
     } catch (e: any) {
@@ -1036,7 +1044,7 @@ function PlaylistDetail({
               type="button"
               aria-haspopup="dialog"
               style={PD.iconBtn}
-              onClick={() => { setShowAnalyzeWarning(false); setShowMix(true); }}
+              onClick={() => { setShowAnalyzeWarning(false); setShowMix(true); setHasOpenedMix(true); }}
               title="BoogieMix (Experimental) — AI-planned transitions for this playlist"
               aria-label="BoogieMix (Experimental)"
             >
@@ -1078,13 +1086,47 @@ function PlaylistDetail({
         <PlaylistPopup title="BoogieMix (Experimental)" onClose={() => setShowMix(false)}>
           <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>BoogieMix is experimental and may produce inconsistent results.</div>
           {deepFallbackMessage && <div style={{ fontSize: 14, color: 'var(--warning)' }}>{deepFallbackMessage}</div>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
+            <span id="boogiemix-order-mode-label">Track order</span>
+            <div role="group" aria-labelledby="boogiemix-order-mode-label" style={{ ...PD.segmentedGroup, display: 'flex' }}>
+              {([
+                { value: 'style' as const, label: 'Style-based', icon: <ShuffleIcon /> },
+                { value: 'playlist' as const, label: 'Playlist order', icon: <ListIcon /> },
+              ]).map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  aria-pressed={mixOrderMode === opt.value}
+                  onClick={() => setMixOrderMode(opt.value)}
+                  style={{
+                    ...PD.segment,
+                    flex: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    ...(mixOrderMode === opt.value ? PD.segmentActive : {}),
+                  }}
+                >
+                  {opt.icon}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {mixOrderMode === 'playlist' && (
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              Order locked to playlist. BoogieMix will not reorder or AI-plan the sequence — it mixes all {tracks.length} tracks exactly as listed.
+            </div>
+          )}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
-            BoogieMix style
+            {mixOrderMode === 'playlist' ? 'Transition style' : 'BoogieMix style'}
             <select
             value={mixStyle}
             onChange={(e) => setMixStyle(e.target.value as any)}
-            style={{ ...PD.select, minWidth: 120 }}
-            title="BoogieMix style"
+            disabled={mixOrderMode === 'playlist'}
+            style={{ ...PD.select, minWidth: 120, ...(mixOrderMode === 'playlist' ? hybridControlStyles.disabled : {}) }}
+            title={mixOrderMode === 'playlist' ? 'Transition style' : 'BoogieMix style'}
           >
             <option value="chill_blend">Chill blend</option>
             <option value="club_blend">Club blend</option>
@@ -1092,18 +1134,21 @@ function PlaylistDetail({
             <option value="safe_mix">Safe mix</option>
           </select>
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
-            BoogieMix quality
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
+            <label htmlFor="boogiemix-quality-select">BoogieMix quality</label>
             <select
+            id="boogiemix-quality-select"
             value={mixQuality}
             onChange={(e) => setMixQuality(e.target.value as any)}
             style={{ ...PD.select, minWidth: 164 }}
             title="BoogieMix quality"
+            aria-describedby="boogiemix-quality-hint"
           >
             <option value="standard">Standard</option>
             <option value="high_quality">High Quality (Deep Analysis)</option>
           </select>
-          </label>
+            <span id="boogiemix-quality-hint" style={{ fontSize: 12, color: 'var(--text-muted)' }}>Standard won&rsquo;t wait for deep analysis, so unanalyzed tracks skip its extra precision.</span>
+          </div>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14, color: 'var(--text-muted)' }}>
             Transition length
             <select

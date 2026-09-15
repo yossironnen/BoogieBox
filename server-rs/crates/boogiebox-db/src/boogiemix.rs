@@ -98,6 +98,8 @@ pub struct MixJobRow {
     pub mix_style: String,
     /// Documents the Mix Quality public API surface.
     pub mix_quality: String,
+    /// Documents the Order Mode public API surface.
+    pub order_mode: String,
     /// Documents the Mix Strategy public API surface.
     pub mix_strategy: Option<String>,
     /// Documents the Planner Provider public API surface.
@@ -511,6 +513,7 @@ pub fn enqueue_mix_job(
     crossfade_sec: i64,
     mix_style: &str,
     mix_quality: &str,
+    order_mode: &str,
 ) -> Result<EntityId, JobError> {
     let playlist = conn
         .query_row(
@@ -544,11 +547,24 @@ pub fn enqueue_mix_job(
     } else {
         "standard"
     };
+    let order = if order_mode == "playlist" {
+        "playlist"
+    } else {
+        "style"
+    };
     conn.execute(
         "INSERT INTO mix_jobs(id, playlist_id, user_id, status, progress_percent, current_step,
-          default_crossfade_sec, mix_style, mix_quality, cancel_requested)
-         VALUES(?1, ?2, ?3, 'pending', 0, 'queued', ?4, ?5, ?6, 0)",
-        params![job_id, playlist_id, user_id, crossfade, style, quality],
+          default_crossfade_sec, mix_style, mix_quality, order_mode, cancel_requested)
+         VALUES(?1, ?2, ?3, 'pending', 0, 'queued', ?4, ?5, ?6, ?7, 0)",
+        params![
+            job_id,
+            playlist_id,
+            user_id,
+            crossfade,
+            style,
+            quality,
+            order
+        ],
     )?;
     Ok(coerce_entity_id(&job_id))
 }
@@ -620,9 +636,9 @@ pub fn get_mix_job(
 ) -> Result<Option<MixJobRow>, JobError> {
     conn.query_row(
         "SELECT id, playlist_id, user_id, status, progress_percent, current_step, last_message,
-                default_crossfade_sec, mix_style, mix_quality, mix_strategy, planner_provider,
-                used_deep_analysis, deep_analysis_status, cancel_requested, output_id,
-                started_at, finished_at, created_at, updated_at
+                default_crossfade_sec, mix_style, mix_quality, order_mode, mix_strategy,
+                planner_provider, used_deep_analysis, deep_analysis_status, cancel_requested,
+                output_id, started_at, finished_at, created_at, updated_at
          FROM mix_jobs WHERE id=?1 AND user_id=?2",
         params![job_id, user_id],
         |r| {
@@ -637,18 +653,19 @@ pub fn get_mix_job(
                 default_crossfade_sec: r.get(7)?,
                 mix_style: r.get(8)?,
                 mix_quality: r.get(9)?,
-                mix_strategy: r.get(10)?,
-                planner_provider: r.get(11)?,
-                used_deep_analysis: r.get::<_, i64>(12)? != 0,
-                deep_analysis_status: r.get(13)?,
-                cancel_requested: r.get::<_, i64>(14)? != 0,
+                order_mode: r.get(10)?,
+                mix_strategy: r.get(11)?,
+                planner_provider: r.get(12)?,
+                used_deep_analysis: r.get::<_, i64>(13)? != 0,
+                deep_analysis_status: r.get(14)?,
+                cancel_requested: r.get::<_, i64>(15)? != 0,
                 output_id: r
-                    .get::<_, Option<String>>(15)?
+                    .get::<_, Option<String>>(16)?
                     .map(|s| coerce_entity_id(&s)),
-                started_at: r.get(16)?,
-                finished_at: r.get(17)?,
-                created_at: r.get(18)?,
-                updated_at: r.get(19)?,
+                started_at: r.get(17)?,
+                finished_at: r.get(18)?,
+                created_at: r.get(19)?,
+                updated_at: r.get(20)?,
             })
         },
     )
@@ -666,9 +683,9 @@ pub fn get_latest_mix_job_for_playlist(
 ) -> Result<Option<MixJobRow>, JobError> {
     conn.query_row(
         "SELECT id, playlist_id, user_id, status, progress_percent, current_step, last_message,
-                default_crossfade_sec, mix_style, mix_quality, mix_strategy, planner_provider,
-                used_deep_analysis, deep_analysis_status, cancel_requested, output_id,
-                started_at, finished_at, created_at, updated_at
+                default_crossfade_sec, mix_style, mix_quality, order_mode, mix_strategy,
+                planner_provider, used_deep_analysis, deep_analysis_status, cancel_requested,
+                output_id, started_at, finished_at, created_at, updated_at
          FROM mix_jobs WHERE playlist_id=?1 AND user_id=?2
          -- rowid, not created_at: two jobs enqueued within the same second (or
          -- even the same UUIDv7 millisecond, whose low bits aren't guaranteed
@@ -687,18 +704,19 @@ pub fn get_latest_mix_job_for_playlist(
                 default_crossfade_sec: r.get(7)?,
                 mix_style: r.get(8)?,
                 mix_quality: r.get(9)?,
-                mix_strategy: r.get(10)?,
-                planner_provider: r.get(11)?,
-                used_deep_analysis: r.get::<_, i64>(12)? != 0,
-                deep_analysis_status: r.get(13)?,
-                cancel_requested: r.get::<_, i64>(14)? != 0,
+                order_mode: r.get(10)?,
+                mix_strategy: r.get(11)?,
+                planner_provider: r.get(12)?,
+                used_deep_analysis: r.get::<_, i64>(13)? != 0,
+                deep_analysis_status: r.get(14)?,
+                cancel_requested: r.get::<_, i64>(15)? != 0,
                 output_id: r
-                    .get::<_, Option<String>>(15)?
+                    .get::<_, Option<String>>(16)?
                     .map(|s| coerce_entity_id(&s)),
-                started_at: r.get(16)?,
-                finished_at: r.get(17)?,
-                created_at: r.get(18)?,
-                updated_at: r.get(19)?,
+                started_at: r.get(17)?,
+                finished_at: r.get(18)?,
+                created_at: r.get(19)?,
+                updated_at: r.get(20)?,
             })
         },
     )
@@ -2767,6 +2785,7 @@ mod tests {
               default_crossfade_sec INTEGER,
               mix_style TEXT,
               mix_quality TEXT,
+              order_mode TEXT,
               cancel_requested INTEGER
             );
             "#,
@@ -2788,6 +2807,7 @@ mod tests {
             45,
             "long_build",
             "high_quality",
+            "style",
         )
         .unwrap();
         let stored: i64 = conn
@@ -2810,6 +2830,7 @@ mod tests {
             9999,
             "club_blend",
             "standard",
+            "playlist",
         )
         .unwrap();
         let stored: i64 = conn
@@ -2820,5 +2841,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, 60);
+    }
+
+    #[test]
+    fn enqueue_mix_job_whitelists_order_mode() {
+        let conn = setup_mix_jobs_db();
+        let job_id = enqueue_mix_job(
+            &conn,
+            &EntityId::Str("playlist-1".into()),
+            &EntityId::Str("user-1".into()),
+            8,
+            "club_blend",
+            "standard",
+            "bogus",
+        )
+        .unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT order_mode FROM mix_jobs WHERE id=?1",
+                params![job_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "style");
     }
 }

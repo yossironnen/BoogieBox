@@ -469,6 +469,7 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           default_crossfade_sec INTEGER NOT NULL DEFAULT 8,
           mix_style            TEXT NOT NULL DEFAULT 'club_blend',
           mix_quality          TEXT NOT NULL DEFAULT 'standard',
+          order_mode           TEXT NOT NULL DEFAULT 'style',
           mix_strategy         TEXT,
           planner_provider     TEXT,
           used_deep_analysis   INTEGER NOT NULL DEFAULT 0,
@@ -757,6 +758,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
         Migration {
             id: "2026-08-31-rebuild-tracks-fts-non-contentless",
             apply: rebuild_tracks_fts_as_non_contentless,
+        },
+        Migration {
+            id: "2026-09-15-boogiemix-order-mode",
+            apply: ensure_boogiemix_order_mode_column,
         },
     ];
 
@@ -2812,6 +2817,24 @@ fn ensure_boogiemix_schema(connection: &Connection) -> Result<(), rusqlite::Erro
     Ok(())
 }
 
+/// Adds `mix_jobs.order_mode` for databases created before BoogieMix's
+/// playlist-order mode existed. Split out from `ensure_boogiemix_schema`
+/// (tracked migration id `2026-05-24-boogiemix-schema`) because that
+/// migration id has already run — and is tracked as done — on every
+/// pre-existing database, so editing its body has no effect there; only a
+/// new migration id actually re-runs on those databases.
+fn ensure_boogiemix_order_mode_column(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "mix_jobs") && !column_exists(connection, "mix_jobs", "order_mode")?
+    {
+        connection.execute_batch(
+            "ALTER TABLE mix_jobs ADD COLUMN order_mode TEXT NOT NULL DEFAULT 'style';
+             UPDATE mix_jobs SET order_mode='style'
+             WHERE order_mode IS NULL OR TRIM(order_mode)='';",
+        )?;
+    }
+    Ok(())
+}
+
 pub mod boogiemix;
 
 #[cfg(test)]
@@ -3868,6 +3891,50 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn tracked_migration_adds_order_mode_to_a_pre_existing_mix_jobs_table() {
+        // Regression: `2026-05-24-boogiemix-schema` had already run (and is
+        // tracked as done) on every real database before order_mode existed,
+        // so adding the column inside that migration's body has no effect on
+        // them — only a new migration id actually re-runs. Reproduces the
+        // exact "no such column: order_mode" 500 this caused on a real DB.
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_migrations (
+                  id TEXT PRIMARY KEY,
+                  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO schema_migrations(id) VALUES('2026-05-24-boogiemix-schema');
+                CREATE TABLE mix_jobs (
+                  id TEXT PRIMARY KEY,
+                  playlist_id TEXT,
+                  user_id TEXT,
+                  status TEXT NOT NULL DEFAULT 'pending',
+                  default_crossfade_sec INTEGER NOT NULL DEFAULT 8,
+                  mix_style TEXT NOT NULL DEFAULT 'club_blend',
+                  mix_quality TEXT NOT NULL DEFAULT 'standard',
+                  cancel_requested INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO mix_jobs(id, playlist_id, user_id) VALUES('job-1', 'p1', 'u1');
+                "#,
+            )
+            .expect("seed schema");
+
+        run_tracked_migrations(&connection).expect("migrate");
+
+        assert!(column_exists(&connection, "mix_jobs", "order_mode").unwrap());
+        let order_mode: String = connection
+            .query_row(
+                "SELECT order_mode FROM mix_jobs WHERE id='job-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(order_mode, "style");
     }
 
     #[test]

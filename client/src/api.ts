@@ -536,13 +536,15 @@ export const api = {
     createJob: (
       playlistId: EntityId,
       style?: 'chill_blend' | 'club_blend' | 'long_build' | 'safe_mix',
-      quality: 'standard' | 'high_quality' = 'standard',
+      quality: 'standard' | 'high_quality' = 'high_quality',
       crossfadeSec?: number,
+      orderMode: 'style' | 'playlist' = 'style',
     ) =>
       post<{ jobId: ApiEntityId }>(`/playlists/${playlistId}/boogiemix/jobs`, {
         style,
         quality,
         default_crossfade_sec: crossfadeSec,
+        order_mode: orderMode,
       }),
     getJob: (jobId: ApiEntityId) =>
       get<BoogieMixJob>(`/boogiemix/jobs/${jobId}`),
