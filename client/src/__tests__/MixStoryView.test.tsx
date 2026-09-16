@@ -6,8 +6,9 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import MixStoryView from '../components/MixStoryView';
+import MixStoryView, { buildSegmentLayout, timeToX, xToTime } from '../components/MixStoryView';
 import type { BoogieMixOutput, MixOutputTrackRow, MixTimelineResponse } from '../types';
+import type { PlaybackSnapshot } from '../components/Player';
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -223,6 +224,100 @@ describe('MixStoryView', () => {
     await waitFor(() => expect(screen.getByText(/couldn.t load this mix/i)).toBeInTheDocument());
   });
 
+  function mockRect(element: HTMLElement, left = 0, width = 360): void {
+    vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+      x: left, y: 0, width, height: 92, top: 0, right: left + width, bottom: 92, left,
+      toJSON: () => ({}),
+    } as DOMRect);
+  }
+
+  function snapshotFor(output_id: string, currentTime: number): PlaybackSnapshot {
+    return {
+      currentTrack: { id: `boogiemix:${output_id}` } as PlaybackSnapshot['currentTrack'],
+      currentTime,
+      duration: 600,
+      isPlaying: true,
+      volume: 1,
+      muted: false,
+      loading: false,
+      audioError: null,
+    };
+  }
+
+  it('clicking the timeline band seeks proportionally within the clicked track segment', async () => {
+    apiMock.boogiemix.timeline.mockResolvedValue({
+      outputId: 'output-1',
+      available: true,
+      tier: 'full',
+      durationSec: 600,
+      tracks: [track(), track({ stepIndex: 1, trackId: 't2', title: 'Shelter', outputStartSec: 300, outputEndSec: 600 })],
+    } as MixTimelineResponse);
+    const playTrack = vi.fn();
+
+    render(<MixStoryView output={output()} playTrack={playTrack} onBack={() => {}} onDelete={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('timeline-band')).toBeInTheDocument());
+
+    const band = screen.getByTestId('timeline-band');
+    mockRect(band, 0, 360); // two 300s tracks, each floored to a 180px segment (see buildSegmentLayout)
+
+    fireEvent.click(band, { clientX: 90 }); // midpoint of the first segment
+    expect(playTrack.mock.calls[0][0].startAtSec).toBeCloseTo(150, 0);
+
+    fireEvent.click(band, { clientX: 270 }); // midpoint of the second segment
+    expect(playTrack.mock.calls[1][0].startAtSec).toBeCloseTo(450, 0);
+  });
+
+  it('shows the playhead only while this mix is the one actually playing', async () => {
+    apiMock.boogiemix.timeline.mockResolvedValue({
+      outputId: 'output-1', available: true, tier: 'full', durationSec: 300, tracks: [track()],
+    } as MixTimelineResponse);
+
+    const { rerender } = render(
+      <MixStoryView output={output()} playTrack={() => {}} onBack={() => {}} onDelete={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByTestId('timeline-band')).toBeInTheDocument());
+    expect(screen.queryByTestId('playhead')).not.toBeInTheDocument();
+
+    rerender(
+      <MixStoryView output={output()} playTrack={() => {}} onBack={() => {}} onDelete={() => {}} playbackSnapshot={snapshotFor('other-output', 50)} />,
+    );
+    expect(screen.queryByTestId('playhead')).not.toBeInTheDocument();
+
+    rerender(
+      <MixStoryView output={output()} playTrack={() => {}} onBack={() => {}} onDelete={() => {}} playbackSnapshot={snapshotFor('output-1', 50)} />,
+    );
+    expect(screen.getByTestId('playhead')).toBeInTheDocument();
+  });
+
+  it('breaks the auto-follow lock on a manual scroll and shows a recenter control', async () => {
+    apiMock.boogiemix.timeline.mockResolvedValue({
+      outputId: 'output-1', available: true, tier: 'full', durationSec: 600,
+      tracks: [track(), track({ stepIndex: 1, trackId: 't2', title: 'Shelter', outputStartSec: 300, outputEndSec: 600 })],
+    } as MixTimelineResponse);
+
+    render(
+      <MixStoryView
+        output={output()}
+        playTrack={() => {}}
+        onBack={() => {}}
+        onDelete={() => {}}
+        playbackSnapshot={snapshotFor('output-1', 550)}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('playhead')).toBeInTheDocument());
+    expect(screen.queryByTestId('recenter-btn')).not.toBeInTheDocument();
+
+    const scrollEl = screen.getByTestId('timeline-scroll');
+    fireEvent.wheel(scrollEl); // a manual gesture breaks the follow lock
+    scrollEl.scrollLeft = 0;   // simulate having scrolled away from the (far-along) playhead
+    fireEvent.scroll(scrollEl);
+
+    await waitFor(() => expect(screen.getByTestId('recenter-btn')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('recenter-btn'));
+    await waitFor(() => expect(screen.queryByTestId('recenter-btn')).not.toBeInTheDocument());
+  });
+
   it('renders human-readable transition chips between tracks', async () => {
     apiMock.boogiemix.timeline.mockResolvedValue({
       outputId: 'output-1',
@@ -238,5 +333,47 @@ describe('MixStoryView', () => {
     render(<MixStoryView output={output()} playTrack={() => {}} onBack={() => {}} onDelete={() => {}} />);
 
     await waitFor(() => expect(screen.getByText(/Beatmatched.*phrase-aligned.*8s blend/)).toBeInTheDocument());
+  });
+});
+
+describe('timeline segment layout helpers', () => {
+  const tracks: MixOutputTrackRow[] = [
+    track(), // 0-300s -> floored to a 180px segment (300 * 0.6)
+    track({ stepIndex: 1, trackId: 't2', outputStartSec: 300, outputEndSec: 320 }), // 20s -> floored to the 130px minimum
+    track({ stepIndex: 2, trackId: 't3', outputStartSec: 320, outputEndSec: 620 }), // 300s -> 180px
+  ];
+
+  it('floors short-track widths to the minimum while scaling longer tracks by duration', () => {
+    const { items, totalWidth } = buildSegmentLayout(tracks);
+    expect(items.map(i => i.width)).toEqual([180, 130, 180]);
+    expect(items.map(i => i.x)).toEqual([0, 180, 310]);
+    expect(totalWidth).toBe(490);
+  });
+
+  it('maps time to x within the containing segment, not linearly across the whole band', () => {
+    const { items } = buildSegmentLayout(tracks);
+    expect(timeToX(0, items)).toBe(0);
+    expect(timeToX(150, items)).toBeCloseTo(90, 5);   // midpoint of the first (180px) segment
+    expect(timeToX(300, items)).toBeCloseTo(180, 5);  // start of the short middle segment
+    expect(timeToX(470, items)).toBeCloseTo(400, 5);  // midpoint of the last segment
+    expect(timeToX(620, items)).toBe(490);            // clamps to the end
+    expect(timeToX(-5, items)).toBe(0);                // clamps before the start
+  });
+
+  it('maps x back to time as the exact inverse of timeToX', () => {
+    const { items } = buildSegmentLayout(tracks);
+    expect(xToTime(0, items)).toBe(0);
+    expect(xToTime(90, items)).toBeCloseTo(150, 5);
+    expect(xToTime(180, items)).toBeCloseTo(300, 5);
+    expect(xToTime(490, items)).toBe(620);
+    expect(xToTime(9999, items)).toBe(620); // clamps past the end
+  });
+
+  it('handles an empty track list without throwing', () => {
+    const { items, totalWidth } = buildSegmentLayout([]);
+    expect(items).toEqual([]);
+    expect(totalWidth).toBe(0);
+    expect(timeToX(10, items)).toBe(0);
+    expect(xToTime(10, items)).toBe(0);
   });
 });

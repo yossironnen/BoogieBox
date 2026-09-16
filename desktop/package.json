@@ -1,6 +1,6 @@
 {
   "name": "boogiebox-desktop",
-  "version": "0.8.321",
+  "version": "0.8.323",
   "private": true,
   "scripts": {
     "dev": "tauri dev",

@@ -1846,6 +1846,7 @@ export default function App() {
           {view === 'mixes' && (
             <MixesView
               playTrack={playTrack}
+              playbackSnapshot={playbackSnapshot}
               openRequest={openMixesRequest}
               onOpenPlaylist={(playlistId) => {
                 setOpenPlaylistRequest({ playlistId, token: Date.now() });

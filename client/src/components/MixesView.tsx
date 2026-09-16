@@ -9,6 +9,7 @@ import { api } from '../api';
 import type { BoogieMixOutput, ClientEntityId, Track } from '../types';
 import { PlaylistArtwork, mixOutputToTrack } from './PlaylistsView';
 import MixStoryView from './MixStoryView';
+import type { PlaybackSnapshot } from './Player';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -203,12 +204,13 @@ function EditableName({
 
 interface Props {
   playTrack: (track: Track, all?: Track[], source?: import('../types').QueueSource) => void;
+  playbackSnapshot?: PlaybackSnapshot | null;
   openRequest?: { playlistName: string; token: number } | null;
   onOpenPlaylist: (playlistId: ClientEntityId) => void;
 }
 
 /** Mixes View is part of this module's public API. */
-export default function MixesView({ playTrack, openRequest, onOpenPlaylist }: Props) {
+export default function MixesView({ playTrack, playbackSnapshot, openRequest, onOpenPlaylist }: Props) {
   const [outputs, setOutputs] = useState<BoogieMixOutput[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -287,6 +289,7 @@ export default function MixesView({ playTrack, openRequest, onOpenPlaylist }: Pr
         <MixStoryView
           output={storyOutput}
           playTrack={playTrack}
+          playbackSnapshot={playbackSnapshot}
           onBack={() => setStoryOutput(null)}
           onDelete={setDeleteTarget}
         />

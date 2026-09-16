@@ -2243,11 +2243,11 @@ export default function SettingsPage({
                   </label>
                   <div style={{ display: 'grid', gap: 6, paddingTop: 2 }}>
                     <span style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      Analysis wait budgets
+                      Analysis wait defaults
                     </span>
                     <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-                      When building a mix, BoogieBox waits up to these limits for deep, BPM, and waveform analysis to
-                      finish on the mix's own tracks before continuing anyway (0–60000 ms).
+                      Only applies if a mix's tracks weren't already deep, BPM, or waveform analyzed — BoogieBox waits
+                      up to these limits for that analysis to finish before continuing anyway (0–60000 ms).
                     </span>
                     {([
                       { key: 'boogiemixHighQualityWaitMs', label: 'Deep analysis (high quality)', value: boogiemixHighQualityWaitMs, setValue: setBoogiemixHighQualityWaitMs, defaultMs: 20000 },

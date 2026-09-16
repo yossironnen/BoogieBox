@@ -11,6 +11,16 @@ import { api } from '../api';
 import type { BoogieMixOutput, MixOutputTrackRow, MixTimelineResponse, QueueSource, Track } from '../types';
 import { PlaylistArtwork, mixOutputToTrack } from './PlaylistsView';
 import { adjustContrast, rgbToHsl, hslToRgb, toHex } from '../hooks/useAdaptiveAccent';
+import type { PlaybackSnapshot } from './Player';
+
+// Fixed per-track sizing for the timeline band: a minimum width keeps titles,
+// BPM, and waveform legible regardless of track count, at the cost of the
+// band growing wider than its panel — the panel scrolls horizontally instead
+// of squeezing everything down to fit (wip/boogiemix-story-timeline-plan.md
+// follow-up: mockup approved 2026-09-16).
+const TRACK_MIN_WIDTH_PX = 130;
+const PX_PER_SEC = 0.6;
+const RECENTER_THRESHOLD_RATIO = 0.35;
 
 // ─── Icons (icon-first per UI conventions) ────────────────────────────────────
 
@@ -25,6 +35,7 @@ const SwapIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="non
 const RemovedIcon = () => <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>;
 const InfoIcon = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>;
 const ShareIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>;
+const RecenterIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -36,6 +47,64 @@ function formatDuration(sec: number | null | undefined): string {
   const s = total % 60;
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function formatRulerTime(sec: number): string {
+  const total = Math.max(0, Math.round(sec));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/** Segment Layout Item is part of this module's public API. */
+export interface SegmentLayoutItem { x: number; width: number; startSec: number; endSec: number; }
+
+/** Lays out each track at a fixed minimum pixel width (scaling up with
+ * duration above that floor), so short tracks don't collapse to unreadable
+ * slivers when a mix has many tracks. Time<->pixel conversions below walk
+ * this per-segment layout rather than assuming a single linear scale across
+ * the whole band, since the floor makes the mapping piecewise, not linear. */
+export function buildSegmentLayout(tracks: MixOutputTrackRow[]): { items: SegmentLayoutItem[]; totalWidth: number } {
+  let x = 0;
+  const items = tracks.map(t => {
+    const duration = Math.max(0, t.outputEndSec - t.outputStartSec);
+    const width = Math.max(TRACK_MIN_WIDTH_PX, duration * PX_PER_SEC);
+    const item: SegmentLayoutItem = { x, width, startSec: t.outputStartSec, endSec: t.outputEndSec };
+    x += width;
+    return item;
+  });
+  return { items, totalWidth: x };
+}
+
+/** Time To X is part of this module's public API. */
+export function timeToX(sec: number, layout: SegmentLayoutItem[]): number {
+  if (layout.length === 0) return 0;
+  if (sec <= layout[0].startSec) return 0;
+  const last = layout[layout.length - 1];
+  if (sec >= last.endSec) return last.x + last.width;
+  for (const item of layout) {
+    if (sec >= item.startSec && sec <= item.endSec) {
+      const span = item.endSec - item.startSec;
+      const ratio = span > 0 ? (sec - item.startSec) / span : 0;
+      return item.x + ratio * item.width;
+    }
+  }
+  return 0;
+}
+
+/** X To Time is part of this module's public API. */
+export function xToTime(x: number, layout: SegmentLayoutItem[]): number {
+  if (layout.length === 0) return 0;
+  const last = layout[layout.length - 1];
+  if (x <= 0) return layout[0].startSec;
+  if (x >= last.x + last.width) return last.endSec;
+  for (const item of layout) {
+    if (x >= item.x && x <= item.x + item.width) {
+      const ratio = item.width > 0 ? (x - item.x) / item.width : 0;
+      return item.startSec + ratio * (item.endSec - item.startSec);
+    }
+  }
+  return last.endSec;
 }
 
 function parseCoverAlbumIds(raw: string | null): string[] {
@@ -164,18 +233,23 @@ function TransitionTooltip({ tooltip }: { tooltip: TooltipState }) {
 interface Props {
   output: BoogieMixOutput;
   playTrack: (track: Track, allTracks?: Track[], source?: QueueSource) => void;
+  playbackSnapshot?: PlaybackSnapshot | null;
   onBack: () => void;
   onDelete: (output: BoogieMixOutput) => void;
 }
 
 /** Mix Story View is part of this module's public API. */
-export default function MixStoryView({ output, playTrack, onBack, onDelete }: Props) {
+export default function MixStoryView({ output, playTrack, playbackSnapshot, onBack, onDelete }: Props) {
   const [timeline, setTimeline] = useState<MixTimelineResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [hoverTooltip, setHoverTooltip] = useState<TooltipState | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [following, setFollowing] = useState(true);
+  const [showRecenter, setShowRecenter] = useState(false);
   const bandRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const wasPlayingThisMixRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,10 +262,74 @@ export default function MixStoryView({ output, playTrack, onBack, onDelete }: Pr
     return () => { cancelled = true; };
   }, [output.id]);
 
-  const tracks = timeline?.tracks ?? [];
+  const tracks = useMemo(() => timeline?.tracks ?? [], [timeline]);
   const segmentColors = useSegmentColors(tracks);
   const albumIds = parseCoverAlbumIds(output.cover_album_ids);
   const totalDuration = timeline?.durationSec || output.duration_sec || tracks[tracks.length - 1]?.outputEndSec || 0;
+
+  const segmentLayout = useMemo(() => buildSegmentLayout(tracks), [tracks]);
+
+  const isThisMixPlaying = playbackSnapshot?.currentTrack?.id === `boogiemix:${output.id}`;
+  const livePositionSec = isThisMixPlaying ? (playbackSnapshot?.currentTime ?? null) : null;
+  const playheadX = livePositionSec != null ? timeToX(livePositionSec, segmentLayout.items) : null;
+
+  // Re-enable follow whenever this mix starts playing fresh (e.g. hitting
+  // Play again after it finished, or switching to it from another track).
+  useEffect(() => {
+    if (isThisMixPlaying && !wasPlayingThisMixRef.current) setFollowing(true);
+    wasPlayingThisMixRef.current = isThisMixPlaying;
+  }, [isThisMixPlaying]);
+
+  // Keep the playhead centered in the visible viewport while playing and
+  // following — a plain scrollLeft assignment (not smooth-scroll) so rapid
+  // per-update calls don't stack competing animations or spuriously trip the
+  // manual-scroll listener below via a same-frame native "scroll" event.
+  useEffect(() => {
+    if (!following || playheadX == null) return;
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const viewport = scrollEl.clientWidth;
+    const target = Math.max(0, Math.min(segmentLayout.totalWidth - viewport, playheadX - viewport / 2));
+    scrollEl.scrollLeft = target;
+  }, [following, playheadX, segmentLayout.totalWidth]);
+
+  // A manual wheel/touch/scrollbar-drag gesture breaks the follow lock —
+  // listened for on the gesture itself, not the resulting "scroll" event,
+  // since our own per-update scrollLeft writes above would otherwise be
+  // indistinguishable from a user-driven scroll.
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const breakFollow = () => setFollowing(false);
+    scrollEl.addEventListener('wheel', breakFollow, { passive: true });
+    scrollEl.addEventListener('pointerdown', breakFollow, { passive: true });
+    scrollEl.addEventListener('touchstart', breakFollow, { passive: true });
+    return () => {
+      scrollEl.removeEventListener('wheel', breakFollow);
+      scrollEl.removeEventListener('pointerdown', breakFollow);
+      scrollEl.removeEventListener('touchstart', breakFollow);
+    };
+    // tracks.length is the proxy for "the scroll container now exists" — the
+    // element behind scrollRef only mounts once the timeline finishes
+    // loading, so a mount-only ([]) effect here would capture a null ref and
+    // never attach these listeners at all.
+  }, [tracks.length]);
+
+  // Surface the "recenter" button only once the playhead has actually
+  // drifted meaningfully off-screen-center while paused-from-following.
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const update = () => {
+      if (following || !isThisMixPlaying || playheadX == null) { setShowRecenter(false); return; }
+      const viewport = scrollEl.clientWidth;
+      const viewCenter = scrollEl.scrollLeft + viewport / 2;
+      setShowRecenter(Math.abs(playheadX - viewCenter) > viewport * RECENTER_THRESHOLD_RATIO);
+    };
+    update();
+    scrollEl.addEventListener('scroll', update, { passive: true });
+    return () => scrollEl.removeEventListener('scroll', update);
+  }, [following, isThisMixPlaying, playheadX]);
 
   const handlePlay = () => {
     const track = mixOutputToTrack(output, output.playlist_name || output.name);
@@ -205,10 +343,24 @@ export default function MixStoryView({ output, playTrack, onBack, onDelete }: Pr
   };
 
   const handleBandClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!bandRef.current || totalDuration <= 0) return;
+    if (!bandRef.current || segmentLayout.items.length === 0) return;
     const rect = bandRef.current.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    seekTo(ratio * totalDuration);
+    const x = Math.min(rect.width, Math.max(0, e.clientX - rect.left));
+    seekTo(xToTime(x, segmentLayout.items));
+  };
+
+  const handleRecenter = () => {
+    setFollowing(true);
+    const scrollEl = scrollRef.current;
+    if (scrollEl && playheadX != null) {
+      const viewport = scrollEl.clientWidth;
+      const target = Math.max(0, Math.min(segmentLayout.totalWidth - viewport, playheadX - viewport / 2));
+      if (typeof scrollEl.scrollTo === 'function') {
+        scrollEl.scrollTo({ left: target, behavior: 'smooth' });
+      } else {
+        scrollEl.scrollLeft = target;
+      }
+    }
   };
 
   return (
@@ -273,9 +425,11 @@ export default function MixStoryView({ output, playTrack, onBack, onDelete }: Pr
           <div style={S.sectionSub}>Every crossfade and section — click anywhere to jump playback.</div>
 
           <div style={S.timelineWrap}>
-            <div style={S.timelineBand} ref={bandRef} onClick={handleBandClick}>
-              {tracks.map((t, i) => {
-                const widthPct = totalDuration > 0 ? ((t.outputEndSec - t.outputStartSec) / totalDuration) * 100 : 0;
+            <div style={S.timelineScroll} className="mix-story-timeline-scroll" ref={scrollRef} data-testid="timeline-scroll">
+              <div style={{ ...S.timelineBand, width: segmentLayout.totalWidth }} ref={bandRef} onClick={handleBandClick} data-testid="timeline-band">
+                {playheadX != null && <div data-testid="playhead" style={{ ...S.playhead, left: playheadX }} />}
+                {tracks.map((t, i) => {
+                const width = segmentLayout.items[i]?.width ?? TRACK_MIN_WIDTH_PX;
                 const color = segmentColors.get(i);
                 const peaks = parsePeaks(t.waveformPeaksJson);
                 const isActive = activeIndex === i;
@@ -285,7 +439,7 @@ export default function MixStoryView({ output, playTrack, onBack, onDelete }: Pr
                     data-testid={`timeline-segment-${i}`}
                     style={{
                       ...S.segment,
-                      width: `${widthPct}%`,
+                      width,
                       background: color
                         ? `linear-gradient(180deg, ${color.primary}a8 0%, ${color.primary}36 65%, transparent 100%)`
                         : 'var(--surface-subtle)',
@@ -313,9 +467,9 @@ export default function MixStoryView({ output, playTrack, onBack, onDelete }: Pr
                       <div
                         style={{ ...S.xfade, right: 0 }}
                         onMouseEnter={(e) => {
-                          const rect = bandRef.current?.getBoundingClientRect();
+                          const containerRect = scrollRef.current?.getBoundingClientRect();
                           const xRect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-                          const left = rect ? xRect.left - rect.left - 100 : 0;
+                          const left = containerRect ? xRect.left - containerRect.left - 100 : 0;
                           const next = tracks[i + 1];
                           setHoverTooltip({
                             left: Math.max(0, left),
@@ -334,9 +488,27 @@ export default function MixStoryView({ output, playTrack, onBack, onDelete }: Pr
                     )}
                   </div>
                 );
-              })}
+                })}
+              </div>
+              <div style={{ ...S.ruler, width: segmentLayout.totalWidth }}>
+                {segmentLayout.items.map((item, i) => (
+                  <div key={i} style={{ ...S.tick, width: item.width }}>{formatRulerTime(item.startSec)}</div>
+                ))}
+              </div>
             </div>
             {hoverTooltip && <TransitionTooltip tooltip={hoverTooltip} />}
+            {showRecenter && (
+              <button
+                type="button"
+                data-testid="recenter-btn"
+                style={S.recenterBtn}
+                title="Recenter on playhead"
+                aria-label="Recenter timeline on the currently playing position"
+                onClick={handleRecenter}
+              >
+                <RecenterIcon />
+              </button>
+            )}
             <div style={S.legend}>
               <div style={S.legendItem}><div style={{ ...S.swatch, background: 'linear-gradient(135deg,#4f46a3,#a83e6e,#3f7d4a)' }} /> Segment color — sampled from each track&rsquo;s artwork</div>
               <div style={S.legendItem}><div style={{ ...S.swatch, background: 'rgba(113,113,122,.7)' }} /> No artwork available</div>
@@ -418,9 +590,14 @@ const S: Record<string, React.CSSProperties> = {
   sectionTitle: { fontSize: 13, fontWeight: 600, color: 'var(--text)', margin: '18px 0 4px', display: 'flex', alignItems: 'center', gap: 8 },
   sectionSub: { fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 },
   timelineWrap: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 18px 14px', position: 'relative' },
+  timelineScroll: { overflowX: 'auto', overflowY: 'hidden', borderRadius: 8 },
   timelineBand: { display: 'flex', height: 92, borderRadius: 8, overflow: 'hidden', position: 'relative', cursor: 'pointer' },
-  segment: { position: 'relative', display: 'flex', alignItems: 'flex-end', overflow: 'hidden', borderRight: '1px solid rgba(0,0,0,.5)', transition: 'filter .15s ease' },
+  segment: { position: 'relative', display: 'flex', alignItems: 'flex-end', overflow: 'hidden', borderRight: '1px solid rgba(0,0,0,.5)', transition: 'filter .15s ease', flexShrink: 0 },
   segmentActive: { filter: 'brightness(1.2)', boxShadow: 'inset 0 0 0 2px rgba(255,255,255,.35)' },
+  playhead: { position: 'absolute', top: 0, bottom: 0, width: 2, background: '#fff', boxShadow: '0 0 8px rgba(255,255,255,.7)', zIndex: 5, pointerEvents: 'none' },
+  ruler: { display: 'flex', height: 18, marginTop: 2 },
+  tick: { flexShrink: 0, fontSize: 9.5, color: 'var(--text-faint)', borderLeft: '1px solid var(--border)', paddingLeft: 4 },
+  recenterBtn: { position: 'absolute', bottom: 34, right: 26, width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--accent)', background: 'var(--accent)', color: '#1a1310', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 6px 16px rgba(0,0,0,.5)', zIndex: 6 },
   segmentSvg: { position: 'absolute', bottom: 0, left: 0, width: '100%', height: '100%' },
   segLabel: { position: 'absolute', top: 8, left: 9, fontSize: 10.5, color: 'rgba(255,255,255,.92)', fontWeight: 600, textShadow: '0 1px 3px rgba(0,0,0,.8)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '92%', display: 'flex', alignItems: 'center', gap: 5 },
   artSwatch: { width: 7, height: 7, borderRadius: 2, flexShrink: 0 },
