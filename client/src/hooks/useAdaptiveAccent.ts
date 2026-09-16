@@ -17,7 +17,10 @@ function relativeLuminance(r: number, g: number, b: number): number {
   return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 }
 
-function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+/** Exported for reuse by per-segment (not global) color sampling — see
+ * MixStoryView.tsx's timeline, which tints each track's own segment from
+ * its artwork rather than re-theming the whole app. */
+export function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
   const rr = r / 255, gg = g / 255, bb = b / 255;
   const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
   const l = (max + min) / 2;
@@ -31,7 +34,7 @@ function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
   return [h, s, l];
 }
 
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+export function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
@@ -50,11 +53,11 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   ];
 }
 
-function toHex(r: number, g: number, b: number): string {
+export function toHex(r: number, g: number, b: number): string {
   return '#' + [r, g, b].map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
 }
 
-function adjustContrast(r: number, g: number, b: number): [number, number, number] {
+export function adjustContrast(r: number, g: number, b: number): [number, number, number] {
   const lum = relativeLuminance(r, g, b);
   const [h, s, l] = rgbToHsl(r, g, b);
   if (lum < 0.08) return hslToRgb(h, Math.max(s, 0.5), Math.max(l, 0.52));

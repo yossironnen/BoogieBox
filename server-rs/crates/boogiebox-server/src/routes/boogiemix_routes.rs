@@ -13,11 +13,12 @@ use boogiebox_db::{
         cancel_mix_job, clear_deep_analysis_cache, count_playlist_deep_analysis_ready,
         delete_mix_output, enqueue_mix_job, get_deep_analysis_cache_status,
         get_deep_analysis_queue_status, get_latest_mix_job_for_playlist, get_mix_job,
-        get_mix_job_logs, get_mix_output_file, get_mix_transitions,
-        get_playlist_deep_analysis_progress, get_setting, list_all_mix_outputs, list_mix_outputs,
-        queue_all_deep_analysis, queue_library_deep_analysis, queue_playlist_deep_analysis,
-        rename_mix_output, DeepAnalysisCacheStatus, DeepAnalysisQueueStatus, MixJobLogRow,
-        MixJobRow, MixTransitionRow,
+        get_mix_job_logs, get_mix_output, get_mix_output_file, get_mix_timeline,
+        get_mix_transitions, get_playlist_deep_analysis_progress, get_setting,
+        list_all_mix_outputs, list_mix_outputs, queue_all_deep_analysis,
+        queue_library_deep_analysis, queue_playlist_deep_analysis, rename_mix_output,
+        DeepAnalysisCacheStatus, DeepAnalysisQueueStatus, MixJobLogRow, MixJobRow,
+        MixTransitionRow,
     },
     jobs::JobError,
     music::coerce_entity_id,
@@ -143,6 +144,14 @@ pub fn boogiemix_router(state: SharedState) -> Router {
         .route(
             "/api/boogiemix/outputs/{outputId}/play",
             get(play_output_handler),
+        )
+        .route(
+            "/api/boogiemix/outputs/{outputId}/timeline",
+            get(get_timeline_handler),
+        )
+        .route(
+            "/api/boogiemix/outputs/{outputId}/story-image",
+            get(get_story_image_handler),
         )
         .route(
             "/api/boogiemix/deep-analysis/status",
@@ -734,6 +743,123 @@ async fn play_output_handler(
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, file_size.to_string())
         .body(Body::from_stream(ReaderStream::new(file)))
+        .unwrap_or_else(|_| internal_error("response build failed"))
+}
+
+/// Returns the Story/Timeline breakdown for a rendered mix
+/// (wip/boogiemix-story-timeline-plan.md §4.3): the ordered track list with
+/// each track's real position/trim/crossfade in the finished file, falling
+/// back through the tiers `get_mix_timeline` implements (full snapshot,
+/// lazily reconstructed from `mix_transitions`, or `available: false`) so a
+/// legacy mix degrades gracefully instead of erroring. A genuinely missing
+/// or unowned output is the only case that 404s.
+async fn get_timeline_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(output_id_raw): Path<String>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let output_id = coerce_entity_id(&output_id_raw);
+    let user_id = coerce_entity_id(&user.id);
+
+    let result = match db.lock() {
+        Ok(conn) => match get_mix_timeline(&conn, &output_id, &user_id) {
+            Ok(Some(timeline)) => (StatusCode::OK, Json(timeline)).into_response(),
+            Ok(None) => not_found("Output not found"),
+            Err(e) => internal_error(&e.to_string()),
+        },
+        Err(_) => internal_error("DB lock failed"),
+    };
+    result
+}
+
+/// Returns the shareable "story image" PNG for a rendered mix
+/// (wip/boogiemix-story-timeline-plan.md §4.4.2, Phase 3), generating it on
+/// first request and caching the result on disk (same SHA-1 shard
+/// convention as `artwork_cache.rs`) keyed by `output_id` + a hash of
+/// `(name, track_count)` so a rename or a legacy-mix reconstruction
+/// invalidates the cache.
+async fn get_story_image_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(output_id_raw): Path<String>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return db_not_configured();
+    };
+    let output_id = coerce_entity_id(&output_id_raw);
+    let user_id = coerce_entity_id(&user.id);
+
+    let (output, tracks) = {
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(_) => return internal_error("DB lock failed"),
+        };
+        let output = match get_mix_output(&conn, &output_id, &user_id) {
+            Ok(Some(o)) => o,
+            Ok(None) => return not_found("Output not found"),
+            Err(e) => return internal_error(&e.to_string()),
+        };
+        let timeline = match get_mix_timeline(&conn, &output_id, &user_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => return not_found("Output not found"),
+            Err(e) => return internal_error(&e.to_string()),
+        };
+        (output, timeline.tracks)
+    };
+
+    let db_folder = state
+        .read()
+        .expect("state lock")
+        .db_folder
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let cache_root = db_folder.join("art").join("mix-story");
+    let cache_key = format!(
+        "boogiemix-story:{}:{}:{}",
+        output_id,
+        output.name,
+        tracks.len()
+    );
+
+    let item_dir = crate::artwork_cache::cache_item_dir(&cache_root, &cache_key);
+    if let Some(cached_path) = crate::artwork_cache::find_existing_cached_image(&item_dir) {
+        if let Ok(bytes) = tokio::fs::read(&cached_path).await {
+            return png_response(bytes);
+        }
+    }
+
+    let Some(dest_path) = crate::artwork_cache::get_assigned_cache_file_path(
+        &cache_root,
+        &cache_key,
+        "png",
+        ".png",
+        true,
+    ) else {
+        return internal_error("Failed to allocate story-image cache path");
+    };
+
+    let bytes = match tokio::task::spawn_blocking(move || {
+        crate::story_image::render_story_image(&output, &tracks, &db_folder)
+    })
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(_) => return internal_error("Story image render task panicked"),
+    };
+
+    let _ = tokio::fs::write(&dest_path, &bytes).await;
+    png_response(bytes)
+}
+
+fn png_response(bytes: Vec<u8>) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .body(Body::from(bytes))
         .unwrap_or_else(|_| internal_error("response build failed"))
 }
 
@@ -2125,6 +2251,186 @@ mod route_tests {
         assert!(!file_path.exists());
 
         std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn timeline_handler_404s_for_a_missing_or_unowned_output() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-timeline-404");
+        let cookie = seed_user_session(&pool, "u1");
+        let other_cookie = seed_user_session(&pool, "u2");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let output_id = Uuid::now_v7().to_string();
+        let job_id = Uuid::now_v7().to_string();
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mix_jobs(id, playlist_id, user_id, status, default_crossfade_sec, mix_style, mix_quality) \
+                 VALUES (?, ?, 'u1', 'done', 8, 'club_blend', 'standard')",
+                params![job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, duration_sec, file_size_bytes) \
+                 VALUES (?, ?, ?, 'u1', '/tmp/mix.mp3', 'mix.mp3', 'My Mix', 60.0, 1000)",
+                params![output_id, job_id, playlist_id],
+            )
+            .unwrap();
+        }
+
+        // Unknown output id.
+        let (missing_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/boogiemix/outputs/does-not-exist/timeline")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+
+        // Real output, wrong user.
+        let (forbidden_status, _) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/timeline"))
+                .header("cookie", other_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn timeline_handler_returns_reconstructed_tier_from_mix_transitions() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-timeline-reconstructed");
+        let cookie = seed_user_session(&pool, "u1");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let output_id = Uuid::now_v7().to_string();
+        let job_id = Uuid::now_v7().to_string();
+        let track_ids: Vec<String> = {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mix_jobs(id, playlist_id, user_id, status, default_crossfade_sec, mix_style, mix_quality) \
+                 VALUES (?, ?, 'u1', 'done', 8, 'club_blend', 'standard')",
+                params![job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, duration_sec, file_size_bytes) \
+                 VALUES (?, ?, ?, 'u1', '/tmp/mix.mp3', 'mix.mp3', 'My Mix', 60.0, 1000)",
+                params![output_id, job_id, playlist_id],
+            )
+            .unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT track_id FROM playlist_tracks WHERE playlist_id=?1 ORDER BY position",
+                )
+                .unwrap();
+            let ids: Vec<String> = stmt
+                .query_map(params![playlist_id], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            conn.execute(
+                "INSERT INTO mix_transitions(job_id, step_index, from_track_id, to_track_id, crossfade_sec) \
+                 VALUES (?, 0, ?, ?, 8.0)",
+                params![job_id, ids[0], ids[1]],
+            )
+            .unwrap();
+            ids
+        };
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/timeline"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json = json_body(&body);
+        assert_eq!(json["available"], true);
+        assert_eq!(json["tier"], "reconstructed");
+        let tracks = json["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["trackId"], track_ids[0]);
+        assert_eq!(tracks[1]["trackId"], track_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn story_image_handler_returns_a_cached_png_and_404s_for_unowned_output() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-story-image");
+        let cookie = seed_user_session(&pool, "u1");
+        let other_cookie = seed_user_session(&pool, "u2");
+        let playlist_id = seed_playlist_with_two_tracks(&pool, "u1");
+
+        let output_id = Uuid::now_v7().to_string();
+        let job_id = Uuid::now_v7().to_string();
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mix_jobs(id, playlist_id, user_id, status, default_crossfade_sec, mix_style, mix_quality) \
+                 VALUES (?, ?, 'u1', 'done', 8, 'club_blend', 'standard')",
+                params![job_id, playlist_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, duration_sec, file_size_bytes) \
+                 VALUES (?, ?, ?, 'u1', '/tmp/mix.mp3', 'mix.mp3', 'My Mix', 60.0, 1000)",
+                params![output_id, job_id, playlist_id],
+            )
+            .unwrap();
+        }
+
+        // Wrong user 404s, same as the other output-scoped routes.
+        let (forbidden_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/story-image"))
+                .header("cookie", other_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(forbidden_status, StatusCode::NOT_FOUND);
+
+        // First request generates and returns a real PNG.
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/story-image"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.len() > 8 && &body[0..8] == b"\x89PNG\r\n\x1a\n",
+            "response must be a real PNG"
+        );
+
+        // Second request hits the on-disk cache and returns byte-identical output.
+        let (status2, body2) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/boogiemix/outputs/{output_id}/story-image"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::OK);
+        assert_eq!(
+            body, body2,
+            "cached response must match the first render exactly"
+        );
     }
 
     #[tokio::test]

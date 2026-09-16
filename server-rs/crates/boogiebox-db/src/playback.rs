@@ -301,6 +301,78 @@ pub fn list_tracks_missing_waveforms(
     rows
 }
 
+/// Raw waveform amplitude peaks for one track, parsed from
+/// `track_waveforms.waveform_json`. `None` when the track has no waveform
+/// row yet, or the stored JSON is somehow malformed.
+pub fn get_track_waveform_peaks(
+    conn: &Connection,
+    track_id: &str,
+) -> rusqlite::Result<Option<Vec<f64>>> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT waveform_json FROM track_waveforms WHERE track_id = ?1",
+            params![track_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(json.and_then(|j| serde_json::from_str::<Vec<f64>>(&j).ok()))
+}
+
+/// Same as [`list_tracks_missing_waveforms`] but scoped to a specific set of
+/// track ids — used to prioritize a BoogieMix build's own tracks ahead of
+/// the general library sweep (wip/boogiemix-story-timeline-plan.md §4.7).
+pub fn list_tracks_missing_waveforms_for_ids(
+    conn: &Connection,
+    track_ids: &[String],
+) -> rusqlite::Result<Vec<TrackStreamRow>> {
+    if track_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", track_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT t.id, t.file_path, t.format, t.duration
+         FROM tracks t
+         LEFT JOIN track_waveforms tw ON tw.track_id = t.id
+         WHERE tw.track_id IS NULL
+           AND TRIM(COALESCE(t.file_path, '')) != ''
+           AND t.id IN ({placeholders})
+         ORDER BY t.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(track_ids.iter()), |row| {
+            Ok(TrackStreamRow {
+                id: row.get(0)?,
+                file_path: row.get(1)?,
+                format: row.get(2)?,
+                duration: row.get(3)?,
+            })
+        })?
+        .collect();
+    rows
+}
+
+/// Count of the given track ids that already have a waveform — used by the
+/// BoogieMix build's bounded pre-render wait to report readiness.
+pub fn count_tracks_with_waveform(
+    conn: &Connection,
+    track_ids: &[String],
+) -> rusqlite::Result<usize> {
+    if track_ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = std::iter::repeat_n("?", track_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("SELECT COUNT(*) FROM track_waveforms WHERE track_id IN ({placeholders})");
+    let count: i64 = conn.query_row(&sql, rusqlite::params_from_iter(track_ids.iter()), |r| {
+        r.get(0)
+    })?;
+    Ok(count.max(0) as usize)
+}
+
 /// Documents the Mark Waveform Map Run Complete public API surface.
 pub fn mark_waveform_map_run_complete(
     conn: &Connection,
@@ -613,6 +685,63 @@ pub fn list_tracks_missing_bpm(
         })?
         .collect();
     rows
+}
+
+/// Same as [`list_tracks_missing_bpm`] but scoped to a specific set of
+/// track ids — used to prioritize a BoogieMix build's own tracks ahead of
+/// the general library sweep (wip/boogiemix-story-timeline-plan.md §4.7).
+pub fn list_tracks_missing_bpm_for_ids(
+    conn: &Connection,
+    track_ids: &[String],
+) -> rusqlite::Result<Vec<TrackStreamRow>> {
+    if track_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", track_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, file_path, format, duration
+         FROM tracks
+         WHERE (bpm_detected IS NULL OR bpm_detected <= 0)
+           AND (bpm IS NULL OR bpm <= 0)
+           AND TRIM(COALESCE(file_path, '')) != ''
+           AND id IN ({placeholders})
+         ORDER BY id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(track_ids.iter()), |row| {
+            Ok(TrackStreamRow {
+                id: row.get(0)?,
+                file_path: row.get(1)?,
+                format: row.get(2)?,
+                duration: row.get(3)?,
+            })
+        })?
+        .collect();
+    rows
+}
+
+/// Count of the given track ids that already have a detected BPM — used by
+/// the BoogieMix build's bounded pre-render wait to report readiness.
+pub fn count_tracks_with_bpm(conn: &Connection, track_ids: &[String]) -> rusqlite::Result<usize> {
+    if track_ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = std::iter::repeat_n("?", track_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT COUNT(*) FROM tracks
+         WHERE id IN ({placeholders})
+           AND ((bpm_detected IS NOT NULL AND bpm_detected > 0)
+                OR (bpm IS NOT NULL AND bpm > 0))"
+    );
+    let count: i64 = conn.query_row(&sql, rusqlite::params_from_iter(track_ids.iter()), |r| {
+        r.get(0)
+    })?;
+    Ok(count.max(0) as usize)
 }
 
 /// Documents the Save Track Bpm Detected public API surface.
@@ -1221,6 +1350,29 @@ mod tests {
         save_track_waveform(&f.conn, &f.track_id, 1, None, "[]").unwrap();
         let missing_after = list_tracks_missing_waveforms(&f.conn, 100).unwrap();
         assert!(missing_after.is_empty());
+    }
+
+    #[test]
+    fn get_track_waveform_peaks_round_trips_and_is_none_when_missing() {
+        let f = fixture("waveform-peaks");
+        assert_eq!(
+            get_track_waveform_peaks(&f.conn, &f.track_id).unwrap(),
+            None
+        );
+
+        save_track_waveform(&f.conn, &f.track_id, 3, Some(180.0), "[0.1,0.2,0.3]").unwrap();
+        let peaks = get_track_waveform_peaks(&f.conn, &f.track_id).unwrap();
+        assert_eq!(peaks, Some(vec![0.1, 0.2, 0.3]));
+    }
+
+    #[test]
+    fn get_track_waveform_peaks_is_none_for_malformed_json() {
+        let f = fixture("waveform-peaks-malformed");
+        save_track_waveform(&f.conn, &f.track_id, 1, None, "not json").unwrap();
+        assert_eq!(
+            get_track_waveform_peaks(&f.conn, &f.track_id).unwrap(),
+            None
+        );
     }
 
     #[test]

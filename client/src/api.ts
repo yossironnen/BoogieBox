@@ -591,6 +591,10 @@ export const api = {
       `${BASE}/api/boogiemix/outputs/${outputId}/file`,
     playUrl: (outputId: ApiEntityId) =>
       `${BASE}/api/boogiemix/outputs/${outputId}/play`,
+    timeline: (outputId: ApiEntityId) =>
+      get<import('./types').MixTimelineResponse>(`/boogiemix/outputs/${outputId}/timeline`),
+    storyImageUrl: (outputId: ApiEntityId) =>
+      `${BASE}/api/boogiemix/outputs/${outputId}/story-image`,
   },
   dlna: {
     status:  () => get<{ running: boolean; port: number | null; friendlyName: string | null }>('/dlna/status'),

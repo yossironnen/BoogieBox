@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../api';
 import type { BoogieMixOutput, ClientEntityId, Track } from '../types';
 import { PlaylistArtwork, mixOutputToTrack } from './PlaylistsView';
+import MixStoryView from './MixStoryView';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ const PlaylistIcon = () => <svg width="11" height="11" viewBox="0 0 24 24" fill=
 const XIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
 const AlertTriangleIcon = () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>;
 const EmptyIcon = () => <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="12" height="4" rx="1"/><rect x="3" y="16" width="15" height="4" rx="1"/></svg>;
+const StoryIcon = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -213,6 +215,7 @@ export default function MixesView({ playTrack, openRequest, onOpenPlaylist }: Pr
   const [sortMode, setSortMode] = useState<SortMode>('newest');
   const [viewMode, setViewMode] = useState<ViewMode>(() => (safeLocalStorageGet(VIEW_MODE_STORAGE_KEY) as ViewMode) || 'grid');
   const [deleteTarget, setDeleteTarget] = useState<BoogieMixOutput | null>(null);
+  const [storyOutput, setStoryOutput] = useState<BoogieMixOutput | null>(null);
   const appliedRequestToken = useRef<number | null>(null);
 
   const load = useCallback(async () => {
@@ -270,12 +273,33 @@ export default function MixesView({ playTrack, openRequest, onOpenPlaylist }: Pr
     const target = deleteTarget;
     setDeleteTarget(null);
     setOutputs(prev => prev.filter(o => o.id !== target.id));
+    setStoryOutput(prev => (prev?.id === target.id ? null : prev));
     try {
       if (api.boogiemix?.deleteOutput) await api.boogiemix.deleteOutput(target.id);
     } catch {
       void load();
     }
   };
+
+  if (storyOutput) {
+    return (
+      <>
+        <MixStoryView
+          output={storyOutput}
+          playTrack={playTrack}
+          onBack={() => setStoryOutput(null)}
+          onDelete={setDeleteTarget}
+        />
+        {deleteTarget && (
+          <DeleteMixDialog
+            output={deleteTarget}
+            onConfirm={handleDeleteConfirmed}
+            onCancel={() => setDeleteTarget(null)}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', padding: '28px 32px' }}>
@@ -355,6 +379,7 @@ export default function MixesView({ playTrack, openRequest, onOpenPlaylist }: Pr
                 onRename={name => handleRename(output, name)}
                 onDelete={() => setDeleteTarget(output)}
                 onOpenPlaylist={onOpenPlaylist}
+                onOpenStory={() => setStoryOutput(output)}
               />
             ))}
           </div>
@@ -366,6 +391,7 @@ export default function MixesView({ playTrack, openRequest, onOpenPlaylist }: Pr
             onRename={handleRename}
             onDelete={setDeleteTarget}
             onOpenPlaylist={onOpenPlaylist}
+            onOpenStory={setStoryOutput}
           />
         )}
       </div>
@@ -384,20 +410,21 @@ export default function MixesView({ playTrack, openRequest, onOpenPlaylist }: Pr
 // ─── Grid card ────────────────────────────────────────────────────────────────
 
 function MixCard({
-  output, onPlay, onRename, onDelete, onOpenPlaylist,
+  output, onPlay, onRename, onDelete, onOpenPlaylist, onOpenStory,
 }: {
   output: BoogieMixOutput;
   onPlay: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
   onOpenPlaylist: (playlistId: ClientEntityId) => void;
+  onOpenStory: () => void;
 }) {
   const albumIds = parseCoverAlbumIds(output.cover_album_ids);
   return (
     <div style={S.card}>
-      <div style={S.cover}>
+      <div style={{ ...S.cover, cursor: 'pointer' }} onClick={onOpenStory} title={`View breakdown: ${output.name}`}>
         <PlaylistArtwork albumIds={albumIds} responsive />
-        <button type="button" aria-label={`Play ${output.name}`} title="Play" style={S.coverPlayBtn} onClick={onPlay}>
+        <button type="button" aria-label={`Play ${output.name}`} title="Play" style={S.coverPlayBtn} onClick={(e) => { e.stopPropagation(); onPlay(); }}>
           <PlayIcon size={12} />
         </button>
       </div>
@@ -420,6 +447,7 @@ function MixCard({
       </div>
       <div style={S.cardActions}>
         <button type="button" style={S.iconBtnPrimary} title="Play" aria-label={`Play ${output.name}`} onClick={onPlay}><PlayIcon /></button>
+        <button type="button" style={S.iconBtn} title="View breakdown" aria-label={`View breakdown of ${output.name}`} onClick={onOpenStory}><StoryIcon /></button>
         <a
           style={S.iconBtn}
           title="Download"
@@ -437,13 +465,14 @@ function MixCard({
 // ─── Table ────────────────────────────────────────────────────────────────────
 
 function MixTable({
-  outputs, onPlay, onRename, onDelete, onOpenPlaylist,
+  outputs, onPlay, onRename, onDelete, onOpenPlaylist, onOpenStory,
 }: {
   outputs: BoogieMixOutput[];
   onPlay: (output: BoogieMixOutput) => void;
   onRename: (output: BoogieMixOutput, name: string) => void;
   onDelete: (output: BoogieMixOutput) => void;
   onOpenPlaylist: (playlistId: ClientEntityId) => void;
+  onOpenStory: (output: BoogieMixOutput) => void;
 }) {
   return (
     <table style={S.table}>
@@ -461,9 +490,11 @@ function MixTable({
         {outputs.map(output => (
           <tr key={output.id}>
             <td style={S.td}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, cursor: 'pointer' }} onClick={() => onOpenStory(output)} title={`View breakdown: ${output.name}`}>
                 <span style={S.miniIcon}><PlaylistArtwork albumIds={parseCoverAlbumIds(output.cover_album_ids)} responsive /></span>
-                <EditableName name={output.name} onRename={name => onRename(output, name)} textStyle={S.rowNameText} />
+                <span onClick={(e) => e.stopPropagation()} style={{ minWidth: 0 }}>
+                  <EditableName name={output.name} onRename={name => onRename(output, name)} textStyle={S.rowNameText} />
+                </span>
               </div>
             </td>
             <td style={{ ...S.td, ...S.mutedCell }}>
@@ -479,6 +510,7 @@ function MixTable({
             <td style={S.td}>
               <div style={S.rowActions}>
                 <button type="button" style={S.iconBtnPrimary} title="Play" aria-label={`Play ${output.name}`} onClick={() => onPlay(output)}><PlayIcon size={12} /></button>
+                <button type="button" style={S.iconBtn} title="View breakdown" aria-label={`View breakdown of ${output.name}`} onClick={() => onOpenStory(output)}><StoryIcon /></button>
                 <a
                   style={S.iconBtn}
                   title="Download"

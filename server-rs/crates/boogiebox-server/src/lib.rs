@@ -40,6 +40,7 @@ pub mod event_log;
 pub mod ffmpeg;
 pub mod image_thumb;
 pub mod logging;
+pub mod mix_priority_gate;
 pub mod mix_worker;
 pub mod post_scan;
 pub mod providers;
@@ -48,6 +49,7 @@ pub mod scanner;
 pub mod server_config;
 pub mod settings;
 pub mod similar_artists;
+pub mod story_image;
 #[cfg(test)]
 pub mod test_support;
 pub mod waveform_map;

@@ -351,6 +351,38 @@ describe('Player comprehensive behavior', () => {
     expect(onSnapshot).toHaveBeenCalledWith(expect.objectContaining({ currentTrack: expect.objectContaining({ id: '2' }) }));
   });
 
+  it('seeks to Track.startAtSec once loaded — Mix Story timeline click-to-seek (wip/boogiemix-story-timeline-plan.md §2.5)', async () => {
+    const state: PlayerState = {
+      queue: [track('mix', { startAtSec: 292 } as any)],
+      currentIndex: 0,
+      isPlaying: false,
+      playToken: 1,
+    };
+    const { container } = render(
+      <Player state={state} onStateChange={vi.fn()} ffmpegAvailable />,
+    );
+    const [audioA] = Array.from(container.querySelectorAll('audio'));
+    setMediaState(audioA, { currentTime: 0, duration: 600, error: null });
+    fireEvent.canPlay(audioA);
+    expect(audioA.currentTime).toBe(292);
+  });
+
+  it('does not seek when Track.startAtSec is absent', async () => {
+    const state: PlayerState = {
+      queue: [track('normal')],
+      currentIndex: 0,
+      isPlaying: false,
+      playToken: 1,
+    };
+    const { container } = render(
+      <Player state={state} onStateChange={vi.fn()} ffmpegAvailable />,
+    );
+    const [audioA] = Array.from(container.querySelectorAll('audio'));
+    setMediaState(audioA, { currentTime: 0, duration: 100, error: null });
+    fireEvent.canPlay(audioA);
+    expect(audioA.currentTime).toBe(0);
+  });
+
   it('performs zero-gap and crossfade handoffs through both audio slots', async () => {
     installAudioContext();
     const baseState: PlayerState = {

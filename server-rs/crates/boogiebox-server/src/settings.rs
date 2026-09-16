@@ -34,6 +34,8 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "boogiemixDeepAnalysisPauseBackground",
     "boogiemixDeepAnalysisModel",
     "boogiemixHighQualityWaitMs",
+    "boogiemixBpmWaitMs",
+    "boogiemixWaveformWaitMs",
     "boogiemixDebugCandidates",
     // Audio / playback
     "crossfadeMode",
@@ -244,6 +246,18 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             Ok(n.to_string())
         }
 
+        // BoogieMix analysis wait budgets: 0–60000 ms (server caps at 60s regardless)
+        "boogiemixHighQualityWaitMs" | "boogiemixBpmWaitMs" | "boogiemixWaveformWaitMs" => {
+            let n: u32 = value
+                .trim()
+                .parse()
+                .map_err(|_| format!("Setting '{key}' must be an integer"))?;
+            if n > 60_000 {
+                return Err(format!("Setting '{key}' must be between 0 and 60000"));
+            }
+            Ok(n.to_string())
+        }
+
         // Waveform batch size: 1–5000
         "waveformBackgroundBatchSize" => {
             let n: u32 = value
@@ -324,6 +338,34 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("transcodeQuality".into(), "high".into());
         assert!(normalize_settings_payload(&map).is_ok());
+    }
+
+    #[test]
+    fn accepts_valid_boogiemix_wait_ms_settings() {
+        let mut map = HashMap::new();
+        map.insert("boogiemixHighQualityWaitMs".into(), "20000".into());
+        map.insert("boogiemixBpmWaitMs".into(), "15000".into());
+        map.insert("boogiemixWaveformWaitMs".into(), "15000".into());
+        assert!(normalize_settings_payload(&map).is_ok());
+    }
+
+    #[test]
+    fn rejects_boogiemix_wait_ms_over_cap() {
+        let mut map = HashMap::new();
+        map.insert("boogiemixBpmWaitMs".into(), "60001".into());
+        assert!(normalize_settings_payload(&map).is_err());
+    }
+
+    #[test]
+    fn rejects_boogiemix_wait_ms_non_numeric() {
+        let mut map = HashMap::new();
+        map.insert("boogiemixWaveformWaitMs".into(), "abc".into());
+        assert!(normalize_settings_payload(&map).is_err());
+    }
+
+    #[test]
+    fn accepts_boogiemix_wait_ms_zero() {
+        assert!(normalize_one("boogiemixHighQualityWaitMs", "0").is_ok());
     }
 
     #[test]

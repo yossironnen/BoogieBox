@@ -767,6 +767,14 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-09-15-mix-outputs-named-and-survives-playlist-deletion",
             apply: ensure_mix_outputs_named_and_survives_playlist_deletion,
         },
+        Migration {
+            id: "2026-09-16-purge-orphaned-mix-jobs",
+            apply: purge_orphaned_mix_jobs,
+        },
+        Migration {
+            id: "2026-09-16-mix-output-tracks-schema",
+            apply: ensure_mix_output_tracks_schema,
+        },
     ];
 
     for migration in migrations {
@@ -2943,6 +2951,79 @@ fn ensure_mix_outputs_named_and_survives_playlist_deletion(
     )
 }
 
+/// Creates `mix_output_tracks` (wip/boogiemix-story-timeline-plan.md §4.1) —
+/// one row per track per rendered mix, written once at render time and
+/// never read back from `tracks`/`track_deep_analysis` afterward, so it
+/// survives later edits or deletes of the source track. `track_id`/
+/// `album_id` are deliberately plain columns with no FK constraint (same
+/// pattern as `mix_transitions.from_track_id`) — a miss just means "no
+/// longer in the library", never a broken row.
+fn ensure_mix_output_tracks_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "mix_outputs") {
+        return Ok(());
+    }
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS mix_output_tracks (
+          id                       TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          output_id                TEXT NOT NULL REFERENCES mix_outputs(id) ON DELETE CASCADE,
+          step_index               INTEGER NOT NULL,
+
+          track_id                 TEXT,
+          album_id                 TEXT,
+
+          title                    TEXT NOT NULL,
+          artist_name              TEXT NOT NULL DEFAULT '',
+          album_name               TEXT NOT NULL DEFAULT '',
+          track_duration_sec       REAL NOT NULL DEFAULT 0,
+          bpm                      REAL,
+          key_estimate             TEXT,
+
+          output_start_sec         REAL NOT NULL,
+          output_end_sec           REAL NOT NULL,
+          source_trim_start_sec    REAL NOT NULL DEFAULT 0,
+          source_trim_end_sec      REAL NOT NULL DEFAULT 0,
+          crossfade_in_sec         REAL NOT NULL DEFAULT 0,
+          crossfade_out_sec        REAL NOT NULL DEFAULT 0,
+
+          transition_out_kind             TEXT,
+          transition_out_confidence       REAL,
+          transition_out_phrase_aligned   INTEGER NOT NULL DEFAULT 0,
+          transition_out_reason           TEXT,
+
+          waveform_peaks_json      TEXT,
+          energy_curve_json        TEXT,
+          section_markers_json     TEXT,
+          snapshot_schema_version  INTEGER NOT NULL DEFAULT 1,
+
+          created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_mix_output_tracks_output
+          ON mix_output_tracks(output_id, step_index);
+        "#,
+    )
+}
+
+/// One-time cleanup for the `delete_mix_output` orphan-row gap fixed
+/// alongside this migration (§4.2.1, wip/boogiemix-story-timeline-plan.md):
+/// deleting a mix output never deleted its `mix_jobs` row, leaving it (and,
+/// via that row's own cascades, `mix_transitions`/`mix_job_logs`) behind
+/// forever. Only removes jobs that *did* produce an output which is now
+/// gone — a job that failed or was canceled before ever producing one has
+/// `output_id IS NULL` and is unrelated history, not an orphan.
+fn purge_orphaned_mix_jobs(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "mix_jobs") || !table_exists(connection, "mix_outputs") {
+        return Ok(());
+    }
+    connection.execute(
+        "DELETE FROM mix_jobs
+         WHERE output_id IS NOT NULL
+           AND output_id NOT IN (SELECT id FROM mix_outputs)",
+        [],
+    )?;
+    Ok(())
+}
+
 pub mod boogiemix;
 
 #[cfg(test)]
@@ -3047,6 +3128,21 @@ mod tests {
         assert_eq!(
             query_single_i64(
                 &connection,
+                "SELECT COUNT(*) FROM schema_migrations WHERE id = '2026-09-16-purge-orphaned-mix-jobs'"
+            ),
+            1
+        );
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM schema_migrations WHERE id = '2026-09-16-mix-output-tracks-schema'"
+            ),
+            1
+        );
+        assert!(table_exists(&connection, "mix_output_tracks"));
+        assert_eq!(
+            query_single_i64(
+                &connection,
                 "SELECT COUNT(*) FROM schema_migrations WHERE id = '2026-05-25-remove-video-support'"
             ),
             1
@@ -3061,6 +3157,75 @@ mod tests {
             1
         );
         assert_eq!(query_single_i64(&connection, "PRAGMA auto_vacuum"), 2);
+    }
+
+    /// §4.2.1 (wip/boogiemix-story-timeline-plan.md): a job whose output was
+    /// deleted under the old `delete_mix_output` behavior is purged; a job
+    /// that never produced an output (`output_id IS NULL`) or whose output
+    /// still exists is left alone.
+    #[test]
+    fn purge_orphaned_mix_jobs_removes_only_jobs_whose_output_id_points_nowhere() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("purge-orphaned-mix-jobs-test-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let connection = init_db(&dir).expect("db init").connection;
+
+        connection
+            .execute(
+                "INSERT INTO users(id, username) VALUES('user-1', 'tester')",
+                [],
+            )
+            .unwrap();
+        // Orphan: output_id set, but no matching mix_outputs row — the exact
+        // signature the old delete_mix_output left behind.
+        connection
+            .execute(
+                "INSERT INTO mix_jobs(id, user_id, status, output_id) \
+                 VALUES('job-orphan', 'user-1', 'completed', 'missing-output')",
+                [],
+            )
+            .unwrap();
+        // Never completed: output_id is NULL — legitimate history, not an orphan.
+        connection
+            .execute(
+                "INSERT INTO mix_jobs(id, user_id, status, output_id) \
+                 VALUES('job-pending', 'user-1', 'failed', NULL)",
+                [],
+            )
+            .unwrap();
+        // Still linked to a real, undeleted output — must survive.
+        connection
+            .execute(
+                "INSERT INTO mix_jobs(id, user_id, status, output_id) \
+                 VALUES('job-live', 'user-1', 'completed', 'output-live')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO mix_outputs(id, job_id, user_id, file_path, file_name) \
+                 VALUES('output-live', 'job-live', 'user-1', '/tmp/x.mp3', 'x.mp3')",
+                [],
+            )
+            .unwrap();
+
+        purge_orphaned_mix_jobs(&connection).expect("purge");
+
+        let mut stmt = connection
+            .prepare("SELECT id FROM mix_jobs ORDER BY id")
+            .unwrap();
+        let remaining: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            remaining,
+            vec!["job-live".to_string(), "job-pending".to_string()]
+        );
     }
 
     #[test]

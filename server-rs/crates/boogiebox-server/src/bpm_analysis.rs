@@ -1,6 +1,7 @@
 //! Defines Rust server support logic for Bpm Analysis.
 
-use crate::{ffmpeg, DbPool};
+use crate::{ffmpeg, mix_priority_gate, DbPool};
+use boogiebox_db::playback::TrackStreamRow;
 use serde::Serialize;
 use std::{
     path,
@@ -42,6 +43,13 @@ pub fn start_bpm_analysis_scheduler(db: DbPool, cancel: CancellationToken) {
 }
 
 async fn run_bpm_analysis_if_due(db: &DbPool) {
+    // A BoogieMix build's own targeted request outranks the generic
+    // library sweep — stand down from claiming a new background batch while
+    // one is in flight (wip/boogiemix-story-timeline-plan.md §4.7). Already
+    // in-progress work is unaffected; this only skips *starting* a new tick.
+    if mix_priority_gate::is_active() {
+        return;
+    }
     let db_check = db.clone();
     let due = tokio::task::spawn_blocking(move || {
         let conn = db_check.lock().unwrap_or_else(|p| p.into_inner());
@@ -121,6 +129,24 @@ async fn run_bpm_analysis_batch_inner(db: DbPool) -> Result<BpmBatchResult, Stri
     .map_err(|e| e.to_string())?;
 
     let (settings, tracks) = setup;
+    let result = analyze_bpm_tracks(&db, tracks).await;
+
+    let _ = tokio::task::spawn_blocking({
+        let db = db.clone();
+        move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            boogiebox_db::playback::mark_bpm_analysis_run_complete(&conn, settings.frequency_hours)
+        }
+    })
+    .await;
+
+    Ok(result)
+}
+
+/// Runs BPM detection + save for an already-resolved list of tracks. Shared
+/// by the generic library-sweep batch and the targeted (explicit track-id)
+/// variant below, so both stay in lockstep.
+async fn analyze_bpm_tracks(db: &DbPool, tracks: Vec<TrackStreamRow>) -> BpmBatchResult {
     let ffmpeg_path = ffmpeg::resolve_ffmpeg();
     let mut processed = 0_i64;
     let mut analyzed = 0_i64;
@@ -164,21 +190,48 @@ async fn run_bpm_analysis_batch_inner(db: DbPool) -> Result<BpmBatchResult, Stri
         }
     }
 
-    let _ = tokio::task::spawn_blocking({
-        let db = db.clone();
-        move || {
-            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            boogiebox_db::playback::mark_bpm_analysis_run_complete(&conn, settings.frequency_hours)
-        }
-    })
-    .await;
-
-    Ok(BpmBatchResult {
+    BpmBatchResult {
         processed,
         analyzed,
         skipped,
         errors,
+    }
+}
+
+/// Analyzes BPM for exactly the given track ids (whichever of them are
+/// still missing it), bypassing the "due"/schedule/batch-size machinery
+/// entirely — used by a BoogieMix build's pre-render wait to prioritize its
+/// own tracks ahead of the general library sweep
+/// (wip/boogiemix-story-timeline-plan.md §4.7). Deliberately does not use
+/// the `BPM_ANALYSIS_RUNNING` guard: a targeted call for a handful of
+/// playlist tracks should never be blocked by an in-progress background
+/// sweep, and the two writing the same `tracks` row is a harmless race
+/// (last write wins), not a correctness issue.
+pub async fn run_bpm_analysis_for_tracks(
+    db: DbPool,
+    track_ids: &[String],
+) -> Result<BpmBatchResult, String> {
+    if track_ids.is_empty() {
+        return Ok(BpmBatchResult {
+            processed: 0,
+            analyzed: 0,
+            skipped: 0,
+            errors: 0,
+        });
+    }
+    let ids = track_ids.to_vec();
+    let tracks = tokio::task::spawn_blocking({
+        let db = db.clone();
+        move || {
+            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+            boogiebox_db::playback::list_tracks_missing_bpm_for_ids(&conn, &ids)
+        }
     })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    Ok(analyze_bpm_tracks(&db, tracks).await)
 }
 
 #[cfg(test)]
@@ -210,20 +263,32 @@ mod tests {
     /// Seeds one track missing BPM data, whose file does not exist on disk —
     /// so `run_bpm_analysis_batch_inner` takes the "skipped: missing file"
     /// branch and never spawns a real ffmpeg subprocess (accepted gap; see
-    /// wip/server-rust-coverage-gap-plan.md).
+    /// wip/server-rust-coverage-gap-plan.md). Safe to call multiple times
+    /// against the same db (e.g. to seed several tracks in one test) — the
+    /// shared 'Lib' library is reused via `path`'s UNIQUE constraint rather
+    /// than re-inserted.
     fn seed_track_missing_bpm(db: &DbPool) -> String {
         let conn = db.lock().unwrap();
-        let library_id = Uuid::now_v7().to_string();
         conn.execute(
-            "INSERT INTO libraries(id, path, name) VALUES (?, '/music', 'Lib')",
-            params![library_id],
+            "INSERT INTO libraries(id, path, name) VALUES (lower(hex(randomblob(16))), '/music', 'Lib') \
+             ON CONFLICT(path) DO NOTHING",
+            [],
         )
         .unwrap();
+        let library_id: String = conn
+            .query_row("SELECT id FROM libraries WHERE path = '/music'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         let track_id = Uuid::now_v7().to_string();
         conn.execute(
             "INSERT INTO tracks(id, library_id, title, file_path) \
-             VALUES (?, ?, 'Track', '/does/not/exist.mp3')",
-            params![track_id, library_id],
+             VALUES (?, ?, 'Track', ?)",
+            params![
+                track_id,
+                library_id,
+                format!("/does/not/exist-{track_id}.mp3")
+            ],
         )
         .unwrap();
         track_id
@@ -300,5 +365,72 @@ mod tests {
         run_bpm_analysis_if_due(&db).await;
         let status = boogiebox_db::playback::get_bpm_analysis_status(&db.lock().unwrap()).unwrap();
         assert!(status.last_run.is_some(), "a due batch should have run");
+    }
+
+    #[tokio::test]
+    async fn run_bpm_analysis_if_due_skips_while_priority_gate_is_active() {
+        let _guard = RUN_LOCK.lock().await;
+        let _gate_guard = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
+        let db = temp_db("if-due-gated");
+        seed_track_missing_bpm(&db);
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value='true' WHERE key='bpmBackgroundEnabled'",
+                [],
+            )
+            .unwrap();
+
+        let priority_guard = crate::mix_priority_gate::PriorityAnalysisGuard::acquire();
+        run_bpm_analysis_if_due(&db).await;
+        drop(priority_guard);
+
+        let status = boogiebox_db::playback::get_bpm_analysis_status(&db.lock().unwrap()).unwrap();
+        assert!(
+            status.last_run.is_none(),
+            "a due background batch must not start while a mix build holds the priority gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_bpm_analysis_for_tracks_only_touches_the_given_ids() {
+        let _guard = RUN_LOCK.lock().await;
+        let db = temp_db("targeted");
+        let wanted = seed_track_missing_bpm(&db);
+        let other = seed_track_missing_bpm(&db);
+
+        let result = run_bpm_analysis_for_tracks(db.clone(), std::slice::from_ref(&wanted))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.processed, 1,
+            "only the requested track id is processed"
+        );
+        assert_eq!(
+            result.skipped, 1,
+            "its file is missing on disk, so it's skipped, not analyzed"
+        );
+
+        // The un-requested track is left completely alone: no bpm write attempt at all.
+        let conn = db.lock().unwrap();
+        let other_bpm_detected: Option<f64> = conn
+            .query_row(
+                "SELECT bpm_detected FROM tracks WHERE id = ?1",
+                params![other],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(other_bpm_detected.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_bpm_analysis_for_tracks_is_a_no_op_for_an_empty_list() {
+        let _guard = RUN_LOCK.lock().await;
+        let db = temp_db("targeted-empty");
+        let result = run_bpm_analysis_for_tracks(db, &[]).await.unwrap();
+        assert_eq!(result.processed, 0);
+        assert_eq!(result.analyzed, 0);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.errors, 0);
     }
 }

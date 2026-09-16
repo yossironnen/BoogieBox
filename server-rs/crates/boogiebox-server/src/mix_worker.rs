@@ -2,21 +2,25 @@
 
 use crate::{
     beat_grid::{bar_offset, fit_local_grid, fold_bpm_octave, LocalGrid},
+    bpm_analysis,
     ffmpeg::{resolve_ffmpeg, resolve_ffprobe},
+    mix_priority_gate::PriorityAnalysisGuard,
     post_scan::PostScanState,
-    DbPool,
+    waveform_map, DbPool,
 };
 use boogiebox_db::{
     boogiemix::{
         append_mix_job_log, claim_next_mix_job, collage_album_ids_for_tracks, complete_mix_job,
         count_deep_analysis_ready, create_mix_output, fail_mix_job, get_cached_mix_analysis,
         get_mix_output_dir_from_db, get_setting, is_mix_job_canceled, load_deep_track_features,
-        load_playlist_tracks_for_mix, persist_mix_plan, persist_mix_transitions,
-        queue_missing_deep_analysis_for_tracks, set_mix_job_status, touch_deep_analysis_last_used,
-        update_mix_job_plan_info, update_mix_job_progress, upsert_mix_analysis, DeepTrackFeatures,
-        MixTrackInput, MixTransitionRow, TrackMixAnalysis, TransitionWindow,
+        load_playlist_tracks_for_mix, load_track_album_info, persist_mix_output_tracks,
+        persist_mix_plan, persist_mix_transitions, queue_missing_deep_analysis_for_tracks,
+        set_mix_job_status, touch_deep_analysis_last_used, update_mix_job_plan_info,
+        update_mix_job_progress, upsert_mix_analysis, DeepTrackFeatures, MixOutputTrackRow,
+        MixTrackInput, MixTransitionRow, TrackMixAnalysis, TrackSection, TransitionWindow,
     },
     music::{coerce_entity_id, EntityId},
+    playback::{count_tracks_with_bpm, count_tracks_with_waveform, get_track_waveform_peaks},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +31,60 @@ use std::{
     time::Duration,
 };
 use tokio::process::Command;
+
+/// Target point count for the Story/Timeline visualization snapshots
+/// (`mix_output_tracks.waveform_peaks_json`/`energy_curve_json`) — a mix
+/// timeline packs many tracks into one screen width, so the source
+/// resolution (960-point `track_waveforms`) buys nothing visually while
+/// bloating the payload (wip/boogiemix-story-timeline-plan.md §4.1).
+const SNAPSHOT_TARGET_POINTS: usize = 120;
+
+/// Downsamples a series to at most `target_len` points via bucket
+/// averaging. Returns the input unchanged if it's already at or below
+/// `target_len`.
+fn downsample_bucket_avg(points: &[f64], target_len: usize) -> Vec<f64> {
+    if points.is_empty() || target_len == 0 {
+        return Vec::new();
+    }
+    if points.len() <= target_len {
+        return points.to_vec();
+    }
+    (0..target_len)
+        .map(|i| {
+            let start = i * points.len() / target_len;
+            let end = (((i + 1) * points.len() / target_len).max(start + 1)).min(points.len());
+            let bucket = &points[start..end];
+            bucket.iter().sum::<f64>() / bucket.len() as f64
+        })
+        .collect()
+}
+
+/// Approximates an over-time energy curve from a track's deep-analysis
+/// sections (there is no continuous per-timestamp energy signal to sample
+/// directly — `TrackSection.energy` is the finest-grained real data
+/// available) by sampling each section's energy at `target_len` evenly
+/// spaced points across the track's duration.
+fn energy_curve_from_sections(
+    sections: &[TrackSection],
+    duration_sec: f64,
+    target_len: usize,
+) -> Vec<f64> {
+    if sections.is_empty() || duration_sec <= 0.0 || target_len == 0 {
+        return Vec::new();
+    }
+    let last_energy = sections.last().map(|s| s.energy).unwrap_or(0.5);
+    let denom = (target_len.saturating_sub(1)).max(1) as f64;
+    (0..target_len)
+        .map(|i| {
+            let t = (i as f64 / denom) * duration_sec;
+            sections
+                .iter()
+                .find(|s| t >= s.start && t < s.end)
+                .map(|s| s.energy)
+                .unwrap_or(last_energy)
+        })
+        .collect()
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -195,6 +253,12 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
         return Err("Playlist needs at least 2 tracks".into());
     }
 
+    // Held for the rest of this build (dropped when this function returns,
+    // any path) so the background/library-sweep paths of bpm_analysis,
+    // waveform_map, and deep_analysis stand down and this mix's own tracks
+    // get the machine. See wip/boogiemix-story-timeline-plan.md §4.7.
+    let _priority_guard = PriorityAnalysisGuard::acquire();
+
     let queued = {
         let conn = lock_db(&state.db)?;
         queue_missing_deep_analysis_for_tracks(&conn, &tracks, false).map_err(|e| e.to_string())?
@@ -233,6 +297,28 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
             )
             .ok();
         }
+    }
+
+    // BPM + waveform data is required ahead of *every* mix build, not just
+    // high_quality — it's what the Story/Timeline snapshot (§4.1) needs to
+    // capture at render time, and the app displays BPM regardless of mix
+    // quality. Bounded, best-effort, same as the deep-analysis wait above:
+    // never blocks the build, and any gap is reported so the finished mix
+    // can surface it instead of silently looking incomplete (§4.7 point 4).
+    let bpm_ready = wait_for_bpm_ready(state, &tracks).await?;
+    let waveform_ready = wait_for_waveform_ready(state, &tracks).await?;
+    {
+        let conn = lock_db(&state.db)?;
+        append_mix_job_log(
+            &conn,
+            job_id,
+            "info",
+            &format!(
+                "Pre-render analysis: BPM ready {bpm_ready}/{n}, waveform ready {waveform_ready}/{n}",
+                n = tracks.len()
+            ),
+        )
+        .ok();
     }
 
     // ── Analyze tracks ────────────────────────────────────────────────────────
@@ -567,7 +653,7 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
 
     let rendered_date = unix_millis_to_ymd(ts as u64);
 
-    let file_size = render_mix(
+    let (file_size, track_placements) = render_mix(
         state,
         job_id,
         &ffmpeg,
@@ -623,6 +709,80 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
         )
         .map_err(|e| e.to_string())?;
         complete_mix_job(&conn, job_id, &output_id).map_err(|e| e.to_string())?;
+
+        // Snapshot the Story/Timeline breakdown now, while we have a real
+        // output_id — this data is never re-derived from `tracks`/
+        // `track_deep_analysis` afterward, so it survives later edits or
+        // deletes of the source track (wip/boogiemix-story-timeline-plan.md
+        // §4.1).
+        let track_ids: Vec<EntityId> = ordered_tracks.iter().map(|t| t.track_id.clone()).collect();
+        let album_info = load_track_album_info(&conn, &track_ids).unwrap_or_default();
+        let output_track_rows: Vec<MixOutputTrackRow> = (0..ordered_tracks.len())
+            .map(|i| {
+                let t = ordered_tracks[i];
+                let a = ordered_analyses[i];
+                let placement = &track_placements[i];
+                let outgoing = plan.transitions.get(i);
+                let (album_id, album_name) = album_info
+                    .get(&t.track_id.to_string())
+                    .cloned()
+                    .unwrap_or((None, None));
+
+                // Downsampled visualization snapshot — `None` (not an
+                // error) when the source track had no waveform/deep
+                // analysis at render time; the Story/Timeline view's
+                // fallback tiers already handle that as "no visualization
+                // for this track", same as a fully legacy mix.
+                let waveform_peaks_json = get_track_waveform_peaks(&conn, &t.track_id.to_string())
+                    .ok()
+                    .flatten()
+                    .map(|peaks| downsample_bucket_avg(&peaks, SNAPSHOT_TARGET_POINTS))
+                    .and_then(|p| serde_json::to_string(&p).ok());
+                let deep = deep_features.get(&t.track_id.to_string());
+                let energy_curve_json = deep
+                    .filter(|d| !d.sections.is_empty())
+                    .map(|d| {
+                        energy_curve_from_sections(
+                            &d.sections,
+                            a.duration_sec,
+                            SNAPSHOT_TARGET_POINTS,
+                        )
+                    })
+                    .and_then(|c| serde_json::to_string(&c).ok());
+                let section_markers_json = deep
+                    .filter(|d| !d.sections.is_empty())
+                    .and_then(|d| serde_json::to_string(&d.sections).ok());
+
+                MixOutputTrackRow {
+                    step_index: i as i64,
+                    track_id: Some(t.track_id.clone()),
+                    album_id,
+                    title: t.title.clone().unwrap_or_else(|| "Unknown".to_string()),
+                    artist_name: t.artist.clone().unwrap_or_default(),
+                    album_name: album_name.unwrap_or_default(),
+                    track_duration_sec: a.duration_sec,
+                    bpm: a.bpm_estimate,
+                    key_estimate: a.key_estimate.clone(),
+                    output_start_sec: placement.output_start_sec,
+                    output_end_sec: placement.output_end_sec,
+                    source_trim_start_sec: placement.source_trim_start_sec,
+                    source_trim_end_sec: placement.source_trim_end_sec,
+                    crossfade_in_sec: placement.crossfade_in_sec,
+                    crossfade_out_sec: placement.crossfade_out_sec,
+                    transition_out_kind: outgoing.map(|tr| tr.kind.clone()),
+                    transition_out_confidence: None,
+                    transition_out_phrase_aligned: outgoing
+                        .map(|tr| tr.phrase_aware)
+                        .unwrap_or(false),
+                    transition_out_reason: outgoing.map(|tr| tr.reason.clone()),
+                    waveform_peaks_json,
+                    energy_curve_json,
+                    section_markers_json,
+                }
+            })
+            .collect();
+        persist_mix_output_tracks(&conn, &output_id, &output_track_rows).ok();
+
         update_mix_job_progress(&conn, job_id, "done", 100, Some("Mix completed")).ok();
         append_mix_job_log(
             &conn,
@@ -3726,6 +3886,21 @@ fn render_metadata_args(playlist_name: &str, rendered_date: &str) -> Vec<String>
     ]
 }
 
+/// One track's placement in the finished rendered mix — the position/trim/
+/// crossfade data `render_mix` already computes to build the ffmpeg filter
+/// graph, but used to discard once rendering finished. Snapshotted into
+/// `mix_output_tracks` by the caller once it has a real `output_id`
+/// (`render_mix` runs before `create_mix_output`, so it can't persist these
+/// itself). See wip/boogiemix-story-timeline-plan.md §4.1.
+struct RenderedTrackPlacement {
+    output_start_sec: f64,
+    output_end_sec: f64,
+    source_trim_start_sec: f64,
+    source_trim_end_sec: f64,
+    crossfade_in_sec: f64,
+    crossfade_out_sec: f64,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn render_mix(
     state: &PostScanState,
@@ -3738,7 +3913,7 @@ async fn render_mix(
     out_path: &Path,
     playlist_name: &str,
     rendered_date: &str,
-) -> Result<u64, String> {
+) -> Result<(u64, Vec<RenderedTrackPlacement>), String> {
     let n = tracks.len();
     let transitions = &plan.transitions;
 
@@ -3834,6 +4009,28 @@ async fn render_mix(
     let filter_complex = build_filter_complex(plan, &timings, n, &rhythms, &matched);
     tracing::debug!(filter_complex = %filter_complex, "render filter graph");
 
+    // Same deterministic, side-effect-free computation `build_filter_complex`
+    // already ran internally to build the filter graph string above — redone
+    // here (cheap: no I/O, no ffmpeg) rather than threading a return-type
+    // change through it, since these are pure functions of the exact same
+    // `plan`/`timings`/`rhythms`/`matched` already in scope.
+    let nominal_durs = resolve_cross_durs(plan, &timings, n, &rhythms);
+    let aligned = resolve_aligned_timeline(&timings, &nominal_durs, &rhythms, &matched);
+    let placements: Vec<RenderedTrackPlacement> = (0..n)
+        .map(|i| RenderedTrackPlacement {
+            output_start_sec: aligned.output_starts[i],
+            output_end_sec: aligned.output_starts[i] + timings[i].effective_dur,
+            source_trim_start_sec: timings[i].start,
+            source_trim_end_sec: timings[i].start + timings[i].trim_dur,
+            crossfade_in_sec: if i > 0 {
+                aligned.cross_durs.get(i - 1).copied().unwrap_or(0.0)
+            } else {
+                0.0
+            },
+            crossfade_out_sec: aligned.cross_durs.get(i).copied().unwrap_or(0.0),
+        })
+        .collect();
+
     let mut input_args: Vec<String> = Vec::new();
     for track in tracks.iter().take(n) {
         input_args.push("-i".into());
@@ -3906,7 +4103,7 @@ async fn render_mix(
     }
 
     let meta = std::fs::metadata(out_path).map_err(|e| format!("Output file not found: {e}"))?;
-    Ok(meta.len())
+    Ok((meta.len(), placements))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -3932,6 +4129,61 @@ async fn wait_for_deep_analysis(
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
+}
+
+/// Bounded, best-effort wait for BPM analysis on this mix's own tracks —
+/// required ahead of every mix build, unlike deep analysis's high-quality-
+/// only wait above (wip/boogiemix-story-timeline-plan.md §4.7). Runs a
+/// targeted batch (bypassing the generic library sweep entirely) and, if it
+/// doesn't finish inside the bound, just stops waiting — already-analyzed
+/// tracks keep their result, the build proceeds regardless, and the caller
+/// reports the readiness count rather than treating this as a failure.
+async fn wait_for_bpm_ready(
+    state: &PostScanState,
+    tracks: &[MixTrackInput],
+) -> Result<usize, String> {
+    let wait_ms = {
+        let conn = lock_db(&state.db)?;
+        get_setting(&conn, "boogiemixBpmWaitMs")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(15_000)
+            .min(60_000)
+    };
+    let track_ids: Vec<String> = tracks.iter().map(|t| t.track_id.to_string()).collect();
+    if wait_ms > 0 {
+        let _ = tokio::time::timeout(
+            Duration::from_millis(wait_ms),
+            bpm_analysis::run_bpm_analysis_for_tracks(state.db.clone(), &track_ids),
+        )
+        .await;
+    }
+    let conn = lock_db(&state.db)?;
+    count_tracks_with_bpm(&conn, &track_ids).map_err(|e| e.to_string())
+}
+
+/// Waveform counterpart of [`wait_for_bpm_ready`] — same bounded,
+/// best-effort, targeted-batch shape.
+async fn wait_for_waveform_ready(
+    state: &PostScanState,
+    tracks: &[MixTrackInput],
+) -> Result<usize, String> {
+    let wait_ms = {
+        let conn = lock_db(&state.db)?;
+        get_setting(&conn, "boogiemixWaveformWaitMs")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(15_000)
+            .min(60_000)
+    };
+    let track_ids: Vec<String> = tracks.iter().map(|t| t.track_id.to_string()).collect();
+    if wait_ms > 0 {
+        let _ = tokio::time::timeout(
+            Duration::from_millis(wait_ms),
+            waveform_map::run_waveform_map_for_tracks(state.db.clone(), &track_ids),
+        )
+        .await;
+    }
+    let conn = lock_db(&state.db)?;
+    count_tracks_with_waveform(&conn, &track_ids).map_err(|e| e.to_string())
 }
 
 fn get_mix_output_dir_fn(db: &DbPool, db_folder: Option<&PathBuf>) -> PathBuf {
@@ -3964,7 +4216,7 @@ fn get_mix_output_dir_fn(db: &DbPool, db_folder: Option<&PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boogiebox_db::boogiemix::{KeyNeural, StemSummary, StemWindow, TrackSection};
+    use boogiebox_db::boogiemix::{KeyNeural, StemSummary, StemWindow};
 
     #[test]
     fn unix_millis_to_ymd_formats_known_dates() {
@@ -3973,6 +4225,65 @@ mod tests {
         assert_eq!(unix_millis_to_ymd(1_788_307_200_000), "2026-09-02");
         // 2000-02-29T12:00:00Z (leap day)
         assert_eq!(unix_millis_to_ymd(951_825_600_000), "2000-02-29");
+    }
+
+    #[test]
+    fn downsample_bucket_avg_shrinks_to_target_len_via_averaging() {
+        // 8 points -> 4 buckets of 2, each averaged.
+        let points = vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0];
+        let out = downsample_bucket_avg(&points, 4);
+        assert_eq!(out, vec![1.0, 5.0, 9.0, 13.0]);
+    }
+
+    #[test]
+    fn downsample_bucket_avg_passes_through_when_already_short_enough() {
+        let points = vec![1.0, 2.0, 3.0];
+        assert_eq!(downsample_bucket_avg(&points, 10), points);
+        assert_eq!(downsample_bucket_avg(&points, 3), points);
+    }
+
+    #[test]
+    fn downsample_bucket_avg_handles_empty_input_and_zero_target() {
+        assert!(downsample_bucket_avg(&[], 120).is_empty());
+        assert!(downsample_bucket_avg(&[1.0, 2.0, 3.0], 0).is_empty());
+    }
+
+    fn section(kind: &str, start: f64, end: f64, energy: f64) -> TrackSection {
+        TrackSection {
+            kind: kind.to_string(),
+            start,
+            end,
+            confidence: 0.9,
+            vocal_density: 0.0,
+            drum_density: 0.0,
+            energy,
+        }
+    }
+
+    #[test]
+    fn energy_curve_from_sections_samples_the_matching_section_at_each_point() {
+        let sections = vec![
+            section("intro", 0.0, 10.0, 0.2),
+            section("drop", 10.0, 20.0, 0.9),
+        ];
+        let curve = energy_curve_from_sections(&sections, 20.0, 4);
+        // Sample points at t = 0, 6.67, 13.33, 20 (last clamps into "drop"
+        // via the fallback since 20.0 is outside every half-open range).
+        assert_eq!(curve.len(), 4);
+        assert_eq!(curve[0], 0.2, "t=0 falls in the intro section");
+        assert_eq!(curve[2], 0.9, "t≈13.3 falls in the drop section");
+        assert_eq!(
+            curve[3], 0.9,
+            "the last point falls back to the final section's energy"
+        );
+    }
+
+    #[test]
+    fn energy_curve_from_sections_is_empty_without_sections_or_duration() {
+        assert!(energy_curve_from_sections(&[], 200.0, 120).is_empty());
+        assert!(
+            energy_curve_from_sections(&[section("intro", 0.0, 10.0, 0.5)], 0.0, 120).is_empty()
+        );
     }
 
     #[test]
@@ -6199,6 +6510,76 @@ mod tests {
         let ready =
             wait_for_deep_analysis(&fixture.state, &tracks, Duration::from_millis(50)).await;
         assert_eq!(ready, Ok(0));
+    }
+
+    #[tokio::test]
+    async fn wait_for_bpm_ready_reports_zero_for_a_track_not_in_the_library() {
+        let fixture = mix_fixture("wait-bpm");
+        {
+            let conn = fixture.state.db.lock().unwrap();
+            boogiebox_db::upsert_setting(&conn, "boogiemixBpmWaitMs", "50").unwrap();
+        }
+        // input_track()'s id was never inserted into `tracks`, so the targeted
+        // batch finds nothing to analyze and readiness stays 0 — same shape as
+        // wait_for_deep_analysis_times_out_when_features_never_arrive above.
+        let tracks = vec![input_track("missing-track")];
+        let ready = wait_for_bpm_ready(&fixture.state, &tracks).await;
+        assert_eq!(ready, Ok(0));
+    }
+
+    #[tokio::test]
+    async fn wait_for_bpm_ready_reports_readiness_for_an_already_analyzed_track() {
+        let fixture = mix_fixture("wait-bpm-ready");
+        let track_id = "known-track";
+        {
+            let conn = fixture.state.db.lock().unwrap();
+            boogiebox_db::upsert_setting(&conn, "boogiemixBpmWaitMs", "50").unwrap();
+            let library_id = uuid::Uuid::now_v7().to_string();
+            conn.execute(
+                "INSERT INTO libraries(id, path, name) VALUES (?, '/music', 'Lib')",
+                rusqlite::params![library_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tracks(id, library_id, title, file_path, bpm_detected) \
+                 VALUES (?, ?, 'Track', '/does/not/exist.mp3', 128.0)",
+                rusqlite::params![track_id, library_id],
+            )
+            .unwrap();
+        }
+        let tracks = vec![input_track(track_id)];
+        let ready = wait_for_bpm_ready(&fixture.state, &tracks).await;
+        assert_eq!(
+            ready,
+            Ok(1),
+            "the track already has bpm_detected, so it's immediately ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_waveform_ready_reports_zero_for_a_track_not_in_the_library() {
+        let fixture = mix_fixture("wait-waveform");
+        {
+            let conn = fixture.state.db.lock().unwrap();
+            boogiebox_db::upsert_setting(&conn, "boogiemixWaveformWaitMs", "50").unwrap();
+        }
+        let tracks = vec![input_track("missing-track")];
+        let ready = wait_for_waveform_ready(&fixture.state, &tracks).await;
+        assert_eq!(ready, Ok(0));
+    }
+
+    #[tokio::test]
+    async fn priority_guard_is_held_across_the_full_build_and_released_on_early_return() {
+        let _gate_guard = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
+        assert!(!crate::mix_priority_gate::is_active());
+        {
+            let _guard = crate::mix_priority_gate::PriorityAnalysisGuard::acquire();
+            assert!(crate::mix_priority_gate::is_active());
+        }
+        assert!(
+            !crate::mix_priority_gate::is_active(),
+            "guard must release even on a scope exit, matching an early `?` return in do_process_mix_job"
+        );
     }
 
     #[tokio::test]

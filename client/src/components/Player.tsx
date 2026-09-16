@@ -2451,6 +2451,12 @@ export default function Player({
       const dbSaved = (currentTrack as any).progress_seconds ?? 0;
       const saved = localSaved !== undefined ? localSaved : dbSaved;
       pendingSeekRef.current = saved > 3 ? saved : null;
+    } else if (currentTrack.startAtSec != null && currentTrack.startAtSec > 0) {
+      // Mix Story timeline click-to-seek (MixStoryView.tsx): playTrack() is
+      // called fresh for the clicked position, so this is really "start
+      // already seeked to X" rather than a live seek of already-playing
+      // audio — same onCanPlay-driven mechanism as remember-progress above.
+      pendingSeekRef.current = currentTrack.startAtSec;
     } else {
       pendingSeekRef.current = null;
     }

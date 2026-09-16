@@ -1,6 +1,6 @@
 //! Defines Rust server support logic for Deep Analysis.
 
-use crate::{ffmpeg::resolve_ffmpeg, post_scan::PostScanState};
+use crate::{ffmpeg::resolve_ffmpeg, mix_priority_gate, post_scan::PostScanState};
 use boogiebox_db::{
     boogiemix::{
         claim_next_deep_analysis_job_filtered, complete_deep_analysis_job, fail_deep_analysis_job,
@@ -194,7 +194,7 @@ async fn run_tick(
     }
 
     // Enqueue background jobs before checking queue, so newly-queued work is visible.
-    if !settings.pause_background && settings.background_mode != "off" {
+    if should_discover_background_batch(&settings) {
         dlog!(
             dbg,
             "[boogiemix:deep] checking background batch queue (mode={})",
@@ -324,6 +324,18 @@ async fn run_tick(
             }
         });
     }
+}
+
+/// Whether this tick should look for more generic background work to queue.
+/// A BoogieMix build's own pre-render wait outranks discovering *new*
+/// background work — stand down while one is in flight
+/// (wip/boogiemix-story-timeline-plan.md §4.7). Jobs already
+/// pending/running are unaffected by this — they still get claimed/preempted
+/// via the existing priority mechanics in `run_tick`.
+fn should_discover_background_batch(settings: &DeepSettings) -> bool {
+    !settings.pause_background
+        && settings.background_mode != "off"
+        && !mix_priority_gate::is_active()
 }
 
 fn has_queued_jobs(state: &PostScanState) -> bool {
@@ -1215,6 +1227,50 @@ mod tests {
         assert!(parse_bool(Some("true"), false));
         assert!(!parse_bool(Some("FALSE"), true));
         assert!(parse_bool(Some("bogus"), true));
+    }
+
+    fn deep_settings_fixture() -> DeepSettings {
+        DeepSettings {
+            enabled: true,
+            max_concurrent: 1,
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            prefer_gpu: false,
+            use_madmom: false,
+            cleanup_temp: true,
+            temp_dir: std::env::temp_dir(),
+            background_mode: "all_music".to_string(),
+            pause_background: false,
+            max_duration_secs: None,
+            debug_logging: false,
+            preferred_model: MODEL_HEAVY.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn should_discover_background_batch_respects_pause_and_mode_and_priority_gate() {
+        let _gate_guard = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
+
+        assert!(should_discover_background_batch(&deep_settings_fixture()));
+
+        let paused = DeepSettings {
+            pause_background: true,
+            ..deep_settings_fixture()
+        };
+        assert!(!should_discover_background_batch(&paused));
+
+        let off = DeepSettings {
+            background_mode: "off".to_string(),
+            ..deep_settings_fixture()
+        };
+        assert!(!should_discover_background_batch(&off));
+
+        let _priority_guard = crate::mix_priority_gate::PriorityAnalysisGuard::acquire();
+        assert!(
+            !should_discover_background_batch(&deep_settings_fixture()),
+            "a mix build holding the priority gate must suppress new background discovery"
+        );
+        drop(_priority_guard);
+        assert!(should_discover_background_batch(&deep_settings_fixture()));
     }
 
     #[test]

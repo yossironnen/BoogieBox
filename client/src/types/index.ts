@@ -72,6 +72,11 @@ export interface Track {
    * rendered BoogieMix output) be queued/played through the normal Player
    * flow. See `mixOutputToTrack` in PlaylistsView.tsx. */
   stream_url_override?: string;
+  /** When set, Player seeks here once the track has loaded (reuses the same
+   * `pendingSeekRef` mechanism as remember-progress playlists) — lets the
+   * Mix Story timeline's click-to-seek start playback already positioned at
+   * the clicked point instead of always restarting at 0:00. */
+  startAtSec?: number;
 }
 
 /** Artist is part of this module's public API. */
@@ -289,6 +294,9 @@ export interface AppSettings {
   boogiemixDeepAnalysisPauseBackground: string;
   boogiemixDeepAnalysisMaxDurationMins: string;
   boogiemixDeepAnalysisModel: string;
+  boogiemixHighQualityWaitMs: string;
+  boogiemixBpmWaitMs: string;
+  boogiemixWaveformWaitMs: string;
 }
 
 /** Scan Schedule is part of this module's public API. */
@@ -375,6 +383,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   boogiemixDeepAnalysisPauseBackground: 'false',
   boogiemixDeepAnalysisMaxDurationMins: '15',
   boogiemixDeepAnalysisModel: 'mdx_extra_q',
+  boogiemixHighQualityWaitMs: '20000',
+  boogiemixBpmWaitMs: '15000',
+  boogiemixWaveformWaitMs: '15000',
 };
 
 /** FONT OPTIONS is part of this module's public API. */
@@ -491,6 +502,49 @@ export interface BoogieMixOutput {
   file_size_bytes: number | null;
   format: string;
   created_at: string;
+}
+
+/** One track's position/trim/crossfade + snapshot within a rendered mix —
+ * mirrors the server's `MixOutputTrackRow`
+ * (wip/boogiemix-story-timeline-plan.md §4.1). */
+export interface MixOutputTrackRow {
+  stepIndex: number;
+  /** `null` — a live pointer with no FK — means the track is no longer in
+   * the library; `title`/`artistName`/etc. are still the snapshot taken at
+   * render time. */
+  trackId: ClientEntityId | null;
+  albumId: ClientEntityId | null;
+  title: string;
+  artistName: string;
+  albumName: string;
+  trackDurationSec: number;
+  bpm: number | null;
+  keyEstimate: string | null;
+  outputStartSec: number;
+  outputEndSec: number;
+  sourceTrimStartSec: number;
+  sourceTrimEndSec: number;
+  crossfadeInSec: number;
+  crossfadeOutSec: number;
+  transitionOutKind: string | null;
+  transitionOutConfidence: number | null;
+  transitionOutPhraseAligned: boolean;
+  transitionOutReason: string | null;
+  /** Downsampled snapshots (~120 points), `null` when unavailable at
+   * render time — the timeline falls back to a flat fill for that track. */
+  waveformPeaksJson: string | null;
+  energyCurveJson: string | null;
+  sectionMarkersJson: string | null;
+}
+
+/** `GET /api/boogiemix/outputs/{id}/timeline` response
+ * (wip/boogiemix-story-timeline-plan.md §4.3). */
+export interface MixTimelineResponse {
+  outputId: ClientEntityId;
+  available: boolean;
+  tier: 'full' | 'reconstructed' | 'unavailable';
+  durationSec: number;
+  tracks: MixOutputTrackRow[];
 }
 
 /** Boogie Mix Deep Analysis Status is part of this module's public API. */

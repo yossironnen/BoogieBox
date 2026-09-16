@@ -849,6 +849,9 @@ export default function SettingsPage({
   const [boogiemixDeepPauseBackground, setBoogiemixDeepPauseBackground] = useState(settings.boogiemixDeepAnalysisPauseBackground === 'true');
   const [boogiemixDeepMaxDurationMins, setBoogiemixDeepMaxDurationMins] = useState(Number(settings.boogiemixDeepAnalysisMaxDurationMins) || 15);
   const [boogiemixDeepModel, setBoogiemixDeepModel] = useState(settings.boogiemixDeepAnalysisModel || 'mdx_extra_q');
+  const [boogiemixHighQualityWaitMs, setBoogiemixHighQualityWaitMs] = useState(Number(settings.boogiemixHighQualityWaitMs) || 20000);
+  const [boogiemixBpmWaitMs, setBoogiemixBpmWaitMs] = useState(Number(settings.boogiemixBpmWaitMs) || 15000);
+  const [boogiemixWaveformWaitMs, setBoogiemixWaveformWaitMs] = useState(Number(settings.boogiemixWaveformWaitMs) || 15000);
   const [boogiemixDeepActionBusy, setBoogiemixDeepActionBusy] = useState<string | null>(null);
   const [boogiemixDeepActionResult, setBoogiemixDeepActionResult] = useState<string | null>(null);
   const [boogiemixDeepSelectedLibrary, setBoogiemixDeepSelectedLibrary] = useState<ClientEntityId | ''>('');
@@ -888,6 +891,9 @@ export default function SettingsPage({
     setBoogiemixDeepPauseBackground(settings.boogiemixDeepAnalysisPauseBackground === 'true');
     setBoogiemixDeepMaxDurationMins(Number(settings.boogiemixDeepAnalysisMaxDurationMins) || 15);
     setBoogiemixDeepModel(settings.boogiemixDeepAnalysisModel || 'mdx_extra_q');
+    setBoogiemixHighQualityWaitMs(Number(settings.boogiemixHighQualityWaitMs) || 20000);
+    setBoogiemixBpmWaitMs(Number(settings.boogiemixBpmWaitMs) || 15000);
+    setBoogiemixWaveformWaitMs(Number(settings.boogiemixWaveformWaitMs) || 15000);
   }, [settings]);
 
   const loadSchedules = useCallback(async () => {
@@ -1039,6 +1045,9 @@ export default function SettingsPage({
         setBoogiemixDeepPauseBackground((s.boogiemixDeepAnalysisPauseBackground ?? 'false') === 'true');
         setBoogiemixDeepMaxDurationMins(Number(s.boogiemixDeepAnalysisMaxDurationMins ?? '15') || 15);
         setBoogiemixDeepModel(s.boogiemixDeepAnalysisModel || 'mdx_extra_q');
+        setBoogiemixHighQualityWaitMs(Number(s.boogiemixHighQualityWaitMs) || 20000);
+        setBoogiemixBpmWaitMs(Number(s.boogiemixBpmWaitMs) || 15000);
+        setBoogiemixWaveformWaitMs(Number(s.boogiemixWaveformWaitMs) || 15000);
       });
       refreshLibraries().catch(() => {});
       loadDlnaStatus();
@@ -2232,6 +2241,41 @@ export default function SettingsPage({
                       </span>
                     </div>
                   </label>
+                  <div style={{ display: 'grid', gap: 6, paddingTop: 2 }}>
+                    <span style={{ fontSize: 13, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Analysis wait budgets
+                    </span>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                      When building a mix, BoogieBox waits up to these limits for deep, BPM, and waveform analysis to
+                      finish on the mix's own tracks before continuing anyway (0–60000 ms).
+                    </span>
+                    {([
+                      { key: 'boogiemixHighQualityWaitMs', label: 'Deep analysis (high quality)', value: boogiemixHighQualityWaitMs, setValue: setBoogiemixHighQualityWaitMs, defaultMs: 20000 },
+                      { key: 'boogiemixBpmWaitMs', label: 'BPM analysis', value: boogiemixBpmWaitMs, setValue: setBoogiemixBpmWaitMs, defaultMs: 15000 },
+                      { key: 'boogiemixWaveformWaitMs', label: 'Waveform analysis', value: boogiemixWaveformWaitMs, setValue: setBoogiemixWaveformWaitMs, defaultMs: 15000 },
+                    ] as const).map(({ key, label, value, setValue, defaultMs }) => (
+                      <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ color: 'var(--text)', minWidth: 200 }}>{label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={60000}
+                          step={500}
+                          value={value}
+                          onChange={(e) => setValue(Math.min(60000, Math.max(0, Number(e.target.value) || 0)))}
+                          onBlur={() => {
+                            const saveValue = String(value);
+                            runBoogieMixDeepAction(`${key}-wait`, async () => {
+                              await api.settings.update({ [key]: saveValue });
+                              return `${label} wait saved`;
+                            });
+                          }}
+                          style={{ width: 90, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 10px', fontSize: 14 }}
+                        />
+                        <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>ms (default {defaultMs.toLocaleString()})</span>
+                      </label>
+                    ))}
+                  </div>
                   {/* Analysis model selector */}
                   {(() => {
                     const gpuAvailable = boogiemixDeepStatus?.runtime?.gpuAvailable ?? false;

@@ -3,6 +3,7 @@
 use crate::music::{coerce_entity_id, EntityId};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::{NoContext, Timestamp, Uuid};
 
 fn new_id() -> String {
@@ -1018,6 +1019,421 @@ pub fn create_mix_output(
     Ok(coerce_entity_id(&output_id))
 }
 
+/// One track's snapshot within a rendered mix
+/// (wip/boogiemix-story-timeline-plan.md §4.1) — written once at render
+/// time by [`persist_mix_output_tracks`] and read back verbatim by
+/// [`get_mix_output_tracks`]; never re-derived from `tracks`/
+/// `track_deep_analysis`, so it survives later edits or deletes of the
+/// source track.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MixOutputTrackRow {
+    /// Documents the Step Index public API surface.
+    pub step_index: i64,
+    /// Live pointer, no FK — `None`/a miss means the track is no longer in
+    /// the library.
+    pub track_id: Option<EntityId>,
+    /// Live pointer, no FK — same "may dangle" contract as `track_id`.
+    pub album_id: Option<EntityId>,
+    /// Documents the Title public API surface.
+    pub title: String,
+    /// Documents the Artist Name public API surface.
+    pub artist_name: String,
+    /// Documents the Album Name public API surface.
+    pub album_name: String,
+    /// Documents the Track Duration Sec public API surface.
+    pub track_duration_sec: f64,
+    /// Documents the Bpm public API surface.
+    pub bpm: Option<f64>,
+    /// Documents the Key Estimate public API surface.
+    pub key_estimate: Option<String>,
+    /// Documents the Output Start Sec public API surface.
+    pub output_start_sec: f64,
+    /// Documents the Output End Sec public API surface.
+    pub output_end_sec: f64,
+    /// Documents the Source Trim Start Sec public API surface.
+    pub source_trim_start_sec: f64,
+    /// Documents the Source Trim End Sec public API surface.
+    pub source_trim_end_sec: f64,
+    /// Documents the Crossfade In Sec public API surface.
+    pub crossfade_in_sec: f64,
+    /// Documents the Crossfade Out Sec public API surface.
+    pub crossfade_out_sec: f64,
+    /// Documents the Transition Out Kind public API surface.
+    pub transition_out_kind: Option<String>,
+    /// Documents the Transition Out Confidence public API surface.
+    pub transition_out_confidence: Option<f64>,
+    /// Documents the Transition Out Phrase Aligned public API surface.
+    pub transition_out_phrase_aligned: bool,
+    /// Documents the Transition Out Reason public API surface.
+    pub transition_out_reason: Option<String>,
+    /// Downsampled waveform snapshot (JSON array), `None` when the source
+    /// track had no waveform data at render time.
+    pub waveform_peaks_json: Option<String>,
+    /// Downsampled energy-curve snapshot (JSON array), `None` when deep
+    /// analysis wasn't available at render time.
+    pub energy_curve_json: Option<String>,
+    /// Downsampled section-markers snapshot (JSON array), `None` when deep
+    /// analysis wasn't available at render time.
+    pub section_markers_json: Option<String>,
+}
+
+/// Replaces (delete + reinsert) every `mix_output_tracks` row for
+/// `output_id` — idempotent, so a retried/re-run persistence call can't
+/// duplicate rows.
+pub fn persist_mix_output_tracks(
+    conn: &Connection,
+    output_id: &EntityId,
+    rows: &[MixOutputTrackRow],
+) -> Result<(), JobError> {
+    conn.execute(
+        "DELETE FROM mix_output_tracks WHERE output_id=?1",
+        params![output_id],
+    )?;
+    for row in rows {
+        conn.execute(
+            "INSERT INTO mix_output_tracks(
+                output_id, step_index, track_id, album_id, title, artist_name, album_name,
+                track_duration_sec, bpm, key_estimate,
+                output_start_sec, output_end_sec, source_trim_start_sec, source_trim_end_sec,
+                crossfade_in_sec, crossfade_out_sec,
+                transition_out_kind, transition_out_confidence, transition_out_phrase_aligned,
+                transition_out_reason, waveform_peaks_json, energy_curve_json, section_markers_json
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+            params![
+                output_id,
+                row.step_index,
+                row.track_id,
+                row.album_id,
+                row.title,
+                row.artist_name,
+                row.album_name,
+                row.track_duration_sec,
+                row.bpm,
+                row.key_estimate,
+                row.output_start_sec,
+                row.output_end_sec,
+                row.source_trim_start_sec,
+                row.source_trim_end_sec,
+                row.crossfade_in_sec,
+                row.crossfade_out_sec,
+                row.transition_out_kind,
+                row.transition_out_confidence,
+                row.transition_out_phrase_aligned,
+                row.transition_out_reason,
+                row.waveform_peaks_json,
+                row.energy_curve_json,
+                row.section_markers_json,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn map_mix_output_track_row(r: &rusqlite::Row) -> rusqlite::Result<MixOutputTrackRow> {
+    Ok(MixOutputTrackRow {
+        step_index: r.get(0)?,
+        track_id: r.get::<_, Option<String>>(1)?.map(|s| coerce_entity_id(&s)),
+        album_id: r.get::<_, Option<String>>(2)?.map(|s| coerce_entity_id(&s)),
+        title: r.get(3)?,
+        artist_name: r.get(4)?,
+        album_name: r.get(5)?,
+        track_duration_sec: r.get(6)?,
+        bpm: r.get(7)?,
+        key_estimate: r.get(8)?,
+        output_start_sec: r.get(9)?,
+        output_end_sec: r.get(10)?,
+        source_trim_start_sec: r.get(11)?,
+        source_trim_end_sec: r.get(12)?,
+        crossfade_in_sec: r.get(13)?,
+        crossfade_out_sec: r.get(14)?,
+        transition_out_kind: r.get(15)?,
+        transition_out_confidence: r.get(16)?,
+        transition_out_phrase_aligned: r.get(17)?,
+        transition_out_reason: r.get(18)?,
+        waveform_peaks_json: r.get(19)?,
+        energy_curve_json: r.get(20)?,
+        section_markers_json: r.get(21)?,
+    })
+}
+
+/// Ordered per-track breakdown for a rendered mix, empty when
+/// [`persist_mix_output_tracks`] has never run for this `output_id` (a
+/// legacy mix, or one the reconstruction path in the timeline route hasn't
+/// backfilled yet).
+pub fn get_mix_output_tracks(
+    conn: &Connection,
+    output_id: &EntityId,
+) -> Result<Vec<MixOutputTrackRow>, JobError> {
+    let mut stmt = conn.prepare(
+        "SELECT step_index, track_id, album_id, title, artist_name, album_name,
+                track_duration_sec, bpm, key_estimate,
+                output_start_sec, output_end_sec, source_trim_start_sec, source_trim_end_sec,
+                crossfade_in_sec, crossfade_out_sec,
+                transition_out_kind, transition_out_confidence, transition_out_phrase_aligned,
+                transition_out_reason, waveform_peaks_json, energy_curve_json, section_markers_json
+         FROM mix_output_tracks WHERE output_id=?1 ORDER BY step_index ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![output_id], map_mix_output_track_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Track id (as a string) -> (album id, album title), the lookup shape
+/// [`load_track_album_info`] returns.
+pub type TrackAlbumInfoMap = HashMap<String, (Option<EntityId>, Option<String>)>;
+
+/// Album id + title for each of the given track ids, keyed by track id
+/// (as a string, for cheap lookup from render-time code that already holds
+/// `EntityId`s). Missing/unlinked albums are simply absent from the map.
+pub fn load_track_album_info(
+    conn: &Connection,
+    track_ids: &[EntityId],
+) -> Result<TrackAlbumInfoMap, JobError> {
+    let mut map = HashMap::new();
+    if track_ids.is_empty() {
+        return Ok(map);
+    }
+    let placeholders = std::iter::repeat_n("?", track_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT t.id, t.album_id, al.title
+         FROM tracks t
+         LEFT JOIN albums al ON al.id = t.album_id
+         WHERE t.id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(track_ids.iter()), |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (track_id, album_id, album_title) = row?;
+        map.insert(
+            track_id,
+            (album_id.map(|s| coerce_entity_id(&s)), album_title),
+        );
+    }
+    Ok(map)
+}
+
+/// `(title, artist, duration_sec, bpm, album_id, album_name)`, the lookup
+/// shape [`load_live_track_snapshot`] returns.
+type LiveTrackSnapshot = (String, String, f64, Option<f64>, Option<EntityId>, String);
+
+/// Live snapshot of one track for the reconstruction path below. `None`
+/// when the track no longer exists — the caller falls back to an "Unknown
+/// track" placeholder rather than failing the whole reconstruction.
+fn load_live_track_snapshot(
+    conn: &Connection,
+    track_id: &EntityId,
+) -> Result<Option<LiveTrackSnapshot>, JobError> {
+    conn.query_row(
+        "SELECT t.title, COALESCE(ar.name, ''), COALESCE(t.duration, 0),
+                COALESCE(t.bpm_detected, t.bpm), t.album_id, COALESCE(al.title, '')
+         FROM tracks t
+         LEFT JOIN artists ar ON ar.id = t.artist_id
+         LEFT JOIN albums al ON al.id = t.album_id
+         WHERE t.id = ?1",
+        params![track_id],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get::<_, Option<String>>(4)?.map(|s| coerce_entity_id(&s)),
+                r.get(5)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(JobError::Db)
+}
+
+/// Approximate duration assumed for a reconstructed track whose row no
+/// longer exists in `tracks` — there's no way to know its real length once
+/// it's gone, so the timeline just needs *a* plausible span rather than a
+/// broken/zero one.
+const RECONSTRUCTED_FALLBACK_DURATION_SEC: f64 = 240.0;
+
+/// Lazily reconstructs an approximate `mix_output_tracks` snapshot for a
+/// legacy mix (one rendered before this table existed) from its durable
+/// `mix_transitions` chain, persists it so this only ever runs once per
+/// output, and returns it. Empty when `mix_transitions` itself has nothing
+/// for this `job_id` either (the "Unavailable" tier).
+///
+/// Timing here is a **deliberate approximation**, not a re-derivation of
+/// the real render: the beat-aligned arithmetic `render_mix` uses needs
+/// tempo/rhythm grid data that was never stored anywhere durable, only
+/// consumed transiently at render time. This just chains each track's
+/// current duration and its transition's `crossfade_sec`
+/// (`start[i] = start[i-1] + duration[i-1] - crossfade_sec[i-1]`), which is
+/// exactly what §4.2 promises for this tier: track blocks and crossfade
+/// zones, no waveform.
+pub fn reconstruct_mix_output_tracks(
+    conn: &Connection,
+    output_id: &EntityId,
+    job_id: &EntityId,
+) -> Result<Vec<MixOutputTrackRow>, JobError> {
+    let transitions = get_mix_transitions(conn, job_id)?;
+    if transitions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut ordered_track_ids: Vec<EntityId> = vec![transitions[0].from_track_id.clone()];
+    ordered_track_ids.extend(transitions.iter().map(|t| t.to_track_id.clone()));
+
+    let mut rows = Vec::with_capacity(ordered_track_ids.len());
+    let mut cursor = 0.0_f64;
+    for (i, track_id) in ordered_track_ids.iter().enumerate() {
+        let snapshot = load_live_track_snapshot(conn, track_id)?;
+        let (title, artist_name, duration, bpm, album_id, album_name) = match snapshot {
+            Some((title, artist, duration, bpm, album_id, album_name)) => (
+                if title.trim().is_empty() {
+                    "Unknown track".to_string()
+                } else {
+                    title
+                },
+                artist,
+                if duration > 0.0 {
+                    duration
+                } else {
+                    RECONSTRUCTED_FALLBACK_DURATION_SEC
+                },
+                bpm,
+                album_id,
+                album_name,
+            ),
+            None => (
+                "Unknown track".to_string(),
+                String::new(),
+                RECONSTRUCTED_FALLBACK_DURATION_SEC,
+                None,
+                None,
+                String::new(),
+            ),
+        };
+
+        let incoming = if i > 0 { transitions.get(i - 1) } else { None };
+        let outgoing = transitions.get(i);
+        let crossfade_in = incoming.map(|t| t.crossfade_sec).unwrap_or(0.0);
+        let crossfade_out = outgoing.map(|t| t.crossfade_sec).unwrap_or(0.0);
+
+        let output_start = cursor;
+        let output_end = output_start + duration;
+        cursor = output_end - crossfade_out;
+
+        rows.push(MixOutputTrackRow {
+            step_index: i as i64,
+            track_id: Some(track_id.clone()),
+            album_id,
+            title,
+            artist_name,
+            album_name,
+            track_duration_sec: duration,
+            bpm,
+            key_estimate: None,
+            output_start_sec: output_start,
+            output_end_sec: output_end,
+            source_trim_start_sec: 0.0,
+            source_trim_end_sec: duration,
+            crossfade_in_sec: crossfade_in,
+            crossfade_out_sec: crossfade_out,
+            // No structured `kind`/confidence was ever stored for old
+            // transitions — only the raw diagnostic `reason` text.
+            transition_out_kind: None,
+            transition_out_confidence: None,
+            transition_out_phrase_aligned: outgoing.map(|t| t.phrase_aware).unwrap_or(false),
+            transition_out_reason: outgoing.map(|t| t.reason.clone()),
+            waveform_peaks_json: None,
+            energy_curve_json: None,
+            section_markers_json: None,
+        });
+    }
+
+    persist_mix_output_tracks(conn, output_id, &rows)?;
+    Ok(rows)
+}
+
+/// Full `GET /timeline` response shape
+/// (wip/boogiemix-story-timeline-plan.md §4.3).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MixTimelineResponse {
+    /// Documents the Output Id public API surface.
+    pub output_id: EntityId,
+    /// Documents the Available public API surface.
+    pub available: bool,
+    /// `"full"` | `"reconstructed"` | `"unavailable"` — see §4.2's tier table.
+    pub tier: String,
+    /// Documents the Duration Sec public API surface.
+    pub duration_sec: f64,
+    /// Documents the Tracks public API surface.
+    pub tracks: Vec<MixOutputTrackRow>,
+}
+
+/// Resolves the Story/Timeline breakdown for one mix output, trying each
+/// tier from §4.2 in order: an existing snapshot ("full"), then a lazy
+/// reconstruction from `mix_transitions` ("reconstructed"), then
+/// `available: false` ("unavailable") if even that has nothing. `Ok(None)`
+/// specifically means the output doesn't exist or isn't owned by
+/// `user_id` — the route handler maps that to 404, distinct from a real,
+/// owned output that just has no timeline data (`available: false`, still
+/// a 200).
+pub fn get_mix_timeline(
+    conn: &Connection,
+    output_id: &EntityId,
+    user_id: &EntityId,
+) -> Result<Option<MixTimelineResponse>, JobError> {
+    let owned: Option<(String, f64)> = conn
+        .query_row(
+            "SELECT job_id, duration_sec FROM mix_outputs WHERE id=?1 AND user_id=?2",
+            params![output_id, user_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((job_id_str, duration_sec)) = owned else {
+        return Ok(None);
+    };
+    let job_id = coerce_entity_id(&job_id_str);
+
+    let full = get_mix_output_tracks(conn, output_id)?;
+    if !full.is_empty() {
+        return Ok(Some(MixTimelineResponse {
+            output_id: output_id.clone(),
+            available: true,
+            tier: "full".to_string(),
+            duration_sec,
+            tracks: full,
+        }));
+    }
+
+    let reconstructed = reconstruct_mix_output_tracks(conn, output_id, &job_id)?;
+    if !reconstructed.is_empty() {
+        return Ok(Some(MixTimelineResponse {
+            output_id: output_id.clone(),
+            available: true,
+            tier: "reconstructed".to_string(),
+            duration_sec,
+            tracks: reconstructed,
+        }));
+    }
+
+    Ok(Some(MixTimelineResponse {
+        output_id: output_id.clone(),
+        available: false,
+        tier: "unavailable".to_string(),
+        duration_sec,
+        tracks: Vec::new(),
+    }))
+}
+
 const MIX_OUTPUT_SELECT: &str = "SELECT mo.id, mo.job_id, mo.playlist_id, mo.file_name, mo.name,
           CASE WHEN mo.playlist_id IS NOT NULL THEN p.name ELSE NULLIF(mo.source_playlist_name, '') END,
           mo.cover_album_ids, mo.duration_sec, mo.file_size_bytes, mo.format, mo.created_at
@@ -1066,6 +1482,20 @@ pub fn list_all_mix_outputs(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Single-row counterpart of `list_all_mix_outputs`, for the story-image
+/// route (needs the output's name/cover/duration to compose the poster).
+/// `None` for a missing or unowned output.
+pub fn get_mix_output(
+    conn: &Connection,
+    output_id: &EntityId,
+    user_id: &EntityId,
+) -> Result<Option<MixOutputRow>, JobError> {
+    let sql = format!("{MIX_OUTPUT_SELECT} WHERE mo.id=?1 AND mo.user_id=?2");
+    conn.query_row(&sql, params![output_id, user_id], map_mix_output_row)
+        .optional()
+        .map_err(JobError::Db)
+}
+
 /// Renames a mix output. Returns `false` if no matching row exists for this
 /// user (not found / not owned).
 pub fn rename_mix_output(
@@ -1088,25 +1518,34 @@ pub fn rename_mix_output(
 /// Deletes a mix output row and returns its `file_path` so the caller can
 /// remove the rendered file from disk. Returns `None` if no matching row
 /// exists for this user.
+///
+/// Also deletes the output's `mix_jobs` row: `mix_outputs.job_id` cascades
+/// from `mix_jobs`, not the other way around, so without this the job (and,
+/// via *its* cascades, `mix_transitions`/`mix_job_logs`) would be orphaned
+/// forever every time a mix is deleted
+/// (wip/boogiemix-story-timeline-plan.md §4.2.1).
 pub fn delete_mix_output(
     conn: &Connection,
     output_id: &EntityId,
     user_id: &EntityId,
 ) -> Result<Option<String>, JobError> {
-    let file_path: Option<String> = conn
+    let row: Option<(String, String)> = conn
         .query_row(
-            "SELECT file_path FROM mix_outputs WHERE id=?1 AND user_id=?2",
+            "SELECT file_path, job_id FROM mix_outputs WHERE id=?1 AND user_id=?2",
             params![output_id, user_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let Some(file_path) = file_path else {
+    let Some((file_path, job_id)) = row else {
         return Ok(None);
     };
     conn.execute(
         "DELETE FROM mix_outputs WHERE id=?1 AND user_id=?2",
         params![output_id, user_id],
     )?;
+    // mix_transitions/mix_job_logs cascade off mix_jobs.id (lib.rs schema),
+    // so this one delete cleans up all three tables.
+    conn.execute("DELETE FROM mix_jobs WHERE id=?1", params![job_id])?;
     Ok(Some(file_path))
 }
 
@@ -2996,5 +3435,372 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, "style");
+    }
+
+    /// Regression for §4.2.1 (wip/boogiemix-story-timeline-plan.md):
+    /// deleting a mix output used to leave its `mix_jobs` row — and, via
+    /// that row's own cascades, `mix_transitions`/`mix_job_logs` — orphaned
+    /// forever. Needs the real schema (for the cascade FKs), so this uses
+    /// `init_db` rather than the hand-rolled fixtures above.
+    #[test]
+    fn delete_mix_output_also_removes_its_job_transitions_and_logs() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("delete-mix-output-test-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::init_db(&dir).unwrap().connection;
+
+        conn.execute(
+            "INSERT INTO users(id, username) VALUES('user-1', 'tester')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_jobs(id, playlist_id, user_id, status) \
+             VALUES('job-1', NULL, 'user-1', 'completed')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name) \
+             VALUES('output-1', 'job-1', NULL, 'user-1', '/tmp/mix.mp3', 'mix.mp3')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_transitions(job_id, step_index, from_track_id, to_track_id) \
+             VALUES('job-1', 0, 't1', 't2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_job_logs(job_id, level, message) VALUES('job-1', 'info', 'started')",
+            [],
+        )
+        .unwrap();
+
+        let deleted = delete_mix_output(
+            &conn,
+            &EntityId::Str("output-1".into()),
+            &EntityId::Str("user-1".into()),
+        )
+        .unwrap();
+        assert_eq!(deleted, Some("/tmp/mix.mp3".to_string()));
+
+        let jobs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mix_jobs", [], |r| r.get(0))
+            .unwrap();
+        let transitions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mix_transitions", [], |r| r.get(0))
+            .unwrap();
+        let logs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mix_job_logs", [], |r| r.get(0))
+            .unwrap();
+        let outputs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mix_outputs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(jobs, 0, "the job row must be cleaned up, not orphaned");
+        assert_eq!(transitions, 0, "cascades off mix_jobs.id");
+        assert_eq!(logs, 0, "cascades off mix_jobs.id");
+        assert_eq!(outputs, 0);
+    }
+
+    #[test]
+    fn delete_mix_output_returns_none_for_an_unknown_output() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("delete-mix-output-missing-test-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::init_db(&dir).unwrap().connection;
+        let deleted = delete_mix_output(
+            &conn,
+            &EntityId::Str("does-not-exist".into()),
+            &EntityId::Str("user-1".into()),
+        )
+        .unwrap();
+        assert_eq!(deleted, None);
+    }
+
+    /// Common fixture for the `mix_output_tracks` tests below: a user, one
+    /// completed job+output, and one library track/album so
+    /// `load_track_album_info` has something real to resolve.
+    fn setup_mix_output_tracks_db(dir_suffix: &str) -> (Connection, EntityId) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mix-output-tracks-test-{dir_suffix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::init_db(&dir).unwrap().connection;
+
+        conn.execute(
+            "INSERT INTO users(id, username) VALUES('user-1', 'tester')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO libraries(id, path, name) VALUES('lib-1', '/music', 'Lib')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO albums(id, title, artist_id) VALUES('album-1', 'Album One', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, title, file_path, album_id) \
+             VALUES('t1', 'lib-1', 'Song One', '/music/one.mp3', 'album-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_jobs(id, playlist_id, user_id, status) \
+             VALUES('job-1', NULL, 'user-1', 'completed')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name) \
+             VALUES('output-1', 'job-1', NULL, 'user-1', '/tmp/mix.mp3', 'mix.mp3')",
+            [],
+        )
+        .unwrap();
+        (conn, EntityId::Str("output-1".into()))
+    }
+
+    fn sample_output_track_row(step_index: i64, track_id: &str) -> MixOutputTrackRow {
+        MixOutputTrackRow {
+            step_index,
+            track_id: Some(EntityId::Str(track_id.to_string())),
+            album_id: Some(EntityId::Str("album-1".to_string())),
+            title: "Song One".to_string(),
+            artist_name: "Artist One".to_string(),
+            album_name: "Album One".to_string(),
+            track_duration_sec: 240.0,
+            bpm: Some(124.0),
+            key_estimate: Some("8A".to_string()),
+            output_start_sec: step_index as f64 * 200.0,
+            output_end_sec: step_index as f64 * 200.0 + 220.0,
+            source_trim_start_sec: 0.0,
+            source_trim_end_sec: 240.0,
+            crossfade_in_sec: if step_index > 0 { 8.0 } else { 0.0 },
+            crossfade_out_sec: 8.0,
+            transition_out_kind: Some("beatmatch".to_string()),
+            transition_out_confidence: None,
+            transition_out_phrase_aligned: true,
+            transition_out_reason: Some("deep:club_blend|kind:beatmatch".to_string()),
+            waveform_peaks_json: Some("[0.1,0.2,0.3]".to_string()),
+            energy_curve_json: None,
+            section_markers_json: None,
+        }
+    }
+
+    #[test]
+    fn persist_and_get_mix_output_tracks_round_trips_every_field() {
+        let (conn, output_id) = setup_mix_output_tracks_db("round-trip");
+        let rows = vec![
+            sample_output_track_row(0, "t1"),
+            sample_output_track_row(1, "t2"),
+        ];
+        persist_mix_output_tracks(&conn, &output_id, &rows).unwrap();
+
+        let loaded = get_mix_output_tracks(&conn, &output_id).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].step_index, 0);
+        assert_eq!(loaded[1].step_index, 1);
+        assert_eq!(loaded[0].track_id, Some(EntityId::Str("t1".to_string())));
+        assert_eq!(
+            loaded[0].album_id,
+            Some(EntityId::Str("album-1".to_string()))
+        );
+        assert_eq!(loaded[0].title, "Song One");
+        assert_eq!(loaded[0].bpm, Some(124.0));
+        assert_eq!(loaded[0].key_estimate.as_deref(), Some("8A"));
+        assert_eq!(loaded[0].output_end_sec, 220.0);
+        assert_eq!(loaded[0].crossfade_in_sec, 0.0);
+        assert_eq!(loaded[1].crossfade_in_sec, 8.0);
+        assert!(loaded[0].transition_out_phrase_aligned);
+        assert_eq!(loaded[0].transition_out_kind.as_deref(), Some("beatmatch"));
+        assert_eq!(
+            loaded[0].waveform_peaks_json.as_deref(),
+            Some("[0.1,0.2,0.3]")
+        );
+        assert_eq!(loaded[0].energy_curve_json, None);
+    }
+
+    #[test]
+    fn persist_mix_output_tracks_is_idempotent_not_additive() {
+        let (conn, output_id) = setup_mix_output_tracks_db("idempotent");
+        persist_mix_output_tracks(&conn, &output_id, &[sample_output_track_row(0, "t1")]).unwrap();
+        // Re-persisting (e.g. a retried job) must replace, not append.
+        persist_mix_output_tracks(&conn, &output_id, &[sample_output_track_row(0, "t1")]).unwrap();
+
+        let loaded = get_mix_output_tracks(&conn, &output_id).unwrap();
+        assert_eq!(
+            loaded.len(),
+            1,
+            "re-persisting must replace, not duplicate, rows"
+        );
+    }
+
+    #[test]
+    fn get_mix_output_tracks_is_empty_for_a_legacy_output_with_no_snapshot() {
+        let (conn, output_id) = setup_mix_output_tracks_db("legacy");
+        let loaded = get_mix_output_tracks(&conn, &output_id).unwrap();
+        assert!(
+            loaded.is_empty(),
+            "no rows persisted yet must read back as empty, not an error"
+        );
+    }
+
+    #[test]
+    fn load_track_album_info_resolves_linked_album_and_ignores_unknown_ids() {
+        let (conn, _output_id) = setup_mix_output_tracks_db("album-info");
+        let ids = vec![
+            EntityId::Str("t1".to_string()),
+            EntityId::Str("does-not-exist".to_string()),
+        ];
+        let info = load_track_album_info(&conn, &ids).unwrap();
+        assert_eq!(info.len(), 1, "only the real track resolves");
+        let (album_id, album_name) = info.get("t1").expect("t1 present");
+        assert_eq!(
+            album_id.as_ref(),
+            Some(&EntityId::Str("album-1".to_string()))
+        );
+        assert_eq!(album_name.as_deref(), Some("Album One"));
+    }
+
+    #[test]
+    fn load_track_album_info_is_empty_for_an_empty_id_list() {
+        let (conn, _output_id) = setup_mix_output_tracks_db("album-info-empty");
+        let info = load_track_album_info(&conn, &[]).unwrap();
+        assert!(info.is_empty());
+    }
+
+    /// Adds a second track + a chain of `mix_transitions` (t1 -> t2 -> t3,
+    /// t3 pointing at a track id that was never inserted, simulating a
+    /// since-deleted track) on top of `setup_mix_output_tracks_db`'s
+    /// user/track/job/output fixture — everything the timeline
+    /// reconstruction/tier tests below need.
+    fn setup_timeline_db(dir_suffix: &str) -> (Connection, EntityId, EntityId) {
+        let (conn, output_id) = setup_mix_output_tracks_db(dir_suffix);
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, title, file_path, duration) \
+             VALUES('t2', 'lib-1', 'Song Two', '/music/two.mp3', 200)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_transitions(job_id, step_index, from_track_id, to_track_id, crossfade_sec) \
+             VALUES('job-1', 0, 't1', 't2', 8.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mix_transitions(job_id, step_index, from_track_id, to_track_id, crossfade_sec) \
+             VALUES('job-1', 1, 't2', 't-deleted', 6.0)",
+            [],
+        )
+        .unwrap();
+        (conn, output_id, EntityId::Str("job-1".to_string()))
+    }
+
+    #[test]
+    fn reconstruct_mix_output_tracks_chains_durations_and_flags_a_deleted_track() {
+        let (conn, output_id, job_id) = setup_timeline_db("reconstruct");
+        let rows = reconstruct_mix_output_tracks(&conn, &output_id, &job_id).unwrap();
+
+        assert_eq!(rows.len(), 3, "t1, t2, and the deleted track all get a row");
+        assert_eq!(rows[0].title, "Song One");
+        assert_eq!(rows[0].output_start_sec, 0.0);
+        assert_eq!(rows[0].track_duration_sec, 240.0, "t1's real duration");
+        assert_eq!(rows[0].crossfade_out_sec, 8.0);
+        // t2 starts 8s (the crossfade) before t1 would otherwise end.
+        assert_eq!(rows[1].output_start_sec, 240.0 - 8.0);
+        assert_eq!(rows[1].track_duration_sec, 200.0, "t2's real duration");
+
+        let deleted = &rows[2];
+        assert_eq!(
+            deleted.track_id,
+            Some(EntityId::Str("t-deleted".to_string()))
+        );
+        assert_eq!(deleted.title, "Unknown track");
+        assert_eq!(
+            deleted.track_duration_sec, 240.0,
+            "falls back to the fixed placeholder duration, not zero/panic"
+        );
+
+        // Reconstruction persists what it built — a second read finds the
+        // same rows without needing mix_transitions again.
+        let persisted = get_mix_output_tracks(&conn, &output_id).unwrap();
+        assert_eq!(persisted.len(), 3);
+    }
+
+    #[test]
+    fn reconstruct_mix_output_tracks_is_empty_without_any_transitions() {
+        let (conn, output_id) = setup_mix_output_tracks_db("reconstruct-empty");
+        let rows =
+            reconstruct_mix_output_tracks(&conn, &output_id, &EntityId::Str("job-1".to_string()))
+                .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn get_mix_timeline_returns_full_tier_when_a_snapshot_already_exists() {
+        let (conn, output_id) = setup_mix_output_tracks_db("timeline-full");
+        persist_mix_output_tracks(&conn, &output_id, &[sample_output_track_row(0, "t1")]).unwrap();
+
+        let timeline = get_mix_timeline(&conn, &output_id, &EntityId::Str("user-1".to_string()))
+            .unwrap()
+            .expect("output exists and is owned");
+        assert!(timeline.available);
+        assert_eq!(timeline.tier, "full");
+        assert_eq!(timeline.tracks.len(), 1);
+    }
+
+    #[test]
+    fn get_mix_timeline_falls_back_to_reconstructed_tier() {
+        let (conn, output_id, _job_id) = setup_timeline_db("timeline-reconstructed");
+        let timeline = get_mix_timeline(&conn, &output_id, &EntityId::Str("user-1".to_string()))
+            .unwrap()
+            .expect("output exists and is owned");
+        assert!(timeline.available);
+        assert_eq!(timeline.tier, "reconstructed");
+        assert_eq!(timeline.tracks.len(), 3);
+    }
+
+    #[test]
+    fn get_mix_timeline_is_unavailable_with_neither_snapshot_nor_transitions() {
+        let (conn, output_id) = setup_mix_output_tracks_db("timeline-unavailable");
+        let timeline = get_mix_timeline(&conn, &output_id, &EntityId::Str("user-1".to_string()))
+            .unwrap()
+            .expect("output exists and is owned");
+        assert!(!timeline.available);
+        assert_eq!(timeline.tier, "unavailable");
+        assert!(timeline.tracks.is_empty());
+    }
+
+    #[test]
+    fn get_mix_timeline_returns_none_for_an_unowned_or_missing_output() {
+        let (conn, output_id) = setup_mix_output_tracks_db("timeline-unowned");
+        assert!(get_mix_timeline(
+            &conn,
+            &output_id,
+            &EntityId::Str("someone-else".to_string())
+        )
+        .unwrap()
+        .is_none());
+        assert!(get_mix_timeline(
+            &conn,
+            &EntityId::Str("does-not-exist".to_string()),
+            &EntityId::Str("user-1".to_string())
+        )
+        .unwrap()
+        .is_none());
     }
 }
