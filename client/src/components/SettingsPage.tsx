@@ -750,8 +750,6 @@ export default function SettingsPage({
   onStreamDirectChange,
   adaptiveAccentEnabled = true,
   onAdaptiveAccentEnabledChange,
-  hideCompilationOnlyArtists = true,
-  onHideCompilationOnlyArtistsChange,
   hybridThemeMode = 'dark',
   onHybridThemeModeChange,
   vinylHardcore = false,
@@ -1513,33 +1511,6 @@ export default function SettingsPage({
             </div>
             <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 6 }}>
               Applies to album view, artist view, and playback bar. Saved for your user profile.
-            </div>
-          </SettingsPanel>
-
-          <SettingsPanel
-            title="Artist browsing"
-            description="Many library entries are artists with no releases of their own — they only appear via a track or two on someone else's compilation. Hide them from Browse to keep the artist list focused on artists you actually own releases from. A direct search always finds them regardless of this setting."
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={hideCompilationOnlyArtists}
-                aria-label="Hide compilation-only artists"
-                onClick={() => onHideCompilationOnlyArtistsChange?.(!hideCompilationOnlyArtists)}
-                title={hideCompilationOnlyArtists ? 'Compilation-only artists are hidden from Browse' : 'All artists are shown in Browse'}
-                style={{ ...hybridControlStyles.switchTrack, ...(hideCompilationOnlyArtists ? hybridControlStyles.switchTrackActive : {}) }}
-              >
-                <span style={{ ...hybridControlStyles.switchThumb, ...(hideCompilationOnlyArtists ? hybridControlStyles.switchThumbActive : {}) }} />
-              </button>
-              <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                {hideCompilationOnlyArtists
-                  ? 'Hiding artists with no owned releases (default)'
-                  : 'Showing every artist, including compilation-only appearances'}
-              </div>
-            </div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 6 }}>
-              Applies to Browse only. Saved for your user profile.
             </div>
           </SettingsPanel>
 

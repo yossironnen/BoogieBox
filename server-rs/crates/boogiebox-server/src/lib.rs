@@ -314,6 +314,15 @@ pub async fn run_from_env() -> Result<(), ServerError> {
                 Ok(_) => {}
                 Err(err) => tracing::warn!("Startup mix-job recovery failed: {err}"),
             }
+            match boogiebox_db::force_hide_compilation_only_artists_for_all_users(&conn) {
+                Ok(n) if n > 0 => {
+                    tracing::info!("Startup: re-enabled hideCompilationOnlyArtists for {n} user(s)")
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!("Startup hideCompilationOnlyArtists enforcement failed: {err}")
+                }
+            }
         }
         db_warmup::warm_in_background(db.clone());
         let dlna_db = db.clone();

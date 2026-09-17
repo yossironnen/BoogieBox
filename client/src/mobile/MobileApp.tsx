@@ -113,8 +113,6 @@ export default function MobileApp(props: MobileSharedProps) {
           onHybridThemeModeChange={props.onHybridThemeModeChange}
           adaptiveAccentEnabled={props.adaptiveAccentEnabled}
           onAdaptiveAccentEnabledChange={props.onAdaptiveAccentEnabledChange}
-          hideCompilationOnlyArtists={props.hideCompilationOnlyArtists}
-          onHideCompilationOnlyArtistsChange={props.onHideCompilationOnlyArtistsChange}
           eqControls={eqControls}
           playbackMode={props.playbackMode}
           vinylHardcore={props.vinylHardcore}

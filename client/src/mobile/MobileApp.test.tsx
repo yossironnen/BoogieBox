@@ -137,7 +137,6 @@ function createProps(overrides: Partial<MobileSharedProps> = {}): MobileSharedPr
     onSettingsChange: vi.fn(),
     onHybridThemeModeChange: vi.fn(),
     onAdaptiveAccentEnabledChange: vi.fn(),
-    onHideCompilationOnlyArtistsChange: vi.fn(),
     onPlaybackModeChange: vi.fn(),
     onVinylHardcoreChange: vi.fn(),
     onVinylNeedleDropChange: vi.fn(),

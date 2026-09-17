@@ -1547,7 +1547,6 @@ export default function App() {
         onSettingsChange={setSettings}
         onHybridThemeModeChange={selectHybridThemeMode}
         onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
-        onHideCompilationOnlyArtistsChange={setHideCompilationOnlyArtists}
         onPlaybackModeChange={setPlaybackMode}
         onVinylHardcoreChange={setVinylHardcore}
         onVinylNeedleDropChange={setVinylNeedleDrop}
@@ -1870,8 +1869,6 @@ export default function App() {
               onStreamDirectChange={setStreamDirect}
               adaptiveAccentEnabled={adaptiveAccentEnabled}
               onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
-              hideCompilationOnlyArtists={hideCompilationOnlyArtists}
-              onHideCompilationOnlyArtistsChange={setHideCompilationOnlyArtists}
               hybridThemeMode={hybridThemeMode}
               onHybridThemeModeChange={selectHybridThemeMode}
               vinylHardcore={vinylHardcore}

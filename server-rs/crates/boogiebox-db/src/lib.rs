@@ -2594,6 +2594,22 @@ pub fn upsert_user_setting(
     Ok(())
 }
 
+/// Forces `hideCompilationOnlyArtists` to `"true"` for every existing user row, and inserts it
+/// for any user missing the key. Compilation-only artist browsing is retired front-end-side, so
+/// this is re-applied on every server startup rather than as a one-time migration, in case a
+/// stale client or direct API call ever manages to flip it back off.
+pub fn force_hide_compilation_only_artists_for_all_users(
+    conn: &Connection,
+) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        r#"INSERT INTO user_settings(user_id, key, value, updated_at)
+           SELECT id, 'hideCompilationOnlyArtists', 'true', datetime('now') FROM users
+           ON CONFLICT(user_id, key) DO UPDATE SET value = 'true', updated_at = excluded.updated_at
+           WHERE user_settings.value != 'true'"#,
+        [],
+    )
+}
+
 fn ensure_provider_usage_and_art_tables(connection: &Connection) -> Result<(), rusqlite::Error> {
     // Fix provider_usage_stats if it has the old bootstrap schema (has column 'action').
     // The correct schema uses a composite PK of (provider, entity_type, usage_type) with a count.
