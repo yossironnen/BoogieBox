@@ -34,6 +34,7 @@ pub mod beat_grid;
 pub mod bpm_analysis;
 pub mod cors;
 pub mod db_maintenance;
+pub mod db_warmup;
 pub mod deep_analysis;
 pub mod dlna;
 pub mod event_log;
@@ -314,6 +315,7 @@ pub async fn run_from_env() -> Result<(), ServerError> {
                 Err(err) => tracing::warn!("Startup mix-job recovery failed: {err}"),
             }
         }
+        db_warmup::warm_in_background(db.clone());
         let dlna_db = db.clone();
         let cancel = state.worker_cancel.clone();
         let ps_state = post_scan::PostScanState {
@@ -816,6 +818,7 @@ async fn switch_db_handler(
                     db_folder: s.db_folder.clone(),
                     cancel: cancel.clone(),
                 };
+                db_warmup::warm_in_background(ps_state.db.clone());
                 scanner::start_scan_scheduler(ps_state.clone());
                 post_scan::start_post_scan_scheduler(ps_state.clone());
                 waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
