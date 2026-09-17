@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - website/**
-      - Docs/Screenshots/**
       - client/public/boogiebox.png
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -35,7 +34,7 @@ jobs:
           mkdir -p _site/assets/screenshots
           cp website/index.html website/styles.css website/script.js _site/
           cp client/public/boogiebox.png _site/assets/
-          cp Docs/Screenshots/*.png _site/assets/screenshots/
+          cp website/assets/screenshots/*.png _site/assets/screenshots/
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
