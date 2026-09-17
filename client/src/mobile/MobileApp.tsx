@@ -97,6 +97,7 @@ export default function MobileApp(props: MobileSharedProps) {
           selection={playlistSelection}
           onSelectionChange={setPlaylistSelection}
           onPlayTrack={(track, allTracks) => props.onPlayTrack(track, allTracks, playlistSelection.playlist ? { type: 'playlist', id: playlistSelection.playlist.id, rememberProgress: !!playlistSelection.playlist.remember_progress } : undefined)}
+          onPlayMixTrack={(track, allTracks) => props.onPlayTrack(track, allTracks)}
           onAddToQueue={props.onAddToQueue}
         />
       )}

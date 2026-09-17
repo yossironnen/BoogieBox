@@ -8,7 +8,7 @@ import type { ClientEntityId, Playlist, PlaylistTrack, Track } from '../../types
 import type { EntityId } from '../../entityId';
 import type { MobilePlaylistSelection } from '../mobileShell';
 import ArtImage from '../../components/ArtImage';
-import { hybridMobileContentStyles } from '../../hybridPreview';
+import { hybridControlStyles, hybridMobileContentStyles } from '../../hybridPreview';
 import { phase2 } from '../../uiPhase2';
 import {
   MobilePlaylistEditorSheet,
@@ -17,6 +17,23 @@ import {
 import MobileBottomSheet from '../components/MobileBottomSheet';
 import MobileBoogieMixPanel from '../components/MobileBoogieMixPanel';
 import MobileConfirmationSheet from '../components/MobileConfirmationSheet';
+import MobileMixesView from './MobileMixesView';
+
+type LibraryTab = 'playlists' | 'mixes';
+
+const PlaylistsTabIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+    <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+  </svg>
+);
+
+const MixesTabIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="16 3 21 3 21 8" /><line x1="4" y1="20" x2="21" y2="3" />
+    <polyline points="21 16 21 21 16 21" /><line x1="15" y1="15" x2="21" y2="21" /><line x1="4" y1="4" x2="9" y2="9" />
+  </svg>
+);
 
 const SWIPE_ACTION_WIDTH = 112;
 const SWIPE_DELETE_THRESHOLD = 92;
@@ -224,14 +241,17 @@ export default function MobilePlaylistsView({
   selection,
   onSelectionChange,
   onPlayTrack,
+  onPlayMixTrack,
   onAddToQueue,
 }: {
   initialPlaylistId: EntityId | null;
   selection: MobilePlaylistSelection;
   onSelectionChange: (selection: MobilePlaylistSelection) => void;
   onPlayTrack: (track: PlaylistTrack, allTracks?: PlaylistTrack[]) => void;
+  onPlayMixTrack: (track: Track, allTracks?: Track[]) => void;
   onAddToQueue: (track: PlaylistTrack) => void;
 }) {
+  const [libraryTab, setLibraryTab] = useState<LibraryTab>('playlists');
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -273,6 +293,11 @@ export default function MobilePlaylistsView({
     onSelectionChange({ playlist, tracks });
     setPlaylists((prev) => prev.map((entry) => (entry.id === playlist.id ? playlist : entry)));
   }, [onSelectionChange]);
+
+  const openMixSourcePlaylist = useCallback((playlistId: EntityId) => {
+    setLibraryTab('playlists');
+    loadSelectedPlaylist(playlistId).catch(() => setError('Could not load that playlist.'));
+  }, [loadSelectedPlaylist]);
 
   useEffect(() => {
     void loadPlaylists();
@@ -812,54 +837,93 @@ export default function MobilePlaylistsView({
     >
       <header style={hybridMobileContentStyles.pageHeader}>
         <div style={styles.listKicker}>Library</div>
-        <h1 style={styles.listHeader}>Playlists</h1>
-        <p style={styles.listSubhead}>Build, edit, and jump into playlists from your phone.</p>
-        <button type="button" style={styles.newPlaylistButton} onClick={openCreateEditor}>New Playlist</button>
+        <h1 style={styles.listHeader}>{libraryTab === 'mixes' ? 'Mixes' : 'Playlists'}</h1>
+        <p style={styles.listSubhead}>
+          {libraryTab === 'mixes'
+            ? 'Play and manage the BoogieMixes you’ve rendered.'
+            : 'Build, edit, and jump into playlists from your phone.'}
+        </p>
+        <div role="group" aria-label="Library section" style={{ ...hybridControlStyles.segmentedGroup, display: 'flex', marginTop: 4, marginBottom: 4 }}>
+          <button
+            type="button"
+            aria-pressed={libraryTab === 'playlists'}
+            style={{
+              ...hybridControlStyles.segment,
+              ...styles.librarySegment,
+              ...(libraryTab === 'playlists' ? hybridControlStyles.segmentActive : null),
+            }}
+            onClick={() => setLibraryTab('playlists')}
+          >
+            <PlaylistsTabIcon /> Playlists
+          </button>
+          <button
+            type="button"
+            aria-pressed={libraryTab === 'mixes'}
+            style={{
+              ...hybridControlStyles.segment,
+              ...styles.librarySegment,
+              ...(libraryTab === 'mixes' ? hybridControlStyles.segmentActive : null),
+            }}
+            onClick={() => setLibraryTab('mixes')}
+          >
+            <MixesTabIcon /> Mixes
+          </button>
+        </div>
+        {libraryTab === 'playlists' ? (
+          <button type="button" style={styles.newPlaylistButton} onClick={openCreateEditor}>New Playlist</button>
+        ) : null}
       </header>
-      {refreshing ? <div role="status" style={styles.refreshState}>Refreshing playlists...</div> : null}
-      {error ? (
-        <div role="alert" style={styles.error}>
-          {error}
-          <button type="button" style={styles.retryButton} onClick={() => void loadPlaylists()}>Retry</button>
-        </div>
-      ) : null}
-      {loading ? <div role="status" style={styles.loadingState}>Loading playlists...</div> : null}
-      {!error && !loading && !playlists.length ? (
-        <div role="status" style={styles.emptyCreateState}>
-          <div style={styles.emptyCreateTitle}>No playlists yet.</div>
-          <div style={styles.emptyCreateCopy}>Start one here, then use track kebabs across Browse, Search, and playlists to fill it up fast.</div>
-          <button type="button" style={styles.emptyCreateButton} onClick={openCreateEditor}>Create Playlist</button>
-        </div>
-      ) : null}
-      {!loading ? (
-        <div style={styles.playlistList}>
-          {playlists.map((playlist) => (
-            <button
-              key={playlist.id}
-              type="button"
-              style={styles.card}
-              onClick={() => onSelectionChange({ playlist, tracks: [] })}
-            >
-              <span style={styles.cardArtwork}>
-                {playlist.art_album_ids?.[0] ? (
-                  <ArtImage
-                    src={api.albumArtUrl(playlist.art_album_ids[0], 300)}
-                    alt=""
-                    imgStyle={hybridMobileContentStyles.listArtworkImage}
-                  />
-                ) : (
-                  <span style={hybridMobileContentStyles.listArtworkFallback}>≡</span>
-                )}
-              </span>
-              <span style={styles.cardMeta}>
-                <span style={styles.cardTitle}>{playlist.name}</span>
-                <span style={styles.cardSub}>{playlist.track_count} tracks - {fmtDuration(playlist.total_duration)}</span>
-              </span>
-              <span style={hybridMobileContentStyles.listBadge}>Open</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+
+      {libraryTab === 'mixes' ? (
+        <MobileMixesView onPlayTrack={onPlayMixTrack} onOpenPlaylist={openMixSourcePlaylist} />
+      ) : (
+        <>
+          {refreshing ? <div role="status" style={styles.refreshState}>Refreshing playlists...</div> : null}
+          {error ? (
+            <div role="alert" style={styles.error}>
+              {error}
+              <button type="button" style={styles.retryButton} onClick={() => void loadPlaylists()}>Retry</button>
+            </div>
+          ) : null}
+          {loading ? <div role="status" style={styles.loadingState}>Loading playlists...</div> : null}
+          {!error && !loading && !playlists.length ? (
+            <div role="status" style={styles.emptyCreateState}>
+              <div style={styles.emptyCreateTitle}>No playlists yet.</div>
+              <div style={styles.emptyCreateCopy}>Start one here, then use track kebabs across Browse, Search, and playlists to fill it up fast.</div>
+              <button type="button" style={styles.emptyCreateButton} onClick={openCreateEditor}>Create Playlist</button>
+            </div>
+          ) : null}
+          {!loading ? (
+            <div style={styles.playlistList}>
+              {playlists.map((playlist) => (
+                <button
+                  key={playlist.id}
+                  type="button"
+                  style={styles.card}
+                  onClick={() => onSelectionChange({ playlist, tracks: [] })}
+                >
+                  <span style={styles.cardArtwork}>
+                    {playlist.art_album_ids?.[0] ? (
+                      <ArtImage
+                        src={api.albumArtUrl(playlist.art_album_ids[0], 300)}
+                        alt=""
+                        imgStyle={hybridMobileContentStyles.listArtworkImage}
+                      />
+                    ) : (
+                      <span style={hybridMobileContentStyles.listArtworkFallback}>≡</span>
+                    )}
+                  </span>
+                  <span style={styles.cardMeta}>
+                    <span style={styles.cardTitle}>{playlist.name}</span>
+                    <span style={styles.cardSub}>{playlist.track_count} tracks - {fmtDuration(playlist.total_duration)}</span>
+                  </span>
+                  <span style={hybridMobileContentStyles.listBadge}>Open</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
       <MobilePlaylistEditorSheet
         open={editorOpen}
         mode="create"
@@ -1156,6 +1220,14 @@ const styles: Record<string, React.CSSProperties> = {
   listKicker: hybridMobileContentStyles.eyebrow,
   listHeader: hybridMobileContentStyles.pageTitle,
   listSubhead: { ...hybridMobileContentStyles.pageBody, marginBottom: 4 },
+  librarySegment: {
+    flex: 1,
+    minHeight: 44,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
   refreshState: {
     ...hybridMobileContentStyles.feedback,
     marginTop: 14,

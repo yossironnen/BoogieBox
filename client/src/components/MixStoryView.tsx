@@ -502,7 +502,7 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
                 type="button"
                 data-testid="recenter-btn"
                 style={S.recenterBtn}
-                title="Recenter on playhead"
+                title="Recenter"
                 aria-label="Recenter timeline on the currently playing position"
                 onClick={handleRecenter}
               >

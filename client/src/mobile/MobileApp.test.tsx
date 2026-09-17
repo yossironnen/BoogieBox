@@ -34,11 +34,12 @@ vi.mock('./views/MobileSearchView', () => ({
 }));
 
 vi.mock('./views/MobilePlaylistsView', () => ({
-  default: ({ initialPlaylistId, onSelectionChange, onPlayTrack, onAddToQueue }: any) => (
+  default: ({ initialPlaylistId, onSelectionChange, onPlayTrack, onPlayMixTrack, onAddToQueue }: any) => (
     <div>
       playlists-view-{initialPlaylistId}
       <button onClick={() => onSelectionChange({ playlist: { id: 'p1', remember_progress: true }, tracks: [] })}>playlist-select</button>
       <button onClick={() => onPlayTrack({ id: 'playlist-track' }, [])}>playlist-play</button>
+      <button onClick={() => onPlayMixTrack({ id: 'boogiemix:m1' }, [])}>mix-play</button>
       <button onClick={() => onAddToQueue({ id: 'playlist-track' })}>playlist-queue</button>
     </div>
   ),
@@ -178,6 +179,8 @@ describe('MobileApp', () => {
     expect(screen.getByText('playlists-view-p9')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'playlist-select' }));
     fireEvent.click(screen.getByRole('button', { name: 'playlist-play' }));
+    fireEvent.click(screen.getByRole('button', { name: 'mix-play' }));
+    expect(props.onPlayTrack).toHaveBeenCalledWith({ id: 'boogiemix:m1' }, []);
     fireEvent.click(screen.getByRole('button', { name: 'playlist-queue' }));
 
     fireEvent.click(screen.getByRole('button', { name: /Now/ }));

@@ -1113,6 +1113,7 @@ export default function App() {
   const [activeSidebarLibraryId, setActiveSidebarLibraryId] = useState<ClientEntityId | null>(null);
   const [browseResetRequest, setBrowseResetRequest] = useState<number | null>(null);
   const [playlistsResetRequest, setPlaylistsResetRequest] = useState<number | null>(null);
+  const [mixesResetRequest, setMixesResetRequest] = useState<number | null>(null);
   const [hoveredSidebarLibraryId, setHoveredSidebarLibraryId] = useState<ClientEntityId | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [stats, setStats]       = useState<Stats | null>(null);
@@ -1500,6 +1501,9 @@ export default function App() {
     if (nextView === 'playlists') {
       setPlaylistsResetRequest(Date.now());
     }
+    if (nextView === 'mixes') {
+      setMixesResetRequest(Date.now());
+    }
     setView(nextView);
   }, [clearSidebarLibrarySelection]);
 
@@ -1848,6 +1852,7 @@ export default function App() {
               playTrack={playTrack}
               playbackSnapshot={playbackSnapshot}
               openRequest={openMixesRequest}
+              resetRequest={mixesResetRequest}
               onOpenPlaylist={(playlistId) => {
                 setOpenPlaylistRequest({ playlistId, token: Date.now() });
                 setView('playlists');

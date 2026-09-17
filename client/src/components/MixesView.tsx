@@ -206,11 +206,12 @@ interface Props {
   playTrack: (track: Track, all?: Track[], source?: import('../types').QueueSource) => void;
   playbackSnapshot?: PlaybackSnapshot | null;
   openRequest?: { playlistName: string; token: number } | null;
+  resetRequest?: number | null;
   onOpenPlaylist: (playlistId: ClientEntityId) => void;
 }
 
 /** Mixes View is part of this module's public API. */
-export default function MixesView({ playTrack, playbackSnapshot, openRequest, onOpenPlaylist }: Props) {
+export default function MixesView({ playTrack, playbackSnapshot, openRequest, resetRequest, onOpenPlaylist }: Props) {
   const [outputs, setOutputs] = useState<BoogieMixOutput[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -240,6 +241,14 @@ export default function MixesView({ playTrack, playbackSnapshot, openRequest, on
     appliedRequestToken.current = openRequest.token;
     setQuery(openRequest.playlistName);
   }, [openRequest]);
+
+  const appliedResetToken = useRef<number | null>(null);
+  useEffect(() => {
+    if (resetRequest == null || appliedResetToken.current === resetRequest) return;
+    appliedResetToken.current = resetRequest;
+    setStoryOutput(null);
+    setDeleteTarget(null);
+  }, [resetRequest]);
 
   const setPersistedViewMode = useCallback((mode: ViewMode) => {
     safeLocalStorageSet(VIEW_MODE_STORAGE_KEY, mode);

@@ -5,7 +5,7 @@
 import React, { useCallback, useState } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import type { ClientEntityId, Playlist, PlaylistTrack } from '../../types';
+import type { BoogieMixOutput, ClientEntityId, Playlist, PlaylistTrack, Track } from '../../types';
 import type { MobilePlaylistSelection } from '../mobileShell';
 import MobilePlaylistsView, {
   buildCollageAlbumIds,
@@ -29,6 +29,12 @@ const { apiMock } = vi.hoisted(() => ({
       reorder: vi.fn(),
       removeTrack: vi.fn(),
       exportM3uUrl: vi.fn(),
+    },
+    boogiemix: {
+      listAllOutputs: vi.fn(),
+      renameOutput: vi.fn(),
+      deleteOutput: vi.fn(),
+      playUrl: vi.fn((outputId: ClientEntityId) => `/api/boogiemix/outputs/${outputId}/play`),
     },
     search: vi.fn(),
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number) => `/api/albums/${albumId}/art?size=${size}`),
@@ -130,12 +136,28 @@ const tracks: PlaylistTrack[] = [
   },
 ];
 
+const mixOutput: BoogieMixOutput = {
+  id: 'mix-1',
+  job_id: 'job-1',
+  playlist_id: '7',
+  file_name: 'late-night-mix.mp3',
+  name: 'Late Night Mix',
+  playlist_name: 'Some Electro',
+  cover_album_ids: '["31","32"]',
+  duration_sec: 725,
+  file_size_bytes: 123456,
+  format: 'mp3',
+  created_at: '2026-03-10T00:00:00.000Z',
+};
+
 function TestHarness({
   initialSelection,
   onSelectionChangeSpy,
+  onPlayMixTrackSpy,
 }: {
   initialSelection: MobilePlaylistSelection;
   onSelectionChangeSpy?: (selection: MobilePlaylistSelection) => void;
+  onPlayMixTrackSpy?: (track: Track, allTracks?: Track[]) => void;
 }) {
   const [selection, setSelection] = useState(initialSelection);
   const handleSelectionChange = useCallback((next: MobilePlaylistSelection) => {
@@ -149,6 +171,7 @@ function TestHarness({
       selection={selection}
       onSelectionChange={handleSelectionChange}
       onPlayTrack={() => {}}
+      onPlayMixTrack={onPlayMixTrackSpy ?? (() => {})}
       onAddToQueue={() => {}}
     />
   );
@@ -168,6 +191,9 @@ describe('MobilePlaylistsView', () => {
     apiMock.playlists.exportM3uUrl.mockReturnValue('#playlist-export');
     apiMock.search.mockResolvedValue({ tracks: [] });
     apiMock.albumArtUrl.mockImplementation((albumId: ClientEntityId, size: number) => `/api/albums/${albumId}/art?size=${size}`);
+    apiMock.boogiemix.listAllOutputs.mockResolvedValue([mixOutput]);
+    apiMock.boogiemix.renameOutput.mockResolvedValue({ ok: true });
+    apiMock.boogiemix.deleteOutput.mockResolvedValue({ ok: true });
   });
 
   it('renders playlist art thumbnails on mobile track rows', async () => {
@@ -270,6 +296,7 @@ describe('MobilePlaylistsView', () => {
         selection={{ playlist, tracks }}
         onSelectionChange={() => {}}
         onPlayTrack={onPlayTrack}
+        onPlayMixTrack={() => {}}
         onAddToQueue={onAddToQueue}
       />,
     );
@@ -301,6 +328,7 @@ describe('MobilePlaylistsView', () => {
         selection={{ playlist: null, tracks: [] }}
         onSelectionChange={onSelectionChange}
         onPlayTrack={vi.fn()}
+        onPlayMixTrack={vi.fn()}
         onAddToQueue={vi.fn()}
       />,
     );
@@ -322,6 +350,7 @@ describe('MobilePlaylistsView', () => {
         selection={{ playlist, tracks }}
         onSelectionChange={onSelectionChange}
         onPlayTrack={vi.fn()}
+        onPlayMixTrack={vi.fn()}
         onAddToQueue={vi.fn()}
       />,
     );
@@ -351,6 +380,7 @@ describe('MobilePlaylistsView', () => {
         selection={{ playlist, tracks }}
         onSelectionChange={vi.fn()}
         onPlayTrack={onPlayTrack}
+        onPlayMixTrack={vi.fn()}
         onAddToQueue={vi.fn()}
       />,
     );
@@ -452,6 +482,64 @@ describe('MobilePlaylistsView', () => {
     expect(sortPlaylistTracks(sortable, 'artist').map((track) => track.id)).toEqual(['c', 'd', 'b', 'a']);
     expect(sortPlaylistTracks(sortable, 'album').map((track) => track.id)).toEqual(['c', 'd', 'b', 'a']);
     expect(sortPlaylistTracks(sortable, 'rating').map((track) => track.id)).toEqual(['c', 'b', 'd', 'a']);
+  });
+
+  it('switches to the Mixes segment, plays a mix, and shows its source playlist', async () => {
+    const onPlayMixTrackSpy = vi.fn();
+    render(<TestHarness initialSelection={{ playlist: null, tracks: [] }} onPlayMixTrackSpy={onPlayMixTrackSpy} />);
+
+    await screen.findByText('Some Electro');
+    fireEvent.click(screen.getByRole('button', { name: /Mixes/ }));
+
+    expect(await screen.findByText('Late Night Mix')).toBeInTheDocument();
+    expect(screen.getByText('From Some Electro')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Play Late Night Mix' }));
+    expect(onPlayMixTrackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'boogiemix:mix-1', title: 'Late Night Mix' }),
+      expect.any(Array),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Late Night Mix' }));
+    fireEvent.click(screen.getByRole('button', { name: /Open source playlist/i }));
+    await waitFor(() => expect(apiMock.playlists.get).toHaveBeenCalledWith('7'));
+    expect(screen.getByText('3 tracks - 3h 0m')).toBeInTheDocument();
+  });
+
+  it('renames and deletes a mix from its actions sheet', async () => {
+    render(<TestHarness initialSelection={{ playlist: null, tracks: [] }} />);
+    fireEvent.click(screen.getByRole('button', { name: /Mixes/ }));
+    await screen.findByText('Late Night Mix');
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Late Night Mix' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    const renameInput = screen.getByDisplayValue('Late Night Mix');
+    fireEvent.change(renameInput, { target: { value: 'Renamed Mix' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Renamed Mix')).toBeInTheDocument();
+    expect(apiMock.boogiemix.renameOutput).toHaveBeenCalledWith('mix-1', 'Renamed Mix');
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Renamed Mix' }));
+    fireEvent.click(screen.getByRole('button', { name: /Delete mix/i }));
+    const deleteDialog = await screen.findByRole('alertdialog', { name: 'Delete this mix?' });
+    fireEvent.click(within(deleteDialog).getByRole('button', { name: 'Delete mix' }));
+    await waitFor(() => expect(apiMock.boogiemix.deleteOutput).toHaveBeenCalledWith('mix-1'));
+    expect(screen.queryByText('Renamed Mix')).not.toBeInTheDocument();
+  });
+
+  it('shows an empty state and a retry action for the Mixes segment', async () => {
+    apiMock.boogiemix.listAllOutputs.mockResolvedValueOnce([]);
+    render(<TestHarness initialSelection={{ playlist: null, tracks: [] }} />);
+    fireEvent.click(screen.getByRole('button', { name: /Mixes/ }));
+    expect(await screen.findByText('No mixes yet.')).toBeInTheDocument();
+
+    apiMock.boogiemix.listAllOutputs.mockRejectedValueOnce(new Error('offline'));
+    fireEvent.click(screen.getByRole('button', { name: /Playlists/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Mixes/ }));
+    expect(await screen.findByText('offline')).toBeInTheDocument();
+
+    apiMock.boogiemix.listAllOutputs.mockResolvedValueOnce([mixOutput]);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Late Night Mix')).toBeInTheDocument();
   });
 });
 

@@ -1536,7 +1536,7 @@ function PlaylistsGrid({
           <div style={{ minWidth: 0 }}>
             <div style={PG.heroEyebrow}>Collection</div>
             <div style={PG.heroTitle}>Playlists</div>
-            <div style={PG.heroBody}>Every mix and manual playlist in one wall. Click a cover to open it.</div>
+            <div style={PG.heroBody}>Browse and create playlists. Click a cover to open it.</div>
           </div>
           <div style={PG.heroStats}>
             <div style={PG.heroStat}>{playlists.length} playlist{playlists.length !== 1 ? 's' : ''}</div>
