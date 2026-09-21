@@ -7,29 +7,34 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use boogiebox_db::artwork::{
-    get_lastfm_cached, get_lastfm_cached_stale, get_setting, save_lastfm_cache,
-};
 use boogiebox_db::boogiemix::get_track_sonic_fingerprint;
 use boogiebox_db::music::{
-    album_change_cursor, coerce_entity_id, get_album, get_artist, get_artist_external_identity,
-    get_artist_merge_info, get_artist_name, get_home_top_rated, get_track, interleave_by_artist,
-    list_album_tracks, list_albums, list_albums_by_group_tracks, list_albums_latest,
-    list_artist_albums, list_artist_appears_on, list_artist_own_random_tracks,
-    list_artist_radio_candidates, list_artist_radio_tags, list_artists, list_artists_most_played,
-    list_auto_dj_candidates, list_genres, list_home_genre_summaries, list_recently_played,
-    list_top_played, lock_artist_identity, merge_artists, normalize_artist_release_types,
-    search_music, unmerge_artists, update_track_metadata, ArtistList, ArtistMergeError, EntityId,
+    album_change_cursor, coerce_entity_id, get_album, get_artist, get_artist_merge_info,
+    get_artist_name, get_home_top_rated, get_track, interleave_by_artist, list_album_tracks,
+    list_albums, list_albums_by_group_tracks, list_albums_latest, list_artist_albums,
+    list_artist_appears_on, list_artists, list_artists_most_played, list_auto_dj_candidates,
+    list_genres, list_home_genre_summaries, list_recently_played, list_top_played,
+    lock_artist_identity, merge_artists, normalize_artist_release_types, search_music,
+    unmerge_artists, update_track_metadata, ArtistList, ArtistMergeError, EntityId,
     ListAlbumsParams, ListArtistsParams, SearchMusicParams, TrackMetadataUpdate,
 };
+use boogiebox_db::radio::seed_tag_vector;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::{
-    auth::AuthenticatedUser,
-    providers::{
-        fetch_deezer_related_artists, fetch_lastfm_similar_artists, RelatedArtistCandidate,
+    artist_radio::{
+        load_inputs, plan_radio, radio_options, Coverage, Focus, MixShares, RadioOptions,
+        RadioReason, DEFAULT_VARIETY,
     },
-    similar_artists::{resolve_local_similar_artists, SimilarArtistResult},
+    auth::AuthenticatedUser,
+    radio_metadata::{radio_metadata_status, spawn_lazy_tag_fetch},
+    similar_artists::{
+        gather_related_candidates, resolve_local_similar_artists_with_listenbrainz,
+        SimilarArtistResult,
+    },
+    tag_taxonomy::MOOD_BUCKETS,
     DbPool, ErrorResponse, SharedState,
 };
 
@@ -55,6 +60,14 @@ pub fn music_router(state: SharedState) -> Router {
             get(artist_appears_on_handler),
         )
         .route("/api/artists/{id}/radio", get(artist_radio_handler))
+        .route(
+            "/api/artists/{id}/radio/options",
+            get(artist_radio_options_handler),
+        )
+        .route(
+            "/api/radio/metadata/status",
+            get(radio_metadata_status_handler),
+        )
         .route(
             "/api/artists/{id}/release-types/resolve",
             post(resolve_artist_release_types_handler),
@@ -176,10 +189,24 @@ struct AutoDjQuery {
 }
 
 #[derive(Debug, Serialize)]
+struct RadioTrackOut {
+    #[serde(flatten)]
+    track: boogiebox_db::music::TrackRow,
+    radio_reason: RadioReason,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ArtistRadioResponse {
     artist: String,
+    /// The seed artist's leading tags (kept from v1).
     tags: Vec<String>,
-    tracks: Vec<boogiebox_db::music::TrackRow>,
+    /// Mood buckets in effect (requested or auto-picked).
+    moods: Vec<String>,
+    mix: MixShares,
+    coverage: Coverage,
+    degraded: Option<String>,
+    tracks: Vec<RadioTrackOut>,
 }
 
 // -- Helpers -------------------------------------------------------------------
@@ -741,10 +768,6 @@ async fn lock_artist_identity_handler(
     }
 }
 
-fn decode_related_cache(payload: Option<String>) -> Option<Vec<RelatedArtistCandidate>> {
-    payload.and_then(|raw| serde_json::from_str(&raw).ok())
-}
-
 async fn similar_artists_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
@@ -762,102 +785,25 @@ async fn similar_artists_handler(
         .clone();
     let artist_id = coerce_entity_id(&id);
     let limit = parse_limit(q.limit.as_deref(), 12, 50) as usize;
-    let context_db = db.clone();
-    let source_id = artist_id.clone();
-    let context = tokio::task::spawn_blocking(move || {
-        let conn = context_db.lock().expect("db");
-        let Some(identity) = get_artist_external_identity(&conn, &source_id)? else {
-            return Ok::<_, rusqlite::Error>(None);
-        };
-        let source_key = identity.artist_id.to_string();
-        let lastfm_cache_key = format!("artist-similar:lastfm:{source_key}");
-        let deezer_cache_key = format!("artist-similar:deezer:{source_key}");
-        Ok(Some((
-            identity,
-            get_setting(&conn, "lastfmKey"),
-            lastfm_cache_key.clone(),
-            get_lastfm_cached(&conn, &lastfm_cache_key),
-            get_lastfm_cached_stale(&conn, &lastfm_cache_key),
-            deezer_cache_key.clone(),
-            get_lastfm_cached(&conn, &deezer_cache_key),
-            get_lastfm_cached_stale(&conn, &deezer_cache_key),
-        )))
-    })
-    .await;
-    let Some((
-        identity,
-        lastfm_key,
-        lastfm_cache_key,
-        lastfm_fresh,
-        lastfm_stale,
-        deezer_cache_key,
-        deezer_fresh,
-        deezer_stale,
-    )) = (match context {
-        Ok(Ok(value)) => value,
-        _ => return internal_error(),
-    })
-    else {
-        return not_found("Artist not found");
+    let related = match gather_related_candidates(&db, &http_client, &artist_id, None).await {
+        Ok(Some(related)) => related,
+        Ok(None) => return not_found("Artist not found"),
+        Err(_) => return internal_error(),
     };
-
-    let mut cache_updates: Vec<(String, String)> = Vec::new();
-    let lastfm = if let Some(cached) = decode_related_cache(lastfm_fresh) {
-        cached
-    } else if let Some(api_key) = lastfm_key.as_deref() {
-        match fetch_lastfm_similar_artists(
-            &http_client,
-            api_key,
-            &identity.name,
-            identity.lastfm_mbid.as_deref(),
-            100,
-        )
-        .await
-        {
-            Ok(candidates) => {
-                if let Ok(payload) = serde_json::to_string(&candidates) {
-                    cache_updates.push((lastfm_cache_key, payload));
-                }
-                candidates
-            }
-            Err(_) => decode_related_cache(lastfm_stale).unwrap_or_default(),
-        }
-    } else {
-        decode_related_cache(lastfm_stale).unwrap_or_default()
-    };
-
-    let deezer = if let Some(cached) = decode_related_cache(deezer_fresh) {
-        cached
-    } else if let Some(deezer_id) = identity.deezer_artist_id.as_deref() {
-        match fetch_deezer_related_artists(&http_client, deezer_id, 100).await {
-            Ok(candidates) => {
-                if let Ok(payload) = serde_json::to_string(&candidates) {
-                    cache_updates.push((deezer_cache_key, payload));
-                }
-                candidates
-            }
-            Err(_) => decode_related_cache(deezer_stale).unwrap_or_default(),
-        }
-    } else {
-        decode_related_cache(deezer_stale).unwrap_or_default()
-    };
-
-    if !cache_updates.is_empty() {
-        let cache_db = db.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let conn = cache_db.lock().expect("db");
-            for (key, payload) in cache_updates {
-                save_lastfm_cache(&conn, &key, &payload, 7);
-            }
-        })
-        .await;
-    }
 
     let user_id = user.id;
     let response_source_id = artist_id.clone();
     match tokio::task::spawn_blocking(move || {
         let conn = db.lock().expect("db");
-        resolve_local_similar_artists(&conn, &user_id, &artist_id, &lastfm, &deezer, limit)
+        resolve_local_similar_artists_with_listenbrainz(
+            &conn,
+            &user_id,
+            &artist_id,
+            &related.lastfm,
+            &related.deezer,
+            &related.listenbrainz,
+            limit,
+        )
     })
     .await
     {
@@ -956,53 +902,198 @@ async fn artist_appears_on_handler(
 
 // -- Albums --------------------------------------------------------------------
 
+#[derive(Debug, Deserialize)]
+struct ArtistRadioQuery {
+    limit: Option<String>,
+    focus: Option<String>,
+    moods: Option<String>,
+    variety: Option<String>,
+}
+
+/// Validates the radio query string; the error text is safe to show the user.
+fn parse_radio_query(q: ArtistRadioQuery) -> Result<RadioOptions, &'static str> {
+    let limit = parse_limit(q.limit.as_deref(), 100, 300).max(10) as usize;
+    let focus = match q.focus.as_deref().map(str::trim) {
+        None | Some("") => Focus::Similar,
+        Some(value) => Focus::parse(value).ok_or("focus must be 'similar' or 'mood'")?,
+    };
+    let mut moods: Vec<String> = Vec::new();
+    if let Some(raw) = q.moods.as_deref() {
+        for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let bucket = part.to_lowercase();
+            if !MOOD_BUCKETS.contains(&bucket.as_str()) {
+                return Err("moods contains an unknown mood");
+            }
+            if !moods.contains(&bucket) {
+                moods.push(bucket);
+            }
+        }
+    }
+    let variety = match q.variety.as_deref().map(str::trim) {
+        None | Some("") => DEFAULT_VARIETY,
+        Some(value) => {
+            let parsed: f64 = value
+                .parse()
+                .map_err(|_| "variety must be a number between 0 and 1")?;
+            if !parsed.is_finite() || !(0.0..=1.0).contains(&parsed) {
+                return Err("variety must be a number between 0 and 1");
+            }
+            parsed
+        }
+    };
+    Ok(RadioOptions {
+        limit,
+        focus,
+        moods,
+        variety,
+    })
+}
+
+/// How long a radio launch waits on a provider for similar artists before
+/// falling back to stale/empty data (the queue is still built either way).
+const RADIO_SIMILAR_NETWORK_BUDGET: Duration = Duration::from_secs(4);
+
 async fn artist_radio_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Query(q): Query<ArtistRadioQuery>,
+) -> impl IntoResponse {
+    let options = match parse_radio_query(q) {
+        Ok(options) => options,
+        Err(message) => return bad_request(message),
+    };
+    let db = match get_db(&state) {
+        Some(d) => d,
+        None => return setup_required(),
+    };
+    let http_client = state
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .http_client
+        .clone();
+    let artist_id = coerce_entity_id(&id);
+
+    let name_db = db.clone();
+    let name_id = artist_id.clone();
+    let artist_name = match tokio::task::spawn_blocking(move || {
+        let conn = name_db.lock().unwrap_or_else(|p| p.into_inner());
+        get_artist_name(&conn, &name_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(name))) => name,
+        Ok(Ok(None)) => return not_found("Artist not found"),
+        _ => return internal_error(),
+    };
+
+    // Cache-first; a cold cache costs at most a few seconds, never a failure.
+    let related = gather_related_candidates(
+        &db,
+        &http_client,
+        &artist_id,
+        Some(RADIO_SIMILAR_NETWORK_BUDGET),
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+
+    let user_id = user.id;
+    let build_db = db.clone();
+    let built = tokio::task::spawn_blocking(move || {
+        let conn = build_db.lock().unwrap_or_else(|p| p.into_inner());
+        let seed_tag_names: Vec<String> = seed_tag_vector(&conn, &artist_id)?
+            .into_iter()
+            .take(12)
+            .map(|t| t.tag)
+            .collect();
+        let inputs = load_inputs(
+            &conn,
+            &user_id,
+            &artist_id,
+            artist_name.clone(),
+            &related,
+            &options,
+        )?;
+        let mut rng = rand::rng();
+        let mut next = move || rng.random::<f64>();
+        let plan = plan_radio(inputs, &options, &mut next);
+        Ok::<_, rusqlite::Error>((artist_name, seed_tag_names, plan))
+    })
+    .await;
+    let (artist, tags, plan) = match built {
+        Ok(Ok(built)) => built,
+        _ => return internal_error(),
+    };
+
+    // Enrich the tracks about to play in the background so the next launch is richer.
+    let queued_ids: Vec<EntityId> = plan
+        .tracks
+        .iter()
+        .map(|p| p.track.track.id.clone())
+        .collect();
+    spawn_lazy_tag_fetch(db, http_client, queued_ids);
+
+    let body = ArtistRadioResponse {
+        artist,
+        tags,
+        moods: plan.moods,
+        mix: plan.mix,
+        coverage: plan.coverage,
+        degraded: plan.degraded,
+        tracks: plan
+            .tracks
+            .into_iter()
+            .map(|p| RadioTrackOut {
+                track: p.track.track,
+                radio_reason: p.reason,
+            })
+            .collect(),
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+async fn artist_radio_options_handler(
     State(state): State<SharedState>,
     _user: AuthenticatedUser,
     Path(id): Path<String>,
-    Query(q): Query<LimitQuery>,
 ) -> impl IntoResponse {
     let db = match get_db(&state) {
         Some(d) => d,
         None => return setup_required(),
     };
     let artist_id = coerce_entity_id(&id);
-    let limit = parse_limit(q.limit.as_deref(), 100, 300).max(10);
-
     match tokio::task::spawn_blocking(move || {
-        let conn = db.lock().expect("db");
-        let Some(artist) = get_artist_name(&conn, &artist_id)? else {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        if get_artist_name(&conn, &artist_id)?.is_none() {
             return Ok::<_, rusqlite::Error>(None);
-        };
-        let tags = list_artist_radio_tags(&conn, &artist_id)?;
-        if tags.is_empty() {
-            return Ok(Some(Err(
-                "No saved style tags for this artist yet. Run a scan after configuring Last.fm key."
-                    .to_string(),
-            )));
         }
-
-        let mut tracks = list_artist_radio_candidates(&conn, &artist_id, tags.len(), limit)?;
-        if tracks.len() < std::cmp::min(20, (limit / 2) as usize) {
-            let fill_limit = limit - tracks.len() as i64;
-            if fill_limit > 0 {
-                tracks.extend(list_artist_own_random_tracks(
-                    &conn, &artist_id, fill_limit,
-                )?);
-            }
-        }
-        let tracks = interleave_by_artist(tracks, limit as usize);
-        Ok(Some(Ok(ArtistRadioResponse {
-            artist,
-            tags,
-            tracks,
-        })))
+        radio_options(&conn, &artist_id).map(Some)
     })
     .await
     {
-        Ok(Ok(Some(Ok(body)))) => (StatusCode::OK, Json(body)).into_response(),
-        Ok(Ok(Some(Err(message)))) => not_found(message),
+        Ok(Ok(Some(options))) => (StatusCode::OK, Json(options)).into_response(),
         Ok(Ok(None)) => not_found("Artist not found"),
+        _ => internal_error(),
+    }
+}
+
+async fn radio_metadata_status_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(d) => d,
+        None => return setup_required(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        radio_metadata_status(&conn)
+    })
+    .await
+    {
+        Ok(Ok(status)) => (StatusCode::OK, Json(status)).into_response(),
         _ => internal_error(),
     }
 }
@@ -1449,7 +1540,7 @@ async fn auto_dj_handler(
 #[cfg(test)]
 mod similar_artist_route_tests {
     use super::*;
-    use crate::AppState;
+    use crate::{providers::RelatedArtistCandidate, AppState};
     use axum::{
         body::{to_bytes, Body},
         http::Request,
@@ -1717,15 +1808,15 @@ mod browse_route_tests {
         .await;
         assert_eq!(appears_on_missing_status, StatusCode::NOT_FOUND);
 
-        // No saved Last.fm style tags yet -> radio 404s with a helpful message rather
-        // than 500ing.
-        let (radio_status, _) = get(
+        // No tags yet -> radio degrades to the artist's own tracks instead of failing.
+        let (radio_status, radio_body) = get(
             format!("/api/artists/{artist_id}/radio"),
             app.clone(),
             cookie.clone(),
         )
         .await;
-        assert_eq!(radio_status, StatusCode::NOT_FOUND);
+        assert_eq!(radio_status, StatusCode::OK);
+        assert!(json_body(&radio_body)["degraded"].is_string());
 
         let (release_types_status, _) = send(
             app.clone(),
@@ -2144,5 +2235,253 @@ mod browse_route_tests {
         .await;
         assert_eq!(locked_status, StatusCode::OK);
         assert_eq!(json_body(&locked_body)["metadata_locked"].as_i64(), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod artist_radio_route_tests {
+    use super::*;
+    use crate::{providers::RelatedArtistCandidate, AppState};
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use boogiebox_db::{artwork::save_lastfm_cache, initialize_schema};
+    use rusqlite::Connection;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex, RwLock};
+    use tower::ServiceExt;
+
+    fn app() -> axum::Router {
+        let conn = Connection::open_in_memory().expect("memory db");
+        initialize_schema(&conn).expect("schema");
+        conn.execute_batch(
+            "INSERT INTO users(id, username) VALUES('user-1', 'user');
+             INSERT INTO sessions(token, user_id, expires_at)
+               VALUES('session-1', 'user-1', datetime('now', '+1 day'));
+             INSERT INTO libraries(id, path, name) VALUES('lib', '/m', 'Music');
+             INSERT INTO artists(id, name, lastfm_mbid) VALUES
+               ('seed', 'Seed', 'seed-mbid'), ('sim', 'Similar', 'sim-mbid'), ('other', 'Other', NULL);
+             INSERT INTO albums(id, title, album_artist, artist_id) VALUES
+               ('a-seed', 'S', 'Seed', 'seed'), ('a-sim', 'X', 'Similar', 'sim'), ('a-other', 'O', 'Other', 'other');
+             INSERT INTO artist_styles(artist_id, style, kind, bucket, weight) VALUES
+               ('seed', 'trip-hop', 'genre', NULL, 1.0),
+               ('seed', 'melancholy', 'mood', 'melancholic', 0.8),
+               ('other', 'trip-hop', 'genre', NULL, 0.9);",
+        )
+        .expect("fixtures");
+        for (id, artist, album) in [
+            ("s1", "seed", "a-seed"),
+            ("s2", "seed", "a-seed"),
+            ("x1", "sim", "a-sim"),
+            ("o1", "other", "a-other"),
+            ("o2", "other", "a-other"),
+        ] {
+            conn.execute(
+                "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path)
+                 VALUES(?1, 'lib', ?2, ?3, ?1, '/m/' || ?1 || '.mp3')",
+                rusqlite::params![id, artist, album],
+            )
+            .expect("track");
+        }
+        let similar = serde_json::to_string(&vec![RelatedArtistCandidate {
+            external_id: Some("sim-mbid".into()),
+            name: "Similar".into(),
+            url: None,
+            image_url: None,
+            match_score: Some(0.9),
+            rank: 1,
+        }])
+        .unwrap();
+        save_lastfm_cache(&conn, "artist-similar:lastfm:seed", &similar, 7);
+        save_lastfm_cache(&conn, "artist-similar:deezer:seed", "[]", 7);
+        save_lastfm_cache(&conn, "artist-similar:listenbrainz:seed", "[]", 7);
+        music_router(Arc::new(RwLock::new(AppState {
+            setup_required: false,
+            db: Some(Arc::new(Mutex::new(conn))),
+            ..AppState::default()
+        })))
+    }
+
+    async fn get(app: &axum::Router, uri: &str, authed: bool) -> (StatusCode, Value) {
+        let mut request = Request::builder().uri(uri);
+        if authed {
+            request = request.header("cookie", "bb_session=session-1");
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn radio_routes_require_authentication() {
+        let app = app();
+        for uri in [
+            "/api/artists/seed/radio",
+            "/api/artists/seed/radio/options",
+            "/api/radio/metadata/status",
+        ] {
+            assert_eq!(
+                get(&app, uri, false).await.0,
+                StatusCode::UNAUTHORIZED,
+                "{uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn radio_route_validates_query_and_unknown_artists() {
+        let app = app();
+        for query in [
+            "focus=bogus",
+            "moods=chill,nope",
+            "variety=2",
+            "variety=-0.1",
+            "variety=abc",
+            "variety=NaN",
+        ] {
+            let (status, body) = get(&app, &format!("/api/artists/seed/radio?{query}"), true).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+            assert!(body["error"].is_string());
+        }
+        assert_eq!(
+            get(&app, "/api/artists/missing/radio", true).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            get(&app, "/api/artists/missing/radio/options", true)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn radio_route_returns_an_explained_queue_with_mix_and_moods() {
+        let app = app();
+        let (status, body) = get(&app, "/api/artists/seed/radio?limit=10", true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["artist"], "Seed");
+        assert_eq!(body["moods"], serde_json::json!(["melancholic"]));
+        assert!(body["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "trip-hop"));
+        assert_eq!(body["degraded"], Value::Null);
+        assert_eq!(body["coverage"]["candidates"], 5);
+
+        let tracks = body["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 5);
+        assert_eq!(
+            tracks[0]["radio_reason"]["kind"], "seed",
+            "opens with the seed artist"
+        );
+        let kinds: Vec<&str> = tracks
+            .iter()
+            .map(|t| t["radio_reason"]["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"similar"));
+        assert!(kinds.contains(&"style"));
+        assert!(
+            tracks[0]["title"].is_string(),
+            "track fields stay flattened"
+        );
+        let mix = &body["mix"];
+        let total = mix["seed"].as_f64().unwrap()
+            + mix["similar"].as_f64().unwrap()
+            + mix["mood"].as_f64().unwrap();
+        assert!((total - 1.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn radio_route_accepts_focus_moods_and_variety_options() {
+        let app = app();
+        let (status, body) = get(
+            &app,
+            "/api/artists/seed/radio?focus=mood&moods=dreamy,chill&variety=0.9&limit=10",
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["moods"], serde_json::json!(["dreamy", "chill"]));
+        assert!(!body["tracks"].as_array().unwrap().is_empty());
+        // An artist with no similar data or tags still gets a (degraded) queue.
+        let (status, body) = get(&app, "/api/artists/other/radio", true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body["tracks"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn radio_options_and_status_routes_describe_the_metadata_state() {
+        let app = app();
+        let (status, body) = get(&app, "/api/artists/seed/radio/options", true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["autoMoods"], serde_json::json!(["melancholic"]));
+        assert_eq!(body["moods"].as_array().unwrap().len(), 8);
+        assert_eq!(body["moods"][1]["bucket"], "melancholic");
+        assert_eq!(body["moods"][1]["auto"], true);
+        assert_eq!(body["libraryTagProgress"]["candidates"], 5);
+
+        let (status, body) = get(&app, "/api/radio/metadata/status", true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["mode"], "full");
+        assert_eq!(body["keylessEnabled"], true);
+        assert_eq!(body["lastfmConfigured"], false);
+        assert_eq!(body["tracksTotal"], 5);
+        assert_eq!(body["artistsTagged"], 2);
+    }
+
+    #[tokio::test]
+    async fn radio_routes_report_setup_required_without_a_database() {
+        let app = music_router(Arc::new(RwLock::new(AppState::default())));
+        // No session can exist without a database, so the extractor rejects first.
+        assert_eq!(
+            get(&app, "/api/artists/seed/radio", true).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn parse_radio_query_applies_defaults_and_clamps_limit() {
+        let parse = |limit: Option<&str>,
+                     focus: Option<&str>,
+                     moods: Option<&str>,
+                     variety: Option<&str>| {
+            parse_radio_query(ArtistRadioQuery {
+                limit: limit.map(str::to_owned),
+                focus: focus.map(str::to_owned),
+                moods: moods.map(str::to_owned),
+                variety: variety.map(str::to_owned),
+            })
+        };
+        let defaults = parse(None, None, None, None).unwrap();
+        assert_eq!((defaults.limit, defaults.focus), (100, Focus::Similar));
+        assert!(defaults.moods.is_empty());
+        assert_eq!(defaults.variety, DEFAULT_VARIETY);
+        assert_eq!(parse(Some("1"), None, None, None).unwrap().limit, 10);
+        assert_eq!(parse(Some("9999"), None, None, None).unwrap().limit, 300);
+        assert_eq!(
+            parse(
+                None,
+                Some(" mood "),
+                Some(" Chill ,, chill,dark"),
+                Some(" 0.2 ")
+            )
+            .unwrap()
+            .moods,
+            vec!["chill", "dark"]
+        );
+        assert_eq!(
+            parse(None, Some(""), Some(""), Some("")).unwrap().focus,
+            Focus::Similar
+        );
     }
 }

@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../api';
-import type { Artist, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
+import type { Artist, ArtistRadioOptions, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
 import type { EntityId } from '../entityId';
 import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
@@ -19,6 +19,7 @@ import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
 import { groupArtistDiscographyByReleaseType } from '../releaseTypes';
 import { findTopTrackMatch, matchesTrackArtist, resolveTopTrackFromLibrarySearch } from '../artistTrackMatching';
 import ArtImage from './ArtImage';
+import { ArtistRadioSplitButton } from './ArtistRadioControls';
 import StarRating from './StarRating';
 import { phase2 } from '../uiPhase2';
 import { HYBRID_ARTWORK_HOVER, hybridBrowseStyles } from '../hybridPreview';
@@ -1995,11 +1996,13 @@ function LockBadge() {
 }
 
 function ArtistHeader({
-  artist, onPlayRadio, radioLoading, onRefreshed, onRateArtist, adaptiveAccentEnabled, canEditMetadata = false,
+  artist, onPlayRadio, radioLoading, radioNotice, onRefreshed, onRateArtist, adaptiveAccentEnabled, canEditMetadata = false,
 }: {
   artist: Artist;
-  onPlayRadio: () => void;
+  onPlayRadio: (options: ArtistRadioOptions) => void;
   radioLoading: boolean;
+  /** Non-blocking note when the last radio was built from less data than usual. */
+  radioNotice?: string | null;
   onRefreshed: () => void;
   onRateArtist: (rating: number | null) => void | Promise<void>;
   adaptiveAccentEnabled: boolean;
@@ -2115,15 +2118,12 @@ function ArtistHeader({
             />
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-            <button
-              className="icon-action-btn icon-action-btn--primary"
-              data-tip={radioLoading ? 'Building Radio…' : 'Play Artist Radio'}
-              aria-label="Play Artist Radio — build a random radio queue from similar style tags"
-              onClick={onPlayRadio}
-              disabled={radioLoading}
-            >
-              {radioLoading ? <span className="icon-action-spinner" aria-hidden="true" /> : <PlayIcon size={15} />}
-            </button>
+            <ArtistRadioSplitButton
+              artistId={artist.id}
+              artistName={artist.name}
+              loading={radioLoading}
+              onStart={onPlayRadio}
+            />
             <button className="icon-action-btn" data-tip="Edit" aria-label="Edit artist" onClick={() => setShowEdit(true)}>
               <EditIcon />
             </button>
@@ -2131,6 +2131,11 @@ function ArtistHeader({
               <RefreshIcon />
             </button>
           </div>
+          {radioNotice && (
+            <div role="status" data-testid="radio-notice" style={{ marginTop: 8, fontSize: 13, color: 'var(--text-muted)', maxWidth: 520 }}>
+              {radioNotice}
+            </div>
+          )}
         </div>
       </div>
       <LastFmBio artist={artist.name} />
@@ -2466,6 +2471,7 @@ export default function BrowseView({
   const [currentAlbum, setCurrentAlbum] = useState<Album | null>(null);
   const [currentArtist, setCurrentArtist] = useState<Artist | null>(null);
   const [artistRadioLoading, setArtistRadioLoading] = useState(false);
+  const [artistRadioNotice, setArtistRadioNotice] = useState<string | null>(null);
   const [topTracksPlayLoading, setTopTracksPlayLoading] = useState(false);
   const [infoAlert, setInfoAlert] = useState<string | null>(null);
   const isLibraryScopeForced = Boolean(forcedLibraryIds && forcedLibraryIds.length > 0);
@@ -2845,15 +2851,17 @@ export default function BrowseView({
     };
   }, [genreFilterOpen, libraryFilterOpen, refineOpen]);
 
-  const playArtistRadio = useCallback(async (artist: Artist) => {
+  const playArtistRadio = useCallback(async (artist: Artist, options: Partial<ArtistRadioOptions> = {}) => {
     setArtistRadioLoading(true);
+    setArtistRadioNotice(null);
     try {
-      const result = await api.artistRadio(artist.id, 120);
+      const result = await api.artistRadio(artist.id, { limit: 120, ...options });
       if (!result.tracks.length) {
         setInfoAlert(`No radio tracks found for "${artist.name}".`);
         return;
       }
-      playTrack(result.tracks[0], result.tracks);
+      setArtistRadioNotice(result.degraded);
+      playTrack(result.tracks[0], result.tracks, { type: 'radio', id: artist.id });
     } catch (e: any) {
       setInfoAlert(e.message || 'Failed to build artist radio.');
     } finally {
@@ -3470,8 +3478,9 @@ export default function BrowseView({
           <div style={L.artistDetailScroll}>
             <ArtistHeader
               artist={currentArtist ?? drill.artist}
-              onPlayRadio={() => playArtistRadio(drill.artist)}
+              onPlayRadio={(options) => playArtistRadio(drill.artist, options)}
               radioLoading={artistRadioLoading}
+              radioNotice={artistRadioNotice}
               onRateArtist={(rating) => handleArtistRatingChange(currentArtist ?? drill.artist, rating)}
               onRefreshed={() => {
                 api.artist(drill.artist.id).then(setCurrentArtist).catch(() => {});

@@ -7,6 +7,7 @@ import { api } from '../../api';
 import type { PlaybackSnapshot, PlayerEqControls, PlayerState } from '../../components/Player';
 import type { AppSettings, AuthUser, ClientEntityId, SonicFingerprint, StemWindow } from '../../types';
 import ArtImage from '../../components/ArtImage';
+import { RadioReasonChip } from '../../components/ArtistRadioControls';
 import {
   hybridMobileContentStyles,
   MOBILE_TAB_BAR_DOCK_HEIGHT,
@@ -502,6 +503,7 @@ export default function MobileNowPlayingView({
               <span style={styles.queueMeta}>
                 <span style={styles.queueTitle}>{entry.title || entry.file_name}</span>
                 <span style={styles.queueSub}>{entry.artist || 'Unknown artist'}</span>
+                {entry.radio_reason ? <RadioReasonChip reason={entry.radio_reason} /> : null}
               </span>
             </button>
             <button

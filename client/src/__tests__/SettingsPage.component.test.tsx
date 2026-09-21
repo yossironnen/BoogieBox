@@ -29,6 +29,7 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     },
     systemStatus: vi.fn(),
     systemSwitchDb: vi.fn(),
+    radioMetadataStatus: vi.fn(),
   },
   getStreamDirectMock: vi.fn(),
   setStreamDirectMock: vi.fn(),
@@ -54,6 +55,7 @@ describe('SettingsPage component flows', () => {
     vi.stubGlobal('fetch', vi.fn());
 
     getStreamDirectMock.mockReturnValue(false);
+    apiMock.radioMetadataStatus.mockResolvedValue({ mode: 'full', lastfmConfigured: true, keylessEnabled: true, tracksChecked: 0, tracksTotal: 0, artistsTagged: 0, artistsTotal: 0 });
     apiMock.systemStatus.mockResolvedValue({ setupRequired: false, ffmpegAvailable: true, dbFolder: 'D:\\BoogieData' });
     apiMock.systemSwitchDb.mockResolvedValue({ ok: true });
     apiMock.libraries.list.mockResolvedValue([{ id: '1', name: 'Main Library', path: 'D:\\Music', primary_path: 'D:\\Music', folder_count: 2, folders: [{ id: 'f1', library_id: '1', path: 'D:\\Music', position: 0 }, { id: 'f2', library_id: '1', path: 'D:\\More Music', position: 1 }], library_type: 'music', added_at: '2026-01-01', last_scan: null, track_count: 12 }]);

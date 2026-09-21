@@ -70,6 +70,28 @@ describe('MobileNowPlayingView', () => {
     expect(screen.getByText('Text')).toBeInTheDocument();
   });
 
+  it('shows why each radio track is queued', () => {
+    const base = {
+      file_path: 'x', file_name: 'song.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320,
+      sample_rate: 44100, channels: 2, album: 'Album', library_name: 'Main', track_number: 1, disc_number: 1,
+      year: 2025, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01',
+    };
+    const queue = [
+      { ...base, id: '1', title: 'Seed Song', artist: 'Artist', radio_reason: { kind: 'seed', label: 'Artist' } },
+      { ...base, id: '2', title: 'Plain Song', artist: 'Other' },
+    ] as any[];
+    render(
+      <MobileNowPlayingView
+        snapshot={{ currentTrack: queue[0], currentTime: 0, duration: 120, isPlaying: false, volume: 0.5, muted: false, loading: false, audioError: null }}
+        playerState={{ queue, currentIndex: 0, isPlaying: false, playToken: 1 }}
+        onStateChange={() => {}}
+      />,
+    );
+    const chips = screen.getAllByTestId('radio-reason-chip');
+    expect(chips).toHaveLength(1);
+    expect(chips[0]).toHaveAttribute('title', 'Seed artist');
+  });
+
   it('handles transport and every queue editing gesture', () => {
     const queue = ['1', '2', '3'].map((id) => ({
       id, file_path: 'x', file_name: `song-${id}.mp3`, file_size: 1, format: 'MP3',

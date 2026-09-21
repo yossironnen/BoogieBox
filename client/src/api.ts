@@ -11,6 +11,10 @@ import type {
   ArtistMergeInfo,
   UnmergeResult,
   SimilarArtistsResponse,
+  ArtistRadioOptions,
+  ArtistRadioOptionsSnapshot,
+  ArtistRadioResponse,
+  RadioMetadataStatus,
   Album,
   LatestAlbum,
   HomeTopRated,
@@ -341,8 +345,16 @@ export const api = {
     get<SimilarArtistsResponse>(`/artists/${artistId}/similar`, { limit }),
   resolveArtistReleaseTypes: (artistId: ApiEntityId) =>
     post<{ ok: boolean; updated: number }>(`/artists/${artistId}/release-types/resolve`),
-  artistRadio: (artistId: ApiEntityId, limit = 100) =>
-    get<{ artist: string; tags: string[]; tracks: Track[] }>(`/artists/${artistId}/radio`, { limit }),
+  artistRadio: (artistId: ApiEntityId, options: Partial<ArtistRadioOptions> & { limit?: number } = {}) =>
+    get<ArtistRadioResponse>(`/artists/${artistId}/radio`, {
+      limit: options.limit ?? 100,
+      focus: options.focus,
+      moods: options.moods && options.moods.length ? options.moods.join(',') : undefined,
+      variety: options.variety,
+    }),
+  artistRadioOptions: (artistId: ApiEntityId) =>
+    get<ArtistRadioOptionsSnapshot>(`/artists/${artistId}/radio/options`),
+  radioMetadataStatus: () => get<RadioMetadataStatus>('/radio/metadata/status'),
   genres: () => get<Genre[]>('/genres'),
   stats: () => get<Stats>('/stats'),
   recentlyPlayed: (limit = 10) => get<Track[]>('/tracks/recently-played', { limit }),

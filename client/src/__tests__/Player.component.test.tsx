@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Player, { resolveDesktopPlayerDockHeight, type PlayerState } from '../components/Player';
 import {
@@ -263,7 +263,7 @@ describe('Player artist link', () => {
     const state: PlayerState = {
       queue: [
         { ...baseTrack, id: 'queue-1', title: 'Current song' },
-        { ...baseTrack, id: 'queue-2', title: 'Next song' },
+        { ...baseTrack, id: 'queue-2', title: 'Next song', radio_reason: { kind: 'similar', label: 'Artist' } },
       ],
       currentIndex: 0,
       isPlaying: false,
@@ -275,6 +275,9 @@ describe('Player artist link', () => {
 
     const queueDialog = screen.getByRole('dialog', { name: 'Playback queue' });
     expect(queueDialog).toHaveStyle(`bottom: ${DESKTOP_PLAYER_DOCK_HEIGHT + 8}px`);
+    // Radio tracks say why they are queued; ordinary tracks show no chip.
+    expect(within(queueDialog).getAllByTestId('radio-reason-chip')).toHaveLength(1);
+    expect(within(queueDialog).getByTestId('radio-reason-chip')).toHaveAttribute('title', 'Similar to Artist');
     const nextTrack = screen.getByRole('option', { name: /Next song/i });
     fireEvent.keyDown(nextTrack, { key: 'Enter' });
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 1, isPlaying: true }));

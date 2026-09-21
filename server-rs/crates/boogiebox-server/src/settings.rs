@@ -57,6 +57,9 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "bpmBackgroundLastRun",
     "bpmBackgroundNextRun",
     "bpmSpotifyFallbackEnabled",
+    // Artist Radio metadata
+    "radioTrackTagSync",
+    "radioKeylessProviders",
     // Debug
     "scanDebugLoggingEnabled",
     "deepmixDebugLoggingEnabled",
@@ -149,6 +152,7 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         | "bpmAnalysisEnabled"
         | "bpmBackgroundEnabled"
         | "bpmSpotifyFallbackEnabled"
+        | "radioKeylessProviders"
         | "scanDebugLoggingEnabled"
         | "deepmixDebugLoggingEnabled"
         | "replayGainEnabled"
@@ -159,6 +163,14 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         | "boogiemixDebugCandidates" => {
             if value != "true" && value != "false" {
                 return Err(format!("Setting '{key}' must be 'true' or 'false'"));
+            }
+            Ok(value.to_string())
+        }
+
+        // Artist Radio track-tag sync: off, radio-launch only, or full-library backfill.
+        "radioTrackTagSync" => {
+            if !["off", "lazy", "full"].contains(&value) {
+                return Err(format!("Setting '{key}' must be 'off', 'lazy', or 'full'"));
             }
             Ok(value.to_string())
         }
@@ -361,6 +373,17 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("boogiemixWaveformWaitMs".into(), "abc".into());
         assert!(normalize_settings_payload(&map).is_err());
+    }
+
+    #[test]
+    fn validates_artist_radio_settings() {
+        for value in ["off", "lazy", "full"] {
+            assert!(normalize_one("radioTrackTagSync", value).is_ok(), "{value}");
+        }
+        assert!(normalize_one("radioTrackTagSync", "always").is_err());
+        assert!(normalize_one("radioKeylessProviders", "true").is_ok());
+        assert!(normalize_one("radioKeylessProviders", "false").is_ok());
+        assert!(normalize_one("radioKeylessProviders", "yes").is_err());
     }
 
     #[test]

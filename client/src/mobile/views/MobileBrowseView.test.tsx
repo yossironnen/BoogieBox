@@ -12,6 +12,8 @@ const { apiMock } = vi.hoisted(() => ({
     artists: vi.fn(),
     artistAlbums: vi.fn(),
     artistSimilar: vi.fn(),
+    artistRadio: vi.fn(),
+    artistRadioOptions: vi.fn(),
     albumTracks: vi.fn(),
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number) => `/api/albums/${albumId}/art?size=${size}`),
     artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number) => `/api/artists/${artistId}/photo?size=${size}`),
@@ -38,6 +40,13 @@ describe('MobileBrowseView', () => {
     apiMock.playlists.addTrack.mockResolvedValue({ ok: true });
     apiMock.playlists.create.mockResolvedValue({ id: '88', name: 'Fresh Playlist', track_count: 0, total_duration: 0, created_at: '2026-01-01', updated_at: '2026-01-01', description: null });
     apiMock.setTrackRating.mockResolvedValue({ ok: true });
+    window.localStorage.clear();
+    apiMock.artistRadioOptions.mockResolvedValue({
+      tags: ['trip-hop'],
+      autoMoods: ['melancholic'],
+      moods: [{ bucket: 'melancholic', available: true, auto: true }],
+      libraryTagProgress: { tagged: 5, candidates: 10 },
+    });
   });
 
   it('renders artists and opens an artist album grid', async () => {
@@ -209,5 +218,78 @@ describe('MobileBrowseView', () => {
       />,
     );
     expect(await screen.findByRole('alert')).toHaveTextContent('Artists could not be loaded');
+  });
+
+  describe('Artist Radio', () => {
+    const artist = { id: '2', name: 'Artist', track_count: 10, album_count: 1 };
+    const radioTracks = [
+      { id: 't1', title: 'One', artist: 'Artist', radio_reason: { kind: 'seed', label: 'Artist' } },
+      { id: 't2', title: 'Two', artist: 'Other', radio_reason: { kind: 'similar', label: 'Artist' } },
+    ];
+    const response = (over: Record<string, unknown> = {}) => ({
+      artist: 'Artist', tags: [], moods: [], mix: { seed: 0.3, similar: 0.45, mood: 0.25 },
+      coverage: { tagged: 0, candidates: 2 }, degraded: null, tracks: radioTracks, ...over,
+    });
+    const renderArtist = (onPlayTrack = vi.fn()) => {
+      render(
+        <MobileBrowseView
+          onPlayTrack={onPlayTrack}
+          onAddToQueue={() => {}}
+          selection={{ artist, album: null, tracks: [] }}
+          onSelectionChange={() => {}}
+        />,
+      );
+      return onPlayTrack;
+    };
+
+    it('starts a radio from the artist page and queues it with the radio source', async () => {
+      apiMock.artistRadio.mockResolvedValue(response({ degraded: 'Not enough tag data yet.' }));
+      const onPlayTrack = renderArtist();
+
+      fireEvent.click(await screen.findByRole('button', { name: /Play Artist Radio/ }));
+      await waitFor(() => expect(onPlayTrack).toHaveBeenCalledWith(radioTracks[0], radioTracks, { type: 'radio', id: '2' }));
+      expect(apiMock.artistRadio).toHaveBeenCalledWith('2', { limit: 120, focus: 'similar', moods: [], variety: 0.45 });
+      expect(await screen.findByTestId('radio-notice')).toHaveTextContent('Not enough tag data yet.');
+    });
+
+    it('starts with the options chosen in the bottom sheet', async () => {
+      apiMock.artistRadio.mockResolvedValue(response());
+      const onPlayTrack = renderArtist();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Radio options' }));
+      const sheet = await screen.findByRole('dialog', { name: /Artist Radio options/ });
+      fireEvent.click(screen.getByRole('button', { name: /^Mood$/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Start radio' }));
+
+      await waitFor(() => expect(onPlayTrack).toHaveBeenCalled());
+      expect(apiMock.artistRadio).toHaveBeenCalledWith('2', { limit: 120, focus: 'mood', moods: [], variety: 0.45 });
+      expect(sheet).not.toBeInTheDocument();
+    });
+
+    it('explains an empty radio and a failed request without playing anything', async () => {
+      apiMock.artistRadio
+        .mockResolvedValueOnce(response({ tracks: [], degraded: 'No tracks found for this artist.' }))
+        .mockRejectedValueOnce(new Error('radio offline'))
+        .mockRejectedValueOnce('boom');
+      const onPlayTrack = renderArtist();
+      const start = () => fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/ }));
+
+      start();
+      expect(await screen.findByTestId('radio-notice')).toHaveTextContent('No radio tracks found for "Artist".');
+      start();
+      await waitFor(() => expect(screen.getByTestId('radio-notice')).toHaveTextContent('radio offline'));
+      start();
+      await waitFor(() => expect(screen.getByTestId('radio-notice')).toHaveTextContent('Failed to build artist radio.'));
+      expect(onPlayTrack).not.toHaveBeenCalled();
+    });
+
+    it('does not offer a radio on the artist list', async () => {
+      apiMock.artists.mockResolvedValue([{ id: '7', name: 'Neon Skyline', track_count: 14, album_count: 2 }]);
+      render(
+        <MobileBrowseView onPlayTrack={() => {}} onAddToQueue={() => {}} selection={{ artist: null, album: null, tracks: [] }} onSelectionChange={() => {}} />,
+      );
+      await screen.findByRole('button', { name: /Neon Skyline/i });
+      expect(screen.queryByRole('button', { name: /Play Artist Radio/ })).toBeNull();
+    });
   });
 });

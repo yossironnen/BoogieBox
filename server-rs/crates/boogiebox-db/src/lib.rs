@@ -6,6 +6,7 @@ pub mod maintenance;
 pub mod music;
 pub mod playback;
 pub mod playlists;
+pub mod radio;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -775,6 +776,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-09-16-mix-output-tracks-schema",
             apply: ensure_mix_output_tracks_schema,
         },
+        Migration {
+            id: "2026-09-21-radio-metadata-schema",
+            apply: ensure_radio_metadata_schema,
+        },
     ];
 
     for migration in migrations {
@@ -1157,6 +1162,80 @@ fn ensure_artist_external_identity_schema(connection: &Connection) -> Result<(),
           ON artists(discogs_artist_id) WHERE discogs_artist_id IS NOT NULL;
         "#,
     )?;
+    Ok(())
+}
+
+/// Backs Artist Radio v2 (`wip/artist-radio-v2-plan.md` §2): per-track/album
+/// tags from external providers, a per-provider sync cursor (doubles as a
+/// negative cache), weights/kinds on the existing artist tags, and a
+/// MusicBrainz artist identity that doesn't depend on a Last.fm key.
+fn ensure_radio_metadata_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "tracks") {
+        connection.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS track_tags (
+              track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+              tag TEXT NOT NULL COLLATE NOCASE,
+              kind TEXT NOT NULL,
+              bucket TEXT,
+              weight REAL NOT NULL,
+              source TEXT NOT NULL,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (track_id, tag, source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_track_tags_tag ON track_tags(tag, weight DESC);
+
+            CREATE TABLE IF NOT EXISTS track_tag_sync (
+              track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+              source TEXT NOT NULL,
+              checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+              status TEXT NOT NULL,
+              PRIMARY KEY (track_id, source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_track_tag_sync_source
+              ON track_tag_sync(source, status, checked_at);
+            "#,
+        )?;
+    }
+    if table_exists(connection, "albums") {
+        connection.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS album_styles (
+              album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+              tag TEXT NOT NULL COLLATE NOCASE,
+              kind TEXT NOT NULL,
+              source TEXT NOT NULL DEFAULT 'discogs',
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (album_id, tag)
+            );
+            "#,
+        )?;
+    }
+    if table_exists(connection, "artist_styles") {
+        for (column, definition) in [
+            ("kind", "TEXT NOT NULL DEFAULT 'genre'"),
+            ("bucket", "TEXT"),
+            ("weight", "REAL"),
+        ] {
+            if !column_exists(connection, "artist_styles", column)? {
+                connection.execute_batch(&format!(
+                    "ALTER TABLE artist_styles ADD COLUMN {column} {definition}"
+                ))?;
+            }
+        }
+    }
+    if table_exists(connection, "artists") {
+        for column in ["musicbrainz_artist_id", "musicbrainz_identity_checked_at"] {
+            if !column_exists(connection, "artists", column)? {
+                connection
+                    .execute_batch(&format!("ALTER TABLE artists ADD COLUMN {column} TEXT"))?;
+            }
+        }
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_artists_musicbrainz_artist_id
+               ON artists(musicbrainz_artist_id) WHERE musicbrainz_artist_id IS NOT NULL;",
+        )?;
+    }
     Ok(())
 }
 
@@ -2256,6 +2335,8 @@ fn seed_default_settings(connection: &Connection) -> Result<(), rusqlite::Error>
         ("bpmAnalysisEnabled", "true"),
         ("bpmBackgroundEnabled", "false"),
         ("bpmBackgroundFrequencyHours", "24"),
+        ("radioTrackTagSync", "full"),
+        ("radioKeylessProviders", "true"),
         ("scanDebugLoggingEnabled", "false"),
         ("deepmixDebugLoggingEnabled", "false"),
         ("boogiemixOutputFolder", ""),
@@ -4559,6 +4640,53 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn radio_metadata_schema_is_fresh_upgrade_safe_and_idempotent() {
+        let fresh = Connection::open_in_memory().expect("fresh db");
+        initialize_schema(&fresh).expect("fresh schema");
+        for table in ["track_tags", "track_tag_sync", "album_styles"] {
+            assert!(table_exists(&fresh, table), "{table} exists");
+        }
+        for column in ["kind", "bucket", "weight"] {
+            assert!(column_exists(&fresh, "artist_styles", column).expect("style column"));
+        }
+        for column in ["musicbrainz_artist_id", "musicbrainz_identity_checked_at"] {
+            assert!(column_exists(&fresh, "artists", column).expect("mb column"));
+        }
+
+        // An upgrade DB whose artist_styles predates the new columns keeps its rows.
+        let upgrade = Connection::open_in_memory().expect("upgrade db");
+        upgrade
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                   id TEXT PRIMARY KEY,
+                   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 CREATE TABLE artists (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+                 CREATE TABLE artist_styles (
+                   artist_id TEXT NOT NULL,
+                   style TEXT NOT NULL COLLATE NOCASE,
+                   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                   PRIMARY KEY (artist_id, style)
+                 );
+                 INSERT INTO artists(id, name) VALUES('a1', 'Artist');
+                 INSERT INTO artist_styles(artist_id, style) VALUES('a1', 'trip-hop');",
+            )
+            .expect("old schema");
+        ensure_radio_metadata_schema(&upgrade).expect("first run");
+        ensure_radio_metadata_schema(&upgrade).expect("idempotent second run");
+        assert_eq!(
+            query_single_text(
+                &upgrade,
+                "SELECT style || '/' || kind FROM artist_styles WHERE artist_id='a1'"
+            ),
+            "trip-hop/genre"
+        );
+        assert!(column_exists(&upgrade, "artists", "musicbrainz_artist_id").expect("mb column"));
+        // No tracks/albums tables in this fixture: their tables are skipped, not an error.
+        assert!(!table_exists(&upgrade, "track_tags"));
     }
 
     #[test]

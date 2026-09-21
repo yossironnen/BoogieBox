@@ -103,7 +103,7 @@ fn push_genre_filter(
     }
 }
 
-fn id_to_value(id: &EntityId) -> Value {
+pub(crate) fn id_to_value(id: &EntityId) -> Value {
     match id {
         EntityId::Int(n) => Value::Integer(*n),
         EntityId::Str(s) => Value::Text(s.clone()),
@@ -544,6 +544,7 @@ pub enum ArtistIdentityProvider {
     Deezer,
     Spotify,
     Discogs,
+    MusicBrainz,
 }
 
 /// Optional provider identities stored for one local artist.
@@ -643,6 +644,14 @@ pub fn persist_artist_identity_if_missing(
              WHERE id=?2 AND (discogs_artist_id IS NULL OR discogs_identity_checked_at IS NULL)",
             rusqlite::params![external_id, artist_id],
         )?,
+        ArtistIdentityProvider::MusicBrainz => conn.execute(
+            "UPDATE artists
+             SET musicbrainz_artist_id=COALESCE(musicbrainz_artist_id, ?1),
+                 musicbrainz_identity_checked_at=datetime('now')
+             WHERE id=?2
+               AND (musicbrainz_artist_id IS NULL OR musicbrainz_identity_checked_at IS NULL)",
+            rusqlite::params![external_id, artist_id],
+        )?,
     };
     Ok(changed > 0)
 }
@@ -707,6 +716,11 @@ pub fn find_owned_artist_by_external_identity(
         }
         ArtistIdentityProvider::Discogs => {
             "SELECT ar.id FROM artists ar WHERE ar.discogs_artist_id=?1"
+        }
+        // `lastfm_mbid` is also a MusicBrainz artist id, so either column can match.
+        ArtistIdentityProvider::MusicBrainz => {
+            "SELECT ar.id FROM artists ar
+             WHERE (ar.musicbrainz_artist_id=?1 OR ar.lastfm_mbid=?1)"
         }
     };
     let sql =
@@ -2232,7 +2246,7 @@ pub struct TrackRow {
     pub file_path: Option<String>,
 }
 
-fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
+pub(crate) fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
     Ok(TrackRow {
         id: row.get(0)?,
         file_name: row.get(1)?,
@@ -2266,7 +2280,7 @@ fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
     })
 }
 
-const TRACK_COLS: &str = "t.id, t.file_name, t.file_size, t.format,
+pub(crate) const TRACK_COLS: &str = "t.id, t.file_name, t.file_size, t.format,
      t.duration, t.bitrate, t.sample_rate, t.channels,
      t.title, t.track_number, t.disc_number, t.year, t.genre,
      t.composer, t.comment, t.bpm, t.bpm_detected, t.bpm_source, t.bpm_confidence, t.scanned_at,
@@ -2720,106 +2734,13 @@ pub fn get_artist_name(
     .optional()
 }
 
-/// Documents the List Artist Radio Tags public API surface.
+/// An artist's saved style/mood tags (also shown as chips on the artist page).
 pub fn list_artist_radio_tags(
     conn: &Connection,
     artist_id: &EntityId,
 ) -> rusqlite::Result<Vec<String>> {
     conn.prepare("SELECT style FROM artist_styles WHERE artist_id = ? ORDER BY style")?
         .query_map(rusqlite::params![artist_id], |row| row.get::<_, String>(0))?
-        .collect()
-}
-
-/// Documents the List Artist Radio Candidates public API surface.
-pub fn list_artist_radio_candidates(
-    conn: &Connection,
-    artist_id: &EntityId,
-    tags_len: usize,
-    limit: i64,
-) -> rusqlite::Result<Vec<TrackRow>> {
-    let min_overlap = if tags_len >= 4 { 2 } else { 1 };
-    let per_artist_cap = ((limit + 11) / 12).clamp(2, 8);
-    let sql = format!(
-        "WITH target_styles AS (
-           SELECT style FROM artist_styles WHERE artist_id = ?
-         ),
-         style_popularity AS (
-           SELECT style, COUNT(DISTINCT artist_id) AS artist_count
-           FROM artist_styles
-           GROUP BY style
-         ),
-         target_weights AS (
-           SELECT ts.style AS style,
-                  COALESCE(1.0 / (1 + sp.artist_count), 1.0) AS weight
-           FROM target_styles ts
-           LEFT JOIN style_popularity sp ON sp.style = ts.style
-         ),
-         similar_artists AS (
-           SELECT s2.artist_id AS artist_id,
-                  COUNT(*) AS overlap,
-                  SUM(tw.weight) AS score
-           FROM artist_styles s2
-           JOIN target_weights tw ON tw.style = s2.style
-           WHERE s2.artist_id != ?
-           GROUP BY s2.artist_id
-           HAVING COUNT(*) >= ?
-         ),
-         ranked_tracks AS (
-           SELECT {TRACK_COLS}, NULL AS rating,
-                  sa.score AS score,
-                  sa.overlap AS overlap,
-                  ROW_NUMBER() OVER (PARTITION BY t.artist_id ORDER BY RANDOM()) AS artist_pick
-           FROM tracks t
-           JOIN similar_artists sa ON sa.artist_id = t.artist_id
-           LEFT JOIN artists ar ON ar.id = t.artist_id
-           LEFT JOIN albums al ON al.id = t.album_id
-           LEFT JOIN libraries l ON l.id = t.library_id
-         )
-         SELECT id, file_name, file_size, format, duration, bitrate, sample_rate, channels,
-                title, track_number, disc_number, year, genre, composer, comment,
-                bpm, bpm_detected, bpm_source, bpm_confidence, scanned_at,
-                last_played_at, play_count, album_id, artist, album, library_name,
-                has_deep_analysis, rating
-         FROM ranked_tracks
-         WHERE artist_pick <= ?
-         ORDER BY score DESC, overlap DESC, RANDOM()
-         LIMIT ?"
-    );
-    conn.prepare(&sql)?
-        .query_map(
-            params_from_iter([
-                id_to_value(artist_id),
-                id_to_value(artist_id),
-                Value::Integer(min_overlap),
-                Value::Integer(per_artist_cap),
-                Value::Integer(limit),
-            ]),
-            map_track,
-        )?
-        .collect()
-}
-
-/// Documents the List Artist Own Random Tracks public API surface.
-pub fn list_artist_own_random_tracks(
-    conn: &Connection,
-    artist_id: &EntityId,
-    limit: i64,
-) -> rusqlite::Result<Vec<TrackRow>> {
-    let sql = format!(
-        "SELECT {TRACK_COLS}, NULL AS rating
-         FROM tracks t
-         LEFT JOIN artists ar ON ar.id = t.artist_id
-         LEFT JOIN albums al ON al.id = t.album_id
-         LEFT JOIN libraries l ON l.id = t.library_id
-         WHERE t.artist_id = ?
-         ORDER BY RANDOM()
-         LIMIT ?"
-    );
-    conn.prepare(&sql)?
-        .query_map(
-            params_from_iter([id_to_value(artist_id), Value::Integer(limit)]),
-            map_track,
-        )?
         .collect()
 }
 

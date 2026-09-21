@@ -47,6 +47,9 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `GET` | `/api/albums` | Browse albums. |
 | `GET` | `/api/albums/{id}` | Fetch album detail. |
 | `GET` | `/api/albums/latest` | Fetch recently added albums. |
+| `GET` | `/api/artists/{id}/similar` | Similar artists owned locally (Last.fm, Deezer, ListenBrainz). |
+| `GET` | `/api/artists/{id}/radio` | Build an Artist Radio queue. Query: `limit` (10-300, default 100), `focus` (`similar`\|`mood`), `moods` (comma-separated: `chill,melancholic,uplifting,energetic,dark,dreamy,romantic,aggressive`), `variety` (0-1). Returns `artist`, `tags`, `moods`, `mix`, `coverage`, `degraded` (non-error notice when data is thin) and `tracks`, each with a `radio_reason` (`seed`\|`similar`\|`mood`\|`style`). Never 404s for a known artist. |
+| `GET` | `/api/artists/{id}/radio/options` | What the radio options popover offers: seed `tags`, `autoMoods`, per-mood availability and library-wide tagging progress. |
 | `GET` | `/api/tracks/{id}` | Fetch track detail. |
 | `GET` | `/api/genres` | List library genres. |
 | `GET` | `/api/stats` | Fetch library statistics. |
@@ -141,6 +144,11 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `GET` | `/api/admin/provider-usage` | Fetch provider usage statistics. |
 | `GET` | `/api/lastfm/info` | Fetch Last.fm artist information. |
 | `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist. |
+| `GET` | `/api/radio/metadata/status` | Artist Radio metadata collection mode, provider availability and progress (`tracksChecked`/`tracksTotal`, `artistsTagged`/`artistsTotal`). |
+
+Artist Radio settings (global, admin): `radioTrackTagSync` (`off` | `lazy` | `full`, default `full`) controls
+Last.fm track-tag collection; `radioKeylessProviders` (`true`/`false`, default `true`) enables MusicBrainz and
+ListenBrainz (no key needed).
 
 ## Implementation Notes
 

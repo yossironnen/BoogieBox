@@ -28,6 +28,7 @@ use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
 };
+pub mod artist_radio;
 pub mod artwork_cache;
 pub mod auth;
 pub mod beat_grid;
@@ -45,12 +46,14 @@ pub mod mix_priority_gate;
 pub mod mix_worker;
 pub mod post_scan;
 pub mod providers;
+pub mod radio_metadata;
 pub mod routes;
 pub mod scanner;
 pub mod server_config;
 pub mod settings;
 pub mod similar_artists;
 pub mod story_image;
+pub mod tag_taxonomy;
 #[cfg(test)]
 pub mod test_support;
 pub mod waveform_map;
@@ -337,6 +340,11 @@ pub async fn run_from_env() -> Result<(), ServerError> {
         post_scan::start_post_scan_scheduler(ps_state.clone());
         waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
         bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
+        radio_metadata::start_radio_metadata_scheduler(
+            ps_state.db.clone(),
+            ps_state.http_client.clone(),
+            cancel.clone(),
+        );
         db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
         deep_analysis::start_deep_analysis_worker(ps_state.clone());
         mix_worker::start_mix_worker(ps_state);
@@ -736,6 +744,11 @@ async fn setup_handler(
                 post_scan::start_post_scan_scheduler(ps_state.clone());
                 waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
                 bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
+                radio_metadata::start_radio_metadata_scheduler(
+                    ps_state.db.clone(),
+                    ps_state.http_client.clone(),
+                    cancel.clone(),
+                );
                 db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);
@@ -832,6 +845,11 @@ async fn switch_db_handler(
                 post_scan::start_post_scan_scheduler(ps_state.clone());
                 waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
                 bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
+                radio_metadata::start_radio_metadata_scheduler(
+                    ps_state.db.clone(),
+                    ps_state.http_client.clone(),
+                    cancel.clone(),
+                );
                 db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);

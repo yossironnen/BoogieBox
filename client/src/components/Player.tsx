@@ -22,6 +22,7 @@ import {
   migrateGraphicProfileToParametricProfile,
 } from '../audio/eq';
 import ParametricEqEditor from './ParametricEqEditor';
+import { RadioReasonChip } from './ArtistRadioControls';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
 import {
   DESKTOP_PLAYER_DOCK_HEIGHT,
@@ -1643,6 +1644,7 @@ function QueuePanel({ queue, currentIndex, onSelect, onRemove, onClear, onClose,
               <div style={{ fontSize: 14, fontWeight: i === currentIndex ? 700 : 550, color: PLAYER_THEME_TOKENS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.title || track.file_name}</div>
               <div style={{ fontSize: 13, color: PLAYER_THEME_TOKENS.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.artist || 'Unknown artist'}</div>
             </div>
+            {track.radio_reason ? <RadioReasonChip reason={track.radio_reason} /> : null}
             <button
               type="button"
               aria-label={`Remove ${track.title || track.file_name} from queue`}

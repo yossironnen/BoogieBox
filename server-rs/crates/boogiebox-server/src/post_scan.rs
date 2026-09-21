@@ -15,6 +15,7 @@ use crate::{
         search_spotify_artist_match_with_token, ArtistProviderMatch, LastFmInfoPayload,
         MetadataSearchResult,
     },
+    tag_taxonomy::{normalize_tag, to_tag_inputs},
     DbPool,
 };
 use boogiebox_db::{
@@ -31,6 +32,7 @@ use boogiebox_db::{
         EntityId,
     },
     playlists::normalize_release_type,
+    radio::{replace_album_styles, replace_artist_tags},
 };
 use reqwest::Client;
 use rusqlite::OptionalExtension;
@@ -1099,41 +1101,20 @@ async fn run_sync_artist_styles(
         let tags = fetch_lastfm_artist_top_tags(&state.http_client, &api_key, artist_name).await;
         tokio::time::sleep(provider_sweep_delay()).await;
 
-        let valid_styles: Vec<String> = tags
-            .iter()
-            .filter(|(name, count)| {
-                let n = name.to_lowercase();
-                *count >= MIN_LASTFM_TAG_COUNT
-                    && !STYLE_TAG_BLACKLIST.contains(&n.as_str())
-                    && !n.contains("seen live")
-                    && !n.contains("under ")
-                    && !n.contains("my ")
-                    && n.len() >= 3
-            })
-            .map(|(name, _)| name.to_lowercase())
-            .take(12)
-            .collect();
+        // Normalized, classified (genre / mood / era) and weighted; junk such as
+        // "seen live" and "favorites" is dropped by the taxonomy.
+        let mut styles = to_tag_inputs(&tags, MIN_LASTFM_TAG_COUNT, 0.0, 12, &[artist_name]);
+        styles.retain(|s| !STYLE_TAG_BLACKLIST.contains(&s.tag.as_str()));
 
-        if valid_styles.is_empty() {
+        if styles.is_empty() {
             continue;
         }
 
         let db = state.db.clone();
         let id = artist_id.clone();
-        let styles = valid_styles.clone();
         let _ = tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            let _ = conn.execute(
-                "DELETE FROM artist_styles WHERE artist_id = ?",
-                rusqlite::params![id],
-            );
-            for style in styles {
-                let _ = conn.execute(
-                    "INSERT OR REPLACE INTO artist_styles(artist_id, style, updated_at) \
-                     VALUES(?, ?, datetime('now'))",
-                    rusqlite::params![id, style],
-                );
-            }
+            let _ = replace_artist_tags(&conn, &coerce_entity_id(&id), &styles);
         })
         .await;
     }
@@ -1245,21 +1226,23 @@ async fn run_sync_discogs_album_metadata(
             continue;
         }
 
-        let (needs_release_type, needs_label, needs_year) = {
+        let (needs_release_type, needs_label, needs_year, needs_styles) = {
             let db = state.db.clone();
             let id = album_id.clone();
+            let has_discogs = discogs_token.is_some();
             tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
                 (
                     get_album_release_type(&conn, &id).is_none(),
                     get_album_label(&conn, &id).is_none(),
                     get_album_year(&conn, &id).is_none(),
+                    has_discogs && album_needs_styles(&conn, &id),
                 )
             })
             .await
-            .unwrap_or((false, false, false))
+            .unwrap_or((false, false, false, false))
         };
-        if !needs_release_type && !needs_label && !needs_year {
+        if !needs_release_type && !needs_label && !needs_year && !needs_styles {
             continue;
         }
 
@@ -1357,9 +1340,78 @@ async fn run_sync_discogs_album_metadata(
             }
         }
 
+        // Free-ride on the search response we already have: Discogs releases carry
+        // genre/style arrays. The "already checked" marker is only stamped when a
+        // provider actually answered (non-empty results) — a failed or throttled
+        // search must stay retryable, never be remembered as "no styles".
+        if needs_styles && !results.is_empty() {
+            let styles = matched
+                .iter()
+                .filter(|r| r.provider == "discogs")
+                .filter_map(|r| r.extra.as_ref())
+                .map(extract_discogs_styles)
+                .find(|styles| !styles.is_empty())
+                .unwrap_or_default();
+            let db = state.db.clone();
+            let id = album_id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                if !styles.is_empty() {
+                    let _ = replace_album_styles(&conn, &coerce_entity_id(&id), "discogs", &styles);
+                }
+                save_lastfm_cache(
+                    &conn,
+                    &album_styles_marker_key(&id),
+                    "1",
+                    ALBUM_STYLES_RECHECK_DAYS,
+                );
+            })
+            .await;
+        }
+
         tokio::time::sleep(discogs_album_metadata_sync_delay()).await;
     }
     Ok(())
+}
+
+/// How long a "checked for Discogs styles" marker suppresses a re-search.
+const ALBUM_STYLES_RECHECK_DAYS: i64 = 180;
+
+fn album_styles_marker_key(album_id: &str) -> String {
+    format!("album-styles-checked:{album_id}")
+}
+
+/// True when the album has no stored styles and no fresh "already checked" marker.
+fn album_needs_styles(conn: &rusqlite::Connection, album_id: &str) -> bool {
+    let has_styles: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM album_styles WHERE album_id = ?1)",
+            [album_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(true);
+    !has_styles && get_lastfm_cached(conn, &album_styles_marker_key(album_id)).is_none()
+}
+
+/// A Discogs release's `genre` and `style` arrays as normalized `(tag, kind)`
+/// pairs (kind = `genre` | `style`), deduplicated and capped.
+fn extract_discogs_styles(extra: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (field, kind) in [("style", "style"), ("genre", "genre")] {
+        let Some(values) = extra[field].as_array() else {
+            continue;
+        };
+        for value in values.iter().filter_map(|v| v.as_str()) {
+            let Some(tag) = normalize_tag(value, &[]) else {
+                continue;
+            };
+            if !out.iter().any(|(existing, _)| *existing == tag) {
+                out.push((tag, kind.to_owned()));
+            }
+        }
+    }
+    out.truncate(8);
+    out
 }
 
 #[cfg(test)]
@@ -1622,6 +1674,26 @@ mod tests {
             regenerated_write_time > unchanged_write_time,
             "a stale thumbnail (older than its source) must be regenerated"
         );
+    }
+
+    #[test]
+    fn extract_discogs_styles_normalizes_dedupes_and_prefers_styles_first() {
+        use super::extract_discogs_styles;
+        let extra = serde_json::json!({
+            "style": ["Trip Hop", "Downtempo", "trip-hop", "  "],
+            "genre": ["Electronic", "Downtempo"]
+        });
+        assert_eq!(
+            extract_discogs_styles(&extra),
+            vec![
+                ("trip-hop".to_string(), "style".to_string()),
+                ("downtempo".to_string(), "style".to_string()),
+                ("electronic".to_string(), "genre".to_string()),
+            ]
+        );
+        assert!(extract_discogs_styles(&serde_json::json!({})).is_empty());
+        let many = serde_json::json!({ "style": (0..20).map(|i| format!("style {i}")).collect::<Vec<_>>() });
+        assert_eq!(extract_discogs_styles(&many).len(), 8);
     }
 
     #[test]
@@ -2527,8 +2599,18 @@ mod tests {
             boogiebox_db::artwork::set_album_year(&conn, &f.album_id, 2000);
             boogiebox_db::artwork::set_album_release_type(&conn, &f.album_id, "compilation");
         }
-        // No mock server mounted — proves the "nothing needed" branch
-        // short-circuits before calling `search_metadata`.
+        // Styles already captured too, and no mock server mounted — proves the
+        // "nothing needed" branch short-circuits before calling `search_metadata`.
+        {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::radio::replace_album_styles(
+                &conn,
+                &boogiebox_db::music::coerce_entity_id(&f.album_id),
+                "discogs",
+                &[("downtempo".to_string(), "style".to_string())],
+            )
+            .unwrap();
+        }
         let result =
             super::run_sync_discogs_album_metadata(&f.state, &f.library_id_entity(), None).await;
         assert!(result.is_ok());
@@ -2572,6 +2654,72 @@ mod tests {
         };
         assert_eq!(label.as_deref(), Some("Real Records"));
         assert_eq!(year, Some(1999));
+
+        std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn sync_discogs_album_metadata_captures_styles_once_and_not_on_a_failed_search() {
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        std::env::set_var("BOOGIEBOX_DISCOGS_API_BASE", "http://127.0.0.1:1");
+        let f = fixture("discogs-meta-styles");
+        set_setting(&f, "discogsToken", "tok");
+        {
+            let conn = f.state.db.lock().unwrap();
+            boogiebox_db::artwork::set_album_label(&conn, &f.album_id, "Real Label");
+            boogiebox_db::artwork::set_album_year(&conn, &f.album_id, 2000);
+            boogiebox_db::artwork::set_album_release_type(&conn, &f.album_id, "compilation");
+        }
+        let count = |f: &Fixture| -> (i64, i64) {
+            let conn = f.state.db.lock().unwrap();
+            (
+                conn.query_row("SELECT COUNT(*) FROM album_styles", [], |r| r.get(0))
+                    .unwrap(),
+                conn.query_row(
+                    "SELECT COUNT(*) FROM lastfm_cache WHERE cache_key LIKE 'album-styles-checked:%'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+            )
+        };
+
+        // Provider unreachable: nothing stored and, crucially, no marker.
+        let result =
+            super::run_sync_discogs_album_metadata(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        assert_eq!(count(&f), (0, 0));
+
+        // Provider answers with genre/style arrays for the matching release.
+        let server = wiremock::MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_DISCOGS_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/database/search"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "results": [{
+                        "title": "Test Artist - Test Album",
+                        "genre": ["Electronic"],
+                        "style": ["Trip Hop", "Downtempo"]
+                    }]
+                })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let result =
+            super::run_sync_discogs_album_metadata(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        assert_eq!(count(&f), (3, 1));
+
+        // Captured: a second sweep is a no-op (the mock allows exactly one call).
+        let result =
+            super::run_sync_discogs_album_metadata(&f.state, &f.library_id_entity(), None).await;
+        assert!(result.is_ok());
+        assert_eq!(count(&f), (3, 1));
+        server.verify().await;
 
         std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
     }

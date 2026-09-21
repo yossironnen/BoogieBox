@@ -434,6 +434,49 @@ describe('api.artistSimilar', () => {
   });
 });
 
+describe('api Artist Radio', () => {
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const requestUrl = () => new URL(vi.mocked(fetch).mock.calls[0][0] as string, window.location.href);
+
+  it('sends only the options that were chosen, defaulting the limit to 100', async () => {
+    vi.mocked(fetch).mockReturnValue(okJson({ tracks: [] }));
+    await api.artistRadio('5');
+    let url = requestUrl();
+    expect(url.pathname).toContain('/api/artists/5/radio');
+    expect(url.searchParams.get('limit')).toBe('100');
+    for (const key of ['focus', 'moods', 'variety']) expect(url.searchParams.has(key)).toBe(false);
+
+    vi.mocked(fetch).mockClear();
+    vi.mocked(fetch).mockReturnValue(okJson({ tracks: [] }));
+    await api.artistRadio('5', { limit: 120, focus: 'mood', moods: ['chill', 'dark'], variety: 0.7 });
+    url = requestUrl();
+    expect(url.searchParams.get('limit')).toBe('120');
+    expect(url.searchParams.get('focus')).toBe('mood');
+    expect(url.searchParams.get('moods')).toBe('chill,dark');
+    expect(url.searchParams.get('variety')).toBe('0.7');
+
+    vi.mocked(fetch).mockClear();
+    vi.mocked(fetch).mockReturnValue(okJson({ tracks: [] }));
+    await api.artistRadio('5', { moods: [] });
+    expect(requestUrl().searchParams.has('moods')).toBe(false);
+  });
+
+  it('loads the options snapshot and the metadata status', async () => {
+    const snapshot = { tags: [], autoMoods: [], moods: [], libraryTagProgress: { tagged: 0, candidates: 0 } };
+    vi.mocked(fetch).mockReturnValue(okJson(snapshot));
+    expect(await api.artistRadioOptions('5')).toEqual(snapshot);
+    expect(requestUrl().pathname).toContain('/api/artists/5/radio/options');
+
+    vi.mocked(fetch).mockClear();
+    const status = { mode: 'full', lastfmConfigured: true, keylessEnabled: true, tracksChecked: 1, tracksTotal: 2, artistsTagged: 0, artistsTotal: 0 };
+    vi.mocked(fetch).mockReturnValue(okJson(status));
+    expect(await api.radioMetadataStatus()).toEqual(status);
+    expect(requestUrl().pathname).toContain('/api/radio/metadata/status');
+  });
+});
+
 describe('api recently played', () => {
   beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
   afterEach(() => { vi.restoreAllMocks(); });

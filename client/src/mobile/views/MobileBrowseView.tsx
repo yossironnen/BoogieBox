@@ -2,13 +2,14 @@
  * Defines mobile Mobile Browse View behavior for the BoogieBox React client.
  */
 
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api } from '../../api';
 import ArtImage from '../../components/ArtImage';
+import { ArtistRadioSplitButton } from '../../components/ArtistRadioControls';
 import type { PlaybackSnapshot } from '../../components/Player';
 import StarRating from '../../components/StarRating';
 import { hybridMobileContentStyles } from '../../hybridPreview';
-import type { Album, Artist, Library, Playlist, SimilarArtist, Track } from '../../types';
+import type { Album, Artist, ArtistRadioOptions, Library, Playlist, QueueSource, SimilarArtist, Track } from '../../types';
 import { phase2 } from '../../uiPhase2';
 import { useMobileTrackActions } from '../components/MobileActionSheets';
 import type { MobileBrowseSelection } from '../mobileShell';
@@ -25,7 +26,7 @@ export default function MobileBrowseView({
   playbackSnapshot,
   hideCompilationOnlyArtists = true,
 }: {
-  onPlayTrack: (track: Track, allTracks?: Track[]) => void;
+  onPlayTrack: (track: Track, allTracks?: Track[], source?: QueueSource) => void;
   onAddToQueue: (track: Track) => void;
   selection: MobileBrowseSelection;
   onSelectionChange: (selection: MobileBrowseSelection) => void;
@@ -38,6 +39,8 @@ export default function MobileBrowseView({
   const [tracks, setTracks] = useState<Track[]>(selection.tracks);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [similarArtists, setSimilarArtists] = useState<SimilarArtist[]>([]);
+  const [radioLoading, setRadioLoading] = useState(false);
+  const [radioNotice, setRadioNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -146,6 +149,24 @@ export default function MobileBrowseView({
     };
   }, [selection.album, selection.artist]);
 
+  const startArtistRadio = useCallback((options: ArtistRadioOptions) => {
+    const artist = selection.artist;
+    if (!artist) return;
+    setRadioLoading(true);
+    setRadioNotice(null);
+    api.artistRadio(artist.id, { limit: 120, ...options })
+      .then((result) => {
+        if (!result.tracks.length) {
+          setRadioNotice(`No radio tracks found for "${artist.name}".`);
+          return;
+        }
+        setRadioNotice(result.degraded);
+        onPlayTrack(result.tracks[0], result.tracks, { type: 'radio', id: artist.id });
+      })
+      .catch((e: unknown) => setRadioNotice(e instanceof Error && e.message ? e.message : 'Failed to build artist radio.'))
+      .finally(() => setRadioLoading(false));
+  }, [onPlayTrack, selection.artist]);
+
   const trackActions = useMobileTrackActions<Track>({ playlists, onPlayTrack, onAddToQueue });
   const nowPlayingId = playbackSnapshot?.currentTrack?.id ?? null;
   const atRoot = !selection.artist && !selection.album;
@@ -213,6 +234,20 @@ export default function MobileBrowseView({
                   ? `${selection.album.year ?? 'Unknown year'} • ${selection.album.track_count} tracks`
                   : `${selection.artist?.album_count ?? 0} albums • ${selection.artist?.track_count ?? 0} tracks`}
               </div>
+              {atArtist && selection.artist ? (
+                <div style={{ marginTop: 10 }}>
+                  <ArtistRadioSplitButton
+                    artistId={selection.artist.id}
+                    artistName={selection.artist.name}
+                    loading={radioLoading}
+                    presentation="sheet"
+                    onStart={startArtistRadio}
+                  />
+                  {radioNotice ? (
+                    <div role="status" data-testid="radio-notice" style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>{radioNotice}</div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
         )}

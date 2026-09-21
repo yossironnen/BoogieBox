@@ -1600,6 +1600,316 @@ pub async fn fetch_lastfm_top_tracks(
     Ok(tracks)
 }
 
+// -- Artist Radio metadata (wip/artist-radio-v2-plan.md §3) ---------------------
+
+/// Why a tag/similarity lookup produced nothing. `RateLimited` must stay
+/// distinguishable from "the provider has no data" so callers can back off
+/// instead of negative-caching a miss that was really a throttle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderFetchError {
+    RateLimited,
+    Failed(String),
+}
+
+impl std::fmt::Display for ProviderFetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProviderFetchError::RateLimited => write!(f, "provider rate limit exceeded"),
+            ProviderFetchError::Failed(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+const PROVIDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// MusicBrainz requires a descriptive User-Agent with contact information.
+const MUSICBRAINZ_USER_AGENT: &str = concat!(
+    "BoogieBox/",
+    env!("CARGO_PKG_VERSION"),
+    " ( https://github.com/yossironnen/BoogieBox )"
+);
+
+/// ListenBrainz Labs similar-artists algorithm (session-based, 9000 days).
+const LISTENBRAINZ_SIMILAR_ALGORITHM: &str =
+    "session_based_days_9000_session_300_contribution_5_threshold_15_limit_50_skip_30";
+
+fn musicbrainz_api_base() -> String {
+    provider_base_url(
+        "BOOGIEBOX_MUSICBRAINZ_API_BASE",
+        "https://musicbrainz.org/ws/2",
+    )
+}
+
+fn listenbrainz_labs_api_base() -> String {
+    provider_base_url(
+        "BOOGIEBOX_LISTENBRAINZ_LABS_API_BASE",
+        "https://labs.api.listenbrainz.org",
+    )
+}
+
+/// MusicBrainz IDs are UUIDs; reject anything else before it reaches a URL path.
+pub fn is_valid_mbid(value: &str) -> bool {
+    value.len() == 36 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+fn json_count(value: &Value) -> u64 {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+        .unwrap_or(0)
+}
+
+fn parse_tag_counts(tags: &Value) -> Vec<(String, u64)> {
+    tags.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| {
+                    let name = t["name"].as_str()?.trim().to_owned();
+                    (!name.is_empty()).then(|| (name, json_count(&t["count"])))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Fetches Last.fm's crowd tags for one track (`track.getTopTags`).
+///
+/// Unlike [`fetch_lastfm_artist_top_tags`] this returns a `Result` so a rate
+/// limit (HTTP 429 or Last.fm error 29) is never confused with a track that
+/// simply has no tags (error 6 / an empty list → `Ok(vec![])`).
+pub async fn fetch_lastfm_track_top_tags(
+    client: &Client,
+    api_key: &str,
+    artist_name: &str,
+    track_title: &str,
+) -> Result<Vec<(String, u64)>, ProviderFetchError> {
+    let lastfm_api_root = lastfm_api_base();
+    let url = format!(
+        "{lastfm_api_root}?method=track.gettoptags&artist={}&track={}&api_key={}&format=json&autocorrect=1",
+        urlencoding::encode(artist_name),
+        urlencoding::encode(track_title),
+        urlencoding::encode(api_key),
+    );
+    let t0 = log_request(
+        "lastfm",
+        "track_top_tags",
+        &format!("{artist_name} — {track_title}"),
+    );
+    let response = client
+        .get(&url)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("lastfm", "track_top_tags", t0, response.status());
+    if response.status().as_u16() == 429 {
+        return Err(ProviderFetchError::RateLimited);
+    }
+    if !response.status().is_success() {
+        return Err(ProviderFetchError::Failed(format!(
+            "Last.fm returned {}",
+            response.status().as_u16()
+        )));
+    }
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    if let Some(code) = data["error"].as_i64() {
+        return match code {
+            29 => Err(ProviderFetchError::RateLimited),
+            6 => Ok(Vec::new()),
+            _ => Err(ProviderFetchError::Failed(
+                data["message"]
+                    .as_str()
+                    .unwrap_or("Last.fm request failed")
+                    .to_owned(),
+            )),
+        };
+    }
+    Ok(parse_tag_counts(&data["toptags"]["tag"]))
+}
+
+/// MusicBrainz and ListenBrainz signal throttling with HTTP 429/503.
+fn check_metabrainz_status(response: &reqwest::Response) -> Result<(), ProviderFetchError> {
+    match response.status().as_u16() {
+        429 | 503 => Err(ProviderFetchError::RateLimited),
+        code if !response.status().is_success() => {
+            Err(ProviderFetchError::Failed(format!("returned {code}")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Resolves an artist name to a MusicBrainz ID. Only an unambiguous exact
+/// (normalized) name match with a high search score is accepted; namesakes
+/// produce `Ok(None)` rather than a guess.
+pub async fn search_musicbrainz_artist(
+    client: &Client,
+    artist_name: &str,
+) -> Result<Option<String>, ProviderFetchError> {
+    let cleaned: String = artist_name
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\'))
+        .collect();
+    if cleaned.trim().is_empty() {
+        return Ok(None);
+    }
+    let query = format!("artist:\"{}\"", cleaned.trim());
+    let url = format!(
+        "{}/artist/?query={}&fmt=json&limit=5",
+        musicbrainz_api_base(),
+        urlencoding::encode(&query)
+    );
+    let t0 = log_request("musicbrainz", "artist_search", artist_name);
+    let response = client
+        .get(&url)
+        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("musicbrainz", "artist_search", t0, response.status());
+    check_metabrainz_status(&response)?;
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let wanted = normalize_artist_name(&cleaned);
+    let matches: Vec<&Value> = data["artists"]
+        .as_array()
+        .map(|artists| {
+            artists
+                .iter()
+                .filter(|artist| {
+                    artist["name"]
+                        .as_str()
+                        .is_some_and(|name| normalize_artist_name(name) == wanted)
+                        && artist["score"].as_i64().unwrap_or(0) >= 90
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if matches.len() != 1 {
+        return Ok(None);
+    }
+    Ok(matches[0]["id"]
+        .as_str()
+        .filter(|id| is_valid_mbid(id))
+        .map(str::to_owned))
+}
+
+/// Fetches MusicBrainz's user-voted genres/tags for an artist as `(name, votes)`.
+pub async fn fetch_musicbrainz_artist_tags(
+    client: &Client,
+    mbid: &str,
+) -> Result<Vec<(String, u64)>, ProviderFetchError> {
+    if !is_valid_mbid(mbid) {
+        return Err(ProviderFetchError::Failed(
+            "invalid MusicBrainz id".to_owned(),
+        ));
+    }
+    let url = format!(
+        "{}/artist/{mbid}?inc=tags+genres&fmt=json",
+        musicbrainz_api_base()
+    );
+    let t0 = log_request("musicbrainz", "artist_tags", mbid);
+    let response = client
+        .get(&url)
+        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("musicbrainz", "artist_tags", t0, response.status());
+    if response.status().as_u16() == 404 {
+        return Ok(Vec::new());
+    }
+    check_metabrainz_status(&response)?;
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let mut merged: Vec<(String, u64)> = parse_tag_counts(&data["tags"]);
+    for (name, count) in parse_tag_counts(&data["genres"]) {
+        match merged.iter_mut().find(|(existing, _)| *existing == name) {
+            Some(entry) => entry.1 = entry.1.max(count),
+            None => merged.push((name, count)),
+        }
+    }
+    Ok(merged)
+}
+
+fn parse_listenbrainz_similar_artists(
+    data: &Value,
+    source_mbid: &str,
+    limit: usize,
+) -> Vec<RelatedArtistCandidate> {
+    let Some(items) = data.as_array() else {
+        return Vec::new();
+    };
+    let usable: Vec<(&Value, String)> = items
+        .iter()
+        .filter_map(|item| {
+            let id = item["artist_mbid"].as_str()?.trim();
+            let name = item["name"].as_str()?.trim();
+            (!name.is_empty() && is_valid_mbid(id) && !id.eq_ignore_ascii_case(source_mbid))
+                .then(|| (item, id.to_owned()))
+        })
+        .collect();
+    let top = usable
+        .iter()
+        .map(|(item, _)| item["score"].as_f64().unwrap_or(0.0))
+        .fold(0.0_f64, f64::max);
+    usable
+        .into_iter()
+        .take(limit.clamp(1, 100))
+        .enumerate()
+        .map(|(index, (item, id))| RelatedArtistCandidate {
+            match_score: (top > 0.0)
+                .then(|| (item["score"].as_f64().unwrap_or(0.0) / top).clamp(0.0, 1.0)),
+            url: Some(format!("https://musicbrainz.org/artist/{id}")),
+            external_id: Some(id),
+            name: item["name"].as_str().unwrap_or_default().trim().to_owned(),
+            image_url: None,
+            rank: index + 1,
+        })
+        .collect()
+}
+
+/// Fetches ListenBrainz Labs' similar artists for a MusicBrainz artist id.
+/// Scores are normalized against the strongest hit so they read as 0..1.
+pub async fn fetch_listenbrainz_similar_artists(
+    client: &Client,
+    mbid: &str,
+    limit: usize,
+) -> Result<Vec<RelatedArtistCandidate>, ProviderFetchError> {
+    if !is_valid_mbid(mbid) {
+        return Err(ProviderFetchError::Failed(
+            "invalid MusicBrainz id".to_owned(),
+        ));
+    }
+    let url = format!(
+        "{}/similar-artists/json?artist_mbids={mbid}&algorithm={LISTENBRAINZ_SIMILAR_ALGORITHM}",
+        listenbrainz_labs_api_base()
+    );
+    let t0 = log_request("listenbrainz", "similar_artists", mbid);
+    let response = client
+        .get(&url)
+        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("listenbrainz", "similar_artists", t0, response.status());
+    check_metabrainz_status(&response)?;
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    Ok(parse_listenbrainz_similar_artists(&data, mbid, limit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2296,6 +2606,280 @@ pub(crate) mod provider_fetch_tests {
         assert_eq!(related[0].name, "Related Artist");
 
         std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
+    }
+
+    const MBID_A: &str = "10adbe5e-a2c0-4bf3-8249-2b4cbf6e6ca8";
+    const MBID_B: &str = "8f6bd1e4-fbe1-4f50-aa9b-94c450ec0f11";
+
+    #[tokio::test]
+    async fn fetch_lastfm_track_top_tags_parses_and_distinguishes_rate_limits_from_misses() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        let client = Client::new();
+
+        Mock::given(method("GET"))
+            .and(query_param("method", "track.gettoptags"))
+            .and(query_param("track", "Teardrop"))
+            .and(query_param("autocorrect", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptags": { "tag": [
+                    { "name": "trip-hop", "count": 100 },
+                    { "name": "melancholy", "count": "45" },
+                    { "name": "  ", "count": 3 }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+        let tags = fetch_lastfm_track_top_tags(&client, "key", "Massive Attack", "Teardrop")
+            .await
+            .unwrap();
+        assert_eq!(
+            tags,
+            vec![("trip-hop".to_owned(), 100), ("melancholy".to_owned(), 45)]
+        );
+
+        // Last.fm error 6 = track not found → an empty result, not a failure.
+        Mock::given(method("GET"))
+            .and(query_param("track", "Unknown"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "error": 6, "message": "Track not found" })),
+            )
+            .mount(&server)
+            .await;
+        assert!(fetch_lastfm_track_top_tags(&client, "key", "A", "Unknown")
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Error 29 and HTTP 429 are rate limits; other errors are plain failures.
+        Mock::given(method("GET"))
+            .and(query_param("track", "Limited"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "error": 29, "message": "Rate Limit Exceeded" }),
+            ))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            fetch_lastfm_track_top_tags(&client, "key", "A", "Limited").await,
+            Err(ProviderFetchError::RateLimited)
+        );
+        Mock::given(method("GET"))
+            .and(query_param("track", "Throttled"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            fetch_lastfm_track_top_tags(&client, "key", "A", "Throttled").await,
+            Err(ProviderFetchError::RateLimited)
+        );
+        Mock::given(method("GET"))
+            .and(query_param("track", "Broken"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "error": 8, "message": "Operation failed" }),
+                ),
+            )
+            .mount(&server)
+            .await;
+        assert_eq!(
+            fetch_lastfm_track_top_tags(&client, "key", "A", "Broken").await,
+            Err(ProviderFetchError::Failed("Operation failed".to_owned()))
+        );
+        Mock::given(method("GET"))
+            .and(query_param("track", "Down"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            fetch_lastfm_track_top_tags(&client, "key", "A", "Down").await,
+            Err(ProviderFetchError::Failed(_))
+        ));
+
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn search_musicbrainz_artist_accepts_only_one_confident_exact_match() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
+        let client = Client::new();
+
+        Mock::given(method("GET"))
+            .and(path("/artist/"))
+            .and(query_param("query", "artist:\"Massive Attack\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": [
+                    { "id": MBID_A, "name": "Massive Attack", "score": 100 },
+                    { "id": MBID_B, "name": "Massive Attack Tribute", "score": 95 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            search_musicbrainz_artist(&client, "Massive Attack")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(MBID_A)
+        );
+
+        // Two exact namesakes → ambiguous → no guess.
+        Mock::given(method("GET"))
+            .and(path("/artist/"))
+            .and(query_param("query", "artist:\"Nirvana\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": [
+                    { "id": MBID_A, "name": "Nirvana", "score": 100 },
+                    { "id": MBID_B, "name": "Nirvana", "score": 98 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            search_musicbrainz_artist(&client, "Nirvana").await.unwrap(),
+            None
+        );
+
+        // Low score, throttling, and blank/quote-only names.
+        Mock::given(method("GET"))
+            .and(path("/artist/"))
+            .and(query_param("query", "artist:\"Weak\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": [{ "id": MBID_A, "name": "Weak", "score": 60 }]
+            })))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            search_musicbrainz_artist(&client, "Weak").await.unwrap(),
+            None
+        );
+        Mock::given(method("GET"))
+            .and(path("/artist/"))
+            .and(query_param("query", "artist:\"Busy\""))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            search_musicbrainz_artist(&client, "Busy").await,
+            Err(ProviderFetchError::RateLimited)
+        );
+        assert_eq!(
+            search_musicbrainz_artist(&client, "\"\"").await.unwrap(),
+            None
+        );
+
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_musicbrainz_artist_tags_merges_tags_and_genres() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
+        let client = Client::new();
+
+        Mock::given(method("GET"))
+            .and(path(format!("/artist/{MBID_A}")))
+            .and(query_param("inc", "tags genres")) // `+` decodes to a space in query strings
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "tags": [{ "name": "downtempo", "count": 12 }, { "name": "british", "count": 5 }],
+                "genres": [{ "name": "downtempo", "count": 14 }, { "name": "trip hop", "count": 9 }]
+            })))
+            .mount(&server)
+            .await;
+        let tags = fetch_musicbrainz_artist_tags(&client, MBID_A)
+            .await
+            .unwrap();
+        assert_eq!(
+            tags,
+            vec![
+                ("downtempo".to_owned(), 14),
+                ("british".to_owned(), 5),
+                ("trip hop".to_owned(), 9)
+            ]
+        );
+
+        Mock::given(method("GET"))
+            .and(path(format!("/artist/{MBID_B}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        assert!(fetch_musicbrainz_artist_tags(&client, MBID_B)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // A malformed id never reaches the network.
+        assert!(matches!(
+            fetch_musicbrainz_artist_tags(&client, "../../etc").await,
+            Err(ProviderFetchError::Failed(_))
+        ));
+        assert!(!is_valid_mbid("not-a-uuid"));
+        assert!(is_valid_mbid(MBID_A));
+
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn fetch_listenbrainz_similar_artists_normalizes_scores_and_skips_self() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LISTENBRAINZ_LABS_API_BASE", server.uri());
+        let client = Client::new();
+
+        Mock::given(method("GET"))
+            .and(path("/similar-artists/json"))
+            .and(query_param("artist_mbids", MBID_A))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "artist_mbid": MBID_A, "name": "Massive Attack", "score": 9999 },
+                { "artist_mbid": MBID_B, "name": "Portishead", "score": 8000 },
+                { "artist_mbid": "a74b1b7f-71a5-4011-9441-d0b5e4122711", "name": "Radiohead", "score": 4000 },
+                { "artist_mbid": "bad", "name": "Skipped", "score": 1 },
+                { "artist_mbid": "cb67438a-7f50-4f2b-a6f1-2bb2729fd538", "name": " ", "score": 1 }
+            ])))
+            .mount(&server)
+            .await;
+        let similar = fetch_listenbrainz_similar_artists(&client, MBID_A, 10)
+            .await
+            .unwrap();
+        assert_eq!(similar.len(), 2);
+        assert_eq!(similar[0].name, "Portishead");
+        assert_eq!(similar[0].external_id.as_deref(), Some(MBID_B));
+        assert_eq!(similar[0].rank, 1);
+        assert_eq!(similar[0].match_score, Some(1.0));
+        assert!((similar[1].match_score.unwrap() - 0.5).abs() < 1e-9);
+        assert_eq!(
+            fetch_listenbrainz_similar_artists(&client, MBID_A, 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        Mock::given(method("GET"))
+            .and(query_param("artist_mbids", MBID_B))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            fetch_listenbrainz_similar_artists(&client, MBID_B, 5).await,
+            Err(ProviderFetchError::RateLimited)
+        );
+        assert!(matches!(
+            fetch_listenbrainz_similar_artists(&client, "nope", 5).await,
+            Err(ProviderFetchError::Failed(_))
+        ));
+        assert!(parse_listenbrainz_similar_artists(&serde_json::json!({}), MBID_A, 5).is_empty());
+        assert_eq!(
+            format!("{}", ProviderFetchError::Failed("boom".to_owned())),
+            "boom"
+        );
+        assert!(format!("{}", ProviderFetchError::RateLimited).contains("rate limit"));
+
+        std::env::remove_var("BOOGIEBOX_LISTENBRAINZ_LABS_API_BASE");
     }
 
     #[tokio::test]

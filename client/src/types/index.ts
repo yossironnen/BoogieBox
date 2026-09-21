@@ -77,6 +77,70 @@ export interface Track {
    * Mix Story timeline's click-to-seek start playback already positioned at
    * the clicked point instead of always restarting at 0:00. */
   startAtSec?: number;
+  /** Why this track is in an Artist Radio queue (set only by `/artists/:id/radio`). */
+  radio_reason?: RadioReason | null;
+}
+
+/** Why a track is in an Artist Radio queue — rendered as a chip in the queue. */
+export interface RadioReason {
+  kind: 'seed' | 'similar' | 'mood' | 'style';
+  /** Seed/similar: the seed artist's name; mood: the mood bucket; style: the shared tag. */
+  label: string;
+}
+
+/** The closed set of mood buckets Artist Radio can be built around. */
+export type RadioMoodBucket =
+  | 'chill'
+  | 'melancholic'
+  | 'uplifting'
+  | 'energetic'
+  | 'dark'
+  | 'dreamy'
+  | 'romantic'
+  | 'aggressive';
+
+/** Artist Radio focus: the artist and artists like it, or lean on moods. */
+export type RadioFocus = 'similar' | 'mood';
+
+/** User-chosen Artist Radio options (all optional server-side; these are the defaults). */
+export interface ArtistRadioOptions {
+  focus: RadioFocus;
+  /** Empty = auto-pick from the artist. */
+  moods: RadioMoodBucket[];
+  /** 0 = familiar … 1 = adventurous. */
+  variety: number;
+}
+
+/** Response of `GET /artists/:id/radio`. */
+export interface ArtistRadioResponse {
+  artist: string;
+  tags: string[];
+  moods: RadioMoodBucket[];
+  mix: { seed: number; similar: number; mood: number };
+  coverage: { tagged: number; candidates: number };
+  /** Set when the queue was built from less data than usual (never an error). */
+  degraded: string | null;
+  tracks: Track[];
+}
+
+/** Response of `GET /artists/:id/radio/options` — what the options popover offers. */
+export interface ArtistRadioOptionsSnapshot {
+  tags: string[];
+  autoMoods: RadioMoodBucket[];
+  moods: Array<{ bucket: RadioMoodBucket; available: boolean; auto: boolean }>;
+  /** Library-wide background tagging progress. */
+  libraryTagProgress: { tagged: number; candidates: number };
+}
+
+/** Response of `GET /radio/metadata/status` (Settings). */
+export interface RadioMetadataStatus {
+  mode: 'off' | 'lazy' | 'full';
+  lastfmConfigured: boolean;
+  keylessEnabled: boolean;
+  tracksChecked: number;
+  tracksTotal: number;
+  artistsTagged: number;
+  artistsTotal: number;
 }
 
 /** Artist is part of this module's public API. */
@@ -712,7 +776,7 @@ export interface BpmBatchResult {
 }
 
 /** Queue Source Type is part of this module's public API. */
-export type QueueSourceType = 'album' | 'playlist' | 'autodj' | 'search' | 'single';
+export type QueueSourceType = 'album' | 'playlist' | 'autodj' | 'search' | 'single' | 'radio';
 
 /** Queue Source is part of this module's public API. */
 export interface QueueSource {

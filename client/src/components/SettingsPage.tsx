@@ -18,6 +18,7 @@ import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
 import FolderPickerModal from './FolderPickerModal';
 import ConfirmModal from './ConfirmModal';
+import RadioMetadataSettings from './RadioMetadataSettings';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1858,6 +1859,7 @@ export default function SettingsPage({
                 ['advanced-boogiemix', 'BoogieMix'],
                 ['advanced-waveforms', 'Waveforms'],
                 ['advanced-bpm', 'BPM'],
+                ['advanced-radio', 'Radio'],
                 ['advanced-dlna', 'DLNA'],
                 ['advanced-debug', 'Diagnostics'],
                 ...(isAdmin ? [['advanced-database', 'Database']] : []),
@@ -2569,6 +2571,10 @@ export default function SettingsPage({
               </div>
             )}
           </div>
+
+          {/* ── Artist Radio ────────────────────────────────────────────── */}
+          <div id="advanced-radio" style={P.advancedSectionTitle}>Artist Radio</div>
+          <RadioMetadataSettings disabled={!isAdmin} />
 
           {/* ── DLNA Server ─────────────────────────────────────────────── */}
           <div id="advanced-dlna" style={P.advancedSectionTitle}>DLNA Server</div>

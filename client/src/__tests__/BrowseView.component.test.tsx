@@ -22,6 +22,7 @@ const { apiMock } = vi.hoisted(() => ({
     albumTracks: vi.fn(),
     albumTracksByGroup: vi.fn(),
     artistRadio: vi.fn(),
+    artistRadioOptions: vi.fn(),
     search: vi.fn(),
     setArtistRating: vi.fn(),
     setAlbumRating: vi.fn(),
@@ -103,7 +104,7 @@ describe('BrowseView component flows', () => {
     apiMock.resolveArtistReleaseTypes.mockResolvedValue({ updated: false });
     apiMock.albumTracks.mockResolvedValue(tracks);
     apiMock.albumTracksByGroup.mockResolvedValue(tracks);
-    apiMock.artistRadio.mockResolvedValue({ artist: 'Artist One', tags: ['rock'], tracks: [tracks[0]] });
+    apiMock.artistRadio.mockResolvedValue({ artist: 'Artist One', tags: ['rock'], moods: [], mix: { seed: 0.3, similar: 0.45, mood: 0.25 }, coverage: { tagged: 0, candidates: 1 }, degraded: null, tracks: [tracks[0]] });
     apiMock.setArtistRating.mockResolvedValue({ ok: true, rating: 4.5 });
     apiMock.setAlbumRating.mockResolvedValue({ ok: true, rating: 5, updated: 1 });
     apiMock.setTrackRating.mockResolvedValue({ ok: true, rating: 0.5 });
@@ -267,11 +268,12 @@ describe('BrowseView component flows', () => {
     expect(await screen.findByText(/Top 5 Songs/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/i }));
-    await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', 120));
+    await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', expect.objectContaining({ limit: 120 })));
     expect(playTrack).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ id: '1' }),
       expect.arrayContaining([expect.objectContaining({ id: '1' })]),
+      { type: 'radio', id: '1' },
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Play Top 5/i }));
@@ -373,7 +375,50 @@ describe('BrowseView component flows', () => {
     await waitFor(() => expect(apiMock.artistAlbums).toHaveBeenCalledWith('1'));
 
     fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/i }));
-    await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', 120));
+    await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', expect.objectContaining({ limit: 120 })));
+  });
+
+  it('starts Artist Radio with the options chosen in the popover and shows a non-blocking notice when data is thin', async () => {
+    apiMock.artistRadioOptions.mockResolvedValue({
+      tags: ['rock'],
+      autoMoods: ['melancholic'],
+      moods: [{ bucket: 'melancholic', available: true, auto: true }],
+      libraryTagProgress: { tagged: 1, candidates: 4 },
+    });
+    const radioTrack = makeTrack('1', 'Top Song');
+    apiMock.artistRadio.mockResolvedValueOnce({
+      artist: 'Artist One', tags: ['rock'], moods: ['melancholic'], mix: { seed: 1, similar: 0, mood: 0 },
+      coverage: { tagged: 0, candidates: 1 }, degraded: 'Not enough tag data yet — playing this artist\'s tracks.',
+      tracks: [radioTrack],
+    });
+    window.localStorage.clear();
+    const playTrack = vi.fn();
+
+    render(
+      <BrowseView libraries={[]} playTrack={playTrack} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+    );
+    await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
+    fireEvent.click(screen.getByText('Artist One'));
+    await waitFor(() => expect(apiMock.artistAlbums).toHaveBeenCalledWith('1'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Radio options' }));
+    await screen.findByRole('dialog', { name: /Artist Radio options for Artist One/ });
+    fireEvent.click(screen.getByRole('button', { name: /^Mood$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start radio' }));
+
+    await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', { limit: 120, focus: 'mood', moods: [], variety: 0.45 }));
+    await waitFor(() => expect(playTrack).toHaveBeenCalledWith(radioTrack, [radioTrack], { type: 'radio', id: '1' }));
+    expect(await screen.findByTestId('radio-notice')).toHaveTextContent(/Not enough tag data yet/);
+    // The notice is not a blocking dialog.
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+
+    // A later launch clears the previous notice.
+    apiMock.artistRadio.mockResolvedValueOnce({
+      artist: 'Artist One', tags: [], moods: [], mix: { seed: 0.3, similar: 0.45, mood: 0.25 },
+      coverage: { tagged: 1, candidates: 1 }, degraded: null, tracks: [radioTrack],
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Play Artist Radio/ }));
+    await waitFor(() => expect(screen.queryByTestId('radio-notice')).toBeNull());
   });
 
   it('renders every artist release section and handles empty and failed playback builders', async () => {
@@ -716,7 +761,7 @@ describe('BrowseView component flows', () => {
     expect(screen.getByText('Open artist')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Play artist radio'));
-    await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', 120));
+    await waitFor(() => expect(apiMock.artistRadio).toHaveBeenCalledWith('1', expect.objectContaining({ limit: 120 })));
 
     fireEvent.mouseEnter(artistCard);
     fireEvent.click(within(artistCard).getByRole('button', { name: 'More actions' }));

@@ -76,7 +76,7 @@ export default function MobileApp(props: MobileSharedProps) {
       )}
       {tab === 'browse' && (
         <MobileBrowseView
-          onPlayTrack={(track, allTracks) => props.onPlayTrack(track, allTracks)}
+          onPlayTrack={(track, allTracks, source) => props.onPlayTrack(track, allTracks, source)}
           onAddToQueue={props.onAddToQueue}
           selection={browseSelection}
           onSelectionChange={setBrowseSelection}
