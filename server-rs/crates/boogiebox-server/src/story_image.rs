@@ -31,6 +31,96 @@ const SURFACE_SUBTLE: Rgba<u8> = Rgba([24, 24, 27, 255]);
 const TEXT: Rgba<u8> = Rgba([228, 228, 231, 255]);
 const TEXT_MUTED: Rgba<u8> = Rgba([113, 113, 122, 255]);
 const ACCENT: Rgba<u8> = Rgba([99, 102, 241, 255]);
+const WAVEFORM_COLOR: Rgba<u8> = Rgba([255, 255, 255, 255]);
+const TRACK_THUMB_SIZE: u32 = 20;
+
+// Same fixed palette + rolling hash as the client's `hashToFallbackColor`
+// (client/src/components/MixStoryView.tsx) — bit-identical results for ASCII
+// keys (track ids are UUIDs), so the downloaded PNG and the in-app view pick
+// the same fallback color for the same track.
+const FALLBACK_PALETTE: [[u8; 3]; 8] = [
+    [0x6d, 0x5c, 0xe0],
+    [0xc2, 0x47, 0x7d],
+    [0xd9, 0x77, 0x06],
+    [0x1c, 0x9c, 0x6d],
+    [0x2b, 0x8b, 0xd1],
+    [0xa3, 0x4c, 0xd6],
+    [0xc2, 0x41, 0x0c],
+    [0x0e, 0x94, 0x88],
+];
+
+fn hash_to_fallback_color(key: &str) -> Rgba<u8> {
+    let mut hash: i32 = 0;
+    for c in key.chars() {
+        hash = hash.wrapping_mul(31).wrapping_add(c as i32);
+    }
+    let idx = (hash.unsigned_abs() as usize) % FALLBACK_PALETTE.len();
+    let [r, g, b] = FALLBACK_PALETTE[idx];
+    Rgba([r, g, b, 255])
+}
+
+/// A track with no resolvable album id snapshots as `track_id::None` far
+/// more often than as a missing title/artist, so the fallback key prefers
+/// the track id (stable, ASCII) and only falls back to title+artist for the
+/// rare legacy row that has neither.
+fn fallback_key(track: &MixOutputTrackRow) -> String {
+    match &track.track_id {
+        Some(id) => id.to_string(),
+        None => format!("{}::{}", track.title, track.artist_name),
+    }
+}
+
+/// Manually alpha-blends `color` over `canvas` within the given rect and
+/// writes back a fully opaque pixel. Plain `imageproc` drawing functions on
+/// an `RgbaImage` overwrite pixels rather than blending them, so a
+/// translucent rect drawn that way would erase the artwork underneath
+/// instead of darkening it — this is what makes the scrim actually a scrim.
+fn blend_rect_alpha(
+    canvas: &mut RgbaImage,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: [u8; 3],
+    alpha: f32,
+) {
+    let (cw, ch) = canvas.dimensions();
+    let a = alpha.clamp(0.0, 1.0);
+    for row in 0..h {
+        let py = y + row;
+        if py < 0 || py as u32 >= ch {
+            continue;
+        }
+        for col in 0..w {
+            let px = x + col;
+            if px < 0 || px as u32 >= cw {
+                continue;
+            }
+            let pixel = canvas.get_pixel_mut(px as u32, py as u32);
+            for c in 0..3 {
+                pixel[c] = ((color[c] as f32) * a + (pixel[c] as f32) * (1.0 - a)).round() as u8;
+            }
+            pixel[3] = 255;
+        }
+    }
+}
+
+/// Vertical scrim gradient (lighter at top, darker at bottom) over a rect —
+/// mirrors the client's per-segment
+/// `linear-gradient(180deg, rgba(0,0,0,.15) 0%, rgba(0,0,0,.55) 100%)`.
+fn draw_vertical_scrim(canvas: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32) {
+    const ALPHA_TOP: f32 = 0.15;
+    const ALPHA_BOTTOM: f32 = 0.55;
+    for row in 0..h {
+        let t = if h > 1 {
+            row as f32 / (h - 1) as f32
+        } else {
+            0.0
+        };
+        let alpha = ALPHA_TOP + (ALPHA_BOTTOM - ALPHA_TOP) * t;
+        blend_rect_alpha(canvas, x, y + row, w, 1, [0, 0, 0], alpha);
+    }
+}
 
 fn font() -> FontRef<'static> {
     FontRef::try_from_slice(FONT_BYTES).expect("bundled CascadiaMono.ttf must parse")
@@ -50,24 +140,6 @@ pub fn album_art_thumb_root(db_folder: &Path) -> PathBuf {
         .join("album")
         .join("thumb")
         .join("300")
-}
-
-fn load_album_average_color(thumb_root: &Path, album_id: &str) -> Option<Rgba<u8>> {
-    let cache_key = crate::artwork_cache::build_album_art_cache_key(album_id);
-    let item_dir = crate::artwork_cache::cache_item_dir(thumb_root, &cache_key);
-    let path = crate::artwork_cache::find_existing_cached_image(&item_dir)?;
-    let img = image::open(path).ok()?.into_rgb8();
-    let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
-    for px in img.pixels() {
-        r += px[0] as u64;
-        g += px[1] as u64;
-        b += px[2] as u64;
-        n += 1;
-    }
-    if n == 0 {
-        return None;
-    }
-    Some(Rgba([(r / n) as u8, (g / n) as u8, (b / n) as u8, 255]))
 }
 
 fn load_album_thumb(thumb_root: &Path, album_id: &str) -> Option<RgbaImage> {
@@ -117,7 +189,10 @@ fn draw_timeline(
         return;
     }
 
+    // Pass 1: each segment's real artwork (cover-fit), or a deterministic
+    // fallback color when no cached thumbnail resolves.
     let mut cursor_x = x;
+    let mut segments: Vec<(i32, i32)> = Vec::with_capacity(tracks.len());
     for track in tracks {
         let span = (track.output_end_sec - track.output_start_sec).max(0.0);
         let seg_w = ((span / total_duration) * width as f64).round() as i32;
@@ -126,17 +201,41 @@ fn draw_timeline(
             break;
         }
 
-        let color = track
+        let thumb = track
             .album_id
             .as_ref()
-            .and_then(|id| load_album_average_color(thumb_root, &id.to_string()))
-            .unwrap_or(Rgba([39, 39, 42, 255]));
-        draw_filled_rect_mut(
-            canvas,
-            Rect::at(cursor_x, y).of_size(seg_w as u32, TIMELINE_HEIGHT as u32),
-            color,
-        );
+            .and_then(|id| load_album_thumb(thumb_root, &id.to_string()));
+        match thumb {
+            Some(img) => {
+                let resized = image::imageops::resize(
+                    &img,
+                    seg_w.max(1) as u32,
+                    TIMELINE_HEIGHT as u32,
+                    image::imageops::FilterType::Triangle,
+                );
+                image::imageops::overlay(canvas, &resized, cursor_x as i64, y as i64);
+            }
+            None => {
+                let color = hash_to_fallback_color(&fallback_key(track));
+                draw_filled_rect_mut(
+                    canvas,
+                    Rect::at(cursor_x, y).of_size(seg_w as u32, TIMELINE_HEIGHT as u32),
+                    color,
+                );
+            }
+        }
+        segments.push((cursor_x, seg_w));
+        cursor_x += seg_w;
+    }
 
+    // Pass 2: one scrim gradient across the whole drawn width so text and
+    // waveform bars stay legible over busy photos — done once here (not
+    // per segment) since it's visually identical either way and alpha
+    // blending must run after every segment's artwork is already in place.
+    draw_vertical_scrim(canvas, x, y, cursor_x - x, TIMELINE_HEIGHT);
+
+    // Pass 3: waveform bars + separators, on top of the scrim.
+    for (track, &(seg_x, seg_w)) in tracks.iter().zip(segments.iter()) {
         if let Some(peaks) = track
             .waveform_peaks_json
             .as_deref()
@@ -146,21 +245,15 @@ fn draw_timeline(
             let max_peak = peaks.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
             let bar_count = peaks.len().min(seg_w.max(1) as usize).max(1);
             let bar_w = (seg_w as f64 / bar_count as f64).max(1.0);
-            let waveform_color = Rgba([
-                color[0].saturating_add(40),
-                color[1].saturating_add(40),
-                color[2].saturating_add(40),
-                220,
-            ]);
             for i in 0..bar_count {
                 let peak = peaks[i * peaks.len() / bar_count];
                 let bar_h = ((peak / max_peak) * (TIMELINE_HEIGHT as f64 - 8.0)).max(2.0) as u32;
-                let bx = cursor_x + (i as f64 * bar_w).round() as i32;
+                let bx = seg_x + (i as f64 * bar_w).round() as i32;
                 let bw = bar_w.round().max(1.0) as u32;
                 draw_filled_rect_mut(
                     canvas,
                     Rect::at(bx, y + TIMELINE_HEIGHT - bar_h as i32).of_size(bw, bar_h),
-                    waveform_color,
+                    WAVEFORM_COLOR,
                 );
             }
         }
@@ -168,10 +261,9 @@ fn draw_timeline(
         // Thin separator between segments.
         draw_filled_rect_mut(
             canvas,
-            Rect::at(cursor_x + seg_w - 1, y).of_size(1, TIMELINE_HEIGHT as u32),
+            Rect::at(seg_x + seg_w - 1, y).of_size(1, TIMELINE_HEIGHT as u32),
             Rgba([0, 0, 0, 140]),
         );
-        cursor_x += seg_w;
     }
 }
 
@@ -286,7 +378,32 @@ pub fn render_story_image(
 
     // ── Track list ──────────────────────────────────────────────────────
     let mut row_y = timeline_y + TIMELINE_HEIGHT + 20;
+    let text_x = MARGIN + TRACK_THUMB_SIZE as i32 + 10;
     for (i, track) in tracks.iter().take(MAX_TRACK_ROWS).enumerate() {
+        let thumb_y = row_y + (TRACK_ROW_HEIGHT - TRACK_THUMB_SIZE as i32) / 2;
+        let thumb = track
+            .album_id
+            .as_ref()
+            .and_then(|id| load_album_thumb(&thumb_root, &id.to_string()));
+        match thumb {
+            Some(img) => {
+                let resized = image::imageops::resize(
+                    &img,
+                    TRACK_THUMB_SIZE,
+                    TRACK_THUMB_SIZE,
+                    image::imageops::FilterType::Triangle,
+                );
+                image::imageops::overlay(&mut canvas, &resized, MARGIN as i64, thumb_y as i64);
+            }
+            None => {
+                draw_filled_rect_mut(
+                    &mut canvas,
+                    Rect::at(MARGIN, thumb_y).of_size(TRACK_THUMB_SIZE, TRACK_THUMB_SIZE),
+                    hash_to_fallback_color(&fallback_key(track)),
+                );
+            }
+        }
+
         let label = if track.artist_name.is_empty() {
             format!("{}. {}", i + 1, track.title)
         } else {
@@ -295,7 +412,7 @@ pub fn render_story_image(
         draw_text_mut(
             &mut canvas,
             TEXT,
-            MARGIN,
+            text_x,
             row_y,
             PxScale::from(15.0),
             &font,
@@ -455,5 +572,90 @@ mod tests {
             album_art_thumb_root(&base),
             base.join("art").join("album").join("thumb").join("300")
         );
+    }
+
+    #[test]
+    fn hash_to_fallback_color_is_deterministic() {
+        let a = hash_to_fallback_color("track-123");
+        let b = hash_to_fallback_color("track-123");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn hash_to_fallback_color_prefers_the_track_id_over_title_and_artist() {
+        let by_id = track_row(0, "Nightdrive", 0.0, 300.0); // track_id = Some("t0")
+        let mut no_id = track_row(0, "Nightdrive", 0.0, 300.0);
+        no_id.track_id = None;
+        assert_eq!(fallback_key(&by_id), "t0");
+        assert_eq!(fallback_key(&no_id), "Nightdrive::Artist");
+    }
+
+    #[test]
+    fn draw_timeline_paints_the_cached_thumbnail_instead_of_a_flat_fallback_color() {
+        let mut track = track_row(0, "Nightdrive", 0.0, 300.0);
+        track.album_id = Some(EntityId::Str("album-1".into()));
+
+        let dir =
+            std::env::temp_dir().join(format!("story-image-timeline-art-{}", uuid::Uuid::now_v7()));
+        let cache_key = crate::artwork_cache::build_album_art_cache_key("album-1");
+        let item_dir = crate::artwork_cache::cache_item_dir(&dir, &cache_key);
+        std::fs::create_dir_all(&item_dir).unwrap();
+        RgbaImage::from_pixel(40, 40, Rgba([255, 0, 0, 255]))
+            .save(item_dir.join("art.png"))
+            .unwrap();
+
+        let mut canvas = RgbaImage::from_pixel(400, TIMELINE_HEIGHT as u32, BG);
+        draw_timeline(
+            &mut canvas,
+            &dir,
+            std::slice::from_ref(&track),
+            300.0,
+            0,
+            0,
+            400,
+        );
+
+        // Top row of the segment, where the scrim is lightest (alpha .15) —
+        // a seeded pure-red thumbnail should still read strongly red, unlike
+        // any entry in the deterministic fallback palette or the panel's
+        // neutral background.
+        let sample = canvas.get_pixel(5, 0);
+        assert!(
+            sample[0] > 180 && sample[1] < 80,
+            "expected a reddish pixel from the seeded thumbnail, got {sample:?}"
+        );
+    }
+
+    #[test]
+    fn draw_timeline_falls_back_to_the_deterministic_palette_when_no_thumbnail_resolves() {
+        let track = track_row(0, "Nightdrive", 0.0, 300.0); // no album_id
+        let dir = std::env::temp_dir().join(format!(
+            "story-image-timeline-noart-{}",
+            uuid::Uuid::now_v7()
+        ));
+
+        let mut canvas = RgbaImage::from_pixel(400, TIMELINE_HEIGHT as u32, BG);
+        draw_timeline(
+            &mut canvas,
+            &dir,
+            std::slice::from_ref(&track),
+            300.0,
+            0,
+            0,
+            400,
+        );
+
+        let expected = hash_to_fallback_color(&fallback_key(&track));
+        let sample = canvas.get_pixel(5, 0);
+        // Row 0 blends the fallback color toward black at exactly the scrim's
+        // top alpha (.15), so the expected value is exact modulo rounding.
+        for c in 0..3 {
+            let want = (expected[c] as f32 * 0.85).round() as i16;
+            assert!(
+                (sample[c] as i16 - want).abs() <= 2,
+                "channel {c}: expected ~{want}, got {}",
+                sample[c]
+            );
+        }
     }
 }

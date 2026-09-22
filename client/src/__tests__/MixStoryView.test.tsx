@@ -109,6 +109,53 @@ describe('MixStoryView', () => {
     await waitFor(() => expect(screen.getByText('Removed from library')).toBeInTheDocument());
   });
 
+  it('renders real album art in the track list and carousel when albumId is present', async () => {
+    apiMock.boogiemix.timeline.mockResolvedValue({
+      outputId: 'output-1', available: true, tier: 'full', durationSec: 300,
+      tracks: [track({ albumId: 'album-1' })],
+    } as MixTimelineResponse);
+
+    render(<MixStoryView output={output()} playTrack={() => {}} onBack={() => {}} onDelete={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('track-row-0')).toBeInTheDocument());
+
+    const rowArt = within(screen.getByTestId('track-art-0')).getByRole('presentation');
+    expect(rowArt).toHaveAttribute('src', '/api/albums/album-1/art?size=300');
+
+    const segmentArt = within(screen.getByTestId('timeline-segment-0')).getByRole('presentation');
+    expect(segmentArt).toHaveAttribute('src', '/api/albums/album-1/art?size=300');
+  });
+
+  it('falls back to a color swatch (no <img>) when a track has no albumId', async () => {
+    apiMock.boogiemix.timeline.mockResolvedValue({
+      outputId: 'output-1', available: true, tier: 'full', durationSec: 300,
+      tracks: [track({ albumId: null })],
+    } as MixTimelineResponse);
+
+    render(<MixStoryView output={output()} playTrack={() => {}} onBack={() => {}} onDelete={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('track-row-0')).toBeInTheDocument());
+
+    expect(within(screen.getByTestId('track-art-0')).queryByRole('presentation')).not.toBeInTheDocument();
+    const artEl = screen.getByTestId('track-art-0') as HTMLElement;
+    expect(artEl.style.background).toBeTruthy();
+    expect(artEl.style.background).not.toBe('var(--surface-subtle)');
+  });
+
+  it('keeps showing real artwork (with a removed badge) for a removed track whose album art still resolves', async () => {
+    apiMock.boogiemix.timeline.mockResolvedValue({
+      outputId: 'output-1', available: true, tier: 'reconstructed', durationSec: 300,
+      tracks: [track({ trackId: null, albumId: 'album-1', title: 'Ghost Town' })],
+    } as MixTimelineResponse);
+
+    render(<MixStoryView output={output()} playTrack={() => {}} onBack={() => {}} onDelete={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('track-row-0')).toBeInTheDocument());
+
+    expect(within(screen.getByTestId('track-art-0')).getByRole('presentation')).toHaveAttribute(
+      'src', '/api/albums/album-1/art?size=300',
+    );
+    expect(within(screen.getByTestId('track-art-0')).getByTitle('Removed from library')).toBeInTheDocument();
+    expect(screen.getByText('Removed from library')).toBeInTheDocument();
+  });
+
   it('shows the reconstructed-tier banner but not for a full-tier mix', async () => {
     apiMock.boogiemix.timeline.mockResolvedValue({
       outputId: 'output-1', available: true, tier: 'reconstructed', durationSec: 300, tracks: [track()],

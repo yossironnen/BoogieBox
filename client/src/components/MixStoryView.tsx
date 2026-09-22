@@ -6,11 +6,10 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FastAverageColor } from 'fast-average-color';
 import { api } from '../api';
 import type { BoogieMixOutput, MixOutputTrackRow, MixTimelineResponse, QueueSource, Track } from '../types';
 import { PlaylistArtwork, mixOutputToTrack } from './PlaylistsView';
-import { adjustContrast, rgbToHsl, hslToRgb, toHex } from '../hooks/useAdaptiveAccent';
+import ArtImage from './ArtImage';
 import type { PlaybackSnapshot } from './Player';
 
 // Fixed per-track sizing for the timeline band: a minimum width keeps titles,
@@ -148,63 +147,26 @@ function humanizeTransition(kind: string | null, phraseAligned: boolean, crossfa
   return parts.join(' · ');
 }
 
-// ─── Per-segment artwork color sampling ────────────────────────────────────────
+// ─── Deterministic per-track fallback color ────────────────────────────────────
 
-interface SegmentColor { primary: string; secondary: string; }
-const colorCache = new Map<string, SegmentColor>();
+// A track with no resolvable artwork gets one stable color, not a re-sampled
+// or per-render-random one — hashed from a durable key so it never jumps
+// between reloads or re-renders (plan: wip/boogiemix-story-artwork-plan.md).
+const FALLBACK_PALETTE = [
+  '#6d5ce0', '#c2477d', '#d97706', '#1c9c6d',
+  '#2b8bd1', '#a34cd6', '#c2410c', '#0e9488',
+];
 
-/** Samples a dominant color from each track's own artwork, reusing the same
- * `fast-average-color` + contrast-clamp machinery `useAdaptiveAccent.ts`
- * already uses to re-theme the app globally from album/track art — applied
- * here per timeline segment instead (wip/boogiemix-story-timeline-plan.md
- * §4.6). `null` for a track with no resolvable art; the timeline falls back
- * to a neutral fill for that segment, the same way the app-wide hook falls
- * back on a sampling failure. */
-function useSegmentColors(tracks: MixOutputTrackRow[]): Map<number, SegmentColor | null> {
-  const [colors, setColors] = useState<Map<number, SegmentColor | null>>(new Map());
+function hashToFallbackColor(key: string): string {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) | 0;
+  }
+  return FALLBACK_PALETTE[Math.abs(hash) % FALLBACK_PALETTE.length];
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    const fac = new FastAverageColor();
-    const pending = tracks
-      .map((t, i) => ({ i, albumId: t.albumId }))
-      .filter(({ albumId }) => albumId != null);
-
-    pending.forEach(({ i, albumId }) => {
-      const url = api.albumArtUrl(albumId as string, 300);
-      const cached = colorCache.get(url);
-      if (cached) {
-        setColors(prev => new Map(prev).set(i, cached));
-        return;
-      }
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = url;
-      img.onload = async () => {
-        if (cancelled) return;
-        try {
-          const result = await fac.getColorAsync(img, { algorithm: 'dominant', mode: 'speed' });
-          if (cancelled) return;
-          const [r, g, b] = adjustContrast(result.value[0], result.value[1], result.value[2]);
-          const primary = toHex(r, g, b);
-          const [h, s, l] = rgbToHsl(r, g, b);
-          const [sr, sg, sb] = hslToRgb(h, s * 0.6, Math.min(l + 0.18, 0.8));
-          const secondary = toHex(sr, sg, sb);
-          const value = { primary, secondary };
-          colorCache.set(url, value);
-          setColors(prev => new Map(prev).set(i, value));
-        } catch {
-          if (!cancelled) setColors(prev => new Map(prev).set(i, null));
-        }
-      };
-      img.onerror = () => { if (!cancelled) setColors(prev => new Map(prev).set(i, null)); };
-    });
-
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks.map(t => t.albumId ?? '').join(',')]);
-
-  return colors;
+function fallbackColorFor(t: MixOutputTrackRow): string {
+  return hashToFallbackColor(t.trackId ? String(t.trackId) : `${t.title}::${t.artistName}`);
 }
 
 // ─── Tooltip ──────────────────────────────────────────────────────────────────
@@ -263,7 +225,6 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
   }, [output.id]);
 
   const tracks = useMemo(() => timeline?.tracks ?? [], [timeline]);
-  const segmentColors = useSegmentColors(tracks);
   const albumIds = parseCoverAlbumIds(output.cover_album_ids);
   const totalDuration = timeline?.durationSec || output.duration_sec || tracks[tracks.length - 1]?.outputEndSec || 0;
 
@@ -430,7 +391,6 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
                 {playheadX != null && <div data-testid="playhead" style={{ ...S.playhead, left: playheadX }} />}
                 {tracks.map((t, i) => {
                 const width = segmentLayout.items[i]?.width ?? TRACK_MIN_WIDTH_PX;
-                const color = segmentColors.get(i);
                 const peaks = parsePeaks(t.waveformPeaksJson);
                 const isActive = activeIndex === i;
                 return (
@@ -440,23 +400,27 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
                     style={{
                       ...S.segment,
                       width,
-                      background: color
-                        ? `linear-gradient(180deg, ${color.primary}a8 0%, ${color.primary}36 65%, transparent 100%)`
-                        : 'var(--surface-subtle)',
+                      background: fallbackColorFor(t),
                       ...(isActive ? S.segmentActive : {}),
                     }}
                     onMouseEnter={() => setActiveIndex(i)}
                     onMouseLeave={() => setActiveIndex(prev => (prev === i ? null : prev))}
                   >
+                    {t.albumId != null && (
+                      <ArtImage
+                        src={api.albumArtUrl(t.albumId as string, 300)}
+                        alt=""
+                        wrapperStyle={S.segmentArtWrap}
+                        imgStyle={S.segmentArt}
+                      />
+                    )}
+                    <div style={S.segmentScrim} />
                     {peaks && peaks.length > 0 && (
                       <svg viewBox="0 0 200 92" preserveAspectRatio="none" style={S.segmentSvg}>
-                        <path d={waveformPath(peaks, 200, 92)} fill={color ? `${color.secondary}8c` : 'rgba(113,113,122,0.4)'} />
+                        <path d={waveformPath(peaks, 200, 92)} fill="rgba(255,255,255,.5)" />
                       </svg>
                     )}
-                    <div style={S.segLabel}>
-                      <span style={{ ...S.artSwatch, background: color ? color.primary : 'transparent', boxShadow: color ? '0 0 0 1px rgba(255,255,255,.25)' : 'inset 0 0 0 1px rgba(255,255,255,.35)' }} />
-                      {t.title}
-                    </div>
+                    <div style={S.segLabel}>{t.title}</div>
                     <div style={S.segSub}>
                       {t.artistName}{t.bpm ? ` · ${Math.round(t.bpm)} BPM` : ''}
                     </div>
@@ -510,8 +474,8 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
               </button>
             )}
             <div style={S.legend}>
-              <div style={S.legendItem}><div style={{ ...S.swatch, background: 'linear-gradient(135deg,#4f46a3,#a83e6e,#3f7d4a)' }} /> Segment color — sampled from each track&rsquo;s artwork</div>
-              <div style={S.legendItem}><div style={{ ...S.swatch, background: 'rgba(113,113,122,.7)' }} /> No artwork available</div>
+              <div style={S.legendItem}><div style={{ ...S.swatch, background: 'linear-gradient(135deg,#4f46a3,#a83e6e,#3f7d4a)' }} /> Segment artwork — the track&rsquo;s real cover</div>
+              <div style={S.legendItem}><div style={{ ...S.swatch, background: '#6d5ce0' }} /> No artwork — stable per-track color</div>
             </div>
           </div>
 
@@ -520,7 +484,6 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
 
           <div style={S.trackList}>
             {tracks.map((t, i) => {
-              const color = segmentColors.get(i);
               return (
                 <React.Fragment key={i}>
                   <div
@@ -531,13 +494,19 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
                     onMouseLeave={() => setActiveIndex(prev => (prev === i ? null : prev))}
                   >
                     <div style={S.idx}>{i + 1}</div>
-                    {t.trackId ? (
-                      <div style={{ ...S.art, background: color ? color.primary : 'var(--surface-subtle)' }} />
-                    ) : (
-                      <div style={{ ...S.art, background: 'var(--surface-subtle)', boxShadow: 'inset 0 0 0 1px var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-faint)' }}>
-                        <RemovedIcon />
-                      </div>
-                    )}
+                    <div data-testid={`track-art-${i}`} style={{ ...S.art, position: 'relative', background: fallbackColorFor(t) }}>
+                      {t.albumId != null && (
+                        <ArtImage
+                          src={api.albumArtUrl(t.albumId as string, 300)}
+                          alt=""
+                          wrapperStyle={S.artImgWrap}
+                          imgStyle={S.artImg}
+                        />
+                      )}
+                      {!t.trackId && (
+                        <div style={S.removedBadge} title="Removed from library"><RemovedIcon /></div>
+                      )}
+                    </div>
                     <div style={S.trackInfo}>
                       <div style={S.trackTitle}>
                         {t.title}
@@ -599,10 +568,12 @@ const S: Record<string, React.CSSProperties> = {
   tick: { flexShrink: 0, fontSize: 9.5, color: 'var(--text-faint)', borderLeft: '1px solid var(--border)', paddingLeft: 4 },
   recenterBtn: { position: 'absolute', bottom: 34, right: 26, width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--accent)', background: 'var(--accent)', color: '#1a1310', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 6px 16px rgba(0,0,0,.5)', zIndex: 6 },
   segmentSvg: { position: 'absolute', bottom: 0, left: 0, width: '100%', height: '100%' },
-  segLabel: { position: 'absolute', top: 8, left: 9, fontSize: 10.5, color: 'rgba(255,255,255,.92)', fontWeight: 600, textShadow: '0 1px 3px rgba(0,0,0,.8)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '92%', display: 'flex', alignItems: 'center', gap: 5 },
-  artSwatch: { width: 7, height: 7, borderRadius: 2, flexShrink: 0 },
-  segSub: { position: 'absolute', top: 24, left: 9, fontSize: 9.5, color: 'rgba(255,255,255,.6)', textShadow: '0 1px 3px rgba(0,0,0,.8)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '92%' },
-  noArtMark: { position: 'absolute', bottom: 8, right: 9, fontSize: 9, color: 'rgba(255,255,255,.45)', display: 'flex', alignItems: 'center', gap: 4 },
+  segLabel: { position: 'absolute', top: 8, left: 9, fontSize: 10.5, color: 'rgba(255,255,255,.92)', fontWeight: 600, textShadow: '0 1px 3px rgba(0,0,0,.8)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '92%' },
+  segmentArtWrap: { position: 'absolute', inset: 0 },
+  segmentArt: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' },
+  segmentScrim: { position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(0,0,0,.15) 0%, rgba(0,0,0,.55) 100%)', pointerEvents: 'none' },
+  segSub: { position: 'absolute', top: 24, left: 9, fontSize: 9.5, color: 'rgba(255,255,255,.75)', textShadow: '0 1px 3px rgba(0,0,0,.8)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '92%' },
+  noArtMark: { position: 'absolute', bottom: 8, right: 9, fontSize: 9, color: 'rgba(255,255,255,.75)', textShadow: '0 1px 3px rgba(0,0,0,.8)', display: 'flex', alignItems: 'center', gap: 4 },
   xfade: { position: 'absolute', top: 0, bottom: 0, width: 18, background: 'repeating-linear-gradient(45deg, rgba(99,102,241,.35) 0 4px, rgba(99,102,241,.15) 4px 8px)', zIndex: 3 },
   xfadeTag: { position: 'absolute', bottom: -22, right: -10, fontSize: 9.5, color: 'var(--accent)', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, padding: '2px 5px', whiteSpace: 'nowrap' },
   tooltip: { position: 'absolute', top: -108, width: 220, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', boxShadow: '0 14px 36px rgba(0,0,0,.55)', zIndex: 20, pointerEvents: 'none' },
@@ -616,7 +587,10 @@ const S: Record<string, React.CSSProperties> = {
   trackRow: { display: 'flex', alignItems: 'center', gap: 14, padding: '11px 4px', borderBottom: '1px solid var(--border)', cursor: 'pointer', borderRadius: 8 },
   trackRowActive: { background: 'var(--surface-subtle)' },
   idx: { width: 20, textAlign: 'center', fontSize: 12, color: 'var(--text-faint)' },
-  art: { width: 38, height: 38, borderRadius: 7, flexShrink: 0 },
+  art: { width: 38, height: 38, borderRadius: 7, flexShrink: 0, overflow: 'hidden' },
+  artImgWrap: { position: 'absolute', inset: 0 },
+  artImg: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' },
+  removedBadge: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 4, background: 'rgba(9,9,11,.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' },
   trackInfo: { flex: 1, minWidth: 0 },
   trackTitle: { fontSize: 13.5, color: 'var(--text)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   trackArtist: { fontSize: 12, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
