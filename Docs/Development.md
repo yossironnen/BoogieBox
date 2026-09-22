@@ -35,11 +35,19 @@ The root `npm install` installs repo-level tooling. The client and Tauri desktop
 
 ## Run In Development
 
+Windows:
+
 ```bat
 dev.bat
 ```
 
-`dev.bat` prefers a matching Rust release server under `Releases\boogiebox-VERSION-win-rs\`, starts it with development configuration, then starts the Vite client when Node tooling is available.
+Linux:
+
+```bash
+./dev.sh
+```
+
+Both prefer a matching Rust release server (`Releases\boogiebox-VERSION-win-rs\` on Windows, `Releases/boogiebox-VERSION-linux-rs/` on Linux), start it with development configuration, then start the Vite client when Node tooling is available. `dev.sh` mirrors `dev.bat`.
 
 ## Build
 

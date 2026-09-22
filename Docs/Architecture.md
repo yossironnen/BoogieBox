@@ -31,7 +31,15 @@ Important server modules:
 - `src/waveform_map.rs`: waveform generation.
 - `src/bpm_analysis.rs`: BPM analysis.
 - `src/mix_worker.rs`: BoogieMix planning and rendering.
+- `src/beat_grid.rs`: beat-grid detection used for BoogieMix transitions.
+- `src/mix_priority_gate.rs`: BoogieMix job priority/concurrency gating.
+- `src/story_image.rs`: BoogieMix story image generation.
 - `src/deep_analysis.rs`: optional BoogieMix deep-analysis queueing and status.
+- `src/artist_radio.rs`: Artist Radio queue building.
+- `src/similar_artists.rs`: locally-owned similar-artist resolution.
+- `src/radio_metadata.rs`: background Last.fm/MusicBrainz/ListenBrainz tag and mood-tag collection.
+- `src/tag_taxonomy.rs`: style/mood tag normalization for Artist Radio.
+- `src/db_warmup.rs`: background cache warm-up on startup and library switch.
 - `src/ffmpeg.rs`: FFmpeg and FFprobe resolution.
 - `src/settings.rs`: global and per-user settings normalization.
 - `src/server_config.rs`: database locator and packaged runtime config.

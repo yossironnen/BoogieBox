@@ -9,10 +9,13 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `README.md` | Public project overview. |
 | `package.json` | Root developer scripts for tests, linting, Semgrep, and Rust checks. |
 | `setup-dev.bat` | Interactive developer environment bootstrap. |
-| `dev.bat` | Development launcher. |
+| `dev.bat` | Development launcher (Windows). |
+| `dev.sh` | Development launcher (Linux); mirrors `dev.bat`. |
 | `build-server-rust.bat` | Rust standalone server release and installer build flow (Windows). |
 | `build-server-rust.sh` | Rust standalone server release build flow (Linux). |
 | `build-desktop.bat` | Tauri desktop release build flow. |
+| `build-docker-linux-amd64.bat` / `.sh` | Builds the Linux amd64 Docker image (CPU-only BoogieMix). |
+| `docker/linux-amd64/` | Docker build context and container entrypoint for the Linux image. |
 | `Docs/` | Public and project documentation. |
 | `client/` | React and TypeScript client. |
 | `server-rs/` | Rust server and database crates. |
