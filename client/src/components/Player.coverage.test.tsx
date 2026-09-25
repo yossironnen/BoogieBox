@@ -164,7 +164,7 @@ describe('Player comprehensive behavior', () => {
     setStreamDirect(false);
   });
 
-  it('draws and cycles every visualizer mode and wave style using the live analyser graph', async () => {
+  it('draws every visualizer mode and wave style via the mode selector using the live analyser graph', async () => {
     const { context } = installAudioContext();
     localStorage.setItem('vizMode', 'bars');
     const state: PlayerState = {
@@ -177,25 +177,75 @@ describe('Player comprehensive behavior', () => {
 
     await waitFor(() => expect(context.createAnalyser).toHaveBeenCalled());
     expect(ctx2d.fillRect).toHaveBeenCalled();
-    fireEvent.click(screen.getByTitle('Switch to needle meter'));
-    expect(screen.getByTitle('Switch to HiFi meter')).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle('Switch to HiFi meter'));
-    expect(screen.getByTitle('Switch to visualizer')).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle('Switch to visualizer'));
-    expect(screen.getByTitle('Switch to bar meter')).toBeInTheDocument();
 
-    const waveStyle = screen.getByTitle(/Wave style:/);
-    fireEvent.click(waveStyle);
+    const selector = screen.getByRole('group', { name: 'Visualizer mode' });
+    const buttons = within(selector).getAllByRole('button');
+    expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['Bar meter', 'Needle meter', 'HiFi meter', 'Visualizer']);
+    const pressed = (name: string) => within(selector).getByRole('button', { name }).getAttribute('aria-pressed');
+    expect(pressed('Bar meter')).toBe('true');
+    expect(screen.queryByTitle(/Wave style:/)).toBeNull();
+
+    fireEvent.click(within(selector).getByRole('button', { name: 'Needle meter' }));
+    expect(pressed('Needle meter')).toBe('true');
+    expect(pressed('Bar meter')).toBe('false');
+    expect(localStorage.getItem('vizMode')).toBe('needle');
+
+    fireEvent.click(within(selector).getByRole('button', { name: 'HiFi meter' }));
+    expect(pressed('HiFi meter')).toBe('true');
+    expect(localStorage.getItem('vizMode')).toBe('hifi');
+
+    fireEvent.click(within(selector).getByRole('button', { name: 'Visualizer' }));
+    expect(pressed('Visualizer')).toBe('true');
     fireEvent.click(screen.getByTitle(/Wave style:/));
     fireEvent.click(screen.getByTitle(/Wave style:/));
     fireEvent.click(screen.getByTitle(/Wave style:/));
-    fireEvent.click(screen.getByTitle('Switch to bar meter'));
+    fireEvent.click(screen.getByTitle(/Wave style:/));
+
+    fireEvent.click(within(selector).getByRole('button', { name: 'Bar meter' }));
+    expect(screen.queryByTitle(/Wave style:/)).toBeNull();
 
     expect(ctx2d.arc).toHaveBeenCalled();
     expect(ctx2d.createLinearGradient).toHaveBeenCalled();
     expect(ctx2d.createRadialGradient).toHaveBeenCalled();
     expect(localStorage.getItem('vizMode')).toBe('bars');
     expect(context.resume).toHaveBeenCalled();
+  });
+
+  it('jumps straight to any visualizer mode in one click and restores the stored mode', async () => {
+    const { context } = installAudioContext();
+    localStorage.setItem('vizMode', 'hifi');
+    const state: PlayerState = {
+      queue: [track('1')],
+      currentIndex: 0,
+      isPlaying: true,
+      playToken: 1,
+    };
+    render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable />);
+
+    await waitFor(() => expect(context.createAnalyser).toHaveBeenCalled());
+    const selector = screen.getByRole('group', { name: 'Visualizer mode' });
+    expect(within(selector).getByRole('button', { name: 'HiFi meter' }).getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(within(selector).getByRole('button', { name: 'Bar meter' }));
+    fireEvent.click(within(selector).getByRole('button', { name: 'Visualizer' }));
+    expect(within(selector).getByRole('button', { name: 'Visualizer' }).getAttribute('aria-pressed')).toBe('true');
+    expect(localStorage.getItem('vizMode')).toBe('wave');
+  });
+
+  it('falls back to the bar meter when the stored visualizer mode is invalid', async () => {
+    const { context } = installAudioContext();
+    localStorage.setItem('vizMode', 'tube');
+    const state: PlayerState = {
+      queue: [track('1')],
+      currentIndex: 0,
+      isPlaying: true,
+      playToken: 1,
+    };
+    render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable />);
+
+    await waitFor(() => expect(context.createAnalyser).toHaveBeenCalled());
+    const selector = screen.getByRole('group', { name: 'Visualizer mode' });
+    expect(within(selector).getByRole('button', { name: 'Bar meter' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('renders a multi-tile collage in the playbar for a BoogieMix track, and a single image for a normal track', () => {

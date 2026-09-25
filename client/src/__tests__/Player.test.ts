@@ -20,7 +20,10 @@ import {
   DARK_DEFAULT_HIFI_PALETTE,
   normalizeVizMode,
   getNextVizMode,
+  // DEPRECATED import: only used by the deprecated getVizModeToggleTitle test below.
   getVizModeToggleTitle,
+  getVizModeLabel,
+  VIZ_MODES,
   resolveNeedleMeterPalette,
   resolveHifiMeterPalette,
   computeTransitionThreshold,
@@ -309,11 +312,24 @@ describe('viz mode helpers', () => {
     expect(getNextVizMode('wave')).toBe('bars');
   });
 
+  // DEPRECATED: covers getVizModeToggleTitle, kept only while the helper is deprecated (see its
+  // JSDoc in components/Player.tsx). Delete this test when the helper is removed.
   it('returns mode-toggle titles for each visualizer', () => {
     expect(getVizModeToggleTitle('bars')).toContain('needle');
     expect(getVizModeToggleTitle('needle')).toContain('HiFi');
     expect(getVizModeToggleTitle('hifi')).toContain('visualizer');
     expect(getVizModeToggleTitle('wave')).toContain('bar');
+  });
+
+  it('lists visualizer modes in selector order', () => {
+    expect(VIZ_MODES).toEqual(['bars', 'needle', 'hifi', 'wave']);
+  });
+
+  it('returns selector labels for each visualizer mode', () => {
+    expect(getVizModeLabel('bars')).toBe('Bar meter');
+    expect(getVizModeLabel('needle')).toBe('Needle meter');
+    expect(getVizModeLabel('hifi')).toBe('HiFi meter');
+    expect(getVizModeLabel('wave')).toBe('Visualizer');
   });
 });
 

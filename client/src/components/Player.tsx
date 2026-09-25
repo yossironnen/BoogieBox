@@ -549,12 +549,31 @@ export function getNextVizMode(mode: VizMode): VizMode {
   return 'bars';
 }
 
-/** Get Viz Mode Toggle Title is part of this module's public API. */
+/**
+ * Get Viz Mode Toggle Title is part of this module's public API.
+ *
+ * @deprecated Since 0.8.330: the player bar uses `VizModeSelector` (one icon button per mode)
+ * instead of a single cycle button, so nothing in the UI calls this any more. Kept temporarily
+ * for API compatibility and its unit test. Remove it together with the test in
+ * `__tests__/Player.test.ts` ("getVizModeToggleTitle …") once nothing depends on it.
+ * Use `getVizModeLabel` for new code.
+ */
 export function getVizModeToggleTitle(mode: VizMode): string {
   if (mode === 'bars') return 'Switch to needle meter';
   if (mode === 'needle') return 'Switch to HiFi meter';
   if (mode === 'hifi') return 'Switch to visualizer';
   return 'Switch to bar meter';
+}
+
+/** Visualizer modes in selector display order. */
+export const VIZ_MODES: readonly VizMode[] = ['bars', 'needle', 'hifi', 'wave'];
+
+/** Accessible label (title + aria-label) for a visualizer mode selector button. */
+export function getVizModeLabel(mode: VizMode): string {
+  if (mode === 'bars') return 'Bar meter';
+  if (mode === 'needle') return 'Needle meter';
+  if (mode === 'hifi') return 'HiFi meter';
+  return 'Visualizer';
 }
 
 /** Resolve Needle Meter Palette is part of this module's public API. */
@@ -814,13 +833,14 @@ function drawNeedleMeter(
   const DEG_MAX = 325;   // degrees — far right (+VU)
   const degToRad = (d: number) => (d * Math.PI) / 180;
 
-  // Pivot sits in the lower portion of the canvas (visible hinge).
-  // R is constrained so the arc band stays within the canvas width.
+  // Pivot sits just below the bottom edge, like a real VU meter face, so the
+  // arc can span the full width of the short (66px) dock canvas instead of
+  // being shrunk by the height. Only the top of the pivot jewel shows.
   const cx = w / 2;
-  const cy = h * 0.80;
+  const cy = h * 1.02;
   const R  = Math.min(
-    cx / Math.abs(Math.cos(degToRad(DEG_MIN))) * 0.88,   // horizontal fit
-    cy * 0.82,                                             // vertical fit
+    cx / Math.abs(Math.cos(degToRad(DEG_MIN))) * 0.90,   // horizontal fit
+    cy - 6,                                                // vertical fit (6px top margin)
   );
 
   // Map 0–1 level → angle
@@ -933,10 +953,11 @@ function drawNeedleMeter(
   ctx.fillText('VU', cx, h * 0.72);
 
   // ── Channel label (L / R) ──
+  // Bottom-left corner: the bottom-centre is taken by the pivot jewel.
   ctx.fillStyle = palette.channelLabel;
   ctx.font = 'bold 7px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(label, cx, h - 4);
+  ctx.textAlign = 'left';
+  ctx.fillText(label, 6, h - 5);
 
   // ── Needle ──
   const angle = levelAngle(level);
@@ -1005,10 +1026,12 @@ function drawHifiMeter(
   beginRoundedRect(ctx, 1.5, 1.5, w - 3, h * 0.5, 3.5);
   ctx.fill();
 
-  const dialX = 7;
-  const dialY = 8;
-  const dialW = w - 14;
-  const dialH = h - 24;
+  // Dial fills the face (3px bezel) so it isn't squashed on the short 66px
+  // dock canvas; the channel label sits inside the dial's bottom-left corner.
+  const dialX = 3;
+  const dialY = 3;
+  const dialW = w - 6;
+  const dialH = h - 6;
   const dialGrad = ctx.createLinearGradient(0, dialY, 0, dialY + dialH);
   dialGrad.addColorStop(0, palette.dialTop);
   dialGrad.addColorStop(0.52, palette.dialCenter);
@@ -1140,7 +1163,8 @@ function drawHifiMeter(
 
   ctx.fillStyle = palette.channelText;
   ctx.font = 'bold 6px monospace';
-  ctx.fillText(label, w / 2, h - 4.2);
+  ctx.textAlign = 'left';
+  ctx.fillText(label, dialX + 4, h - 8);
 }
 
 function MeterCanvas({
@@ -1386,16 +1410,56 @@ function WaveVisualizer({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StereoVU — manages Web Audio graph, renders both channels + mode toggle
+// VizModeSelector — one icon button per visualizer mode (under the meters)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VIZ_ICON_PROPS = {
+  width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+  strokeWidth: 2.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+} as const;
+
+function VizModeIcon({ mode }: { mode: VizMode }) {
+  if (mode === 'bars') return <svg {...VIZ_ICON_PROPS}><path d="M5 20V10M12 20V4M19 20v-7" /></svg>;
+  if (mode === 'needle') return <svg {...VIZ_ICON_PROPS}><path d="M4 17a8 8 0 0 1 16 0" /><path d="M12 17l4-6" /></svg>;
+  if (mode === 'hifi') return <svg {...VIZ_ICON_PROPS}><rect x="3" y="6" width="18" height="12" rx="2" /><circle cx="9" cy="12" r="2" /><path d="M15 10h3M15 14h3" /></svg>;
+  return <svg {...VIZ_ICON_PROPS}><path d="M2 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0" /></svg>;
+}
+
+function VizModeSelector({ mode, onSelect }: { mode: VizMode; onSelect: (m: VizMode) => void }) {
+  return (
+    <div role="group" aria-label="Visualizer mode" style={P.vizSelector}>
+      {VIZ_MODES.map(m => {
+        const active = m === mode;
+        const label = getVizModeLabel(m);
+        return (
+          <button
+            key={m}
+            type="button"
+            aria-label={label}
+            title={label}
+            aria-pressed={active}
+            onClick={() => onSelect(m)}
+            style={{ ...P.vizSelectorBtn, ...(active ? P.vizSelectorBtnActive : {}) }}
+          >
+            <VizModeIcon mode={m} />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// StereoVU — manages Web Audio graph, renders both channels + mode selector
 // ─────────────────────────────────────────────────────────────────────────────
 
 function StereoVU({
-  analyser, isPlaying, mode, onToggleMode,
+  analyser, isPlaying, mode, onSelectMode,
 }: {
   analyser: AnalyserNode | null;
   isPlaying: boolean;
   mode: VizMode;
-  onToggleMode: () => void;
+  onSelectMode: (mode: VizMode) => void;
 }) {
   // The analyser is created and owned by Player (tapped off the same
   // MediaElementAudioSourceNode the parametric EQ chain uses for the active
@@ -1445,8 +1509,8 @@ function StereoVU({
   // Canvas sizes per mode
   const isNeedleLike = mode !== 'bars';
   const mW = 112;
-  const mH = 90;
-  const nextMode = getNextVizMode(mode);
+  // 66 + 4 gap + 22 selector row fits the 100px desktop dock.
+  const mH = 66;
 
   const miniButtonStyle: React.CSSProperties = {
     background: 'color-mix(in srgb, var(--text) 6%, transparent)',
@@ -1458,21 +1522,13 @@ function StereoVU({
 
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: isNeedleLike ? 2 : 3,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
       padding: '0 8px',
       borderLeft: `1px solid ${PLAYER_THEME_TOKENS.border}`,
       borderRight: `1px solid ${PLAYER_THEME_TOKENS.border}`,
       height: '100%', position: 'relative',
     }}>
-      {/* Mode toggle button — top-right of the meter block */}
-      <button
-        onClick={onToggleMode}
-        title={getVizModeToggleTitle(mode)}
-        style={{ position: 'absolute', top: 6, right: 10, zIndex: 1, ...miniButtonStyle }}
-      >
-        {nextMode === 'needle' ? 'NDL' : nextMode === 'hifi' ? 'HIFI' : nextMode === 'wave' ? 'WAVE' : 'BAR'}
-      </button>
-
+      <div style={{ display: 'flex', alignItems: 'center', gap: isNeedleLike ? 2 : 3 }}>
       {mode === 'bars' && (
         <div style={{
           writingMode: 'vertical-rl', fontSize: 9, fontWeight: 700,
@@ -1505,6 +1561,8 @@ function StereoVU({
           <MeterCanvas analyser={analyserR} channel="right" label="R" isPlaying={isPlaying} mode={mode} width={mW} height={mH} />
         </>
       )}
+      </div>
+      <VizModeSelector mode={mode} onSelect={onSelectMode} />
       {vuDebugOn && (
         <div style={{
           position: 'fixed', left: 4, bottom: 4, zIndex: 9999,
@@ -2195,12 +2253,9 @@ export default function Player({
   const triggerVinylNeedleDropRef = useRef(triggerVinylNeedleDrop);
   triggerVinylNeedleDropRef.current = triggerVinylNeedleDrop;
 
-  const toggleMode = useCallback(() => {
-    setVizMode(m => {
-      const next = getNextVizMode(m);
-      try { localStorage.setItem('vizMode', next); } catch {}
-      return next;
-    });
+  const selectVizMode = useCallback((next: VizMode) => {
+    setVizMode(next);
+    try { localStorage.setItem('vizMode', next); } catch {}
   }, []);
 
   // ─── Fetch crossfade config when queue source changes ────────────────────
@@ -3104,7 +3159,7 @@ export default function Player({
         <div style={P.rightCluster} data-testid="player-right-cluster">
           {/* Visualizer */}
           {audioReady && (
-            <StereoVU analyser={analyserForVu} isPlaying={isPlaying} mode={vizMode} onToggleMode={toggleMode} />
+            <StereoVU analyser={analyserForVu} isPlaying={isPlaying} mode={vizMode} onSelectMode={selectVizMode} />
           )}
 
           {/* Playback modes + Volume + Queue */}
@@ -3259,6 +3314,20 @@ export default function Player({
 }
 
 const P: Record<string, React.CSSProperties> = {
+  // Visualizer mode selector — shared segmented-control look, sized down for the dock.
+  vizSelector: {
+    ...hybridControlStyles.segmentedGroup,
+    padding: 2,
+    borderRadius: 9,
+  },
+  vizSelectorBtn: {
+    ...hybridControlStyles.segment,
+    width: 30, height: 22, minHeight: 22, padding: 0, borderRadius: 7,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  vizSelectorBtnActive: {
+    ...hybridControlStyles.segmentActive,
+  },
   bar: {
     height: DESKTOP_PLAYER_DOCK_HEIGHT,
     minHeight: DESKTOP_PLAYER_DOCK_HEIGHT,
