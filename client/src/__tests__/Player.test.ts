@@ -15,6 +15,7 @@ import {
   shouldResumeAudioContext,
   truncateTrackTitle,
   PLAYER_LAYOUT,
+  shouldShowDockMeters,
   PLAYER_THEME_TOKENS,
   DARK_DEFAULT_NEEDLE_PALETTE,
   DARK_DEFAULT_HIFI_PALETTE,
@@ -466,8 +467,18 @@ describe('PLAYER_LAYOUT', () => {
     expect(PLAYER_LAYOUT.trackInfoMinWidth).toBeGreaterThanOrEqual(160);
     expect(PLAYER_LAYOUT.trackInfoMaxWidth).toBeGreaterThan(PLAYER_LAYOUT.trackInfoMinWidth);
     expect(PLAYER_LAYOUT.progressMinWidth).toBeGreaterThanOrEqual(160);
-    expect(PLAYER_LAYOUT.progressWidth).toBe('36vw');
-    expect(PLAYER_LAYOUT.progressMaxWidth).toBe(460);
+    // Fluid progress: no viewport-width or max-width cap any more.
+    expect(PLAYER_LAYOUT).not.toHaveProperty('progressWidth');
+    expect(PLAYER_LAYOUT).not.toHaveProperty('progressMaxWidth');
+    expect(PLAYER_LAYOUT.metersMinDockWidth).toBeGreaterThan(900);
+  });
+
+  it('hides the VU meters only when the measured dock is too narrow', () => {
+    expect(shouldShowDockMeters(0)).toBe(true);
+    expect(shouldShowDockMeters(PLAYER_LAYOUT.metersMinDockWidth)).toBe(true);
+    expect(shouldShowDockMeters(1920)).toBe(true);
+    expect(shouldShowDockMeters(PLAYER_LAYOUT.metersMinDockWidth - 1)).toBe(false);
+    expect(shouldShowDockMeters(880)).toBe(false);
   });
 });
 

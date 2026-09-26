@@ -2,7 +2,7 @@
  * Defines the Waveform Bar React component and related UI helpers.
  */
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { TrackSection, TransitionWindow } from '../types';
 
 /** Waveform Bar Status is part of this module's public API. */
@@ -63,6 +63,20 @@ export function computeWaveformTimeFromClientX(
 }
 
 /** Downsample Waveform is part of this module's public API. */
+/** Minimum px per bin (bar + 1px gap) before the bin count is reduced. */
+const MIN_BIN_PITCH_PX = 3;
+const MIN_DISPLAY_BINS = 24;
+
+/**
+ * Number of bars that fit a waveform of the given width. Unmeasured (0) keeps the
+ * full DISPLAY_BINS; otherwise each bar gets at least MIN_BIN_PITCH_PX so the row
+ * never forces its container wider than the space the player gives it.
+ */
+export function binsForWidth(width: number): number {
+  if (!(width > 0)) return DISPLAY_BINS;
+  return Math.max(MIN_DISPLAY_BINS, Math.min(DISPLAY_BINS, Math.floor((width + 1) / MIN_BIN_PITCH_PX)));
+}
+
 export function downsampleWaveform(points: number[], targetBins = DISPLAY_BINS): number[] {
   if (!points.length || targetBins <= 0) return [];
   if (points.length === targetBins) return points.slice();
@@ -105,11 +119,23 @@ export default function WaveformBar({
   const draggingRef = useRef(false);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [hoverTime, setHoverTime] = useState<number | null>(null);
+  const [rootWidth, setRootWidth] = useState(0);
 
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const update = () => setRootWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const binCount = binsForWidth(rootWidth);
   const bins = useMemo(() => {
-    if (points && points.length > 0) return downsampleWaveform(points, DISPLAY_BINS);
-    return buildPlaceholderBins(status);
-  }, [points, status]);
+    if (points && points.length > 0) return downsampleWaveform(points, binCount);
+    return buildPlaceholderBins(status, binCount);
+  }, [points, status, binCount]);
 
   const clampedCurrent = clamp(Number(currentTime) || 0, 0, Math.max(duration, 0));
   const playedRatio = duration > 0 ? clamp(clampedCurrent / duration, 0, 1) : 0;
@@ -183,6 +209,7 @@ export default function WaveformBar({
       style={{
         position: 'relative',
         flex: 1,
+        minWidth: 0,
         height: totalHeight,
         display: 'flex',
         flexDirection: 'column',
@@ -200,6 +227,7 @@ export default function WaveformBar({
           display: 'flex',
           alignItems: 'center',
           gap: 1,
+          overflow: 'hidden',
           opacity: status === 'error' ? 0.6 : 1,
         }}
       >

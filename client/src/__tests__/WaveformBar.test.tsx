@@ -6,6 +6,7 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import WaveformBar, {
+  binsForWidth,
   computeWaveformTimeFromClientX,
   downsampleWaveform,
   formatWaveformTime,
@@ -185,5 +186,20 @@ describe('WaveformBar component', () => {
       />,
     );
     expect(screen.getAllByTestId('transition-window-marker')).toHaveLength(2);
+  });
+});
+
+describe('binsForWidth', () => {
+  it('keeps full detail when unmeasured or wide', () => {
+    expect(binsForWidth(0)).toBe(180);
+    expect(binsForWidth(1200)).toBe(180);
+  });
+
+  it('reduces bars so a narrow waveform never needs more width than it has', () => {
+    const bins = binsForWidth(200);
+    expect(bins).toBeLessThan(180);
+    // Each bar is >=1px plus a 1px gap: total min-content must fit the width.
+    expect(bins * 2 - 1).toBeLessThanOrEqual(200);
+    expect(binsForWidth(10)).toBe(24);
   });
 });

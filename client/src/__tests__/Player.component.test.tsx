@@ -177,7 +177,9 @@ describe('Player artist link', () => {
 
     expect(screen.getByTestId('player-right-cluster')).toHaveStyle('margin-left: auto');
     expect(screen.getByTestId('player-right-controls')).not.toHaveStyle('margin-left: auto');
-    expect(screen.getByTestId('player-progress-area')).toHaveStyle('max-width: 460px');
+    // Fluid: the progress area takes the remaining width (no cap) down to its minimum.
+    expect(screen.getByTestId('player-progress-area').style.maxWidth).toBe('');
+    expect(screen.getByTestId('player-progress-area')).toHaveStyle('min-width: 180px');
     expect(screen.getByTestId('player-progress-area')).toHaveStyle('flex: 1 1 0');
   });
 

@@ -273,12 +273,22 @@ export const PLAYER_THEME_TOKENS = {
 /** PLAYER LAYOUT is part of this module's public API. */
 export const PLAYER_LAYOUT = {
   trackTitleMaxChars: 35,
-  trackInfoMinWidth: 180,
-  trackInfoMaxWidth: 360,
-  progressWidth: '36vw',
-  progressMaxWidth: 460,
+  // Track info sizes to its text between these bounds (no fixed vw width, so no dead gap).
+  trackInfoMinWidth: 160,
+  trackInfoMaxWidth: 320,
+  // The progress area takes all remaining width (no cap), down to this minimum.
   progressMinWidth: 180,
+  // Below this dock width the VU meters are hidden so nothing overlaps.
+  metersMinDockWidth: 1080,
 } as const;
+
+/**
+ * Whether the VU meters fit the dock. Unmeasured (0) shows them; a measured dock
+ * narrower than PLAYER_LAYOUT.metersMinDockWidth hides them instead of overlapping.
+ */
+export function shouldShowDockMeters(dockWidth: number): boolean {
+  return dockWidth === 0 || dockWidth >= PLAYER_LAYOUT.metersMinDockWidth;
+}
 
 const WAVEFORM_POLL_INTERVAL_MS = 1400;
 const WAVEFORM_POLL_MAX_ATTEMPTS = 24;
@@ -1892,6 +1902,18 @@ export default function Player({
   const [sonicFingerprintChecked, setSonicFingerprintChecked] = useState(false);
   const [showSonicFingerprint, setShowSonicFingerprint] = useState(false);
   const [audioReady,  setAudioReady]  = useState(false);
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [dockWidth, setDockWidth] = useState(0);
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const update = () => setDockWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [headless]);
+  const showMeters = shouldShowDockMeters(dockWidth);
   const [vizMode,     setVizMode]     = useState<VizMode>(() => {
     try { return normalizeVizMode(localStorage.getItem('vizMode')); } catch { return 'bars'; }
   });
@@ -3017,6 +3039,7 @@ export default function Player({
       {headless ? null : (
 
       <div
+        ref={dockRef}
         data-hybrid-preview-surface={hybridPreview ? 'player' : undefined}
         data-vintage-dock={vintage ? vintage.id : undefined}
         style={{
@@ -3141,8 +3164,6 @@ export default function Player({
             data-testid="player-progress-area"
             style={{
               flex: '1 1 0',
-              width: PLAYER_LAYOUT.progressWidth,
-              maxWidth: PLAYER_LAYOUT.progressMaxWidth,
               minWidth: PLAYER_LAYOUT.progressMinWidth,
               display: 'flex',
               flexDirection: 'column',
@@ -3153,7 +3174,8 @@ export default function Player({
             {sonicFingerprintChecked && (
               <div
                 data-testid="sonic-fingerprint-badge-row"
-                style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}
+                // One line only: wrapping made the dock content taller than the bar.
+                style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'nowrap', overflow: 'hidden', minWidth: 0 }}
               >
                 {sonicFingerprint ? (
                   <>
@@ -3265,7 +3287,7 @@ export default function Player({
 
         <div style={P.rightCluster} data-testid="player-right-cluster">
           {/* Visualizer */}
-          {audioReady && (
+          {audioReady && showMeters && (
             <StereoVU analyser={analyserForVu} isPlaying={isPlaying} mode={vizMode} onSelectMode={selectVizMode} />
           )}
 
@@ -3484,7 +3506,6 @@ const P: Record<string, React.CSSProperties> = {
   },
   trackInfo: {
     flex: '0 1 auto',
-    width: 'min(42ch, 30vw)',
     maxWidth: PLAYER_LAYOUT.trackInfoMaxWidth,
     minWidth: PLAYER_LAYOUT.trackInfoMinWidth,
     overflow: 'hidden',
@@ -3528,8 +3549,6 @@ const P: Record<string, React.CSSProperties> = {
   playBtn:      { backgroundColor: PLAYER_THEME_TOKENS.accent, color: '#fff', borderRadius: '50%', width: 44, height: 44, justifyContent: 'center', padding: 0, transition: 'background-color 300ms ease, box-shadow 300ms ease', boxShadow: '0 0 18px color-mix(in srgb, var(--accent-primary, var(--accent)) 35%, transparent)' },
   progressArea: {
     flex: '1 1 0',
-    width: PLAYER_LAYOUT.progressWidth,
-    maxWidth: PLAYER_LAYOUT.progressMaxWidth,
     minWidth: PLAYER_LAYOUT.progressMinWidth,
     display: 'flex',
     alignItems: 'center',
