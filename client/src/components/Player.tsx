@@ -22,6 +22,8 @@ import {
   migrateGraphicProfileToParametricProfile,
 } from '../audio/eq';
 import ParametricEqEditor from './ParametricEqEditor';
+import RotaryKnob from './RotaryKnob';
+import { getVintagePageVars, useVintageStyle } from '../vintageThemes';
 import { RadioReasonChip } from './ArtistRadioControls';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
 import {
@@ -305,6 +307,11 @@ interface NeedleMeterThemeVars {
   accent: string;
   text: string;
   textMuted: string;
+  /** Vintage meter face tokens (set on :root only while a Vintage style is active). */
+  vuFace?: string;
+  vuInk?: string;
+  vuHot?: string;
+  vuRing?: string;
 }
 
 /** Needle Meter Palette is part of this module's public API. */
@@ -437,6 +444,7 @@ interface Rgb {
 const WARM_YELLOW: Rgb = { r: 234, g: 179, b: 8 };
 const WARNING_RED: Rgb = { r: 239, g: 68, b: 68 };
 const BLACK: Rgb = { r: 0, g: 0, b: 0 };
+const WHITE: Rgb = { r: 255, g: 255, b: 255 };
 const ELECTRIC_BLUE: Rgb = { r: 3, g: 163, b: 243 };
 
 function normalizeThemeValue(v: string): string {
@@ -576,8 +584,83 @@ export function getVizModeLabel(mode: VizMode): string {
   return 'Visualizer';
 }
 
+interface VintageMeterColors { face: Rgb; ink: Rgb; hot: Rgb; ring: Rgb }
+
+function getVintageMeterColors(vars: NeedleMeterThemeVars): VintageMeterColors | null {
+  if (!vars.vuFace) return null;
+  const face = parseColorToRgb(vars.vuFace);
+  if (!face) return null;
+  const ink = parseColorToRgb(vars.vuInk ?? '') ?? BLACK;
+  const hot = parseColorToRgb(vars.vuHot ?? '') ?? WARNING_RED;
+  const ring = parseColorToRgb(vars.vuRing ?? '') ?? hot;
+  return { face, ink, hot, ring };
+}
+
+/** Cream/amber VU face with ink scale and a hot red zone (Vintage themes). */
+function resolveVintageNeedlePalette({ face, ink, hot, ring }: VintageMeterColors): NeedleMeterPalette {
+  const warn = mixRgb(ink, hot, 0.5);
+  return {
+    plateTop: rgbString(mixRgb(face, WHITE, 0.18)),
+    plateMid: rgbString(face),
+    plateBottom: rgbString(mixRgb(face, ink, 0.12)),
+    bezel: rgbString(ring),
+    arcGreenStart: rgbaString(ink, 0.10),
+    arcGreenEnd: rgbaString(ink, 0.28),
+    arcYellowStart: rgbaString(warn, 0.30),
+    arcYellowEnd: rgbaString(warn, 0.50),
+    arcRedStart: rgbaString(hot, 0.55),
+    arcRedEnd: rgbaString(hot, 0.90),
+    arcBorder: rgbaString(ink, 0.45),
+    tickLow: rgbaString(ink, 0.80),
+    tickWarn: rgbaString(warn, 0.85),
+    tickHot: rgbaString(hot, 0.95),
+    labelNormal: rgbaString(ink, 0.85),
+    labelHot: rgbString(hot),
+    vuLabel: rgbaString(ink, 0.80),
+    channelLabel: rgbaString(ink, 0.60),
+    needleShadow: 'rgba(0,0,0,0.35)',
+    needleStart: rgbString(ink),
+    needleMid: rgbString(ink),
+    needleEnd: rgbString(mixRgb(ink, hot, 0.3)),
+    pivotTop: rgbString(mixRgb(ink, face, 0.3)),
+    pivotMid: rgbString(ink),
+    pivotBottom: rgbString(BLACK),
+    pivotStroke: rgbString(ring),
+  };
+}
+
+/** HiFi meter with the same amber face as the Vintage needle meter. */
+function resolveVintageHifiPalette({ face, ink, hot, ring }: VintageMeterColors): HifiMeterPalette {
+  return {
+    frameTop: rgbString(mixRgb(ink, face, 0.08)),
+    frameBottom: rgbString(mixRgb(ink, BLACK, 0.3)),
+    frameStroke: rgbString(ring),
+    glassTop: 'rgba(255,255,255,0.10)',
+    glassBottom: 'rgba(0,0,0,0.08)',
+    glassGlow: rgbaString(mixRgb(face, WHITE, 0.3), 0.35),
+    dialTop: rgbString(mixRgb(face, WHITE, 0.15)),
+    dialCenter: rgbString(face),
+    dialBottom: rgbString(mixRgb(face, hot, 0.12)),
+    dialEdge: rgbString(mixRgb(ring, ink, 0.3)),
+    scaleLine: rgbaString(ink, 0.85),
+    tickMajor: rgbaString(ink, 0.90),
+    tickMinor: rgbaString(ink, 0.70),
+    scaleText: rgbaString(ink, 0.90),
+    unitText: rgbaString(ink, 0.75),
+    channelText: rgbaString(ink, 0.70),
+    needleShadow: 'rgba(0,0,0,0.40)',
+    needleCore: rgbString(ink),
+    needleHighlight: rgbString(hot),
+    pivotOuter: rgbString(ink),
+    pivotInner: rgbString(ring),
+    pivotStroke: rgbString(face),
+  };
+}
+
 /** Resolve Needle Meter Palette is part of this module's public API. */
 export function resolveNeedleMeterPalette(vars: NeedleMeterThemeVars): NeedleMeterPalette {
+  const vintage = getVintageMeterColors(vars);
+  if (vintage) return resolveVintageNeedlePalette(vintage);
   if (isDarkDefaultTheme(vars)) {
     return { ...DARK_DEFAULT_NEEDLE_PALETTE };
   }
@@ -621,6 +704,8 @@ export function resolveNeedleMeterPalette(vars: NeedleMeterThemeVars): NeedleMet
 
 /** Resolve Hifi Meter Palette is part of this module's public API. */
 export function resolveHifiMeterPalette(vars: NeedleMeterThemeVars): HifiMeterPalette {
+  const vintage = getVintageMeterColors(vars);
+  if (vintage) return resolveVintageHifiPalette(vintage);
   if (isDarkDefaultTheme(vars)) {
     return { ...DARK_DEFAULT_HIFI_PALETTE };
   }
@@ -675,6 +760,10 @@ function readNeedleThemeVarsFromCss(): NeedleMeterThemeVars {
     accent: read('--accent', DEFAULT_NEEDLE_THEME_VARS.accent),
     text: read('--text', DEFAULT_NEEDLE_THEME_VARS.text),
     textMuted: read('--text-muted', DEFAULT_NEEDLE_THEME_VARS.textMuted),
+    vuFace: read('--vu-face', '') || undefined,
+    vuInk: read('--vu-ink', '') || undefined,
+    vuHot: read('--vu-hot', '') || undefined,
+    vuRing: read('--vu-ring', '') || undefined,
   };
 }
 
@@ -1509,7 +1598,7 @@ function StereoVU({
   // Canvas sizes per mode
   const isNeedleLike = mode !== 'bars';
   const mW = 112;
-  // 66 + 4 gap + 22 selector row fits the 100px desktop dock.
+  // 66 + 4 gap + 22 selector row fits the 116px desktop dock.
   const mH = 66;
 
   const miniButtonStyle: React.CSSProperties = {
@@ -1581,10 +1670,14 @@ function StereoVU({
 // Slider
 // ─────────────────────────────────────────────────────────────────────────────
 
-function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_THEME_TOKENS.accent, thin = false, vertical = false, verticalHeight = 64 }: {
+function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_THEME_TOKENS.accent, thin = false, vertical = false, verticalHeight = 64, fill, trackHeight }: {
   value: number; max: number; onChange: (v: number) => void;
   onSeekStart?: () => void; onSeekEnd?: () => void;
   color?: string; thin?: boolean; vertical?: boolean; verticalHeight?: number;
+  /** CSS background for the filled part (overrides `color`), e.g. Vintage stripes. */
+  fill?: string;
+  /** Horizontal track thickness in px (overrides `thin`). */
+  trackHeight?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -1605,7 +1698,7 @@ function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_T
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   };
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
-  const h = thin ? 3 : 4;
+  const h = trackHeight ?? (thin ? 3 : 4);
   if (vertical) {
     return (
       <div ref={ref} onMouseDown={onMouseDown} style={{ width: h+8, height: verticalHeight, display: 'flex', justifyContent: 'center', cursor: 'pointer', userSelect: 'none' }}>
@@ -1619,7 +1712,7 @@ function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_T
   return (
     <div ref={ref} onMouseDown={onMouseDown} style={{ flex: 1, height: h+8, display: 'flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}>
       <div style={{ flex: 1, height: h, backgroundColor: PLAYER_THEME_TOKENS.border, borderRadius: h, position: 'relative' }}>
-        <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${pct}%`, backgroundColor: color, borderRadius: h }} />
+        <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${pct}%`, background: fill ?? color, borderRadius: h }} />
         <div style={{ position: 'absolute', top: '50%', left: `${pct}%`, transform: 'translate(-50%,-50%)', width: thin?10:12, height: thin?10:12, backgroundColor: PLAYER_THEME_TOKENS.text, borderRadius: '50%', boxShadow: '0 1px 4px rgba(0,0,0,0.35)' }} />
       </div>
     </div>
@@ -1761,6 +1854,13 @@ export default function Player({
   const [duration,    setDuration]    = useState(0);
   const [volume,      setVolume]      = useState(0.5);
   const [muted,       setMuted]       = useState(false);
+  const vintage = useVintageStyle();
+  const ctrlBtn: React.CSSProperties = vintage ? { ...P.ctrlBtn, ...vintage.styles.dockCtrlBtn } : P.ctrlBtn;
+  // Popups rendered inside the dark-scoped dock get the page palette back (matches the queue panel).
+  const dockPopupVars = useMemo(
+    () => (vintage ? getVintagePageVars(vintage) as React.CSSProperties : {}),
+    [vintage],
+  );
   const [eqOpen,      setEqOpen]      = useState(false);
   const [autoEqEnabled, setAutoEqEnabled] = useState(false);
   const [autoEqCurrentPreset, setAutoEqCurrentPreset] = useState<BuiltinEqProfileName>('Rock');
@@ -2918,9 +3018,12 @@ export default function Player({
 
       <div
         data-hybrid-preview-surface={hybridPreview ? 'player' : undefined}
+        data-vintage-dock={vintage ? vintage.id : undefined}
         style={{
           ...P.bar,
           ...(hybridPreview ? hybridPlayerStyles.bar : {}),
+          // Vintage: the dock is a dark surface on a light theme, so its palette is scoped here.
+          ...(vintage ? { ...(vintage.dockVars as React.CSSProperties), ...vintage.styles.dockBar } : {}),
           ...(isVinylMode ? P.barVinyl : {}),
         }}
       >
@@ -2928,6 +3031,7 @@ export default function Player({
         <div style={{
           ...P.albumArtWrap,
           ...(hybridPreview ? hybridPlayerStyles.albumArtWrap : {}),
+          ...(vintage ? vintage.styles.dockAlbumArtWrap : {}),
         }}>
           {currentTrackCoverAlbumIds ? (
             <PlaylistArtwork albumIds={currentTrackCoverAlbumIds} compact responsive />
@@ -2991,11 +3095,11 @@ export default function Player({
 
         {/* Transport */}
         <div style={P.controls}>
-          <button style={P.ctrlBtn} onClick={playPrev}><PrevIcon /></button>
-          <button style={{ ...P.ctrlBtn, ...P.playBtn }} onClick={() => onStateChange({ ...state, isPlaying: !isPlaying })}>
+          <button style={ctrlBtn} onClick={playPrev}><PrevIcon /></button>
+          <button style={{ ...ctrlBtn, ...P.playBtn, ...(vintage ? vintage.styles.dockPlayBtn : {}) }} onClick={() => onStateChange({ ...state, isPlaying: !isPlaying })}>
             {loading ? <span style={{ fontSize: 14, lineHeight: 1 }}>•••</span> : isPlaying ? <PauseIcon /> : <PlayIcon />}
           </button>
-          <button style={P.ctrlBtn} onClick={playNext}><NextIcon /></button>
+          <button style={ctrlBtn} onClick={playNext}><NextIcon /></button>
         </div>
 
                 {/* Progress */}
@@ -3105,6 +3209,7 @@ export default function Player({
             {/* Expandable Sonic Fingerprint panel — rendered as a fixed popup above the player bar */}
             {sonicFingerprint && showSonicFingerprint && (
               <div style={{
+                ...dockPopupVars,
                 position: 'fixed',
                 bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP,
                 left: 12,
@@ -3145,6 +3250,8 @@ export default function Player({
                       />
                     ) : (
                       <Slider value={currentTime} max={duration || 1}
+                        fill={vintage?.styles.dockProgressFill}
+                        trackHeight={vintage ? 8 : undefined}
                         onChange={v => { seekValueRef.current = v; setCurrentTime(v); }}
                         onSeekStart={() => setSeeking(true)}
                         onSeekEnd={() => { setSeeking(false); const a = getActiveAudio(); if (a) a.currentTime = seekValueRef.current; }} />
@@ -3167,13 +3274,13 @@ export default function Player({
             <div style={P.modeControls}>
               {/* Shuffle */}
               <button
-                style={{ ...P.ctrlBtn, color: shuffled ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(shuffled ? P.ctrlBtnActive : {}) }}
+                style={{ ...ctrlBtn, color: shuffled ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(shuffled ? P.ctrlBtnActive : {}) }}
                 title="Shuffle queue"
                 disabled={isVinylMode}
                 onClick={toggleShuffle}
               ><ShuffleIcon /></button>
               <button
-                style={{ ...P.ctrlBtn, color: repeatMode !== 'off' ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(repeatMode !== 'off' ? P.ctrlBtnActive : {}) }}
+                style={{ ...ctrlBtn, color: repeatMode !== 'off' ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(repeatMode !== 'off' ? P.ctrlBtnActive : {}) }}
                 title={repeatMode === 'off' ? 'Repeat off' : repeatMode === 'one' ? 'Repeat track' : 'Repeat queue'}
                 aria-label={repeatMode === 'off' ? 'Repeat off' : repeatMode === 'one' ? 'Repeat track' : 'Repeat queue'}
                 onClick={cycleRepeatMode}
@@ -3181,7 +3288,7 @@ export default function Player({
                 {repeatMode === 'one' ? <RepeatOneIcon /> : <RepeatAllIcon />}
               </button>
               <button
-                style={{ ...P.ctrlBtn, color: lyricsOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(lyricsOpen ? P.ctrlBtnActive : {}) }}
+                style={{ ...ctrlBtn, color: lyricsOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(lyricsOpen ? P.ctrlBtnActive : {}) }}
                 title="Show lyrics"
                 aria-label="Show lyrics"
                 onClick={() => {
@@ -3194,9 +3301,9 @@ export default function Player({
             <div style={{ width: 1, height: 20, backgroundColor: PLAYER_THEME_TOKENS.border, flexShrink: 0 }} />
             {/* Volume icon */}
             <div style={P.volumeStack}>
-              <button style={P.ctrlBtn} onClick={() => setMuted(m => !m)}><VolumeIcon muted={muted} /></button>
+              <button style={ctrlBtn} onClick={() => setMuted(m => !m)}><VolumeIcon muted={muted} /></button>
               <button
-                style={{ ...P.ctrlBtn, color: eqOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(eqOpen ? P.ctrlBtnActive : {}) }}
+                style={{ ...ctrlBtn, color: eqOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(eqOpen ? P.ctrlBtnActive : {}) }}
                 title="Equalizer"
                 aria-label="Equalizer"
                 onClick={() => setEqOpen((open) => !open)}
@@ -3204,15 +3311,24 @@ export default function Player({
                 <EqIcon />
               </button>
             </div>
-            {/* Vertical volume slider */}
-            <Slider
-              value={muted ? 0 : volume} max={1}
-              onChange={v => { setVolume(v); setMuted(false); }}
-              color={PLAYER_THEME_TOKENS.textMuted} thin
-              vertical verticalHeight={60}
-            />
+            {vintage ? (
+              <RotaryKnob
+                value={muted ? 0 : volume}
+                muted={muted}
+                onChange={v => { setVolume(v); setMuted(false); }}
+                onToggleMute={() => setMuted(m => !m)}
+              />
+            ) : (
+              /* Vertical volume slider */
+              <Slider
+                value={muted ? 0 : volume} max={1}
+                onChange={v => { setVolume(v); setMuted(false); }}
+                color={PLAYER_THEME_TOKENS.textMuted} thin
+                vertical verticalHeight={60}
+              />
+            )}
             {eqOpen && (
-              <div style={{ ...P.eqPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }} ref={eqPopupRef} role="dialog" aria-label="Equalizer">
+              <div style={{ ...dockPopupVars, ...P.eqPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }} ref={eqPopupRef} role="dialog" aria-label="Equalizer">
                 <div style={P.eqHeader}>
                   <strong style={{ fontSize: 14 }}>Equalizer</strong>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
@@ -3244,7 +3360,7 @@ export default function Player({
             )}
             {/* Queue */}
             <button
-              style={{ ...P.ctrlBtn, color: showQueue ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(showQueue ? P.ctrlBtnActive : {}) }}
+              style={{ ...ctrlBtn, color: showQueue ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(showQueue ? P.ctrlBtnActive : {}) }}
               onClick={() => setShowQueue(q => !q)}
               title="Playback queue"
               aria-label="Playback queue"
@@ -3254,7 +3370,7 @@ export default function Player({
           </div>
           {lyricsOpen && (
             <div
-              style={{ ...P.lyricsPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }}
+              style={{ ...dockPopupVars, ...P.lyricsPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }}
               role="dialog"
               aria-label="Lyrics popup"
             >

@@ -23,6 +23,8 @@ import { ArtistRadioSplitButton } from './ArtistRadioControls';
 import StarRating from './StarRating';
 import { phase2 } from '../uiPhase2';
 import { HYBRID_ARTWORK_HOVER, hybridBrowseStyles } from '../hybridPreview';
+import { useVintageStyle } from '../vintageThemes';
+import VintageRecord, { VINTAGE_SLEEVE_COVER_STYLE } from './VintageRecord';
 
 const ALPHA_RAIL_LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
 const ROOT_SCROLL_BY_VIEW: Record<string, number> = {};
@@ -1657,6 +1659,7 @@ export function AlbumGrid({
   const [hoveredAlbumId, setHoveredAlbumId] = useState<ClientEntityId | null>(null);
   const [hoveredArtistLinkId, setHoveredArtistLinkId] = useState<ClientEntityId | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const vintage = useVintageStyle();
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const letterFirstIndexMap = useMemo(() => buildLetterFirstIndexMap(albums, (album) => album.title), [albums]);
   const availableLetters = useMemo(() => new Set(Object.keys(letterFirstIndexMap)), [letterFirstIndexMap]);
@@ -1868,10 +1871,22 @@ export function AlbumGrid({
       >
         <div style={{
           ...L.gridArt,
-          ...(hybridPreview && hoveredAlbumId === album.id ? L.gridArtHovered : {}),
+          ...(hybridPreview && !vintage && hoveredAlbumId === album.id ? L.gridArtHovered : {}),
+          ...(vintage ? L.gridArtVintage : {}),
         }}>
-          <AlbumTileImage albumId={album.id} title={album.title} />
-          {hybridPreview && (
+          {vintage ? (
+            // Sleeve at 86% of the (unchanged) art box, so the record peeks into the
+            // remaining width and the windowed grid's tile/row maths stay as they are.
+            <div style={L.gridVintageSleeve}>
+              <VintageRecord albumId={album.id} hovered={hoveredAlbumId === album.id} hoverShift="8px" />
+              <div style={{ ...VINTAGE_SLEEVE_COVER_STYLE, ...L.gridVintageCover }}>
+                <AlbumTileImage albumId={album.id} title={album.title} />
+              </div>
+            </div>
+          ) : (
+            <AlbumTileImage albumId={album.id} title={album.title} />
+          )}
+          {hybridPreview && !vintage && (
             <div
               data-hybrid-art-hover-overlay="album"
               aria-hidden="true"
@@ -4111,6 +4126,28 @@ const L: Record<string, React.CSSProperties> = {
     border: '1px solid var(--browse-art-border-color, var(--border))',
     boxShadow: 'var(--browse-art-shadow, none)',
     transition: 'outline-color 120ms ease, filter 120ms ease',
+  },
+  // Vintage: the art box becomes transparent room for sleeve + record (same size as normal).
+  gridArtVintage: {
+    background: 'transparent',
+    border: 'none',
+    borderRadius: 0,
+    boxShadow: 'none',
+    overflow: 'visible',
+  },
+  gridVintageSleeve: {
+    position: 'absolute',
+    left: 0,
+    top: '7%',
+    width: '86%',
+    aspectRatio: '1 / 1',
+  },
+  gridVintageCover: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 2,
+    overflow: 'hidden',
+    background: 'var(--bg)',
   },
   gridArtHovered: {
     outline: 'var(--browse-art-hover-outline, none)',

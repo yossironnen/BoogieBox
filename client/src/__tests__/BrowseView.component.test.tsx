@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowseView, { AlbumGrid, AlbumList, mergeAlbumChanges } from '../components/BrowseView';
 import { ContextMenuRoot } from '../components/ContextMenu';
 import type { Album, ClientEntityId, Library, Track } from '../types';
+import { VINTAGE_STYLES, VintageStyleContext } from '../vintageThemes';
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -1366,6 +1367,20 @@ describe('Root album windowing (Phase 2)', () => {
     expect(tiles.length).toBeLessThan(50);
   });
 
+  it('Vintage sleeves keep the windowed grid maths: same mounted tiles as the standard grid', () => {
+    const albums = makeAlbumFixtures(9000);
+    const grid = <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} showArtist />;
+    const standard = render(grid);
+    const standardCount = standard.container.querySelectorAll('[role="button"]').length;
+    standard.unmount();
+
+    const vintage = render(
+      <VintageStyleContext.Provider value={VINTAGE_STYLES.recordshop}>{grid}</VintageStyleContext.Provider>,
+    );
+    expect(vintage.container.querySelectorAll('[role="button"]').length).toBe(standardCount);
+    expect(vintage.container.querySelectorAll('[data-vintage-record]').length).toBe(standardCount);
+  });
+
   it('AlbumList mounts only the calculated window plus overscan for a 9,000-album fixture', () => {
     const albums = makeAlbumFixtures(9000);
     render(
@@ -1598,5 +1613,40 @@ describe('Root album windowing (Phase 2)', () => {
     const rendered = screen.getAllByText(/Album \d{4}/).length;
     expect(rendered).toBeGreaterThan(10);
     expect(rendered).toBeLessThan(50);
+  });
+});
+
+describe('AlbumGrid — Vintage Record Shop sleeves', () => {
+  const albums = [
+    { id: 'a1', title: 'Night Drive', artist: 'Chromatics', album_artist: 'Chromatics', year: 2007, genre: 'Synth', track_count: 9, total_duration: 2400, rating: null } as Album,
+    { id: 'a2', title: 'Kill for Love', artist: 'Chromatics', album_artist: 'Chromatics', year: 2012, genre: 'Synth', track_count: 16, total_duration: 5400, rating: null } as Album,
+  ];
+
+  it('draws each album as a sleeve with a record labelled by a round crop of its cover', () => {
+    const { container } = render(
+      <VintageStyleContext.Provider value={VINTAGE_STYLES.recordshop}>
+        <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} />
+      </VintageStyleContext.Provider>,
+    );
+
+    const record = container.querySelector('[data-vintage-record="a1"]') as HTMLElement;
+    expect(record).not.toBeNull();
+    expect(record).toHaveAttribute('aria-hidden', 'true');
+    const labelImg = record.querySelector('[data-vintage-record-label] img');
+    expect(labelImg?.getAttribute('src')).toBe('/api/albums/a1/art?size=300');
+    expect(container.querySelectorAll('[data-vintage-record]')).toHaveLength(2);
+
+    expect(record.style.transform).toBe('');
+    fireEvent.mouseEnter(screen.getByTitle('Night Drive'));
+    expect(record.style.transform).toBe('translateX(8px)');
+    // Hover actions still work on the sleeve tile.
+    expect(screen.getByRole('button', { name: 'Play album Night Drive' })).toBeInTheDocument();
+  });
+
+  it('keeps the standard tiles outside Vintage', () => {
+    const { container } = render(
+      <AlbumGrid albums={albums} loading={false} onSelect={vi.fn()} onPlay={vi.fn()} onQueue={vi.fn()} />,
+    );
+    expect(container.querySelector('[data-vintage-record]')).toBeNull();
   });
 });

@@ -8,7 +8,9 @@ import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
 import type { Album, LatestAlbum, Artist, ClientEntityId, Genre, HomeGenreSummary, Library, Stats, Track, Playlist, CrossfadeMode, HomeTopRated } from '../types';
 import type { EntityId } from '../entityId';
 import { HYBRID_ARTWORK_HOVER, hybridHomeStyles } from '../hybridPreview';
+import { useVintageStyle } from '../vintageThemes';
 import ArtImage from './ArtImage';
+import VintageRecord, { VINTAGE_SLEEVE_COVER_STYLE } from './VintageRecord';
 
 function safeLocalStorageGet(key: string): string | null {
   try {
@@ -79,14 +81,17 @@ function HomeAlbumCover({ albumId, title, size = 150 }: { albumId: ClientEntityI
 
 // ─── Widget Card wrapper ─────────────────────────────────────────────────────
 
-function WidgetCard({ title, span, className, titleClassName, hybridDesign = false, children }: {
+function WidgetCard({ title, span, className, titleClassName, hybridDesign = false, hero = false, children }: {
   title: string;
   span?: boolean;
   className?: string;
   titleClassName?: string;
   hybridDesign?: boolean;
+  /** Larger (italic in Vintage) title for the page's lead card. */
+  hero?: boolean;
   children: React.ReactNode;
 }) {
+  const vintage = useVintageStyle();
   const storageKey = `boogiebox-pane-collapsed-${title}`;
   const [collapsed, setCollapsed] = React.useState(() =>
     safeLocalStorageGet(storageKey) === 'true'
@@ -110,6 +115,7 @@ function WidgetCard({ title, span, className, titleClassName, hybridDesign = fal
       minWidth: 0,
       boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
       ...(hybridDesign ? hybridHomeStyles.card : {}),
+      ...(vintage ? vintage.styles.homeCard : {}),
     }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: collapsed ? 0 : 16 }}>
@@ -119,6 +125,8 @@ function WidgetCard({ title, span, className, titleClassName, hybridDesign = fal
           fontSize: 20, fontWeight: 700, color: 'var(--text)',
           letterSpacing: -0.4,
           ...(hybridDesign ? hybridHomeStyles.cardTitle : {}),
+          ...(vintage ? vintage.styles.homeCardTitle : {}),
+          ...(vintage && hero ? vintage.styles.homeHeroTitle : {}),
         }}
         >
           {title}
@@ -292,6 +300,7 @@ function OffModeIcon({ size = 16, style }: { size?: number; style?: React.CSSPro
 }
 
 function StatsWidget({ stats }: { stats: Stats | null }) {
+  const vintage = useVintageStyle();
   const items = [
     { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '--', Icon: TrackStatIcon },
     { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '--', Icon: ArtistStatIcon },
@@ -299,10 +308,14 @@ function StatsWidget({ stats }: { stats: Stats | null }) {
   ];
   return (
     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-      {items.map(({ label, value, Icon }) => (
-        <div key={label} style={{
+      {items.map(({ label, value, Icon }, index) => (
+        <div key={label} data-vintage-stat={vintage ? label : undefined} style={{
           flex: '1 1 100px', textAlign: 'center', padding: '14px 8px',
           backgroundColor: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)',
+          ...(vintage ? {
+            ...vintage.styles.statTile,
+            boxShadow: `4px 4px 0 ${vintage.stickerShadows[index % vintage.stickerShadows.length]}`,
+          } : {}),
         }}>
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
@@ -311,11 +324,13 @@ function StatsWidget({ stats }: { stats: Stats | null }) {
             <span style={{
               fontSize: 30, fontWeight: 700, color: 'var(--accent)',
               fontVariantNumeric: 'tabular-nums', lineHeight: 1.1,
+              ...(vintage ? vintage.styles.statValue : {}),
             }}>{value}</span>
           </div>
           <div style={{
             fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase',
             letterSpacing: 1, marginTop: 6,
+            ...(vintage ? vintage.styles.statLabel : {}),
           }}>{label}</div>
         </div>
       ))}
@@ -346,6 +361,7 @@ function RecentAlbumsWidget({
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
   hybridDesign: boolean;
 }) {
+  const vintage = useVintageStyle();
   const [albums, setAlbums] = useState<LatestAlbum[]>([]);
   const [loading, setLoading] = useState(true);
   const [hoveredAlbumId, setHoveredAlbumId] = useState<ClientEntityId | null>(null);
@@ -372,6 +388,8 @@ function RecentAlbumsWidget({
   return (
     <div style={{
       display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8,
+      // Room for the record peeking out of each sleeve (and its hover slide).
+      ...(vintage ? { gap: 40, paddingRight: 36, paddingTop: 2 } : {}),
     }}>
       {albums.map(album => (
         <button
@@ -396,6 +414,7 @@ function RecentAlbumsWidget({
             overflow: 'hidden',
             cursor: 'pointer', padding: 0, textAlign: 'left',
             fontFamily: 'inherit', color: 'inherit',
+            ...(vintage ? vintage.styles.recentAlbumTile : {}),
           }}
         >
           <div
@@ -406,9 +425,17 @@ function RecentAlbumsWidget({
               ...(hybridDesign && hoveredAlbumId === album.id
                 ? H.recentAlbumArtWrapHybridHovered
                 : {}),
+              ...(vintage ? vintage.styles.recentAlbumSleeve : {}),
             }}
           >
-            <HomeAlbumCover albumId={album.id} title={album.title} size={150} />
+            <VintageRecord albumId={album.id} hovered={hoveredAlbumId === album.id} />
+            {vintage ? (
+              <div style={VINTAGE_SLEEVE_COVER_STYLE}>
+                <HomeAlbumCover albumId={album.id} title={album.title} size={150} />
+              </div>
+            ) : (
+              <HomeAlbumCover albumId={album.id} title={album.title} size={150} />
+            )}
             {hybridDesign ? (
               <div
                 data-hybrid-art-hover-overlay="recent-album"
@@ -2008,7 +2035,7 @@ export default function HomeView({
           />
         </WidgetCard>
 
-        <WidgetCard title="Let's Boogie!" className="boogie-section" titleClassName="boogie-title" span hybridDesign={hybridDesign}>
+        <WidgetCard title="Let's Boogie!" className="boogie-section" titleClassName="boogie-title" span hero hybridDesign={hybridDesign}>
           <RecentlyPlayedWidget
             allGenres={allGenres}
             homeGenres={homeGenres}

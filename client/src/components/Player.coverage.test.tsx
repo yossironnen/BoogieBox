@@ -346,7 +346,7 @@ describe('Player comprehensive behavior', () => {
     fireEvent.click(screen.getByLabelText('Repeat off'));
     expect(screen.getByLabelText('Repeat track')).toBeInTheDocument();
 
-    const bar = audioA.parentElement?.querySelector('div[style*="height: 100px"]') ?? container;
+    const bar = audioA.parentElement?.querySelector('div[style*="height: 116px"]') ?? container;
     const transport = Array.from(bar.querySelectorAll('button')).filter(button => !button.title).slice(0, 3);
     fireEvent.click(transport[2]);
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ playToken: 3 }));
@@ -555,7 +555,7 @@ describe('Player comprehensive behavior', () => {
 
     fireEvent.click(screen.getByLabelText('Repeat off'));
     fireEvent.click(screen.getByLabelText('Repeat track'));
-    const playerBar = audioA.parentElement?.querySelector('div[style*="height: 100px"]') ?? container;
+    const playerBar = audioA.parentElement?.querySelector('div[style*="height: 116px"]') ?? container;
     const transport = Array.from(playerBar.querySelectorAll('button')).filter(button => !button.title).slice(0, 3);
     fireEvent.click(transport[2]);
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ currentIndex: 0, isPlaying: true }));

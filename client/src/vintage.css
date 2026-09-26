@@ -1,0 +1,35 @@
+/*
+ * Vintage theme decorations that inline styles can't express (pseudo-elements,
+ * media queries). Every rule is scoped by html[data-vintage-style], which is only
+ * set while a Vintage style is active, so these have no effect in other modes.
+ */
+
+/* Record Shop '74: flat paper, no accent glow behind the "Let's Boogie!" card. */
+html[data-vintage-style='recordshop'] .boogie-section::before,
+html[data-vintage-style='recordshop'] .boogie-section::after {
+  display: none;
+}
+
+/* Title underline becomes the three-band shop stripe. */
+html[data-vintage-style='recordshop'] .boogie-title {
+  color: var(--text);
+  letter-spacing: 0;
+}
+
+html[data-vintage-style='recordshop'] .boogie-title::after {
+  height: 4px;
+  bottom: -8px;
+  background: linear-gradient(
+    to right,
+    var(--vintage-stripe-1) 0 33%,
+    var(--vintage-stripe-2) 33% 66%,
+    var(--vintage-stripe-3) 66% 100%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-vintage-style] [data-vintage-record] {
+    transition: none !important;
+    transform: none !important;
+  }
+}

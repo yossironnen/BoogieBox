@@ -714,12 +714,54 @@ describe('SettingsPage component flows', () => {
     expect(await screen.findAllByText(/save denied/i)).not.toHaveLength(0);
   });
 
+  it('offers Vintage mode with a style picker and disables adaptive accent there', () => {
+    const onHybridThemeModeChange = vi.fn();
+    const onVintageStyleChange = vi.fn();
+    const onAdaptiveAccentEnabledChange = vi.fn();
+    const props = {
+      currentUser: { id: '2', username: 'listener', role: 'user' as const, canManageLibraries: false, canEditMetadata: false },
+      onLogout: vi.fn(),
+      settings: { ...DEFAULT_SETTINGS },
+      onSettingsChange: vi.fn(),
+      adaptiveAccentEnabled: true,
+      onAdaptiveAccentEnabledChange,
+      onHybridThemeModeChange,
+      onVintageStyleChange,
+    };
+    const { rerender } = render(<SettingsPage {...props} hybridThemeMode="dark" />);
+
+    const modes = within(screen.getByRole('group', { name: 'New design theme mode' })).getAllByRole('button');
+    expect(modes.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Use light theme', 'Use dark theme', 'Use custom theme', 'Use vintage theme',
+    ]);
+    // Icon-first segments.
+    for (const mode of modes) expect(mode.querySelector('svg')).not.toBeNull();
+    expect(screen.queryByRole('region', { name: 'Vintage style' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Use vintage theme' }));
+    expect(onHybridThemeModeChange).toHaveBeenCalledWith('vintage');
+
+    rerender(<SettingsPage {...props} hybridThemeMode="vintage" vintageStyle="recordshop" />);
+    expect(screen.queryByRole('region', { name: 'Custom palette' })).toBeNull();
+    const picker = screen.getByRole('group', { name: 'Vintage style' });
+    const card = within(picker).getByRole('button', { name: /Record Shop/ });
+    expect(card).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(card);
+    expect(onVintageStyleChange).toHaveBeenCalledWith('recordshop');
+    expect(screen.queryByRole('region', { name: 'Typeface & preview' })).toBeNull();
+
+    const adaptiveSwitch = screen.getByRole('switch', { name: 'Adaptive accent' });
+    expect(adaptiveSwitch).toBeDisabled();
+    expect(screen.getByText('Not used by Vintage themes')).toBeInTheDocument();
+    fireEvent.click(adaptiveSwitch);
+    expect(onAdaptiveAccentEnabledChange).not.toHaveBeenCalled();
+  });
+
   it('applies Hybrid modes, Custom presets, adaptive accent, reset, color edits, and logout', () => {
     const onSettingsChange = vi.fn();
     const onAdaptiveAccentEnabledChange = vi.fn();
     const onHybridThemeModeChange = vi.fn();
     const onLogout = vi.fn();
-    render(
+    const page = (mode: 'dark' | 'custom') => (
       <SettingsPage
         currentUser={{ id: '2', username: 'listener', role: 'user', canManageLibraries: false, canEditMetadata: false }}
         onLogout={onLogout}
@@ -727,20 +769,29 @@ describe('SettingsPage component flows', () => {
         onSettingsChange={onSettingsChange}
         adaptiveAccentEnabled
         onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
-        hybridThemeMode="dark"
+        hybridThemeMode={mode}
         onHybridThemeModeChange={onHybridThemeModeChange}
-      />,
+      />
     );
+    const { rerender } = render(page('dark'));
 
-    expect(screen.getByText('Satoshi')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Theme mode' })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Custom palette' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Typeface & preview' })).toBeNull();
+    // The palette editor only appears once Custom is the selected mode.
+    expect(screen.queryByRole('region', { name: 'Custom palette' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Use light theme' }));
     expect(onHybridThemeModeChange).toHaveBeenCalledWith('light');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Vintage Radio' }));
+    rerender(page('custom'));
+    expect(screen.getByRole('region', { name: 'Custom palette' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Typeface & preview' })).toBeInTheDocument();
+    expect(screen.getByText('Satoshi')).toBeInTheDocument();
+
+    expect(screen.queryByRole('button', { name: 'Vintage Radio' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Solarized' }));
     expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
-      bgTexture: 'wood',
+      colorBg: '#002b36',
+      bgTexture: 'none',
       fontFamily: 'Inter',
     }));
     expect(onHybridThemeModeChange).toHaveBeenCalledWith('custom');
@@ -750,7 +801,7 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(adaptiveSwitch);
     expect(onAdaptiveAccentEnabledChange).toHaveBeenCalledWith(false);
 
-    const backgroundInputs = screen.getAllByDisplayValue('#6a472f');
+    const backgroundInputs = screen.getAllByDisplayValue('#002b36');
     fireEvent.change(backgroundInputs[backgroundInputs.length - 1], { target: { value: '#123456' } });
     expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ colorBg: '#123456' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reset to Default' }));

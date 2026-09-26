@@ -4,16 +4,20 @@
 
 import type React from 'react';
 import type { AppSettings } from './types';
+import { getVintageStyle, type VintageStyle } from './vintageThemes';
 
-export type HybridThemeMode = 'light' | 'dark' | 'custom';
+export type HybridThemeMode = 'light' | 'dark' | 'custom' | 'vintage';
 
 export interface HybridPreviewConfig {
   enabled: boolean;
   mode: HybridThemeMode;
 }
 
+/** Modes supported on every shell (mobile + desktop). */
 export const HYBRID_THEME_MODES: HybridThemeMode[] = ['light', 'dark', 'custom'];
-const HYBRID_THEME_MODE_SET = new Set<HybridThemeMode>(HYBRID_THEME_MODES);
+/** Desktop-only superset: Vintage is not available in the mobile shell. */
+export const DESKTOP_THEME_MODES: HybridThemeMode[] = [...HYBRID_THEME_MODES, 'vintage'];
+const HYBRID_THEME_MODE_SET = new Set<HybridThemeMode>(DESKTOP_THEME_MODES);
 
 export const HYBRID_FONT_FAMILY =
   "'Satoshi', Aptos, \"Segoe UI Variable\", \"Segoe UI\", Inter, system-ui, sans-serif";
@@ -21,7 +25,8 @@ export const HYBRID_FONT_STYLESHEET_ID = 'boogiebox-hybrid-preview-font';
 export const HYBRID_FONT_STYLESHEET_HREF =
   'https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700,900&display=swap';
 
-export const DESKTOP_PLAYER_DOCK_HEIGHT = 100;
+// 116: room for the stacked shuffle/repeat/lyrics column (~107px) with breathing space.
+export const DESKTOP_PLAYER_DOCK_HEIGHT = 116;
 export const DESKTOP_VINYL_PLAYER_DOCK_HEIGHT = 170;
 export const DESKTOP_PLAYER_POPUP_GAP = 8;
 export const MOBILE_TAB_BAR_DOCK_HEIGHT = 78;
@@ -87,7 +92,17 @@ export function parseHybridThemeMode(value: unknown): HybridThemeMode | null {
 export function resolveHybridThemeSettings(
   settings: AppSettings,
   mode: HybridThemeMode,
+  vintageStyle?: VintageStyle | null,
 ): AppSettings {
+  if (mode === 'vintage') {
+    const style = getVintageStyle(vintageStyle);
+    return {
+      ...settings,
+      ...style.palette,
+      bgTexture: 'none',
+      fontFamily: style.fontFamily,
+    };
+  }
   if (mode === 'custom') {
     return {
       ...settings,
@@ -117,7 +132,11 @@ export function mountHybridFont(doc: Document = document): () => void {
 export function getHybridSemanticTokens(
   settings: AppSettings,
   mode: HybridThemeMode,
+  vintageStyle?: VintageStyle | null,
 ): Record<(typeof HYBRID_SEMANTIC_TOKEN_KEYS)[number], string> {
+  if (mode === 'vintage') {
+    return { ...getVintageStyle(vintageStyle).semanticTokens };
+  }
   if (mode === 'light') {
     return {
       '--surface-raised': '#ffffff',

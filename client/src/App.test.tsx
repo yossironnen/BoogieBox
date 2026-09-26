@@ -7,7 +7,8 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import App, { HYBRID_THEME_MODE_STORAGE_KEY } from './App';
+import App, { HYBRID_THEME_MODE_STORAGE_KEY, VINTAGE_STYLE_STORAGE_KEY } from './App';
+import { api } from './api';
 
 vi.mock('./api', () => ({
   getStreamDirect: () => false,
@@ -115,6 +116,51 @@ describe('App sidebar', () => {
       expect(container.querySelector('[data-ui-design="hybrid"]')).toHaveAttribute('data-ui-theme', 'light');
     });
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#f7f5f2');
+  });
+
+  it('applies the Vintage Record Shop style: palette, root tokens, stripe band and crate tabs', async () => {
+    window.localStorage.setItem(`${HYBRID_THEME_MODE_STORAGE_KEY}.u1`, 'vintage');
+    window.localStorage.setItem(`${VINTAGE_STYLE_STORAGE_KEY}.u1`, 'recordshop');
+    const { container, unmount } = render(<App />);
+
+    await screen.findByText('home-view');
+    await waitFor(() => {
+      expect(container.querySelector('[data-ui-design="hybrid"]')).toHaveAttribute('data-ui-theme', 'vintage');
+    });
+    const root = document.documentElement;
+    expect(root.dataset.vintageStyle).toBe('recordshop');
+    expect(root.style.getPropertyValue('--bg')).toBe('#efe4cc');
+    expect(root.style.getPropertyValue('--vu-face')).toBe('#f2c57a');
+    expect(root.style.getPropertyValue('--on-accent')).toBe('#fff8ea');
+    expect(container.querySelector('[data-vintage-stripes]')?.children).toHaveLength(4);
+    // Active nav item is the teal crate-divider tab.
+    expect(screen.getByRole('button', { name: 'Home' }).style.borderRadius).toBe('0 23px 23px 0');
+
+    unmount();
+    // Nothing leaks once the Vintage shell is gone.
+    expect(root.dataset.vintageStyle).toBeUndefined();
+    expect(root.style.getPropertyValue('--vu-face')).toBe('');
+  });
+
+  it('takes the Vintage mode and style from the server and caches them locally', async () => {
+    vi.mocked(api.userSettings.get).mockResolvedValueOnce({ uiThemeMode: 'vintage', uiVintageStyle: 'recordshop' });
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-ui-design="hybrid"]')).toHaveAttribute('data-ui-theme', 'vintage');
+    });
+    expect(window.localStorage.getItem(`${VINTAGE_STYLE_STORAGE_KEY}.u1`)).toBe('recordshop');
+    expect(window.localStorage.getItem(`${HYBRID_THEME_MODE_STORAGE_KEY}.u1`)).toBe('vintage');
+  });
+
+  it('keeps Dark free of Vintage tokens', async () => {
+    const { container } = render(<App />);
+
+    await screen.findByText('home-view');
+    expect(container.querySelector('[data-ui-design="hybrid"]')).toHaveAttribute('data-ui-theme', 'dark');
+    expect(document.documentElement.dataset.vintageStyle).toBeUndefined();
+    expect(document.documentElement.style.getPropertyValue('--vu-face')).toBe('');
+    expect(container.querySelector('[data-vintage-stripes]')).toBeNull();
   });
 
   it('opens the guarded real Browse preview and switches temporary theme roles', async () => {

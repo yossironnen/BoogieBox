@@ -70,6 +70,7 @@ pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
     "theme",
     "adaptiveAccent",
     "uiThemeMode",
+    "uiVintageStyle",
     "eqProfiles",
     "autoEqEnabled",
     "eqSelectedProfile",
@@ -87,13 +88,28 @@ pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
     "vinylNeedleDropIntensity",
 ];
 
+/// Theme modes accepted for the `uiThemeMode` user setting.
+pub const UI_THEME_MODES: &[&str] = &["light", "dark", "custom", "vintage"];
+
+/// Vintage theme styles accepted for the `uiVintageStyle` user setting.
+/// Mirrors `VintageStyle` in `client/src/vintageThemes.ts`.
+pub const UI_VINTAGE_STYLES: &[&str] = &["recordshop"];
+
 /// Documents the USER SETTING MAX VALUE LEN public API surface.
 pub const USER_SETTING_MAX_VALUE_LEN: usize = 4096;
 
 /// Validates user-setting values that have a constrained production contract.
 pub fn validate_user_setting_value(key: &str, value: &str) -> Result<(), String> {
-    if key == "uiThemeMode" && !["light", "dark", "custom"].contains(&value) {
-        return Err("Setting 'uiThemeMode' must be 'light', 'dark', or 'custom'".to_string());
+    if key == "uiThemeMode" && !UI_THEME_MODES.contains(&value) {
+        return Err(
+            "Setting 'uiThemeMode' must be 'light', 'dark', 'custom', or 'vintage'".to_string(),
+        );
+    }
+    if key == "uiVintageStyle" && !UI_VINTAGE_STYLES.contains(&value) {
+        return Err(format!(
+            "Setting 'uiVintageStyle' must be one of: {}",
+            UI_VINTAGE_STYLES.join(", ")
+        ));
     }
     if key == "hideCompilationOnlyArtists" && value != "true" && value != "false" {
         return Err("Setting 'hideCompilationOnlyArtists' must be 'true' or 'false'".to_string());
@@ -396,7 +412,16 @@ mod tests {
         assert!(validate_user_setting_value("uiThemeMode", "light").is_ok());
         assert!(validate_user_setting_value("uiThemeMode", "dark").is_ok());
         assert!(validate_user_setting_value("uiThemeMode", "custom").is_ok());
+        assert!(validate_user_setting_value("uiThemeMode", "vintage").is_ok());
         assert!(validate_user_setting_value("uiThemeMode", "neon").is_err());
+    }
+
+    #[test]
+    fn validates_vintage_styles() {
+        assert!(ALLOWED_USER_SETTING_KEYS.contains(&"uiVintageStyle"));
+        assert!(validate_user_setting_value("uiVintageStyle", "recordshop").is_ok());
+        assert!(validate_user_setting_value("uiVintageStyle", "walnut").is_err());
+        assert!(validate_user_setting_value("uiVintageStyle", "").is_err());
     }
 
     fn normalize_one(key: &str, value: &str) -> Result<String, String> {

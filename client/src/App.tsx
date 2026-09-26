@@ -42,6 +42,15 @@ import {
   resolveHybridThemeSettings,
   type HybridThemeMode,
 } from './hybridPreview';
+import {
+  applyVintageTokens,
+  DEFAULT_VINTAGE_STYLE,
+  getVintageStyle,
+  mountVintageFonts,
+  parseVintageStyle,
+  VintageStyleContext,
+  type VintageStyle,
+} from './vintageThemes';
 
 // ─── CSS Variable injection ───────────────────────────────────────────────────
 // Injects theme as CSS custom properties on :root so ALL components pick them up.
@@ -98,6 +107,7 @@ export const THEME_STORAGE_KEY = 'boogiebox.theme.v1';
 export const ADAPTIVE_ACCENT_STORAGE_KEY = 'boogiebox.theme.adaptiveAccent.v1';
 /** HYBRID THEME MODE STORAGE KEY is part of this module's public API. */
 export const HYBRID_THEME_MODE_STORAGE_KEY = 'boogiebox.ui.hybridThemeMode.v1';
+export const VINTAGE_STYLE_STORAGE_KEY = 'boogiebox.ui.vintageStyle.v1';
 const THEME_TEXTURE_VALUES = new Set(['none', 'wood']);
 const WOOD_BG_TEXTURE = [
   'linear-gradient(90deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 8%, rgba(0,0,0,0.07) 16%, rgba(255,255,255,0.02) 24%, rgba(0,0,0,0.06) 32%, rgba(255,255,255,0.02) 40%, rgba(0,0,0,0.08) 48%, rgba(255,255,255,0.03) 56%, rgba(0,0,0,0.07) 64%, rgba(255,255,255,0.02) 72%, rgba(0,0,0,0.06) 80%, rgba(255,255,255,0.02) 88%, rgba(0,0,0,0.08) 100%)',
@@ -157,6 +167,9 @@ function accentKey(userId: EntityId) { return `${ADAPTIVE_ACCENT_STORAGE_KEY}.u$
 function hybridThemeModeKey(userId: EntityId) {
   return `${HYBRID_THEME_MODE_STORAGE_KEY}.u${userId}`;
 }
+function vintageStyleKey(userId: EntityId) {
+  return `${VINTAGE_STYLE_STORAGE_KEY}.u${userId}`;
+}
 
 function safeLocalStorageGet(key: string): string | null {
   if (typeof window === 'undefined') return null;
@@ -180,6 +193,19 @@ function getStoredAdaptiveAccentEnabled(userId: EntityId): boolean {
 
 function getStoredHybridThemeMode(userId: EntityId): HybridThemeMode | null {
   return parseHybridThemeMode(safeLocalStorageGet(hybridThemeModeKey(userId)));
+}
+
+function getStoredVintageStyle(userId: EntityId): VintageStyle | null {
+  return parseVintageStyle(safeLocalStorageGet(vintageStyleKey(userId)));
+}
+
+function saveVintageStyleToStorage(style: VintageStyle, userId: EntityId): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(vintageStyleKey(userId), style);
+  } catch {
+    // Best effort only (private mode/quota issues).
+  }
 }
 
 function saveThemeToStorage(settings: AppSettings, userId: EntityId): void {
@@ -1107,6 +1133,11 @@ export default function App() {
   const [hybridPreviewMode, setHybridPreviewMode] = useState<HybridThemeMode>(initialHybridPreview.mode);
   const [hybridThemeMode, setHybridThemeMode] = useState<HybridThemeMode>('dark');
   const activeHybridThemeMode = hybridPreviewActive ? hybridPreviewMode : hybridThemeMode;
+  const [vintageStyle, setVintageStyle] = useState<VintageStyle>(DEFAULT_VINTAGE_STYLE);
+  // Vintage is a desktop-only theme mode; the mobile shell keeps its own look.
+  const activeVintage = hybridDesignActive && activeHybridThemeMode === 'vintage'
+    ? getVintageStyle(vintageStyle)
+    : null;
   const [currentUser, setCurrentUser] = useState<AuthUser | null | 'loading'>('loading');
   const [view, setView]         = useState<View>(() => hybridPreviewActive ? 'browse' : 'home');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => getStoredSidebarCollapsed());
@@ -1123,6 +1154,8 @@ export default function App() {
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [streamDirect, setStreamDirect] = useState(() => getStreamDirect());
   const [adaptiveAccentEnabled, setAdaptiveAccentEnabled] = useState<boolean>(true);
+  // Vintage palettes are fixed: artwork-driven accents are ignored (the saved preference is kept).
+  const effectiveAdaptiveAccent = adaptiveAccentEnabled && !activeVintage;
   const [hideCompilationOnlyArtists, setHideCompilationOnlyArtists] = useState<boolean>(true);
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>(() => getStoredPlaybackMode());
   const [vinylHardcore, setVinylHardcore] = useState<boolean>(() => DEFAULT_VINYL_PREFS.hardcore);
@@ -1154,16 +1187,23 @@ export default function App() {
 
   useEffect(() => {
     const activeSettings = hybridDesignActive
-      ? resolveHybridThemeSettings(settings, activeHybridThemeMode)
+      ? resolveHybridThemeSettings(settings, activeHybridThemeMode, vintageStyle)
       : settings;
     applyTheme(activeSettings);
     applyHybridSemanticTokens(
-      hybridDesignActive ? getHybridSemanticTokens(settings, activeHybridThemeMode) : null,
+      hybridDesignActive ? getHybridSemanticTokens(settings, activeHybridThemeMode, vintageStyle) : null,
     );
+    // Always written (or cleared) so vintage tokens never leak into Light/Dark/Custom.
+    applyVintageTokens(activeVintage);
     return () => {
       if (hybridDesignActive) applyHybridSemanticTokens(null);
+      applyVintageTokens(null);
     };
-  }, [activeHybridThemeMode, hybridDesignActive, settings]);
+  }, [activeHybridThemeMode, activeVintage, hybridDesignActive, settings, vintageStyle]);
+
+  useEffect(() => {
+    if (activeVintage) void mountVintageFonts(activeVintage);
+  }, [activeVintage]);
 
   const selectHybridPreviewMode = useCallback((mode: HybridThemeMode) => {
     setHybridPreviewMode(mode);
@@ -1179,6 +1219,14 @@ export default function App() {
     const userId = (currentUser as AuthUser).id;
     saveHybridThemeModeToStorage(mode, userId);
     api.userSettings.update({ uiThemeMode: mode }).catch(() => {});
+  }, [currentUser]);
+
+  const selectVintageStyle = useCallback((style: VintageStyle) => {
+    setVintageStyle(style);
+    if (!currentUser || currentUser === 'loading') return;
+    const userId = (currentUser as AuthUser).id;
+    saveVintageStyleToStorage(style, userId);
+    api.userSettings.update({ uiVintageStyle: style }).catch(() => {});
   }, [currentUser]);
 
   // Persist appearance per-user: localStorage for instant load, server for cross-browser sync.
@@ -1274,6 +1322,7 @@ export default function App() {
     setSettings(prev => ({ ...DEFAULT_SETTINGS, ...prev, ...(getStoredTheme(userId) ?? {}) }));
     setAdaptiveAccentEnabled(getStoredAdaptiveAccentEnabled(userId));
     setHybridThemeMode(getStoredHybridThemeMode(userId) ?? 'dark');
+    setVintageStyle(getStoredVintageStyle(userId) ?? DEFAULT_VINTAGE_STYLE);
     const storedVinylPrefs = getStoredVinylPrefs(userId);
     setVinylHardcore(storedVinylPrefs.hardcore);
     setVinylNeedleDrop(storedVinylPrefs.needleDrop);
@@ -1299,6 +1348,11 @@ export default function App() {
       if (serverHybridThemeMode) {
         setHybridThemeMode(serverHybridThemeMode);
         saveHybridThemeModeToStorage(serverHybridThemeMode, userId);
+      }
+      const serverVintageStyle = parseVintageStyle(userSettings.uiVintageStyle);
+      if (serverVintageStyle) {
+        setVintageStyle(serverVintageStyle);
+        saveVintageStyleToStorage(serverVintageStyle, userId);
       }
       if (
         userSettings.vinylHardcore !== undefined
@@ -1557,6 +1611,7 @@ export default function App() {
   }
 
   return (
+    <VintageStyleContext.Provider value={activeVintage}>
     <div
       data-ui-design="hybrid"
       data-ui-theme={activeHybridThemeMode}
@@ -1591,12 +1646,20 @@ export default function App() {
           </a>
         </div>
       )}
+      {activeVintage && (
+        <div aria-hidden="true" data-vintage-stripes style={S.vintageStripeBand}>
+          {activeVintage.stripes.map((color) => (
+            <div key={color} style={{ ...S.vintageStripe, backgroundColor: color }} />
+          ))}
+        </div>
+      )}
       {/* Body row: sidebar + main */}
       <div style={S.body}>
         {/* Sidebar */}
         <aside style={{
           ...S.sidebar,
           ...(hybridDesignActive ? hybridShellStyles.sidebar : {}),
+          ...(activeVintage ? activeVintage.styles.sidebar : {}),
           ...(sidebarCollapsed ? S.sidebarCollapsed : {}),
         }}>
           <div
@@ -1610,7 +1673,7 @@ export default function App() {
             <img src="/boogiebox.png" alt="BoogieBox logo" style={S.logoImage} />
             {!sidebarCollapsed && (
               <div>
-                <div>BoogieBox</div>
+                <div style={activeVintage ? activeVintage.styles.logoText : undefined}>BoogieBox</div>
                 <div style={S.logoMetaRow}>
                   <span style={S.logoVersion}>v{serverVersion ?? APP_VERSION}</span>
                   <a
@@ -1650,8 +1713,12 @@ export default function App() {
                     ...S.navItem,
                     ...(hybridDesignActive ? hybridShellStyles.navItem : {}),
                     ...(sidebarCollapsed ? S.navItemCollapsed : {}),
+                    ...(activeVintage && !sidebarCollapsed ? activeVintage.styles.navItem : {}),
                     ...(isActive ? S.navItemActive : {}),
                     ...(isActive && hybridDesignActive ? hybridShellStyles.navItemActive : {}),
+                    ...(isActive && activeVintage
+                      ? (sidebarCollapsed ? activeVintage.styles.navItemActiveCollapsed : activeVintage.styles.navItemActive)
+                      : {}),
                   }}
                   onClick={() => openView(id)}
                 >
@@ -1661,7 +1728,11 @@ export default function App() {
               );
             })}
             <div style={S.sidebarSection}>
-              {!sidebarCollapsed && <div style={S.sidebarSectionLabel}>Libraries</div>}
+              {!sidebarCollapsed && (
+                <div style={{ ...S.sidebarSectionLabel, ...(activeVintage ? activeVintage.styles.sectionLabel : {}) }}>
+                  Libraries
+                </div>
+              )}
               <div style={S.libraryList}>
                 {libraries.length === 0 ? (
                   !sidebarCollapsed && <div style={S.libraryEmpty}>No libraries yet</div>
@@ -1715,7 +1786,13 @@ export default function App() {
                           type="button"
                           aria-pressed={isActive}
                           aria-label={library.name}
-                          style={{ ...S.libraryNavItem, ...(sidebarCollapsed ? S.libraryNavItemCollapsed : {}), ...(isActive ? S.libraryNavItemActive : {}) }}
+                          style={{
+                            ...S.libraryNavItem,
+                            ...(activeVintage ? activeVintage.styles.libraryItem : {}),
+                            ...(sidebarCollapsed ? S.libraryNavItemCollapsed : {}),
+                            ...(isActive ? S.libraryNavItemActive : {}),
+                            ...(isActive && activeVintage ? activeVintage.styles.libraryItemActive : {}),
+                          }}
                           onClick={() => openLibraryBrowse(library.id)}
                           title={library.name}
                         >
@@ -1752,7 +1829,11 @@ export default function App() {
         </aside>
 
         {/* Main */}
-        <main style={{ ...S.main, ...(hybridDesignActive ? hybridShellStyles.main : {}) }}>
+        <main style={{
+          ...S.main,
+          ...(hybridDesignActive ? hybridShellStyles.main : {}),
+          ...(activeVintage ? activeVintage.styles.main : {}),
+        }}>
           {view !== 'settings' && view !== 'playlists' && view !== 'home' && view !== 'mixes' && <StatsBar stats={stats} />}
           {view === 'home'      && (
             <HomeView
@@ -1829,7 +1910,7 @@ export default function App() {
                 openArtistRequest={browseOpenArtistRequest}
                 openGenreRequest={browseOpenGenreRequest}
                 resetRequest={browseResetRequest}
-                adaptiveAccentEnabled={adaptiveAccentEnabled}
+                adaptiveAccentEnabled={effectiveAdaptiveAccent}
                 hybridPreview={hybridDesignActive}
                 hideCompilationOnlyArtists={hideCompilationOnlyArtists}
                 canEditMetadata={currentUser.role === 'admin' || currentUser.canEditMetadata}
@@ -1871,6 +1952,8 @@ export default function App() {
               onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
               hybridThemeMode={hybridThemeMode}
               onHybridThemeModeChange={selectHybridThemeMode}
+              vintageStyle={vintageStyle}
+              onVintageStyleChange={selectVintageStyle}
               vinylHardcore={vinylHardcore}
               onVinylHardcoreChange={setVinylHardcore}
               vinylNeedleDrop={vinylNeedleDrop}
@@ -1897,7 +1980,7 @@ export default function App() {
         vinylNeedleDropIntensity={vinylNeedleDropIntensity}
         onPlaybackSnapshotChange={setPlaybackSnapshot}
         hybridPreview={hybridDesignActive}
-        adaptiveAccentEnabled={adaptiveAccentEnabled}
+        adaptiveAccentEnabled={effectiveAdaptiveAccent}
       />
       <ContextMenuRoot />
       {infoTrackId && (
@@ -1908,6 +1991,7 @@ export default function App() {
         />
       )}
     </div>
+    </VintageStyleContext.Provider>
   );
 }
 
@@ -1932,6 +2016,14 @@ const S: Record<string, React.CSSProperties> = {
   },
   body: {
     display: 'flex', flexDirection: 'row', flex: 1, minHeight: 0, overflow: 'hidden',
+  },
+  vintageStripeBand: {
+    display: 'flex',
+    flexDirection: 'column',
+    flexShrink: 0,
+  },
+  vintageStripe: {
+    height: 4,
   },
   sidebar: {
     width: 224,

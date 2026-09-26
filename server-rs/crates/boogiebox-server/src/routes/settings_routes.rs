@@ -1,4 +1,4 @@
-﻿//! Defines Rust API routes for Settings Routes server behavior.
+//! Defines Rust API routes for Settings Routes server behavior.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use serde_json::Value;
@@ -451,6 +451,59 @@ mod tests {
         assert_eq!(bad_status, StatusCode::BAD_REQUEST);
         let bad_json = json_body(&bad_body);
         assert!(bad_json["error"].as_str().unwrap().contains("uiThemeMode"));
+    }
+
+    #[tokio::test]
+    async fn user_settings_accept_vintage_theme_and_reject_unknown_style() {
+        let (app, pool) = new_test_app_with_pool("settings-user-vintage");
+        let cookie = seed_user_session(&pool, "u1");
+
+        let (put_status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/user/settings")
+                .header("cookie", cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"uiThemeMode":"vintage","uiVintageStyle":"recordshop"}"#,
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(put_status, StatusCode::OK);
+
+        let (get_status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/user/settings")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(get_status, StatusCode::OK);
+        let json = json_body(&body);
+        assert_eq!(json["uiThemeMode"], "vintage");
+        assert_eq!(json["uiVintageStyle"], "recordshop");
+
+        let (bad_status, bad_body) = send(
+            app,
+            Request::builder()
+                .method("PUT")
+                .uri("/api/user/settings")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"uiVintageStyle":"walnut"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+        let bad_json = json_body(&bad_body);
+        assert!(bad_json["error"]
+            .as_str()
+            .unwrap()
+            .contains("uiVintageStyle"));
     }
 
     #[tokio::test]

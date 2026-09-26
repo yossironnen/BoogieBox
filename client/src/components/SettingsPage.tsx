@@ -7,12 +7,14 @@ import { api, getStreamDirect, setStreamDirect } from '../api';
 import type { AppSettings, ScanSchedule, WaveformMappingStatus, BpmAnalysisStatus, BoogieMixDeepAnalysisStatus, AuthUser, AdminQueueEntry, AdminQueueSnapshot, ClientEntityId, Library, AdminPostScanJobType, ProviderUsageSnapshot, ProviderUsageProviderSummary } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import {
+  DESKTOP_THEME_MODES,
   hybridControlStyles,
   hybridSettingsStyles,
   HYBRID_FONT_FAMILY,
-  HYBRID_THEME_MODES,
   type HybridThemeMode,
 } from '../hybridPreview';
+import { DEFAULT_VINTAGE_STYLE, type VintageStyle } from '../vintageThemes';
+import VintageStylePicker from './VintageStylePicker';
 import { parseServerDate } from '../utils';
 import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
@@ -436,6 +438,25 @@ function InlineStatus({ busy, busyText, result }: { busy: boolean; busyText: str
   return <div style={{ fontSize: 14, color: isError ? 'var(--danger)' : 'var(--success)', marginTop: 6 }}>{result}</div>;
 }
 
+const THEME_MODE_ICON_PROPS = {
+  width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+  strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+} as const;
+
+function ThemeModeIcon({ mode }: { mode: HybridThemeMode }) {
+  if (mode === 'light') {
+    return <svg {...THEME_MODE_ICON_PROPS}><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>;
+  }
+  if (mode === 'dark') {
+    return <svg {...THEME_MODE_ICON_PROPS}><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>;
+  }
+  if (mode === 'custom') {
+    return <svg {...THEME_MODE_ICON_PROPS}><circle cx="13.5" cy="6.5" r="1.5" /><circle cx="17.5" cy="10.5" r="1.5" /><circle cx="8.5" cy="7.5" r="1.5" /><circle cx="6.5" cy="12.5" r="1.5" /><path d="M12 2a10 10 0 0 0 0 20c1 0 1.7-.8 1.7-1.7 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.8-1.7 1.7-1.7h2A5.5 5.5 0 0 0 22 11c0-5-4.5-9-10-9z" /></svg>;
+  }
+  // Vintage: a hi-fi radio.
+  return <svg {...THEME_MODE_ICON_PROPS}><rect x="2" y="7" width="20" height="13" rx="2" /><circle cx="8" cy="13.5" r="3" /><path d="M14 12h5M14 16h5M7 7l4-4" /></svg>;
+}
+
 function SettingsPanel({
   title,
   description,
@@ -502,15 +523,6 @@ export const THEME_PRESETS: { label: string; settings: Partial<AppSettings> }[] 
     settings: {
       colorBg: '#1a1208', colorSurface: '#241b0f', colorBorder: '#3d2e1a',
       colorAccent: '#f59e0b', colorText: '#fef3c7', colorTextMuted: '#78614a',
-    },
-  },
-  {
-    label: 'Vintage Radio',
-    settings: {
-      colorBg: '#6a472f', colorSurface: '#261a12', colorBorder: '#7d5a3c',
-      colorAccent: '#d4a15e', colorText: '#f6e4c7', colorTextMuted: '#be9a72',
-      bgTexture: 'wood',
-      fontFamily: 'IBM Plex Mono',
     },
   },
   {
@@ -719,6 +731,8 @@ interface Props {
   onHideCompilationOnlyArtistsChange?: (enabled: boolean) => void;
   hybridThemeMode?: HybridThemeMode;
   onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
+  vintageStyle?: VintageStyle;
+  onVintageStyleChange?: (style: VintageStyle) => void;
   vinylHardcore?: boolean;
   onVinylHardcoreChange?: (enabled: boolean) => void;
   vinylNeedleDrop?: boolean;
@@ -753,6 +767,8 @@ export default function SettingsPage({
   onAdaptiveAccentEnabledChange,
   hybridThemeMode = 'dark',
   onHybridThemeModeChange,
+  vintageStyle = DEFAULT_VINTAGE_STYLE,
+  onVintageStyleChange,
   vinylHardcore = false,
   onVinylHardcoreChange,
   vinylNeedleDrop = false,
@@ -764,6 +780,8 @@ export default function SettingsPage({
 }: Props) {
   const isAdmin = currentUser.role === 'admin';
   const canManageLibraries = isAdmin || currentUser.canManageLibraries;
+  const isVintageMode = hybridThemeMode === 'vintage';
+  const isCustomMode = hybridThemeMode === 'custom';
   const [local, setLocal] = useState<AppSettings>(settings);
   const [activeTab, setActiveTab] = useState<'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users'>('theme');
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -1395,10 +1413,10 @@ export default function SettingsPage({
         <div style={P.section}>
           <SettingsPanel
             title="Theme mode"
-            description="Light and Dark use supported New-design defaults. Custom keeps your own saved palette."
+            description="Light and Dark use supported New-design defaults. Custom keeps your own saved palette. Vintage restyles the desktop app after classic hi-fi gear."
           >
             <div role="group" aria-label="New design theme mode" style={hybridControlStyles.segmentedGroup}>
-              {HYBRID_THEME_MODES.map(mode => {
+              {DESKTOP_THEME_MODES.map(mode => {
                 const active = hybridThemeMode === mode;
                 return (
                   <button
@@ -1411,8 +1429,13 @@ export default function SettingsPage({
                       ...hybridControlStyles.segment,
                       ...(active ? hybridControlStyles.segmentActive : {}),
                       minWidth: 78,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 7,
                     }}
                   >
+                    <ThemeModeIcon mode={mode} />
                     {mode.charAt(0).toUpperCase() + mode.slice(1)}
                   </button>
                 );
@@ -1420,38 +1443,51 @@ export default function SettingsPage({
             </div>
           </SettingsPanel>
 
-          <SettingsPanel
-            title="Custom palette"
-            description="Choosing a preset or editing a color switches the New design to Custom without changing your saved font."
-          >
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
-              {THEME_PRESETS.map(preset => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => applyPreset(preset.settings)}
-                  style={{
-                    ...hybridControlStyles.secondaryButton,
-                    minHeight: 34,
-                    padding: '7px 12px',
-                    background: preset.settings.colorBg ?? 'var(--surface-subtle)',
-                    color: preset.settings.colorText ?? 'var(--text)',
-                  }}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(240px, 1fr))', gap: '14px 32px' }}>
-              <ColorInput label="Background" value={local.colorBg} onChange={v => set('colorBg', v)} />
-              <ColorInput label="Surface" value={local.colorSurface} onChange={v => set('colorSurface', v)} />
-              <ColorInput label="Border" value={local.colorBorder} onChange={v => set('colorBorder', v)} />
-              <ColorInput label="Accent" value={local.colorAccent} onChange={v => set('colorAccent', v)} />
-              <ColorInput label="Text" value={local.colorText} onChange={v => set('colorText', v)} />
-              <ColorInput label="Muted Text" value={local.colorTextMuted} onChange={v => set('colorTextMuted', v)} />
-            </div>
-          </SettingsPanel>
+          {isVintageMode && (
+            <SettingsPanel
+              title="Vintage style"
+              description="Pick the era. Album artwork stays full-colour in every style. Not available in the mobile app."
+            >
+              <VintageStylePicker value={vintageStyle} onChange={(style) => onVintageStyleChange?.(style)} />
+            </SettingsPanel>
+          )}
 
+          {isCustomMode && (
+            <SettingsPanel
+              title="Custom palette"
+              description="Pick a preset or edit any color. Your saved font is kept."
+            >
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+                {THEME_PRESETS.map(preset => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => applyPreset(preset.settings)}
+                    style={{
+                      ...hybridControlStyles.secondaryButton,
+                      minHeight: 34,
+                      padding: '7px 12px',
+                      background: preset.settings.colorBg ?? 'var(--surface-subtle)',
+                      color: preset.settings.colorText ?? 'var(--text)',
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(240px, 1fr))', gap: '14px 32px' }}>
+                <ColorInput label="Background" value={local.colorBg} onChange={v => set('colorBg', v)} />
+                <ColorInput label="Surface" value={local.colorSurface} onChange={v => set('colorSurface', v)} />
+                <ColorInput label="Border" value={local.colorBorder} onChange={v => set('colorBorder', v)} />
+                <ColorInput label="Accent" value={local.colorAccent} onChange={v => set('colorAccent', v)} />
+                <ColorInput label="Text" value={local.colorText} onChange={v => set('colorText', v)} />
+                <ColorInput label="Muted Text" value={local.colorTextMuted} onChange={v => set('colorTextMuted', v)} />
+              </div>
+            </SettingsPanel>
+          )}
+
+          {/* The preview renders the saved Custom palette, so it only makes sense in Custom mode. */}
+          {isCustomMode && (
           <SettingsPanel
             title="Typeface & preview"
             description="Satoshi is fixed for the New design. Your previous font setting remains stored during migration."
@@ -1487,6 +1523,7 @@ export default function SettingsPage({
               </div>
             </div>
           </SettingsPanel>
+          )}
 
           <SettingsPanel
             title="Accent source"
@@ -1498,14 +1535,23 @@ export default function SettingsPage({
                 role="switch"
                 aria-checked={adaptiveAccentEnabled}
                 aria-label="Adaptive accent"
+                disabled={isVintageMode}
                 onClick={() => onAdaptiveAccentEnabledChange?.(!adaptiveAccentEnabled)}
-                title={adaptiveAccentEnabled ? 'Adaptive accent is enabled' : 'Selected theme accent is enabled'}
-                style={{ ...hybridControlStyles.switchTrack, ...(adaptiveAccentEnabled ? hybridControlStyles.switchTrackActive : {}) }}
+                title={isVintageMode
+                  ? 'Not used by Vintage themes'
+                  : adaptiveAccentEnabled ? 'Adaptive accent is enabled' : 'Selected theme accent is enabled'}
+                style={{
+                  ...hybridControlStyles.switchTrack,
+                  ...(adaptiveAccentEnabled ? hybridControlStyles.switchTrackActive : {}),
+                  ...(isVintageMode ? hybridControlStyles.disabled : {}),
+                }}
               >
                 <span style={{ ...hybridControlStyles.switchThumb, ...(adaptiveAccentEnabled ? hybridControlStyles.switchThumbActive : {}) }} />
               </button>
               <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                {adaptiveAccentEnabled
+                {isVintageMode
+                  ? 'Not used by Vintage themes'
+                  : adaptiveAccentEnabled
                   ? 'Adaptive from album/artist artwork (current behavior)'
                   : 'Use selected theme accent only'}
               </div>

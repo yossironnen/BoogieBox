@@ -366,6 +366,38 @@ describe('resolveNeedleMeterPalette', () => {
   });
 });
 
+describe('Vintage meter palettes', () => {
+  const base = {
+    bg: '#efe4cc',
+    surface: '#f7efdc',
+    border: '#c9b58f',
+    accent: '#a8441a',
+    text: '#2b2118',
+    textMuted: '#6b5840',
+  };
+
+  it('gives the needle meter a cream/amber face with an ink scale when --vu-face is set', () => {
+    const palette = resolveNeedleMeterPalette({ ...base, vuFace: '#f2c57a', vuInk: '#2b2118', vuHot: '#c4541f', vuRing: '#d9a026' });
+    expect(palette.plateMid).toBe('rgb(242,197,122)');
+    expect(palette.bezel).toBe('rgb(217,160,38)');
+    expect(palette.needleStart).toBe('rgb(43,33,24)');
+    expect(palette.labelHot).toBe('rgb(196,84,31)');
+  });
+
+  it('gives the HiFi meter the same amber dial', () => {
+    const palette = resolveHifiMeterPalette({ ...base, vuFace: '#f2c57a', vuInk: '#2b2118', vuHot: '#c4541f' });
+    expect(palette.dialCenter).toBe('rgb(242,197,122)');
+    expect(palette.needleCore).toBe('rgb(43,33,24)');
+    // Ring falls back to the hot colour when not provided.
+    expect(palette.frameStroke).toBe('rgb(196,84,31)');
+  });
+
+  it('ignores an empty or unparsable face and uses the regular derivation', () => {
+    expect(resolveNeedleMeterPalette({ ...base, vuFace: '' })).toEqual(resolveNeedleMeterPalette(base));
+    expect(resolveHifiMeterPalette({ ...base, vuFace: 'not-a-colour' })).toEqual(resolveHifiMeterPalette(base));
+  });
+});
+
 describe('resolveHifiMeterPalette', () => {
   it('returns exact HiFi dark-default palette for the current default theme values', () => {
     const palette = resolveHifiMeterPalette({

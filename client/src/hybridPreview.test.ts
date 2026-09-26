@@ -5,8 +5,10 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from './types';
 import {
+  DESKTOP_THEME_MODES,
   getClassicPreviewHref,
   getHybridSemanticTokens,
+  HYBRID_THEME_MODES,
   DESKTOP_PLAYER_DOCK_HEIGHT,
   DESKTOP_PLAYER_POPUP_GAP,
   DESKTOP_VINYL_PLAYER_DOCK_HEIGHT,
@@ -32,6 +34,7 @@ import {
   parseHybridThemeMode,
   resolveHybridThemeSettings,
 } from './hybridPreview';
+import { VINTAGE_STYLES } from './vintageThemes';
 
 function relativeLuminance(hex: string): number {
   const channels = hex.match(/[a-f\d]{2}/gi)?.map((channel) => {
@@ -69,8 +72,31 @@ describe('Hybrid preview', () => {
     expect(parseHybridThemeMode('light')).toBe('light');
     expect(parseHybridThemeMode('dark')).toBe('dark');
     expect(parseHybridThemeMode('custom')).toBe('custom');
+    expect(parseHybridThemeMode('vintage')).toBe('vintage');
     expect(parseHybridThemeMode('neon')).toBeNull();
     expect(parseHybridThemeMode(null)).toBeNull();
+  });
+
+  it('offers Vintage on desktop only', () => {
+    expect(HYBRID_THEME_MODES).toEqual(['light', 'dark', 'custom']);
+    expect(DESKTOP_THEME_MODES).toEqual(['light', 'dark', 'custom', 'vintage']);
+  });
+
+  it('resolves Vintage to the style palette, body font and semantic tokens', () => {
+    const saved = { ...DEFAULT_SETTINGS };
+    const recordShop = VINTAGE_STYLES.recordshop;
+    const vintage = resolveHybridThemeSettings(DEFAULT_SETTINGS, 'vintage', 'recordshop');
+
+    expect(vintage).toMatchObject(recordShop.palette);
+    expect(vintage.fontFamily).toBe(recordShop.fontFamily);
+    expect(vintage.bgTexture).toBe('none');
+    // Unknown/missing style falls back to the default style.
+    expect(resolveHybridThemeSettings(DEFAULT_SETTINGS, 'vintage').colorBg).toBe(recordShop.palette.colorBg);
+    expect(DEFAULT_SETTINGS).toEqual(saved);
+
+    const tokens = getHybridSemanticTokens(DEFAULT_SETTINGS, 'vintage', 'recordshop');
+    expect(Object.keys(tokens).sort()).toEqual([...HYBRID_SEMANTIC_TOKEN_KEYS].sort());
+    expect(tokens['--on-accent']).toBe(recordShop.semanticTokens['--on-accent']);
   });
 
   it('maps every Hybrid theme to Satoshi without changing the saved settings', () => {
@@ -197,7 +223,7 @@ describe('Hybrid preview', () => {
   });
 
   it('keeps the Hybrid player tall enough for its 90px meters and docked popups', () => {
-    expect(DESKTOP_PLAYER_DOCK_HEIGHT).toBe(100);
+    expect(DESKTOP_PLAYER_DOCK_HEIGHT).toBe(116);
     expect(DESKTOP_VINYL_PLAYER_DOCK_HEIGHT).toBe(170);
     expect(DESKTOP_PLAYER_POPUP_GAP).toBe(8);
     expect(hybridPlayerStyles.bar).toMatchObject({

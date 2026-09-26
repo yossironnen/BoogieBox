@@ -5,6 +5,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './base.css'
+import './vintage.css'
 import App from './App'
 
 const style = document.createElement('style')

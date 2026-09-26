@@ -35,7 +35,7 @@ describe('THEME_PRESETS', () => {
     expect(labels).toContain('Midnight Blue');
     expect(labels).toContain('Forest');
     expect(labels).toContain('Warm Dark');
-    expect(labels).toContain('Vintage Radio');
+    expect(labels).not.toContain('Vintage Radio');
     expect(labels).toContain('Light');
     expect(labels).toContain('Solarized');
     expect(labels).not.toContain('Original');
@@ -53,10 +53,8 @@ describe('THEME_PRESETS', () => {
     expect(modern?.settings.fontFamily).toBeTruthy();
   });
 
-  it('includes Vintage Radio with wood background texture', () => {
-    const vintage = THEME_PRESETS.find(p => p.label === 'Vintage Radio');
-    expect(vintage).toBeTruthy();
-    expect(vintage?.settings.bgTexture).toBe('wood');
+  it('no longer ships the Vintage Radio preset (superseded by the Vintage theme mode)', () => {
+    expect(THEME_PRESETS.some(p => p.settings.bgTexture === 'wood')).toBe(false);
   });
 });
 
