@@ -1,3 +1,4 @@
+import { invalidateHomeData } from '../homeCache';
 /**
  * Tests the Home view under the Vintage Record Shop style: sticker stat tiles and
  * Recent Albums drawn as sleeves with a record whose label is a round crop of the cover.
@@ -64,6 +65,7 @@ function renderHome(vintage: boolean) {
 
 describe('HomeView — Vintage Record Shop', () => {
   beforeEach(() => {
+    invalidateHomeData(true);
     vi.clearAllMocks();
     Object.defineProperty(window, 'matchMedia', {
       writable: true,

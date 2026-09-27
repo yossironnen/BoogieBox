@@ -1,3 +1,4 @@
+import { invalidateHomeData } from '../homeCache';
 /**
  * Tests that the Home Recent Albums carousel refreshes itself while a background scan runs.
  */
@@ -77,6 +78,7 @@ function renderHome() {
 
 describe('HomeView Recent Albums scan refresh', () => {
   beforeEach(() => {
+    invalidateHomeData(true);
     vi.clearAllMocks();
     vi.useFakeTimers({ shouldAdvanceTime: true });
     Object.defineProperty(window, 'matchMedia', {

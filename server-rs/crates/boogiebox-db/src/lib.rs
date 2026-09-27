@@ -780,6 +780,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-09-21-radio-metadata-schema",
             apply: ensure_radio_metadata_schema,
         },
+        Migration {
+            id: "2026-09-27-home-stats-cache-invalidation",
+            apply: ensure_stats_cache_invalidation,
+        },
     ];
 
     for migration in migrations {
@@ -2139,6 +2143,39 @@ pub fn refresh_denormalized_counts(connection: &Connection) -> Result<(), rusqli
     Ok(())
 }
 
+// Invalidate the persisted singleton after changes to its source data. Triggers
+// also cover cascades, scans, and external SQLite writers, not just HTTP handlers.
+fn ensure_stats_cache_invalidation(connection: &Connection) -> rusqlite::Result<()> {
+    if !["stats_cache", "tracks", "albums", "artists", "libraries"]
+        .iter()
+        .all(|table| table_exists(connection, table))
+    {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS stats_tracks_insert AFTER INSERT ON tracks
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_tracks_delete AFTER DELETE ON tracks
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_tracks_update AFTER UPDATE OF duration, file_size, album_id ON tracks
+           WHEN OLD.duration IS NOT NEW.duration OR OLD.file_size IS NOT NEW.file_size OR OLD.album_id IS NOT NEW.album_id
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_albums_insert AFTER INSERT ON albums
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_albums_delete AFTER DELETE ON albums
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_albums_update AFTER UPDATE OF artist_id ON albums
+           WHEN OLD.artist_id IS NOT NEW.artist_id
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_artists_delete AFTER DELETE ON artists
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_libraries_insert AFTER INSERT ON libraries
+           BEGIN DELETE FROM stats_cache; END;
+         CREATE TRIGGER IF NOT EXISTS stats_libraries_delete AFTER DELETE ON libraries
+           BEGIN DELETE FROM stats_cache; END;",
+    )
+}
+
 /// Documents the Refresh Stats Cache public API surface.
 pub fn refresh_stats_cache(connection: &Connection) -> Result<(), rusqlite::Error> {
     if !table_exists(connection, "stats_cache") {
@@ -3127,6 +3164,61 @@ pub mod boogiemix;
 mod tests {
     use super::*;
     use std::{env, time::SystemTime};
+
+    #[test]
+    fn stats_cache_invalidation_covers_content_changes_but_ignores_playback_and_noops() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE stats_cache(id TEXT);
+            CREATE TABLE tracks(id, duration, file_size, album_id, play_count);
+            CREATE TABLE albums(id, artist_id);
+            CREATE TABLE artists(id);
+            CREATE TABLE libraries(id);
+            INSERT INTO artists VALUES(1);",
+        )
+        .unwrap();
+        ensure_stats_cache_invalidation(&conn).unwrap();
+        ensure_stats_cache_invalidation(&conn).unwrap();
+        for sql in [
+            "INSERT INTO libraries VALUES(1)",
+            "INSERT INTO albums VALUES(1,1)",
+            "INSERT INTO tracks VALUES(1,10,100,1,0)",
+            "UPDATE tracks SET duration=20",
+            "UPDATE tracks SET file_size=200",
+            "UPDATE tracks SET album_id=2",
+            "UPDATE albums SET artist_id=2",
+            "DELETE FROM tracks",
+            "DELETE FROM albums",
+            "DELETE FROM artists",
+            "DELETE FROM libraries",
+        ] {
+            conn.execute("INSERT INTO stats_cache VALUES('stats-cache')", [])
+                .unwrap();
+            conn.execute_batch(sql).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM stats_cache", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{sql}"
+            );
+        }
+        conn.execute_batch(
+            "INSERT INTO tracks VALUES(1,10,100,1,0);
+            INSERT INTO albums VALUES(1,1);
+            INSERT INTO stats_cache VALUES('stats-cache');
+            UPDATE tracks SET play_count=1;
+            UPDATE tracks SET duration=duration;
+            UPDATE albums SET artist_id=artist_id;",
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM stats_cache", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
 
     #[test]
     fn detects_network_paths_and_picks_delete_journal_for_unc() {

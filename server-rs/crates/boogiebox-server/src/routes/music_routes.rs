@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use boogiebox_db::boogiemix::get_track_sonic_fingerprint;
 use boogiebox_db::music::{
@@ -29,6 +29,7 @@ use crate::{
         RadioReason, DEFAULT_VARIETY,
     },
     auth::AuthenticatedUser,
+    home_cache::HomeQueryCache,
     radio_metadata::{radio_metadata_status, spawn_lazy_tag_fetch},
     similar_artists::{
         gather_related_candidates, resolve_local_similar_artists_with_listenbrainz,
@@ -48,6 +49,7 @@ pub fn music_router(state: SharedState) -> Router {
         .route("/api/home/genres", get(home_genres_handler))
         // Home
         .route("/api/home/top-rated", get(home_top_rated_handler))
+        .route("/api/home/genre-covers", get(home_genre_covers_handler))
         // Artists - specific routes BEFORE parameterized ones
         .route("/api/artists/most-played", get(artists_most_played_handler))
         .route("/api/artists/merge", post(merge_artists_handler))
@@ -105,7 +107,59 @@ pub fn music_router(state: SharedState) -> Router {
         .route("/api/tracks/{id}/metadata", put(track_metadata_handler))
         // Auto-DJ
         .route("/api/auto-dj/tracks", get(auto_dj_handler))
+        .layer(Extension(HomeQueryCache::default()))
         .with_state(state)
+}
+
+pub(super) async fn cached_home_query<T: Serialize>(
+    state: SharedState,
+    cache: HomeQueryCache,
+    key: String,
+    load: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
+) -> axum::response::Response {
+    let Some(db) = get_db(&state) else {
+        return setup_required();
+    };
+    match tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        cache.read(&db, &conn, key, load)
+    })
+    .await
+    {
+        Ok(Some(body)) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json"),
+                (axum::http::header::CACHE_CONTROL, "private, no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        _ => internal_error(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GenreCoversQuery {
+    genre: String,
+}
+
+async fn home_genre_covers_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
+    Query(q): Query<GenreCoversQuery>,
+) -> impl IntoResponse {
+    // Cap cache keys and SQL input; missing genre is rejected by the extractor.
+    let genre = q.genre.trim().to_lowercase();
+    if genre.is_empty() || genre.len() > 512 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let key = format!("{}:covers:{genre}", user.id);
+    cached_home_query(state, cache, key, move |conn| {
+        boogiebox_db::music::list_home_genre_covers(conn, &genre)
+    })
+    .await
 }
 
 // -- Query param structs -------------------------------------------------------
@@ -435,36 +489,27 @@ async fn search_handler(
 
 async fn genres_handler(
     State(state): State<SharedState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
-    match tokio::task::spawn_blocking(move || list_genres(&db.lock().expect("db"))).await {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
-        _ => internal_error(),
-    }
+    let user_id = user.id;
+    let key = format!("{user_id}:genres");
+    cached_home_query(state, cache, key, list_genres).await
 }
 
 async fn home_genres_handler(
     State(state): State<SharedState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
     Query(q): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
     let limit = parse_limit(q.limit.as_deref(), 12, 12) as usize;
-    match tokio::task::spawn_blocking(move || {
-        list_home_genre_summaries(&db.lock().expect("db"), limit)
+    let user_id = user.id;
+    let key = format!("{user_id}:home-genres:{limit}");
+    cached_home_query(state, cache, key, move |conn| {
+        list_home_genre_summaries(conn, limit)
     })
     .await
-    {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
-        _ => internal_error(),
-    }
 }
 
 // -- Home top-rated ------------------------------------------------------------
@@ -472,22 +517,16 @@ async fn home_genres_handler(
 async fn home_top_rated_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
     Query(q): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
     let limit = parse_limit(q.limit.as_deref(), 5, 500);
     let user_id = user.id;
-    match tokio::task::spawn_blocking(move || {
-        get_home_top_rated(&db.lock().expect("db"), &user_id, limit)
+    let key = format!("{user_id}:top-rated:{limit}");
+    cached_home_query(state, cache, key, move |conn| {
+        get_home_top_rated(conn, &user_id, limit)
     })
     .await
-    {
-        Ok(Ok(result)) => (StatusCode::OK, Json(result)).into_response(),
-        _ => internal_error(),
-    }
 }
 
 // -- Artists -------------------------------------------------------------------
@@ -822,22 +861,16 @@ async fn similar_artists_handler(
 async fn artists_most_played_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
     Query(q): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
     let limit = parse_limit(q.limit.as_deref(), 10, 500);
     let user_id = user.id;
-    match tokio::task::spawn_blocking(move || {
-        list_artists_most_played(&db.lock().expect("db"), &user_id, limit)
+    let key = format!("{user_id}:most-played:{limit}");
+    cached_home_query(state, cache, key, move |conn| {
+        list_artists_most_played(conn, &user_id, limit)
     })
     .await
-    {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
-        _ => internal_error(),
-    }
 }
 
 async fn artist_albums_handler(
@@ -1222,49 +1255,16 @@ async fn album_change_cursor_handler(
 async fn albums_latest_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
     Query(q): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
     let limit = parse_limit(q.limit.as_deref(), 60, 200);
     let user_id = user.id;
-    let requested_at = std::time::Instant::now();
-    let result = tokio::task::spawn_blocking(move || {
-        let lock_wait_start = std::time::Instant::now();
-        let conn = db.lock().expect("db");
-        let mutex_wait = lock_wait_start.elapsed();
-        let query_start = std::time::Instant::now();
-        let rows = list_albums_latest(&conn, &user_id, limit);
-        (rows, mutex_wait, query_start.elapsed())
+    let key = format!("{user_id}:latest:{limit}");
+    cached_home_query(state, cache, key, move |conn| {
+        list_albums_latest(conn, &user_id, limit)
     })
-    .await;
-    match result {
-        Ok((Ok(rows), mutex_wait, sql_time)) => {
-            let serialize_start = std::time::Instant::now();
-            let body = match serde_json::to_vec(&rows) {
-                Ok(b) => b,
-                Err(_) => return internal_error(),
-            };
-            tracing::debug!(
-                route = "albums_latest",
-                row_count = rows.len(),
-                mutex_wait_ms = mutex_wait.as_secs_f64() * 1000.0,
-                sql_ms = sql_time.as_secs_f64() * 1000.0,
-                serialize_ms = serialize_start.elapsed().as_secs_f64() * 1000.0,
-                total_ms = requested_at.elapsed().as_secs_f64() * 1000.0,
-                "albums latest route timing"
-            );
-            (
-                StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                body,
-            )
-                .into_response()
-        }
-        _ => internal_error(),
-    }
+    .await
 }
 
 async fn albums_by_group_tracks_handler(
@@ -1347,37 +1347,29 @@ async fn album_tracks_handler(
 
 async fn recently_played_handler(
     State(state): State<SharedState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
     Query(q): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
     let limit = parse_limit(q.limit.as_deref(), 500, 500);
-    match tokio::task::spawn_blocking(move || list_recently_played(&db.lock().expect("db"), limit))
-        .await
-    {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
-        _ => internal_error(),
-    }
+    let user_id = user.id;
+    let key = format!("{user_id}:recent:{limit}");
+    cached_home_query(state, cache, key, move |conn| {
+        list_recently_played(conn, limit)
+    })
+    .await
 }
 
 async fn top_played_handler(
     State(state): State<SharedState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
     Query(q): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
     let limit = parse_limit(q.limit.as_deref(), 10, 500);
-    match tokio::task::spawn_blocking(move || list_top_played(&db.lock().expect("db"), limit)).await
-    {
-        Ok(Ok(rows)) => (StatusCode::OK, Json(rows)).into_response(),
-        _ => internal_error(),
-    }
+    let user_id = user.id;
+    let key = format!("{user_id}:top-played:{limit}");
+    cached_home_query(state, cache, key, move |conn| list_top_played(conn, limit)).await
 }
 
 async fn get_track_handler(
@@ -1704,6 +1696,62 @@ mod browse_route_tests {
         )
         .unwrap();
         (artist_id, album_id, track_id)
+    }
+
+    #[tokio::test]
+    async fn home_cover_route_is_authenticated_bounded_and_refreshed_after_changes() {
+        let (app, pool) = new_test_app_with_pool("home-cover-cache");
+        let cookie = seed_user_session(&pool, "home-user");
+        let (_, album_id, track_id) = seed_music(&pool);
+        let request = |uri: &str, auth: bool| {
+            let req = Request::builder().uri(uri);
+            let req = if auth {
+                req.header("cookie", &cookie)
+            } else {
+                req
+            };
+            req.body(Body::empty()).unwrap()
+        };
+        assert_eq!(
+            send(
+                app.clone(),
+                request("/api/home/genre-covers?genre=Rock", false)
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        for uri in [
+            "/api/home/genre-covers",
+            "/api/home/genre-covers?genre=%20",
+            &format!("/api/home/genre-covers?genre={}", "x".repeat(513)),
+        ] {
+            assert_eq!(
+                send(app.clone(), request(uri, true)).await.0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        for _ in 0..2 {
+            let (status, body) = send(
+                app.clone(),
+                request("/api/home/genre-covers?genre=Rock", true),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(json_body(&body), serde_json::json!([album_id]));
+        }
+        pool.lock()
+            .unwrap()
+            .execute("UPDATE tracks SET genre='Jazz' WHERE id=?", [&track_id])
+            .unwrap();
+        let (_, body) = send(
+            app.clone(),
+            request("/api/home/genre-covers?genre=Rock", true),
+        )
+        .await;
+        assert_eq!(json_body(&body), serde_json::json!([]));
+        let (_, body) = send(app, request("/api/home/genre-covers?genre=Jazz", true)).await;
+        assert_eq!(json_body(&body), serde_json::json!([album_id]));
     }
 
     #[tokio::test]
@@ -2441,11 +2489,16 @@ mod artist_radio_route_tests {
 
     #[tokio::test]
     async fn radio_routes_report_setup_required_without_a_database() {
-        let app = music_router(Arc::new(RwLock::new(AppState::default())));
-        // No session can exist without a database, so the extractor rejects first.
+        let mut state = crate::test_support::build_test_state(&crate::test_support::temp_db_path(
+            "radio-no-database",
+        ));
+        state.db = None;
+        state.setup_required = true;
+        let app = music_router(Arc::new(RwLock::new(state)));
+        // The auth extractor reports setup required when there is no database.
         assert_eq!(
             get(&app, "/api/artists/seed/radio", true).await.0,
-            StatusCode::UNAUTHORIZED
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 

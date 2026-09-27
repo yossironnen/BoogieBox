@@ -664,3 +664,65 @@ describe('api.trackSonicFingerprint', () => {
   });
 });
 
+
+
+describe('Home cache API boundaries', () => {
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('uses the bounded cover endpoint and URL-encodes compound genre names', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(['album']), { headers: { 'Content-Type': 'application/json' } }));
+    expect(await api.homeGenreCovers('R&B, Soul')).toEqual(['album']);
+    const url = new URL(String(vi.mocked(fetch).mock.calls[0][0]));
+    expect(url.pathname).toBe('/api/home/genre-covers');
+    expect(url.searchParams.get('genre')).toBe('R&B, Soul');
+  });
+
+  it('refreshes on successful ratings and playback, but not failed mutations', async () => {
+    const { onHomeInvalidated } = await import('../homeCache');
+    const listener = vi.fn();
+    const unsubscribe = onHomeInvalidated(listener);
+    try {
+      vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } }));
+      await api.setTrackRating('track', 5);
+      expect(listener).toHaveBeenCalledTimes(1);
+      vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } }));
+      await api.markTrackPlayed('track');
+      expect(listener).toHaveBeenCalledTimes(2);
+      vi.mocked(fetch).mockResolvedValue(new Response('{"error":"failed"}', { status: 500, headers: { 'Content-Type': 'application/json' } }));
+      await expect(api.setAlbumRating('album', 1)).rejects.toThrow('failed');
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally { unsubscribe(); }
+  });
+
+  it('clears cached data on logout, database switches, and session expiry', async () => {
+    const { homeSnapshot, refreshHomeData } = await import('../homeCache');
+    for (const action of [() => api.auth.logout(), () => api.systemSwitchDb('test-folder')]) {
+      await refreshHomeData('private', async () => ['old-user']);
+      vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } }));
+      await action();
+      expect(homeSnapshot('private').data).toBeUndefined();
+    }
+    await refreshHomeData('private', async () => ['old-user']);
+    vi.mocked(fetch).mockResolvedValue(new Response('{"error":"expired"}', { status: 401, headers: { 'Content-Type': 'application/json' } }));
+    await expect(api.homeTopRated()).rejects.toThrow('expired');
+    expect(homeSnapshot('private').data).toBeUndefined();
+  });
+});
+
+
+describe('expired Home mutations', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([
+    ['post', () => api.markTrackPlayed('track')],
+    ['put', () => api.libraries.rename('lib', 'name')],
+    ['delete', () => api.playlists.remove('playlist')],
+    ['patch', () => api.setTrackRating('track', 3)],
+  ] as const)('clears private snapshots on %s session expiry', async (_method, action) => {
+    const { refreshHomeData, homeSnapshot } = await import('../homeCache');
+    await refreshHomeData('private', async () => ['old-user']);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } })));
+    await expect(action()).rejects.toThrow('Server error 401');
+    expect(homeSnapshot('private').data).toBeUndefined();
+  });
+});

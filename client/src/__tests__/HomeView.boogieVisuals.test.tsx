@@ -1,3 +1,4 @@
+import { invalidateHomeData } from '../homeCache';
 /**
  * Tests Home View.Boogie Visuals.Test behavior for BoogieBox regressions.
  */
@@ -142,6 +143,7 @@ function renderHome(hybridDesign = false) {
 
 describe('HomeView boogie visuals', () => {
   beforeEach(() => {
+    invalidateHomeData(true);
     vi.clearAllMocks();
     mockMatchMedia(false);
     mockIntersectionObserver();

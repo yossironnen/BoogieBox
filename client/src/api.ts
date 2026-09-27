@@ -55,6 +55,7 @@ import type {
   IntroOutroRefined,
 } from './types';
 import type { EntityId } from './entityId';
+import { invalidateHomeData } from './homeCache';
 
 type ApiEntityId = ClientEntityId;
 
@@ -147,12 +148,22 @@ async function get<T>(path: string, params?: Record<string, string | number | bo
     throw new Error(describeNetworkError(error));
   }
   if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
     throw new Error(await readErrorMessage(res));
   }
   return readJson<T>(res);
 }
 
+function homeMutation(path: string): void {
+  if (/^\/(auth\/|system\/(?:setup|switch-db))/.test(path)) {
+    invalidateHomeData(true);
+  } else if (/^\/(?:libraries|playlists|artists|albums|tracks)(?:\/|$)/.test(path)) {
+    invalidateHomeData();
+  }
+}
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
+  if (/^\/(auth\/|system\/(?:setup|switch-db))/.test(path)) invalidateHomeData(true);
   let res: Response;
   try {
     res = await fetch(`${BASE}/api${path}`, {
@@ -165,9 +176,12 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     throw new Error(describeNetworkError(error));
   }
   if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
     throw new Error(await readErrorMessage(res));
   }
-  return readJson<T>(res);
+  const result = await readJson<T>(res);
+  homeMutation(path);
+  return result;
 }
 
 async function put<T>(path: string, body?: unknown): Promise<T> {
@@ -183,9 +197,12 @@ async function put<T>(path: string, body?: unknown): Promise<T> {
     throw new Error(describeNetworkError(error));
   }
   if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
     throw new Error(await readErrorMessage(res));
   }
-  return readJson<T>(res);
+  const result = await readJson<T>(res);
+  homeMutation(path);
+  return result;
 }
 
 async function del<T>(path: string): Promise<T> {
@@ -196,9 +213,12 @@ async function del<T>(path: string): Promise<T> {
     throw new Error(describeNetworkError(error));
   }
   if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
     throw new Error(await readErrorMessage(res));
   }
-  return readJson<T>(res);
+  const result = await readJson<T>(res);
+  homeMutation(path);
+  return result;
 }
 
 async function patch<T>(path: string, body?: unknown): Promise<T> {
@@ -214,9 +234,12 @@ async function patch<T>(path: string, body?: unknown): Promise<T> {
     throw new Error(describeNetworkError(error));
   }
   if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
     throw new Error(await readErrorMessage(res));
   }
-  return readJson<T>(res);
+  const result = await readJson<T>(res);
+  homeMutation(path);
+  return result;
 }
 
 /** Encode Genres Param is part of this module's public API. */
@@ -328,6 +351,7 @@ export const api = {
   albumChangeCursor: () => get<{ cursor: number }>('/albums/change-cursor'),
   latestAlbums: (limit = 60) => get<LatestAlbum[]>('/albums/latest', { limit }),
   homeTopRated: (limit = 5) => get<HomeTopRated>('/home/top-rated', { limit }),
+  homeGenreCovers: (genre: string) => get<ClientEntityId[]>('/home/genre-covers', { genre }),
   homeGenres: (limit = 6) => get<HomeGenreSummary[]>('/home/genres', { limit }),
   albumTracks: (albumId: ApiEntityId, libraryIds?: ApiEntityId[]) =>
     get<Track[]>(`/albums/${albumId}/tracks`, { library_ids: encodeLibraryIdsParam(libraryIds) }),

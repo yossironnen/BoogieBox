@@ -1,3 +1,4 @@
+import { invalidateHomeData } from '../homeCache';
 /**
  * Tests Home View.Playback Tabs.Test behavior for BoogieBox regressions.
  */
@@ -18,6 +19,7 @@ const { apiMock } = vi.hoisted(() => ({
     artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number) => `/api/artists/${artistId}/photo?size=${size}`) ,
     genres: vi.fn(),
     albums: vi.fn(),
+    homeGenreCovers: vi.fn(),
     recentlyPlayed: vi.fn(),
     topPlayedTracks: vi.fn(),
     mostPlayedArtists: vi.fn(),
@@ -85,6 +87,7 @@ function renderHome(
 
 describe('HomeView playback activity tabs', () => {
   beforeEach(() => {
+    invalidateHomeData(true);
     vi.clearAllMocks();
     localStorage.clear();
     mockIntersectionObserver();
@@ -93,7 +96,7 @@ describe('HomeView playback activity tabs', () => {
     apiMock.homeTopRated.mockResolvedValue({ artists: [], albums: [], tracks: [] });
     apiMock.homeGenres.mockResolvedValue([]);
     apiMock.genres.mockResolvedValue([]);
-    apiMock.albums.mockResolvedValue([]);
+    apiMock.homeGenreCovers.mockResolvedValue([]);
     apiMock.recentlyPlayed.mockResolvedValue([]);
     apiMock.topPlayedTracks.mockResolvedValue([]);
     apiMock.mostPlayedArtists.mockResolvedValue([]);
@@ -103,6 +106,68 @@ describe('HomeView playback activity tabs', () => {
     apiMock.crossfade.config.mockResolvedValue({ mode: 'off', duration: 2, source: 'global' });
     apiMock.crossfade.upsertOverride.mockResolvedValue({ ok: true });
     apiMock.crossfade.removeOverride.mockResolvedValue({ ok: true });
+  });
+
+  it('keeps successful genre covers when another genre fails, then retries on refresh', async () => {
+    const genres = ['Rock', 'Jazz'].map(label => ({ label, canonical_key: label.toLowerCase(), track_count: 1, artist_count: 1, album_count: 1, raw_labels: [label] }));
+    apiMock.homeGenres.mockResolvedValue(genres);
+    apiMock.homeGenreCovers.mockImplementation((label: string) => label === 'Jazz' ? Promise.reject(new Error('offline')) : Promise.resolve(['301']));
+    renderHome();
+    const rock = await screen.findByRole('button', { name: 'Open genre Rock' });
+    await waitFor(() => expect(within(rock).getByRole('presentation')).toHaveAttribute('src', '/api/albums/301/art?size=300'));
+    expect(within(screen.getByRole('button', { name: 'Open genre Jazz' })).queryByRole('presentation')).toBeNull();
+    expect(apiMock.homeGenreCovers.mock.calls.filter(([label]) => label === 'Rock')).toHaveLength(1);
+    expect(apiMock.albums).not.toHaveBeenCalled();
+    apiMock.homeGenreCovers.mockImplementation((label: string) => label === 'Rock' ? Promise.reject(new Error('offline')) : Promise.resolve(['302']));
+    act(() => invalidateHomeData());
+    await waitFor(() => expect(within(screen.getByRole('button', { name: 'Open genre Jazz' })).getByRole('presentation')).toHaveAttribute('src', '/api/albums/302/art?size=300'));
+    expect(within(rock).getByRole('presentation')).toHaveAttribute('src', '/api/albums/301/art?size=300');
+  });
+
+  it('renders cached rankings with missing optional metadata and keeps them during a failed refresh', async () => {
+    apiMock.homeTopRated.mockResolvedValue({
+      artists: [{ id: 'ar', name: 'Minimal Artist', rating: null }],
+      albums: [{ id: 'al', title: 'Minimal Album', rating: null }],
+      tracks: [{ id: 'tr', title: '', file_name: 'fallback.mp3', artist: null, album: null, album_id: null, rating: null }],
+    });
+    const view = renderHome();
+    const track = await screen.findByRole('button', { name: 'Play ranked track fallback.mp3' });
+    expect(within(track).getByText('Unknown Artist')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open artist Minimal Artist' })).toHaveTextContent('0 albums');
+    expect(screen.getByRole('button', { name: 'Open album Minimal Album' })).toHaveTextContent('Unknown Artist');
+    view.unmount();
+    apiMock.homeTopRated.mockRejectedValue(new Error('offline'));
+    renderHome();
+    expect(screen.getByRole('button', { name: 'Play ranked track fallback.mp3' })).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.homeTopRated).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Play ranked track fallback.mp3' })).toBeInTheDocument();
+  });
+
+  it('keeps playback fallbacks and fingerprint indicators after cached activity loads', async () => {
+    apiMock.recentlyPlayed.mockResolvedValue([
+      { id: 'one', title: '', file_name: 'fallback-recent.mp3', artist: null, album: null, album_id: null, duration: 0, last_played_at: new Date().toISOString(), has_deep_analysis: true },
+    ]);
+    apiMock.mostPlayedArtists.mockResolvedValue([{ id: 'ar', name: 'Minimal Artist', play_count: 2 }]);
+    renderHome();
+    const row = await screen.findByRole('button', { name: 'Play fallback-recent.mp3' });
+    expect(within(row).getByText('Unknown Artist')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Most Played Artists' }));
+    const artist = await screen.findByRole('button', { name: 'Open artist Minimal Artist' });
+    expect(artist).toHaveTextContent('0 albums');
+    expect(artist).toHaveTextContent('2 plays');
+  });
+
+  it('preserves playlist artwork and hover controls for legacy cached playlist shapes', async () => {
+    apiMock.playlists.list.mockResolvedValue([{ id: 'pl', name: 'Legacy', track_count: 1, total_duration: 3600, art_album_ids: '301,,302' }]);
+    renderHome();
+    const card = await screen.findByRole('button', { name: 'Open playlist Legacy' });
+    expect(card).toHaveTextContent('1 track');
+    expect(card).toHaveTextContent('1h 0m');
+    const play = within(card).getByRole('button', { name: 'Play playlist Legacy' });
+    fireEvent.mouseEnter(card);
+    expect(play).toHaveStyle({ opacity: 1 });
+    fireEvent.mouseLeave(card);
+    expect(play).toHaveStyle({ opacity: 0 });
   });
 
   it('refetches top played tracks each time the tab is reselected', async () => {
@@ -284,14 +349,11 @@ describe('HomeView playback activity tabs', () => {
 
   it('shows a genre\'s sampled album covers as a collage on its Auto DJ quick card', async () => {
     apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
-    apiMock.albums.mockResolvedValue([
-      { id: '301', title: 'A', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 },
-      { id: '302', title: 'B', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 },
-    ]);
+    apiMock.homeGenreCovers.mockResolvedValue(['301', '302']);
 
     renderHome();
 
-    await waitFor(() => expect(apiMock.albums).toHaveBeenCalledWith({ genres: ['Rock'] }));
+    await waitFor(() => expect(apiMock.homeGenreCovers).toHaveBeenCalledWith('Rock'));
     const card = await screen.findByRole('button', { name: 'Start Home Auto DJ with Rock' });
     const sources = within(card).getAllByRole('presentation').map((img) => img.getAttribute('src'));
     expect(sources.sort()).toEqual(['/api/albums/301/art?size=300', '/api/albums/302/art?size=300']);
@@ -324,13 +386,11 @@ describe('HomeView playback activity tabs', () => {
 
   it('shows a random sampled album cover as the Genres panel row thumbnail', async () => {
     apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
-    apiMock.albums.mockResolvedValue([
-      { id: '301', title: 'A', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 },
-    ]);
+    apiMock.homeGenreCovers.mockResolvedValue(['301']);
 
     renderHome();
 
-    await waitFor(() => expect(apiMock.albums).toHaveBeenCalledWith({ genres: ['Rock'] }));
+    await waitFor(() => expect(apiMock.homeGenreCovers).toHaveBeenCalledWith('Rock'));
     const row = await screen.findByRole('button', { name: 'Open genre Rock' });
     expect(within(row).getByRole('presentation')).toHaveAttribute('src', '/api/albums/301/art?size=300');
   });
@@ -346,13 +406,13 @@ describe('HomeView playback activity tabs', () => {
     apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
 
     let resolveAlbums!: (albums: unknown[]) => void;
-    apiMock.albums.mockReturnValue(new Promise((resolve) => { resolveAlbums = resolve; }));
+    apiMock.homeGenreCovers.mockReturnValue(new Promise((resolve) => { resolveAlbums = resolve; }));
     let resolveAllGenres!: (genres: unknown[]) => void;
     apiMock.genres.mockReturnValue(new Promise((resolve) => { resolveAllGenres = resolve; }));
 
     renderHome();
 
-    await waitFor(() => expect(apiMock.albums).toHaveBeenCalledWith({ genres: ['Rock'] }));
+    await waitFor(() => expect(apiMock.homeGenreCovers).toHaveBeenCalledWith('Rock'));
 
     // An unrelated top-level Home fetch (allGenres) resolves while the genre
     // album-art fetch above is still pending, forcing a HomeView re-render.
@@ -365,7 +425,7 @@ describe('HomeView playback activity tabs', () => {
     });
 
     // The album-art fetch resolves afterwards; its result must still land.
-    resolveAlbums([{ id: '301', title: 'A', artist: 'X', album_artist: 'X', year: 2020, genre: 'Rock', track_count: 5 }]);
+    resolveAlbums(['301']);
 
     const row = await screen.findByRole('button', { name: 'Open genre Rock' });
     await waitFor(() => expect(within(row).getByRole('presentation')).toHaveAttribute('src', '/api/albums/301/art?size=300'));

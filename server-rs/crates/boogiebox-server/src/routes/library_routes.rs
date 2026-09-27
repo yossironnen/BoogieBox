@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use boogiebox_db::{
     jobs::{CreateLibraryInput, JobError},
@@ -16,6 +16,7 @@ use std::{fs, net::SocketAddr};
 
 use crate::{
     auth::{AdminUser, AuthenticatedUser, LibraryManager},
+    home_cache::HomeQueryCache,
     pick_folder, DbPool, ErrorResponse, FolderPicker, OkResponse, SharedState,
 };
 
@@ -74,6 +75,7 @@ pub fn library_router(state: SharedState) -> Router {
         .route("/api/admin/browse-folder", post(browse_folder_handler))
         .route("/api/admin/fs/browse", get(fs_browse_handler))
         .route("/api/admin/fs/mkdir", post(fs_mkdir_handler))
+        .layer(Extension(HomeQueryCache::default()))
         .with_state(state)
 }
 
@@ -133,23 +135,16 @@ async fn list_libraries_handler(
 
 async fn stats_handler(
     State(state): State<SharedState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
+    Extension(cache): Extension<HomeQueryCache>,
 ) -> impl IntoResponse {
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required(),
-    };
-
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        boogiebox_db::music::get_stats(&conn)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(stats)) => (StatusCode::OK, Json(stats)).into_response(),
-        _ => internal_error(),
-    }
+    super::music_routes::cached_home_query(
+        state,
+        cache,
+        format!("{}:stats", user.id),
+        boogiebox_db::music::get_stats,
+    )
+    .await
 }
 
 async fn create_library_handler(
@@ -1150,6 +1145,39 @@ mod route_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(json_body(&body).as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stats_route_refreshes_after_library_changes() {
+        let (app, pool) = new_test_app_with_pool("stats-invalidation");
+        let cookie = seed_admin_session(&pool, "admin-stats");
+        let request = || {
+            Request::builder()
+                .uri("/api/stats")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (status, body) = send(app.clone(), request()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["total_libraries"], 0);
+        pool.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO libraries(id,path,name) VALUES('stats-lib','/music','Stats Library')",
+                [],
+            )
+            .unwrap();
+        for _ in 0..2 {
+            let (_, body) = send(app.clone(), request()).await;
+            assert_eq!(json_body(&body)["total_libraries"], 1);
+        }
+        pool.lock()
+            .unwrap()
+            .execute("DELETE FROM libraries WHERE id='stats-lib'", [])
+            .unwrap();
+        let (_, body) = send(app, request()).await;
+        assert_eq!(json_body(&body)["total_libraries"], 0);
     }
 
     #[tokio::test]

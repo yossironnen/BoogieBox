@@ -40,6 +40,7 @@ pub mod deep_analysis;
 pub mod dlna;
 pub mod event_log;
 pub mod ffmpeg;
+pub mod home_cache;
 pub mod image_thumb;
 pub mod logging;
 pub mod mix_priority_gate;

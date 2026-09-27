@@ -4,6 +4,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
+import { useHomeData } from '../hooks/useHomeData';
+import { homeSnapshot, invalidateHomeData, updateHomeData } from '../homeCache';
 import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
 import type { Album, LatestAlbum, Artist, ClientEntityId, Genre, HomeGenreSummary, Library, Stats, Track, Playlist, CrossfadeMode, HomeTopRated } from '../types';
 import type { EntityId } from '../entityId';
@@ -362,25 +364,13 @@ function RecentAlbumsWidget({
   hybridDesign: boolean;
 }) {
   const vintage = useVintageStyle();
-  const [albums, setAlbums] = useState<LatestAlbum[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: albums, loading } = useHomeData<LatestAlbum[]>(
+    'latest:24', () => api.latestAlbums(RECENT_ALBUMS_LIMIT), [], refreshKey,
+  );
   const [hoveredAlbumId, setHoveredAlbumId] = useState<ClientEntityId | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    api.latestAlbums(RECENT_ALBUMS_LIMIT)
-      .then((rows) => { if (!cancelled) setAlbums(rows); })
-      .catch(() => { if (!cancelled) setAlbums([]); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [refreshKey]);
-
-  // Swap newly scanned albums in place (no loading state) so the carousel does not reset.
-  useScanActivityRefresh(useCallback(async () => {
-    const rows = await api.latestAlbums(RECENT_ALBUMS_LIMIT);
-    setAlbums(rows);
-  }, []));
+  // Refresh all mounted Home widgets during scans, preserving visible data and scroll.
+  useScanActivityRefresh(useCallback(() => invalidateHomeData(), []));
 
   if (loading) return <div style={H.widgetEmpty}>Loading...</div>;
   if (albums.length === 0) return <div style={H.widgetEmpty}>No albums yet</div>;
@@ -574,21 +564,14 @@ function TopRatedWidget({
   onOpenAlbum: (album: Album) => void;
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
 }) {
-  const [items, setItems] = useState<HomeTopRated>({ artists: [], albums: [], tracks: [] });
-  const [loading, setLoading] = useState(true);
+  const { data: items, loading } = useHomeData<HomeTopRated>(
+    'top-rated:3', () => api.homeTopRated(3), { artists: [], albums: [], tracks: [] }, refreshKey,
+  );
   const displayItems = useMemo(() => ({
     artists: items.artists.slice(0, 3),
     albums: items.albums.slice(0, 3),
     tracks: items.tracks.slice(0, 3),
   }), [items]);
-
-  useEffect(() => {
-    setLoading(true);
-    api.homeTopRated(3)
-      .then((next) => setItems(next))
-      .catch(() => setItems({ artists: [], albums: [], tracks: [] }))
-      .finally(() => setLoading(false));
-  }, [refreshKey]);
 
   if (loading) return <div style={H.widgetEmpty}>Loading...</div>;
   if (!items.artists.length && !items.albums.length && !items.tracks.length) {
@@ -724,6 +707,21 @@ function TopRatedWidget({
 
 // ─── Genre Breakdown Widget ──────────────────────────────────────────────────
 
+function useGenreCovers(genres: HomeGenreSummary[]): Record<string, ClientEntityId[]> {
+  const labels = genres.slice(0, 6).map(genre => genre.label);
+  const key = `covers:${JSON.stringify(labels)}`;
+  return useHomeData<Record<string, ClientEntityId[]>>(
+    key,
+    async () => {
+      const previous = homeSnapshot(key).data as Record<string, ClientEntityId[]> | undefined;
+      return Object.fromEntries(await Promise.all(labels.map(async label => (
+        [label, await api.homeGenreCovers(label).catch(() => previous?.[label] ?? [])] as const
+      ))));
+    },
+    {}, 0, labels.length > 0,
+  ).data;
+}
+
 function HomeGenresWidget({
   genres,
   onOpenGenre,
@@ -733,47 +731,8 @@ function HomeGenresWidget({
   onOpenGenre: (genre: string) => void;
   onBrowseMusic: () => void;
 }) {
-  const [genreAlbumId, setGenreAlbumId] = useState<Record<string, ClientEntityId | null>>({});
-  const fetchedGenreThumbLabels = useRef<Set<string>>(new Set());
-  // Guards the state update below against only a genuine unmount — NOT
-  // against this effect merely re-running. HomeView's own top-level mount
-  // effect legitimately fetches `homeGenres` twice in quick succession (an
-  // initial load, then once more right after its own post-mount system
-  // refresh), each producing a brand-new array — a real data reload, not a
-  // spurious re-render. A per-effect-run `cancelled` flag (torn down and
-  // recreated on every such reload) discarded the first run's in-flight
-  // album-art fetch before it could resolve, and nothing ever retried since
-  // `fetchedGenreThumbLabels` had already marked those genres as fetched.
-  // Once a per-genre fetch starts, it must always be allowed to land.
-  const isMountedRef = useRef(true);
-  useEffect(() => () => { isMountedRef.current = false; }, []);
-
   const items = useMemo(() => selectTopGenres(genres, 6), [genres]);
-
-  // Sample a single random album cover per genre for the row thumbnail —
-  // fetched once per genre, not re-picked on every render.
-  useEffect(() => {
-    const pending = items.filter((item) => !fetchedGenreThumbLabels.current.has(item.label));
-    if (!pending.length) return;
-    for (const item of pending) fetchedGenreThumbLabels.current.add(item.label);
-    Promise.all(pending.map(async (item) => {
-      try {
-        const albums = await api.albums({ genres: [item.label] });
-        if (!albums.length) return { label: item.label, id: null as ClientEntityId | null };
-        const pick = albums[Math.floor(Math.random() * albums.length)];
-        return { label: item.label, id: pick.id };
-      } catch {
-        return { label: item.label, id: null as ClientEntityId | null };
-      }
-    })).then((entries) => {
-      if (!isMountedRef.current) return;
-      setGenreAlbumId((prev) => {
-        const next = { ...prev };
-        for (const { label, id } of entries) next[label] = id;
-        return next;
-      });
-    });
-  }, [items]);
+  const genreAlbumIds = useGenreCovers(genres);
 
   if (genres.length === 0) return <div style={H.widgetEmpty}>No genre data yet</div>;
 
@@ -795,8 +754,8 @@ function HomeGenresWidget({
             aria-label={topGenreAriaLabel(item.label)}
           >
             <div style={H.genreDiscoveryThumb}>
-              {genreAlbumId[item.label]
-                ? <ArtImage src={api.albumArtUrl(genreAlbumId[item.label]!, 300)} alt="" imgStyle={H.genreDiscoveryThumbImg} wrapperStyle={H.genreDiscoveryThumbWrap} />
+              {genreAlbumIds[item.label]?.[0]
+                ? <ArtImage src={api.albumArtUrl(genreAlbumIds[item.label][0], 300)} alt="" imgStyle={H.genreDiscoveryThumbImg} wrapperStyle={H.genreDiscoveryThumbWrap} />
                 : <GenreIcon size={16} style={H.genreDiscoveryIcon} />}
             </div>
             <div style={H.genreDiscoveryText}>
@@ -848,15 +807,7 @@ function HomeAutoDjModule({
   const [autoDjCfDuration, setAutoDjCfDuration] = useState(2);
   const [autoDjCfHasOverride, setAutoDjCfHasOverride] = useState(false);
   const [autoDjCfSaving, setAutoDjCfSaving] = useState(false);
-  const [genreAlbumIds, setGenreAlbumIds] = useState<Record<string, ClientEntityId[]>>({});
-  const fetchedGenreLabels = useRef<Set<string>>(new Set());
-  // Guards the state update below against only a genuine unmount, not just
-  // this effect re-running — see the matching note in HomeGenresWidget.
-  // HomeView legitimately re-fetches `homeGenres` (thus a new `quickGenres`
-  // reference) a second time right after mount; a per-run `cancelled` flag
-  // discarded the first run's in-flight fetches before they resolved.
-  const isMountedRef = useRef(true);
-  useEffect(() => () => { isMountedRef.current = false; }, []);
+  const genreAlbumIds = useGenreCovers(quickGenres);
 
   useEffect(() => {
     api.crossfade.config('autodj', '0').then((config) => {
@@ -865,34 +816,6 @@ function HomeAutoDjModule({
       setAutoDjCfHasOverride(config.source === 'override');
     }).catch(() => {});
   }, []);
-
-  // Sample up to 4 random album covers per quick genre for the card collage —
-  // fetched once per genre, not re-shuffled on every render.
-  useEffect(() => {
-    const pending = quickGenres.slice(0, 5).filter((genre) => !fetchedGenreLabels.current.has(genre.label));
-    if (!pending.length) return;
-    for (const genre of pending) fetchedGenreLabels.current.add(genre.label);
-    Promise.all(pending.map(async (genre) => {
-      try {
-        const albums = await api.albums({ genres: [genre.label] });
-        const shuffled = [...albums];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
-        return { label: genre.label, ids: shuffled.slice(0, 4).map((album) => album.id) };
-      } catch {
-        return { label: genre.label, ids: [] as ClientEntityId[] };
-      }
-    })).then((entries) => {
-      if (!isMountedRef.current) return;
-      setGenreAlbumIds((prev) => {
-        const next = { ...prev };
-        for (const { label, ids } of entries) next[label] = ids;
-        return next;
-      });
-    });
-  }, [quickGenres]);
 
   const toggleAutoDjGenre = (genreName: string) => {
     setAutoDjGenres((current) => (
@@ -1424,16 +1347,20 @@ function RecentlyPlayedWidget({
   onStartAutoDj: (genres: string[]) => Promise<number>;
 }) {
   const [tab, setTab] = useState<PlaybackActivityTab>('recently-played');
-  const [recentTracks, setRecentTracks] = useState<Track[]>([]);
-  const [heatmapTracks, setHeatmapTracks] = useState<Track[]>([]);
-  const [topTracks, setTopTracks] = useState<Track[]>([]);
-  const [topArtists, setTopArtists] = useState<Artist[]>([]);
-  const [recentLoading, setRecentLoading] = useState(true);
-  const [topTracksLoading, setTopTracksLoading] = useState(false);
-  const [topArtistsLoading, setTopArtistsLoading] = useState(false);
+  const { data: heatmapTracks, loading: recentLoading } = useHomeData<Track[]>(
+    'recent:500', () => api.recentlyPlayed(500), [], 0, tab === 'recently-played',
+  );
+  const recentTracks = useMemo(() => selectRecentlyPlayedTracks(heatmapTracks, 10), [heatmapTracks]);
+  const { data: allTopTracks, loading: topTracksLoading } = useHomeData<Track[]>(
+    'top-played:10', () => api.topPlayedTracks(10), [], 0, tab === 'top-played-tracks',
+  );
+  const topTracks = useMemo(() => selectTopPlayedTracks(allTopTracks, 10), [allTopTracks]);
+  const { data: allTopArtists, loading: topArtistsLoading } = useHomeData<Artist[]>(
+    'most-played:10', () => api.mostPlayedArtists(10), [], 0, tab === 'most-played-artists',
+  );
+  const topArtists = useMemo(() => selectMostPlayedArtists(allTopArtists, 10), [allTopArtists]);
   const [rangeDays, setRangeDays] = useState<BoogieRangeDays>(30);
   const [boogieTransitionKey, setBoogieTransitionKey] = useState(0);
-  const fetchSeqRef = useRef(0);
   const reducedMotion = usePrefersReducedMotion();
 
   const boogieSnapshot = useMemo(
@@ -1456,55 +1383,6 @@ function RecentlyPlayedWidget({
       // Ignore lookup failures from this shortcut.
     }
   };
-
-  useEffect(() => {
-    const fetchSeq = ++fetchSeqRef.current;
-    const isStale = () => fetchSeq !== fetchSeqRef.current;
-
-    if (tab === 'recently-played') {
-      setRecentLoading(true);
-      api.recentlyPlayed(500).then(all => {
-        if (isStale()) return;
-        setHeatmapTracks(all);
-        setRecentTracks(selectRecentlyPlayedTracks(all, 10));
-      }).catch(() => {
-        if (isStale()) return;
-        setHeatmapTracks([]);
-        setRecentTracks([]);
-      }).finally(() => {
-        if (isStale()) return;
-        setRecentLoading(false);
-      });
-      return;
-    }
-
-    if (tab === 'top-played-tracks') {
-      setTopTracksLoading(true);
-      api.topPlayedTracks(10).then(all => {
-        if (isStale()) return;
-        setTopTracks(selectTopPlayedTracks(all, 10));
-      }).catch(() => {
-        if (isStale()) return;
-        setTopTracks([]);
-      }).finally(() => {
-        if (isStale()) return;
-        setTopTracksLoading(false);
-      });
-      return;
-    }
-
-    setTopArtistsLoading(true);
-    api.mostPlayedArtists(10).then(all => {
-      if (isStale()) return;
-      setTopArtists(selectMostPlayedArtists(all, 10));
-    }).catch(() => {
-      if (isStale()) return;
-      setTopArtists([]);
-    }).finally(() => {
-      if (isStale()) return;
-      setTopArtistsLoading(false);
-    });
-  }, [tab]);
 
   const fmtDur = (seconds: number | null) => {
     if (!seconds || seconds <= 0) return '';
@@ -1594,7 +1472,7 @@ function RecentlyPlayedWidget({
       ? topTracksLoading
       : topArtistsLoading;
 
-  if (isLoading) return <div style={H.widgetEmpty}>Loading...</div>;
+  if (recentLoading && heatmapTracks.length === 0) return <div style={H.widgetEmpty}>Loading...</div>;
 
   return (
     <div
@@ -1727,19 +1605,20 @@ function RecentlyPlayedWidget({
         })}
       </div>
 
-      {tab === 'recently-played' && (
+      {isLoading && <div style={H.widgetEmpty}>Loading...</div>}
+      {!isLoading && tab === 'recently-played' && (
         recentTracks.length
           ? renderTrackRows(recentTracks, (track) => fmtDur(track.duration), recentlyPlayedAriaLabel)
           : <div style={H.widgetEmpty}>No recently played songs yet</div>
       )}
 
-      {tab === 'top-played-tracks' && (
+      {!isLoading && tab === 'top-played-tracks' && (
         topTracks.length
           ? renderTrackRows(topTracks, (track) => String(Number(track.play_count ?? 0)), topPlayedTrackAriaLabel)
           : <div style={H.widgetEmpty}>No played songs yet</div>
       )}
 
-      {tab === 'most-played-artists' && (
+      {!isLoading && tab === 'most-played-artists' && (
         topArtists.length
           ? renderArtistRows(topArtists)
           : <div style={H.widgetEmpty}>No played artists yet</div>
@@ -1765,15 +1644,13 @@ function QuickPlaylistsWidget({
   onOpenPlaylist: (playlistId: EntityId) => void;
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
 }) {
-  const [playlists, setPlaylists] = useState<Array<Pick<Playlist, 'id' | 'name' | 'track_count' | 'total_duration' | 'art_album_ids'>>>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: playlists, loading } = useHomeData<
+    Array<Pick<Playlist, 'id' | 'name' | 'track_count' | 'total_duration' | 'art_album_ids'>>
+  >('playlists', () => api.playlists.list(), []);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [hoveredPlaylistId, setHoveredPlaylistId] = useState<EntityId | null>(null);
 
-  useEffect(() => {
-    api.playlists.list().then(setPlaylists).finally(() => setLoading(false));
-  }, []);
 
   const createPlaylist = async () => {
     const normalizeName = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -1794,10 +1671,12 @@ function QuickPlaylistsWidget({
       if (!playlistId) {
         throw new Error('Could not create playlist');
       }
-      setPlaylists(prev => {
-        if (prev.some(pl => pl.id === playlistId)) return prev;
-        return [{ id: playlistId, name: created.name || name, track_count: 0, total_duration: 0, art_album_ids: [] }, ...prev];
-      });
+      updateHomeData<typeof playlists>('playlists', (previous = []) => (
+        previous.some(playlist => playlist.id === playlistId) ? previous : [
+          { ...created, name: created.name || name, track_count: 0, total_duration: 0, art_album_ids: [] },
+          ...previous,
+        ]
+      ));
       onOpenPlaylist(playlistId);
     } catch (e: any) {
       setError(e?.message || 'Could not create playlist');
@@ -2004,13 +1883,10 @@ export default function HomeView({
   onStartAutoDj: (genres: string[]) => Promise<number>;
   hybridDesign?: boolean;
 }) {
-  const [allGenres, setAllGenres] = useState<Genre[]>([]);
-  const [homeGenres, setHomeGenres] = useState<HomeGenreSummary[]>([]);
-
-  useEffect(() => {
-    api.genres().then(setAllGenres).catch(() => setAllGenres([]));
-    api.homeGenres(6).then(setHomeGenres).catch(() => setHomeGenres([]));
-  }, [refreshKey]);
+  const { data: allGenres } = useHomeData<Genre[]>('genres', () => api.genres(), [], refreshKey);
+  const { data: homeGenres } = useHomeData<HomeGenreSummary[]>(
+    'home-genres:6', () => api.homeGenres(6), [], refreshKey,
+  );
 
   if (stats && stats.total_tracks === 0) {
     return <div style={H.empty}>No media found yet. Add a library and run a scan.</div>;

@@ -475,8 +475,8 @@ function StatsBar({ stats }: { stats: Stats | null }) {
     { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '–', Icon: StatsBarTracksIcon },
     { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '–', Icon: StatsBarArtistsIcon },
     { label: 'Albums',  value: stats?.total_albums?.toLocaleString()  ?? '–', Icon: StatsBarAlbumsIcon },
-    { label: 'Hours',   value: stats?.total_hours != null ? stats.total_hours.toLocaleString() : '–', Icon: StatsBarHoursIcon },
-    { label: 'GB',      value: stats?.total_gb    != null ? String(stats.total_gb) : '–', Icon: StatsBarStorageIcon },
+    { label: 'Hours',   value: stats?.total_hours != null ? stats.total_hours.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '–', Icon: StatsBarHoursIcon },
+    { label: 'GB',      value: stats?.total_gb    != null ? stats.total_gb.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '–', Icon: StatsBarStorageIcon },
   ];
   return (
     <div style={S.statsBar}>

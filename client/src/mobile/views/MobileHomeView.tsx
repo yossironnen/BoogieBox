@@ -1,8 +1,9 @@
+import { useHomeData } from '../../hooks/useHomeData';
 /**
  * Defines mobile Mobile Home View behavior for the BoogieBox React client.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { api } from '../../api';
 import ArtImage from '../../components/ArtImage';
 import { hybridMobileContentStyles } from '../../hybridPreview';
@@ -105,37 +106,18 @@ export default function MobileHomeView({
   onOpenBrowse,
   onPlayTrack,
 }: Props) {
-  const [albums, setAlbums] = useState<LatestAlbum[]>([]);
-  const [topRated, setTopRated] = useState<HomeTopRated | null>(null);
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [recentlyPlayed, setRecentlyPlayed] = useState<Track[]>([]);
-  const [topPlayed, setTopPlayed] = useState<Track[]>([]);
-  const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    Promise.allSettled([
-      api.latestAlbums(8),
-      api.homeTopRated(5),
-      api.playlists.list(),
-      api.recentlyPlayed(10),
-      api.topPlayedTracks(10),
-    ]).then(results => {
-      if (cancelled) return;
-      if (results[0].status === 'fulfilled') setAlbums(results[0].value);
-      if (results[1].status === 'fulfilled') setTopRated(results[1].value);
-      if (results[2].status === 'fulfilled') setPlaylists(results[2].value.slice(0, 4));
-      if (results[3].status === 'fulfilled') setRecentlyPlayed(results[3].value);
-      if (results[4].status === 'fulfilled') setTopPlayed(results[4].value);
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshKey]);
+  const albumsQuery = useHomeData<LatestAlbum[]>('latest:8', () => api.latestAlbums(8), [], refreshKey);
+  const ratingsQuery = useHomeData<HomeTopRated | null>('top-rated:5', () => api.homeTopRated(5), null, refreshKey);
+  const playlistsQuery = useHomeData<Playlist[]>('playlists', () => api.playlists.list(), [], refreshKey);
+  const recentQuery = useHomeData<Track[]>('recent:10', () => api.recentlyPlayed(10), [], refreshKey);
+  const topQuery = useHomeData<Track[]>('top-played:10', () => api.topPlayedTracks(10), [], refreshKey);
+  const albums = albumsQuery.data;
+  const topRated = ratingsQuery.data;
+  const playlists = playlistsQuery.data.slice(0, 4);
+  const recentlyPlayed = recentQuery.data;
+  const topPlayed = topQuery.data;
+  const loading = [albumsQuery, ratingsQuery, playlistsQuery, recentQuery, topQuery].some(query => query.loading);
 
   const topRatedItems = topRated
     ? [...topRated.tracks.slice(0, 3), ...topRated.albums.slice(0, 2)]

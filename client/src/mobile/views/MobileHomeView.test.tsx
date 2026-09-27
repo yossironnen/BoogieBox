@@ -1,3 +1,4 @@
+import { invalidateHomeData } from '../../homeCache';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MobileHomeView from './MobileHomeView';
@@ -32,6 +33,7 @@ const track = (id: string, overrides = {}) => ({
 
 describe('MobileHomeView', () => {
   beforeEach(() => {
+    invalidateHomeData(true);
     vi.resetAllMocks();
     apiMock.latestAlbums.mockResolvedValue([
       { id: 'a1', title: 'New Album', album_artist: 'Album Artist', artist: null },

@@ -340,7 +340,7 @@ pub struct StatsRow {
 pub fn get_stats(conn: &Connection) -> rusqlite::Result<StatsRow> {
     // stats_cache fast path
     let cached = conn.query_row(
-        "SELECT total_tracks, total_artists, total_albums, total_libraries, total_hours, total_gb FROM stats_cache WHERE id = 1",
+        "SELECT total_tracks, total_artists, total_albums, total_libraries, total_hours, total_gb FROM stats_cache LIMIT 1",
         [],
         |row| Ok(StatsRow {
             total_tracks: row.get(0)?,
@@ -428,6 +428,27 @@ pub fn list_home_genre_summaries(
         .collect::<rusqlite::Result<_>>()?;
 
     Ok(build_home_genre_summaries(raw, limit))
+}
+
+/// Returns at most four distinct cover candidates without loading album metadata or
+/// aggregating every matching album. Uses the same compound-tag semantics as Browse.
+pub fn list_home_genre_covers(conn: &Connection, genre: &str) -> rusqlite::Result<Vec<EntityId>> {
+    if genre.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut conditions = Vec::new();
+    let mut parameters = Vec::new();
+    push_genre_filter(&mut conditions, &mut parameters, &[genre.to_owned()]);
+    let sql = format!(
+        "SELECT DISTINCT t.album_id FROM tracks t
+         WHERE t.album_id IS NOT NULL AND {} AND EXISTS (
+             SELECT 1 FROM albums al WHERE al.id = t.album_id
+         ) LIMIT 4",
+        conditions.join(" AND ")
+    );
+    conn.prepare(&sql)?
+        .query_map(params_from_iter(parameters), |row| row.get(0))?
+        .collect()
 }
 
 fn canonicalize_home_genre(label: &str) -> String {
@@ -3210,6 +3231,58 @@ pub fn set_track_bpm_detected(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stats_cache_accepts_text_and_legacy_integer_keys_and_falls_back() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        conn.execute_batch(
+            "CREATE TABLE stats_cache (id, total_tracks, total_artists,
+            total_albums, total_libraries, total_hours, total_gb);
+            INSERT INTO stats_cache VALUES ('stats-cache', 63277, 15645, 9096, 1, 2000.0, 400.0);",
+        )
+        .unwrap();
+        assert_eq!(get_stats(&conn).unwrap().total_tracks, 63277);
+        conn.execute("UPDATE stats_cache SET id=1", []).unwrap();
+        assert_eq!(get_stats(&conn).unwrap().total_albums, 9096);
+        conn.execute("DELETE FROM stats_cache", []).unwrap();
+        assert_eq!(get_stats(&conn).unwrap().total_tracks, 0);
+        conn.execute("DROP TABLE stats_cache", []).unwrap();
+        assert_eq!(get_stats(&conn).unwrap().total_tracks, 0);
+    }
+
+    #[test]
+    fn home_cover_candidates_are_bounded_distinct_and_match_literal_compound_tags() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_search_schema(&conn);
+        for i in 0..20 {
+            conn.execute("INSERT INTO albums(id) VALUES (?)", [format!("a{i}")])
+                .unwrap();
+            for n in 0..3 {
+                conn.execute(
+                    "INSERT INTO tracks(id,album_id,genre) VALUES (?,?,?)",
+                    rusqlite::params![format!("t{i}-{n}"), format!("a{i}"), "Rock, Alternative"],
+                )
+                .unwrap();
+            }
+        }
+        let ids = list_home_genre_covers(&conn, " rOcK ").unwrap();
+        assert_eq!(ids.len(), 4);
+        let strings: std::collections::HashSet<_> =
+            ids.iter().map(|id| format!("{id:?}")).collect();
+        assert_eq!(strings.len(), 4);
+        assert!(list_home_genre_covers(&conn, " ").unwrap().is_empty());
+        assert!(list_home_genre_covers(&conn, "Rock%").unwrap().is_empty());
+        assert!(list_home_genre_covers(&conn, "R_ck").unwrap().is_empty());
+        assert!(list_home_genre_covers(&conn, "Prog Rock")
+            .unwrap()
+            .is_empty());
+        conn.execute("UPDATE tracks SET genre='Rock%, Jazz'", [])
+            .unwrap();
+        assert_eq!(list_home_genre_covers(&conn, "Rock%").unwrap().len(), 4);
+        conn.execute("DELETE FROM albums", []).unwrap();
+        assert!(list_home_genre_covers(&conn, "Jazz").unwrap().is_empty());
+    }
 
     fn create_search_schema(conn: &Connection) {
         conn.execute_batch(
