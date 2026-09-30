@@ -784,6 +784,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-09-27-home-stats-cache-invalidation",
             apply: ensure_stats_cache_invalidation,
         },
+        Migration {
+            id: "2026-09-30-deep-analysis-covering-indexes",
+            apply: ensure_deep_analysis_covering_indexes,
+        },
     ];
 
     for migration in migrations {
@@ -2145,6 +2149,31 @@ pub fn refresh_denormalized_counts(connection: &Connection) -> Result<(), rusqli
 
 // Invalidate the persisted singleton after changes to its source data. Triggers
 // also cover cascades, scans, and external SQLite writers, not just HTTP handlers.
+/// `confidence`, `energy_score_refined`, `feature_size_bytes` and `last_used_at`
+/// sit after the large JSON columns, so reading them from the table walks each
+/// row's overflow chain (~900 MB on a 60k-track library). These covering
+/// indexes let the status/cache aggregate and the confidence lookups skip it.
+fn ensure_deep_analysis_covering_indexes(connection: &Connection) -> rusqlite::Result<()> {
+    let columns = [
+        "confidence",
+        "energy_score_refined",
+        "feature_size_bytes",
+        "created_at",
+        "last_used_at",
+    ];
+    for column in columns {
+        if !column_exists(connection, "track_deep_analysis", column)? {
+            return Ok(());
+        }
+    }
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_track_deep_analysis_confidence
+           ON track_deep_analysis(track_id, confidence, energy_score_refined);
+         CREATE INDEX IF NOT EXISTS idx_track_deep_analysis_cache_status
+           ON track_deep_analysis(feature_size_bytes, created_at, last_used_at);",
+    )
+}
+
 fn ensure_stats_cache_invalidation(connection: &Connection) -> rusqlite::Result<()> {
     if !["stats_cache", "tracks", "albums", "artists", "libraries"]
         .iter()
@@ -3329,6 +3358,14 @@ mod tests {
             1
         );
         assert!(table_exists(&connection, "mix_output_tracks"));
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+                   ('idx_track_deep_analysis_confidence', 'idx_track_deep_analysis_cache_status')"
+            ),
+            2
+        );
         assert_eq!(
             query_single_i64(
                 &connection,

@@ -848,8 +848,10 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
         filter_params.push(Value::Text(format!("%{}%", q.to_lowercase())));
     }
     if p.sonic_fingerprint_only {
-        conditions
-            .push("EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".into());
+        conditions.push(
+            "t.id IN (SELECT da.track_id FROM track_deep_analysis da WHERE da.confidence > 0.25)"
+                .into(),
+        );
     }
     if p.hide_compilation_only && p.name_query.is_none() {
         conditions.push("EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)".into());
@@ -1830,8 +1832,10 @@ pub fn list_albums(conn: &Connection, p: ListAlbumsParams<'_>) -> rusqlite::Resu
     }
     push_genre_filter(&mut conditions, &mut filter_params, p.genres);
     if p.sonic_fingerprint_only {
-        conditions
-            .push("EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".into());
+        conditions.push(
+            "t.id IN (SELECT da.track_id FROM track_deep_analysis da WHERE da.confidence > 0.25)"
+                .into(),
+        );
     }
     if let Some(after) = p.after_album_rowid {
         if p.by_album_artist {
@@ -3023,7 +3027,7 @@ pub fn search_music(conn: &Connection, p: SearchMusicParams<'_>) -> rusqlite::Re
         }
         if p.sonic_fingerprint_only {
             conds.push(
-                "EXISTS (SELECT 1 FROM track_deep_analysis da WHERE da.track_id = t.id AND da.confidence > 0.25)".to_owned(),
+                "t.id IN (SELECT da.track_id FROM track_deep_analysis da WHERE da.confidence > 0.25)".to_owned(),
             );
         }
 

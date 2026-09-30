@@ -2343,12 +2343,21 @@ fn load_scoped_deep_analysis_tracks(
     };
     let mut sql = base_deep_track_select(&format!(
         "WHERE {scope}
+           AND {DEEP_ELIGIBLE_SQL}
            AND NOT EXISTS(SELECT 1 FROM deep_analysis_jobs j WHERE j.track_id=t.id AND j.status IN ('pending','running'))
            AND ({staleness})"
     ));
     append_limit(&mut sql, limit);
     query_deep_track_inputs(conn, &sql, params![DEEP_ANALYSIS_VERSION])
 }
+
+/// SQL mirror of `should_skip_deep_analysis(track, None)`. Without it the
+/// background sweep's `LIMIT` keeps returning the same unanalysable tracks,
+/// the Rust filter drops them all, and nothing new is ever queued.
+const DEEP_ELIGIBLE_SQL: &str = "(t.duration IS NULL OR t.duration >= 45.0)
+           AND (lower(t.file_path) GLOB '*.mp3' OR lower(t.file_path) GLOB '*.wav'
+             OR lower(t.file_path) GLOB '*.flac' OR lower(t.file_path) GLOB '*.m4a'
+             OR lower(t.file_path) GLOB '*.aac' OR lower(t.file_path) GLOB '*.ogg')";
 
 fn base_deep_track_select(where_clause: &str) -> String {
     format!(
@@ -2820,6 +2829,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(priority, DEEP_ANALYSIS_PRIORITY_BACKGROUND);
+    }
+
+    #[test]
+    fn background_queue_limit_skips_unanalysable_tracks() {
+        let conn = setup_deep_db();
+        conn.execute_batch(
+            "INSERT INTO tracks(id, file_path, duration, scanned_at) VALUES
+               ('short', 'D:\\Music\\intro.mp3', 20, '2026-09-01 00:00:00'),
+               ('opus', 'D:\\Music\\song.OPUS', 200, '2026-09-01 00:00:00');",
+        )
+        .unwrap();
+
+        let queued = queue_background_deep_analysis_batch(&conn, "all_music", 1).unwrap();
+
+        assert_eq!(queued, 1);
+        let queued_ids: Vec<String> = conn
+            .prepare("SELECT track_id FROM deep_analysis_jobs")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            queued_ids.iter().all(|id| id.starts_with('t')),
+            "{queued_ids:?}"
+        );
     }
 
     #[test]

@@ -25,7 +25,11 @@ use boogiebox_db::{
     upsert_setting,
 };
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    path::PathBuf,
+    process::Stdio,
+    time::{Duration, Instant},
+};
 use tokio::fs::File;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -67,7 +71,7 @@ struct RenameOutputRequest {
     name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeepRuntimeStatus {
     python_available: bool,
@@ -870,7 +874,7 @@ async fn deep_analysis_status_handler(
     let Some(db) = get_db(&state) else {
         return db_not_configured();
     };
-    let (enabled, controls, queue, cache) = match db.lock() {
+    let db_status = tokio::task::spawn_blocking(move || match db.lock() {
         Ok(conn) => match get_deep_analysis_queue_status(&conn) {
             Ok(queue) => {
                 let enabled = parse_bool_setting(
@@ -886,17 +890,20 @@ async fn deep_analysis_status_handler(
                         false,
                     ),
                 };
-                let cache = match get_deep_analysis_cache_status(&conn) {
-                    Ok(cache) => cache,
-                    Err(e) => return internal_error(&e.to_string()),
-                };
-                (enabled, controls, queue, cache)
+                let cache = get_deep_analysis_cache_status(&conn).map_err(|e| e.to_string())?;
+                Ok((enabled, controls, queue, cache))
             }
-            Err(e) => return internal_error(&e.to_string()),
+            Err(e) => Err(e.to_string()),
         },
-        Err(_) => return internal_error("DB lock failed"),
+        Err(_) => Err("DB lock failed".to_string()),
+    })
+    .await;
+    let (enabled, controls, queue, cache) = match db_status {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&e.to_string()),
     };
-    let runtime = detect_deep_runtime().await;
+    let runtime = cached_deep_runtime().await;
     (
         StatusCode::OK,
         Json(DeepAnalysisStatusResponse {
@@ -1165,6 +1172,26 @@ fn parse_bool_setting(raw: Option<&str>, default_value: bool) -> bool {
         Some(v) if v == "false" => false,
         _ => default_value,
     }
+}
+
+const DEEP_RUNTIME_TTL: Duration = Duration::from_secs(5 * 60);
+
+static DEEP_RUNTIME_CACHE: tokio::sync::Mutex<Option<(Instant, DeepRuntimeStatus)>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// Probing spawns several Python interpreters (torch/CUDA imports take seconds,
+/// much longer on a cold disk), so every client's status poll shares one
+/// result and concurrent callers wait on a single probe.
+async fn cached_deep_runtime() -> DeepRuntimeStatus {
+    let mut cache = DEEP_RUNTIME_CACHE.lock().await;
+    if let Some((checked_at, status)) = cache.as_ref() {
+        if checked_at.elapsed() < DEEP_RUNTIME_TTL {
+            return status.clone();
+        }
+    }
+    let status = detect_deep_runtime().await;
+    *cache = Some((Instant::now(), status.clone()));
+    status
 }
 
 async fn detect_deep_runtime() -> DeepRuntimeStatus {

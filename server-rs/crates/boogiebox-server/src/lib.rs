@@ -525,15 +525,43 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         ))
         .merge(routes::dlna_routes::dlna_router(shared_state))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
-        .layer(cors_layer)
-        .layer(compression_layer);
+        .layer(cors_layer);
 
-    if let Some(client_dir) = client_build_dir {
+    // Compression is layered after the static fallback so the client bundle
+    // is compressed too; it matters most for clients on another machine.
+    let app = if let Some(client_dir) = client_build_dir {
         let index = client_dir.join("index.html");
-        api.fallback_service(ServeDir::new(client_dir).fallback(ServeFile::new(index)))
+        let static_files = Router::new()
+            .fallback_service(ServeDir::new(client_dir).fallback(ServeFile::new(index)))
+            .layer(axum::middleware::from_fn(static_cache_headers));
+        api.fallback_service(static_files)
     } else {
         api
+    };
+    app.layer(compression_layer)
+}
+
+/// Vite emits content-hashed files under `/assets/`, so they never change;
+/// everything else (index.html, SPA routes) must revalidate so a new build is
+/// picked up.
+async fn static_cache_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let immutable = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    if response.status().is_success() {
+        let value = if immutable {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        };
+        response
+            .headers_mut()
+            .entry(header::CACHE_CONTROL)
+            .or_insert(header::HeaderValue::from_static(value));
     }
+    response
 }
 
 async fn debug_test_path_handler(
@@ -1203,6 +1231,63 @@ mod tests {
     use tower::ServiceExt;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn client_bundle_is_compressed_and_hashed_assets_are_immutable() {
+        let client_dir = temp_dir("boogiebox-static");
+        fs::create_dir_all(client_dir.join("assets")).unwrap();
+        fs::write(client_dir.join("index.html"), "<html>".repeat(200)).unwrap();
+        fs::write(
+            client_dir.join("assets/index-abc.js"),
+            "let a=1;".repeat(500),
+        )
+        .unwrap();
+        let app = build_app(
+            AppState {
+                setup_required: true,
+                ..AppState::default()
+            },
+            Some(client_dir.clone()),
+        );
+
+        for (uri, cache_control) in [
+            (
+                "/assets/index-abc.js",
+                "public, max-age=31536000, immutable",
+            ),
+            ("/", "no-cache"),
+            ("/browse/artists", "no-cache"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(header::ACCEPT_ENCODING, "gzip")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let headers = response.headers();
+            assert_eq!(
+                headers
+                    .get(header::CONTENT_ENCODING)
+                    .and_then(|v| v.to_str().ok()),
+                Some("gzip"),
+                "{uri}"
+            );
+            assert_eq!(
+                headers
+                    .get(header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some(cache_control),
+                "{uri}"
+            );
+        }
+        let _ = fs::remove_dir_all(client_dir);
+    }
 
     #[tokio::test]
     async fn json_api_response_is_compressed_when_the_client_accepts_it() {

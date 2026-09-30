@@ -82,6 +82,9 @@ struct PythonInvocation {
 }
 
 const RUNTIME_CACHE_SECS: u64 = 60;
+/// After a background discovery pass finds nothing to queue, wait this long
+/// before scanning the library again; the pass is a full-table query.
+const EMPTY_DISCOVERY_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// Marker error returned when a job was stopped to free the machine for
 /// higher-priority work; such a job is requeued rather than failed.
 const PREEMPTED: &str = "preempted_by_higher_priority";
@@ -128,22 +131,33 @@ fn preempt_below(running: &RunningJobs, min_priority: i64) {
 pub fn start_deep_analysis_worker(state: PostScanState) {
     tokio::spawn(async move {
         // Reset any jobs left in 'running' state from a previous unclean shutdown.
-        if let Ok(conn) = state.db.lock() {
-            match reset_stale_deep_analysis_jobs(&conn) {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(
+        let reset =
+            on_db(&state, |state| {
+                state.db.lock().map_err(|e| e.to_string()).and_then(|conn| {
+                    reset_stale_deep_analysis_jobs(&conn).map_err(|e| e.to_string())
+                })
+            })
+            .await;
+        match reset {
+            Some(Ok(0)) | None => {}
+            Some(Ok(n)) => {
+                tracing::info!(
                     "[boogiemix:deep] reset {n} stale running jobs to pending on startup"
-                ),
-                Err(e) => tracing::warn!("[boogiemix:deep] stale job reset failed: {e}"),
+                )
             }
+            Some(Err(e)) => tracing::warn!("[boogiemix:deep] stale job reset failed: {e}"),
         }
         let running: RunningJobs = Arc::new(Mutex::new(HashMap::new()));
         let mut last_runtime: Option<(Instant, RuntimeStatus)> = None;
+        let mut last_empty_discovery: Option<Instant> = None;
         let mut interval = tokio::time::interval(Duration::from_millis(1200));
         loop {
             tokio::select! {
                 _ = state.cancel.cancelled() => break,
-                _ = interval.tick() => run_tick(&state, running.clone(), &mut last_runtime).await,
+                _ = interval.tick() => {
+                    run_tick(&state, running.clone(), &mut last_runtime, &mut last_empty_discovery)
+                        .await
+                }
             }
         }
     });
@@ -153,10 +167,12 @@ async fn run_tick(
     state: &PostScanState,
     running: RunningJobs,
     last_runtime: &mut Option<(Instant, RuntimeStatus)>,
+    last_empty_discovery: &mut Option<Instant>,
 ) {
-    let settings = match load_settings(state) {
-        Ok(settings) => settings,
-        Err(err) => {
+    let settings = match on_db(state, load_settings).await {
+        Some(Ok(settings)) => settings,
+        None => return,
+        Some(Err(err)) => {
             tracing::warn!("[boogiemix:deep] settings unavailable: {err}");
             return;
         }
@@ -175,10 +191,12 @@ async fn run_tick(
     // pause anything lower that is already running so it gets the machine, and
     // hold the claim floor at the highest running tier so nothing lower starts
     // alongside it.
-    let max_pending = match state.db.lock() {
+    let max_pending = on_db(state, |state| match state.db.lock() {
         Ok(conn) => max_pending_deep_analysis_priority(&conn).unwrap_or(None),
         Err(_) => None,
-    };
+    })
+    .await
+    .flatten();
     if let Some(pending_priority) = max_pending {
         preempt_below(&running, pending_priority);
     }
@@ -194,19 +212,27 @@ async fn run_tick(
     }
 
     // Enqueue background jobs before checking queue, so newly-queued work is visible.
-    if should_discover_background_batch(&settings) {
+    if should_discover_background_batch(&settings) && discovery_due(*last_empty_discovery) {
         dlog!(
             dbg,
             "[boogiemix:deep] checking background batch queue (mode={})",
             settings.background_mode
         );
-        if let Err(err) = maybe_queue_background_batch(state, &settings.background_mode) {
-            tracing::warn!("[boogiemix:deep] background queue failed: {err}");
+        let mode = settings.background_mode.clone();
+        match on_db(state, move |state| {
+            maybe_queue_background_batch(state, &mode)
+        })
+        .await
+        {
+            Some(Ok(Some(0))) => *last_empty_discovery = Some(Instant::now()),
+            Some(Ok(_)) => *last_empty_discovery = None,
+            Some(Err(err)) => tracing::warn!("[boogiemix:deep] background queue failed: {err}"),
+            None => {}
         }
     }
 
     // M-05: Check queue before spawning Python runtime detection processes.
-    if !has_queued_jobs(state) {
+    if !on_db(state, has_queued_jobs).await.unwrap_or(false) {
         dlog!(
             dbg,
             "[boogiemix:deep] tick: no pending or running jobs in queue"
@@ -259,7 +285,13 @@ async fn run_tick(
     );
 
     while running_snapshot(&running).0 < settings.max_concurrent {
-        let job = match claim_job(state, !settings.pause_background, claim_floor) {
+        let include_background = !settings.pause_background;
+        let claimed = on_db(state, move |state| {
+            claim_job(state, include_background, claim_floor)
+        })
+        .await
+        .unwrap_or_else(|| Err("claim task failed".into()));
+        let job = match claimed {
             Ok(Some(job)) => job,
             Ok(None) => {
                 dlog!(dbg, "[boogiemix:deep] no more claimable jobs this tick");
@@ -348,18 +380,38 @@ fn has_queued_jobs(state: &PostScanState) -> bool {
     }
 }
 
-fn maybe_queue_background_batch(state: &PostScanState, mode: &str) -> Result<(), String> {
+/// Runs a DB-bound step on the blocking pool so waiting for the shared
+/// connection never parks a Tokio worker that is serving HTTP requests.
+async fn on_db<T, F>(state: &PostScanState, f: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&PostScanState) -> T + Send + 'static,
+{
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || f(&state)).await.ok()
+}
+
+fn discovery_due(last_empty: Option<Instant>) -> bool {
+    last_empty.is_none_or(|at| at.elapsed() >= EMPTY_DISCOVERY_BACKOFF)
+}
+
+/// Returns `None` when the queue already has work (discovery skipped), or the
+/// number of newly queued jobs.
+fn maybe_queue_background_batch(
+    state: &PostScanState,
+    mode: &str,
+) -> Result<Option<usize>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let status = get_deep_analysis_queue_status(&conn).map_err(|e| e.to_string())?;
     if status.pending > 0 || status.running > 0 {
-        return Ok(());
+        return Ok(None);
     }
     let queued =
         queue_background_deep_analysis_batch(&conn, mode, 10).map_err(|e| e.to_string())?;
     if queued > 0 {
         tracing::info!("[boogiemix:deep] queued {queued} background deep-analysis jobs");
     }
-    Ok(())
+    Ok(Some(queued))
 }
 
 fn claim_job(
