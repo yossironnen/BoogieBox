@@ -1680,7 +1680,7 @@ function StereoVU({
 // Slider
 // ─────────────────────────────────────────────────────────────────────────────
 
-function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_THEME_TOKENS.accent, thin = false, vertical = false, verticalHeight = 64, fill, trackHeight }: {
+function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_THEME_TOKENS.accent, thin = false, vertical = false, verticalHeight = 64, fill, trackHeight, trackStyle, thumbStyle }: {
   value: number; max: number; onChange: (v: number) => void;
   onSeekStart?: () => void; onSeekEnd?: () => void;
   color?: string; thin?: boolean; vertical?: boolean; verticalHeight?: number;
@@ -1688,6 +1688,9 @@ function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_T
   fill?: string;
   /** Horizontal track thickness in px (overrides `thin`). */
   trackHeight?: number;
+  /** Horizontal track / thumb overrides (e.g. the Vintage tuning dial). */
+  trackStyle?: React.CSSProperties;
+  thumbStyle?: React.CSSProperties;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -1721,9 +1724,9 @@ function Slider({ value, max, onChange, onSeekStart, onSeekEnd, color = PLAYER_T
   }
   return (
     <div ref={ref} onMouseDown={onMouseDown} style={{ flex: 1, height: h+8, display: 'flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}>
-      <div style={{ flex: 1, height: h, backgroundColor: PLAYER_THEME_TOKENS.border, borderRadius: h, position: 'relative' }}>
+      <div style={{ flex: 1, height: h, backgroundColor: PLAYER_THEME_TOKENS.border, borderRadius: h, position: 'relative', ...trackStyle }}>
         <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${pct}%`, background: fill ?? color, borderRadius: h }} />
-        <div style={{ position: 'absolute', top: '50%', left: `${pct}%`, transform: 'translate(-50%,-50%)', width: thin?10:12, height: thin?10:12, backgroundColor: PLAYER_THEME_TOKENS.text, borderRadius: '50%', boxShadow: '0 1px 4px rgba(0,0,0,0.35)' }} />
+        <div style={{ position: 'absolute', top: '50%', left: `${pct}%`, transform: 'translate(-50%,-50%)', width: thin?10:12, height: thin?10:12, backgroundColor: PLAYER_THEME_TOKENS.text, borderRadius: '50%', boxShadow: '0 1px 4px rgba(0,0,0,0.35)', ...thumbStyle }} />
       </div>
     </div>
   );
@@ -3045,7 +3048,7 @@ export default function Player({
         style={{
           ...P.bar,
           ...(hybridPreview ? hybridPlayerStyles.bar : {}),
-          // Vintage: the dock is a dark surface on a light theme, so its palette is scoped here.
+          // Vintage: the dock is its own surface (dark on Record Shop, aluminium on Hi-Fi Console), so its palette is scoped here.
           ...(vintage ? { ...(vintage.dockVars as React.CSSProperties), ...vintage.styles.dockBar } : {}),
           ...(isVinylMode ? P.barVinyl : {}),
         }}
@@ -3272,8 +3275,10 @@ export default function Player({
                       />
                     ) : (
                       <Slider value={currentTime} max={duration || 1}
-                        fill={vintage?.styles.dockProgressFill}
-                        trackHeight={vintage ? 8 : undefined}
+                        fill={vintage?.styles.dockProgress.fill}
+                        trackHeight={vintage?.styles.dockProgress.trackHeight}
+                        trackStyle={vintage?.styles.dockProgress.track}
+                        thumbStyle={vintage?.styles.dockProgress.thumb}
                         onChange={v => { seekValueRef.current = v; setCurrentTime(v); }}
                         onSeekStart={() => setSeeking(true)}
                         onSeekEnd={() => { setSeeking(false); const a = getActiveAudio(); if (a) a.currentTime = seekValueRef.current; }} />

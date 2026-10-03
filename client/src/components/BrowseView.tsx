@@ -1875,11 +1875,11 @@ export function AlbumGrid({
           ...(vintage ? L.gridArtVintage : {}),
         }}>
           {vintage ? (
-            // Sleeve at 86% of the (unchanged) art box, so the record peeks into the
-            // remaining width and the windowed grid's tile/row maths stay as they are.
-            <div style={L.gridVintageSleeve}>
-              <VintageRecord albumId={album.id} hovered={hoveredAlbumId === album.id} hoverShift="8px" />
-              <div style={{ ...VINTAGE_SLEEVE_COVER_STYLE, ...L.gridVintageCover }}>
+            // The sleeve is smaller than the (unchanged) art box, so the record peeks into the
+            // remaining room and the windowed grid's tile/row maths stay as they are.
+            <div style={{ ...L.gridVintageSleeve, ...vintage.styles.gridSleeve }}>
+              <VintageRecord albumId={album.id} hovered={hoveredAlbumId === album.id} compact />
+              <div style={{ ...VINTAGE_SLEEVE_COVER_STYLE, ...vintage.styles.sleeveCover, ...L.gridVintageCover }}>
                 <AlbumTileImage albumId={album.id} title={album.title} />
               </div>
             </div>
@@ -4135,11 +4135,9 @@ const L: Record<string, React.CSSProperties> = {
     boxShadow: 'none',
     overflow: 'visible',
   },
+  // Position and width come from the vintage style's gridSleeve.
   gridVintageSleeve: {
     position: 'absolute',
-    left: 0,
-    top: '7%',
-    width: '86%',
     aspectRatio: '1 / 1',
   },
   gridVintageCover: {

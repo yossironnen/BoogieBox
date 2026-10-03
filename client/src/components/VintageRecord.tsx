@@ -1,5 +1,5 @@
 /**
- * Vintage (Record Shop) record disc that peeks out from behind an album sleeve.
+ * Vintage record disc that peeks out from behind an album sleeve (direction set by the style).
  * Its centre label is a round crop of the album cover. Renders nothing outside
  * a Vintage style. Position it inside a `position: relative` sleeve box and put
  * the cover in front with VINTAGE_SLEEVE_COVER_STYLE.
@@ -11,11 +11,10 @@ import type { ClientEntityId } from '../types';
 import { useVintageStyle } from '../vintageThemes';
 import ArtImage from './ArtImage';
 
-/** The cover sits in front of the record (shared by Home and Browse). */
+/** The cover sits in front of the record (shared by Home and Browse); add the style's `sleeveCover`. */
 export const VINTAGE_SLEEVE_COVER_STYLE: React.CSSProperties = {
   position: 'relative',
   zIndex: 1,
-  boxShadow: '3px 3px 0 rgba(43,33,24,0.25)',
 };
 
 const LABEL_IMG_STYLE: React.CSSProperties = {
@@ -29,16 +28,16 @@ const LABEL_IMG_STYLE: React.CSSProperties = {
 export default function VintageRecord({
   albumId,
   hovered = false,
-  hoverShift,
+  compact = false,
 }: {
   albumId: ClientEntityId;
   hovered?: boolean;
-  /** Overrides the style's hover slide (e.g. a smaller shift inside a tight grid tile). */
-  hoverShift?: string;
+  /** Uses the style's smaller grid hover slide (a tight Browse tile). */
+  compact?: boolean;
 }) {
   const vintage = useVintageStyle();
   if (!vintage) return null;
-  const hoverStyle = hoverShift ? { transform: `translateX(${hoverShift})` } : vintage.styles.recentAlbumRecordHovered;
+  const hoverStyle = compact ? vintage.styles.gridRecordHovered : vintage.styles.recentAlbumRecordHovered;
   return (
     <div
       data-vintage-record={albumId}

@@ -27,6 +27,26 @@ html[data-vintage-style='recordshop'] .boogie-title::after {
   );
 }
 
+/* Hi-Fi Console '63: "Let's Boogie!" sits on a smoked-glass panel under a brass rule. */
+html[data-vintage-style='hificonsole'] .boogie-section::after {
+  display: none;
+}
+
+html[data-vintage-style='hificonsole'] .boogie-title {
+  letter-spacing: 0;
+}
+
+html[data-vintage-style='hificonsole'] .boogie-title::after {
+  height: 2px;
+  bottom: -8px;
+  background: linear-gradient(
+    to right,
+    var(--vintage-stripe-2),
+    var(--vintage-stripe-1) 40%,
+    var(--vintage-stripe-3)
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   html[data-vintage-style] [data-vintage-record] {
     transition: none !important;

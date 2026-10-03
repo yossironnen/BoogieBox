@@ -314,10 +314,10 @@ function StatsWidget({ stats }: { stats: Stats | null }) {
         <div key={label} data-vintage-stat={vintage ? label : undefined} style={{
           flex: '1 1 100px', textAlign: 'center', padding: '14px 8px',
           backgroundColor: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)',
-          ...(vintage ? {
-            ...vintage.styles.statTile,
-            boxShadow: `4px 4px 0 ${vintage.stickerShadows[index % vintage.stickerShadows.length]}`,
-          } : {}),
+          ...(vintage ? vintage.styles.statTile : {}),
+          ...(vintage && vintage.stickerShadows.length > 0
+            ? { boxShadow: `4px 4px 0 ${vintage.stickerShadows[index % vintage.stickerShadows.length]}` }
+            : {}),
         }}>
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
@@ -379,7 +379,7 @@ function RecentAlbumsWidget({
     <div style={{
       display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8,
       // Room for the record peeking out of each sleeve (and its hover slide).
-      ...(vintage ? { gap: 40, paddingRight: 36, paddingTop: 2 } : {}),
+      ...(vintage ? vintage.styles.recentAlbumRow : {}),
     }}>
       {albums.map(album => (
         <button
@@ -420,7 +420,7 @@ function RecentAlbumsWidget({
           >
             <VintageRecord albumId={album.id} hovered={hoveredAlbumId === album.id} />
             {vintage ? (
-              <div style={VINTAGE_SLEEVE_COVER_STYLE}>
+              <div style={{ ...VINTAGE_SLEEVE_COVER_STYLE, ...vintage.styles.sleeveCover }}>
                 <HomeAlbumCover albumId={album.id} title={album.title} size={150} />
               </div>
             ) : (

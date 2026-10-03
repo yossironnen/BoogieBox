@@ -41,11 +41,11 @@ const STATE: PlayerState = {
   playToken: 1,
 };
 
-function renderPlayer(vintage: boolean) {
+function renderPlayer(vintage: boolean, style = VINTAGE_STYLES.recordshop) {
   const player = <Player state={STATE} onStateChange={vi.fn()} ffmpegAvailable hybridPreview />;
   return render(
     vintage
-      ? <VintageStyleContext.Provider value={VINTAGE_STYLES.recordshop}>{player}</VintageStyleContext.Provider>
+      ? <VintageStyleContext.Provider value={style}>{player}</VintageStyleContext.Provider>
       : player,
   );
 }
@@ -85,6 +85,16 @@ describe('Player — Vintage Record Shop dock', () => {
     const eq = screen.getByRole('dialog', { name: 'Equalizer' });
     expect(eq.style.getPropertyValue('--bg')).toBe(VINTAGE_STYLES.recordshop.palette.colorBg);
     expect(eq.style.getPropertyValue('--text')).toBe(VINTAGE_STYLES.recordshop.palette.colorText);
+  });
+
+  it('Hi-Fi Console: scopes the aluminium dock palette and keeps the rotary volume knob', () => {
+    const { container } = renderPlayer(true, VINTAGE_STYLES.hificonsole);
+
+    const dock = container.querySelector('[data-vintage-dock="hificonsole"]') as HTMLElement;
+    expect(dock).not.toBeNull();
+    expect(dock.style.getPropertyValue('--bg')).toBe('#c9cacb');
+    expect(dock.style.getPropertyValue('--text')).toBe('#161616');
+    expect(screen.getByRole('slider', { name: 'Volume' })).toBeInTheDocument();
   });
 
   it('keeps the vertical slider and unscoped dock outside Vintage', () => {

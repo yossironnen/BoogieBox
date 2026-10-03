@@ -13,6 +13,9 @@ const ICON_PROPS = {
 
 function VintageStyleIcon({ style }: { style: VintageStyle }) {
   switch (style) {
+    case 'hificonsole':
+      // VU meter: face, scale arc and needle.
+      return <svg {...ICON_PROPS}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 15a5 5 0 0 1 10 0" /><path d="M12 15l2.5-4" /></svg>;
     case 'recordshop':
     default:
       // Record with a label and a groove highlight.
@@ -30,7 +33,7 @@ function CheckBadge() {
 
 function MiniPreview({ def }: { def: VintageStyleDefinition }) {
   const p = def.preview;
-  const tiles = [...def.stripes, ...def.stickerShadows].slice(0, 6);
+  const tiles = (p.tiles ?? [...def.stripes, ...def.stickerShadows]).slice(0, 6);
   return (
     <div style={{ ...S.preview, background: p.bg }} aria-hidden="true">
       <div style={{ ...S.previewTop, background: p.top }} />
@@ -118,13 +121,17 @@ const S: Record<string, React.CSSProperties> = {
   cardActive: {
     borderColor: 'var(--accent)',
   },
+  // Fixed-height and clipped: square tiles in a wide card would otherwise spill over the
+  // player bar and the name/era label below.
   preview: {
     height: 120,
+    flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
+    overflow: 'hidden',
   },
-  previewTop: { height: 14 },
-  previewBody: { flex: 1, display: 'flex', minHeight: 0 },
+  previewTop: { height: 14, flexShrink: 0 },
+  previewBody: { flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' },
   previewSide: {
     width: 40,
     display: 'flex',
@@ -145,6 +152,7 @@ const S: Record<string, React.CSSProperties> = {
   previewTile: { aspectRatio: '1', borderRadius: 2 },
   previewBar: {
     height: 26,
+    flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
     gap: 5,

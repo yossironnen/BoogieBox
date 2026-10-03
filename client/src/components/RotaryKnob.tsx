@@ -1,5 +1,5 @@
 /**
- * Rotary (bakelite-style) knob for a 0–1 value, used as the Vintage player
+ * Rotary knob (bakelite or chrome, per vintage style) for a 0–1 value, used as the Vintage player
  * volume control. Supports vertical drag, mouse wheel, keyboard and
  * double-click-to-mute, with ARIA slider semantics.
  */
@@ -150,7 +150,7 @@ const S: Record<string, React.CSSProperties> = {
     borderRadius: '50%',
     cursor: 'ns-resize',
     touchAction: 'none',
-    background: 'radial-gradient(circle at 35% 30%, #4a3a2e 0, #1c140f 60%, #0a0705 100%)',
+    background: 'var(--vintage-knob, radial-gradient(circle at 35% 30%, #4a3a2e 0, #1c140f 60%, #0a0705 100%))',
     boxShadow: '0 4px 8px rgba(0,0,0,0.6), inset 0 0 0 2px var(--vu-ring, var(--accent))',
     outlineOffset: 3,
   },
@@ -167,12 +167,12 @@ const S: Record<string, React.CSSProperties> = {
     width: 2,
     height: '26%',
     borderRadius: 1,
-    background: 'var(--vu-ring, var(--accent))',
+    background: 'var(--vintage-knob-pointer, var(--vu-ring, var(--accent)))',
   },
   caption: {
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: 2,
-    color: 'var(--vu-ring, var(--text-muted))',
+    color: 'var(--vintage-knob-caption, var(--vu-ring, var(--text-muted)))',
   },
 };

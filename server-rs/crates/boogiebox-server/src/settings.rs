@@ -93,7 +93,7 @@ pub const UI_THEME_MODES: &[&str] = &["light", "dark", "custom", "vintage"];
 
 /// Vintage theme styles accepted for the `uiVintageStyle` user setting.
 /// Mirrors `VintageStyle` in `client/src/vintageThemes.ts`.
-pub const UI_VINTAGE_STYLES: &[&str] = &["recordshop"];
+pub const UI_VINTAGE_STYLES: &[&str] = &["recordshop", "hificonsole"];
 
 /// Documents the USER SETTING MAX VALUE LEN public API surface.
 pub const USER_SETTING_MAX_VALUE_LEN: usize = 4096;
@@ -420,6 +420,7 @@ mod tests {
     fn validates_vintage_styles() {
         assert!(ALLOWED_USER_SETTING_KEYS.contains(&"uiVintageStyle"));
         assert!(validate_user_setting_value("uiVintageStyle", "recordshop").is_ok());
+        assert!(validate_user_setting_value("uiVintageStyle", "hificonsole").is_ok());
         assert!(validate_user_setting_value("uiVintageStyle", "walnut").is_err());
         assert!(validate_user_setting_value("uiVintageStyle", "").is_err());
     }

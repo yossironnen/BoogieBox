@@ -43,7 +43,7 @@ function album(id: string, title: string) {
   return { id, title, artist: 'Chromatics', album_artist: 'Chromatics', year: 2026, track_count: 9 };
 }
 
-function renderHome(vintage: boolean) {
+function renderHome(vintage: boolean, style = VINTAGE_STYLES.recordshop) {
   const view = (
     <HomeView
       stats={STATS}
@@ -58,7 +58,7 @@ function renderHome(vintage: boolean) {
   );
   return render(
     vintage
-      ? <VintageStyleContext.Provider value={VINTAGE_STYLES.recordshop}>{view}</VintageStyleContext.Provider>
+      ? <VintageStyleContext.Provider value={style}>{view}</VintageStyleContext.Provider>
       : view,
   );
 }
@@ -119,6 +119,23 @@ describe('HomeView — Vintage Record Shop', () => {
     for (const shadow of shadows) expect(shadow).toMatch(/4px 4px 0/);
     // Each sticker gets a different stripe colour.
     expect(new Set(shadows).size).toBe(tiles.length);
+  });
+
+  it('Hi-Fi Console: the record rises out of the top and stat tiles are recessed windows', async () => {
+    const { container } = renderHome(true, VINTAGE_STYLES.hificonsole);
+    const tile = await screen.findByTitle(/Night Drive/);
+
+    const record = container.querySelector('[data-vintage-record="1"]') as HTMLElement;
+    expect(record.style.top).toBe('-22%');
+    fireEvent.mouseEnter(tile);
+    expect(record.style.transform).toBe('translateY(-10px)');
+
+    const tiles = Array.from(container.querySelectorAll<HTMLElement>('[data-vintage-stat]'));
+    expect(tiles).toHaveLength(3);
+    for (const stat of tiles) {
+      expect(stat.style.boxShadow).toMatch(/^inset/);
+      expect(stat.style.boxShadow).not.toMatch(/4px 4px 0/);
+    }
   });
 
   it('keeps the standard look outside Vintage', async () => {
