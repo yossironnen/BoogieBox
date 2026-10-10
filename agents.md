@@ -146,12 +146,18 @@ All files under the Docs/memory/archive folder have already been implemented and
 
 ## Versioning (MANDATORY)
 
-After any code change:
-- Run `npm test`
-- Run `npm run lint`
-- Run `npm run security:semgrep`
-- Run `cargo clippy --manifest-path server-rs/Cargo.toml --all-targets --all-features -- -D warnings`
+While iterating, run only targeted checks for what changed:
+- Rust: `cargo test --manifest-path server-rs/Cargo.toml -p <crate> <test_filter>`
+- Client: `npm --prefix client test -- <file_or_pattern>`
+
+Once, before finishing, run the full checks scoped by what changed in the task:
+- Rust changed (`.rs`): `npm run server-rs:test`, `npm run server-rs:fmt:check`, `npm run server-rs:clippy`
+- Client/scripts changed (`.ts/.tsx/.js/.jsx/.css`, scripts): `npm --prefix client test`, `npm --prefix client run typecheck`, `npm run lint:eslint`
+- Both changed: `npm test` and `npm run lint` (`lint` already includes clippy; do not run clippy again)
+- Always: `npm run security:semgrep`
+- Run independent checks (lint, semgrep, tests) in parallel where possible.
 - Ensure all tests pass before finishing.
+
 
 If ANY code file changes (`.ts/.tsx/.js/.jsx/.css/.rs` or scripts):
 

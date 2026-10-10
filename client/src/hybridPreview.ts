@@ -296,35 +296,9 @@ export const hybridBrowseStyles: Record<string, React.CSSProperties> = {
   root: {
     background: 'var(--bg)',
   },
-  hero: {
-    background: 'transparent',
-    borderBottom: 'none',
-    boxShadow: 'none',
-  },
-  heroInner: {
-    padding: '24px 28px 16px',
-  },
-  heroTitle: {
-    fontSize: 28,
-    fontWeight: 750,
-    letterSpacing: -0.55,
-  },
-  heroBody: {
-    maxWidth: 620,
-    marginTop: 7,
-    color: 'var(--text-muted)',
-    fontSize: 15,
-  },
-  heroStats: {
-    minWidth: 164,
-    padding: '11px 14px',
-    borderRadius: 14,
-    background: 'var(--surface-subtle)',
-    border: 'none',
-    boxShadow: 'none',
-  },
+  // Applied to the browse CommandBar (root and drill-down).
   toolbar: {
-    padding: '0 28px 14px',
+    padding: '8px 28px',
     borderBottom: '1px solid var(--border)',
   },
   gridTile: {
@@ -371,31 +345,14 @@ export const hybridSearchStyles: Record<string, React.CSSProperties> = {
   root: {
     background: 'var(--bg)',
   },
+  // Applied to the Search CommandBar.
   filterBar: {
-    gap: 10,
-    padding: '24px 28px 18px',
+    padding: '8px 28px',
     borderBottom: '1px solid var(--divider-subtle)',
     background: 'transparent',
   },
-  heroCopy: {
-    width: '100%',
-    marginBottom: 4,
-  },
-  heroTitle: {
-    color: 'var(--text)',
-    fontSize: 28,
-    fontWeight: 750,
-    letterSpacing: -0.55,
-  },
-  heroBody: {
-    maxWidth: 620,
-    marginTop: 6,
-    color: 'var(--text-muted)',
-    fontSize: 15,
-    lineHeight: 1.5,
-  },
   searchWrap: {
-    minHeight: 46,
+    minHeight: 38,
     background: 'var(--surface)',
     border: '1px solid var(--border)',
     borderRadius: 12,
@@ -406,7 +363,7 @@ export const hybridSearchStyles: Record<string, React.CSSProperties> = {
     boxShadow: 'var(--focus-ring)',
   },
   select: {
-    minHeight: 46,
+    minHeight: 38,
     background: 'var(--surface-subtle)',
     border: '1px solid transparent',
     borderRadius: 12,

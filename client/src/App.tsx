@@ -13,6 +13,7 @@ import { DEFAULT_SETTINGS } from './types';
 import Player, { type PlaybackSnapshot, type PlayerState } from './components/Player';
 import SettingsPage from './components/SettingsPage';
 import BrowseView from './components/BrowseView';
+import CommandBar from './components/CommandBar';
 import PlaylistsView from './components/PlaylistsView';
 import MixesView from './components/MixesView';
 import HomeView from './components/HomeView';
@@ -420,79 +421,6 @@ const Icon = {
   ),
 };
 
-// ─── Stats Bar ────────────────────────────────────────────────────────────────
-
-function StatsBarTracksIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <path d="M9 18V5l12-2v13" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="16" r="3" />
-    </svg>
-  );
-}
-
-function StatsBarArtistsIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <path d="M20 21a8 8 0 0 0-16 0" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  );
-}
-
-function StatsBarAlbumsIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="12" r="2.5" />
-    </svg>
-  );
-}
-
-function StatsBarHoursIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l4 2" />
-    </svg>
-  );
-}
-
-function StatsBarStorageIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <rect x="3" y="4" width="18" height="7" rx="1.5" />
-      <rect x="3" y="13" width="18" height="7" rx="1.5" />
-      <circle cx="7" cy="7.5" r="0.9" fill="currentColor" stroke="none" />
-      <circle cx="7" cy="16.5" r="0.9" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function StatsBar({ stats }: { stats: Stats | null }) {
-  const items = [
-    { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '–', Icon: StatsBarTracksIcon },
-    { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '–', Icon: StatsBarArtistsIcon },
-    { label: 'Albums',  value: stats?.total_albums?.toLocaleString()  ?? '–', Icon: StatsBarAlbumsIcon },
-    { label: 'Hours',   value: stats?.total_hours != null ? stats.total_hours.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '–', Icon: StatsBarHoursIcon },
-    { label: 'GB',      value: stats?.total_gb    != null ? stats.total_gb.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '–', Icon: StatsBarStorageIcon },
-  ];
-  return (
-    <div style={S.statsBar}>
-      {items.map(({ label, value, Icon }) => (
-        <div key={label} style={S.statItem}>
-          <div style={S.statValueRow}>
-            <Icon size={16} style={S.statIcon} />
-            <span style={S.statValue}>{value}</span>
-          </div>
-          <span style={S.statLabel}>{label}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ─── Library Manager ──────────────────────────────────────────────────────────
 
 function ArtistRowIcon() {
@@ -621,8 +549,9 @@ function TrackModal({
   );
 }
 
-function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbum }: {
+function SearchView({ libraries, stats, playTrack, addToQueue, onOpenArtist, onOpenAlbum }: {
   libraries: Library[];
+  stats?: Stats | null;
   playTrack: (track: Track, allTracks?: Track[]) => void;
   addToQueue: (track: Track) => void;
   onOpenArtist: (artist: Artist) => void;
@@ -779,13 +708,44 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
     >
 
       {/* ── Filter bar ── */}
-      <div style={{ ...S.filterBar, ...hybridSearchStyles.filterBar }}>
-        <div style={hybridSearchStyles.heroCopy}>
-          <div style={hybridSearchStyles.heroTitle}>Search</div>
-          <div style={hybridSearchStyles.heroBody}>
-            Find artists, albums, and tracks across your music library.
-          </div>
-        </div>
+      <CommandBar
+        watermark="Search"
+        stats={stats}
+        style={hybridSearchStyles.filterBar}
+        actions={(
+          <button
+            type="button"
+            style={{
+              padding: 0,
+              width: 34,
+              height: 34,
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'rgba(255,255,255,0.04)',
+              color: 'var(--text)',
+              border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+              borderRadius: 999,
+              cursor: 'pointer',
+              fontSize: 16,
+              fontFamily: 'inherit',
+              fontWeight: 700,
+              ...(sonicFingerprintOnly ? {
+                color: 'var(--accent)',
+                background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--accent) 50%, var(--border))',
+              } : {}),
+            }}
+            onClick={() => setSonicFingerprintOnly(v => !v)}
+            title="Show only tracks with Sonic Fingerprint (AI stem analysis)"
+            aria-label="Filter by Sonic Fingerprint"
+            aria-pressed={sonicFingerprintOnly}
+          >
+            ✦
+          </button>
+        )}
+      >
         <div
           style={{
             ...S.searchWrap,
@@ -801,49 +761,17 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
             autoFocus />
           {query && <button type="button" aria-label="Clear search" style={S.clearBtn} onClick={() => setQuery('')}><Icon.X /></button>}
         </div>
-        <select style={{ ...S.select, ...hybridSearchStyles.select }} value={libraryId ?? ''} onChange={e => setLibraryId(e.target.value || undefined)}>
+        <select style={{ ...S.select, ...hybridSearchStyles.select, ...S.commandSelect }} value={libraryId ?? ''} onChange={e => setLibraryId(e.target.value || undefined)}>
           <option value="">All Libraries</option>
           {libraries.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
-        <select style={{ ...S.select, ...hybridSearchStyles.select }} value={genre} onChange={e => setGenre(e.target.value)}>
+        <select style={{ ...S.select, ...hybridSearchStyles.select, ...S.commandSelect }} value={genre} onChange={e => setGenre(e.target.value)}>
           <option value="">All Genres</option>
           {genres.map(g => <option key={g.genre} value={g.genre}>{g.genre} ({g.track_count})</option>)}
         </select>
-        <input style={{ ...S.select, ...hybridSearchStyles.select, width: 90 }} placeholder="Year" value={year}
+        <input style={{ ...S.select, ...hybridSearchStyles.select, width: 90, flexShrink: 0 }} placeholder="Year" value={year}
           onChange={e => setYear(e.target.value)} type="number" min="1900" max="2099" />
-        <button
-          type="button"
-          style={{
-            padding: 0,
-            width: 34,
-            height: 34,
-            flexShrink: 0,
-            alignSelf: 'center',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'rgba(255,255,255,0.04)',
-            color: 'var(--text)',
-            border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
-            borderRadius: 999,
-            cursor: 'pointer',
-            fontSize: 16,
-            fontFamily: 'inherit',
-            fontWeight: 700,
-            ...(sonicFingerprintOnly ? {
-              color: 'var(--accent)',
-              background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--accent) 50%, var(--border))',
-            } : {}),
-          }}
-          onClick={() => setSonicFingerprintOnly(v => !v)}
-          title="Show only tracks with Sonic Fingerprint (AI stem analysis)"
-          aria-label="Filter by Sonic Fingerprint"
-          aria-pressed={sonicFingerprintOnly}
-        >
-          ✦
-        </button>
-      </div>
+      </CommandBar>
 
       {/* ── Artists + Albums quick results ── */}
       {showQuick && (
@@ -1834,7 +1762,6 @@ export default function App() {
           ...(hybridDesignActive ? hybridShellStyles.main : {}),
           ...(activeVintage ? activeVintage.styles.main : {}),
         }}>
-          {view !== 'settings' && view !== 'playlists' && view !== 'home' && view !== 'mixes' && <StatsBar stats={stats} />}
           {view === 'home'      && (
             <HomeView
               stats={stats}
@@ -1892,6 +1819,7 @@ export default function App() {
           {view === 'search'    && (
             <SearchView
               libraries={libraries}
+              stats={stats}
               playTrack={playTrack}
               addToQueue={addToQueue}
               onOpenArtist={artist => { setBrowseOpenArtistRequest({ artist, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
@@ -1901,6 +1829,7 @@ export default function App() {
           {view === 'browse'    && (
               <BrowseView
                 libraries={libraries}
+                stats={stats}
                 forcedLibraryIds={activeSidebarLibraryId ? [activeSidebarLibraryId] : null}
                 playTrack={playTrack}
                 playAlbumInVinylMode={playAlbumInVinylMode}
@@ -2225,49 +2154,17 @@ const S: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     backgroundColor: 'color-mix(in srgb, var(--bg) 88%, transparent)',
   },
-  statsBar: {
-    display: 'flex',
-    borderBottom: '1px solid color-mix(in srgb, var(--border) 60%, transparent)',
-    flexShrink: 0,
-    backgroundColor: 'color-mix(in srgb, var(--surface) 24%, transparent)',
-    backdropFilter: 'blur(12px)',
-  },
-  statItem: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    padding: '14px 24px',
-    borderRight: '1px solid color-mix(in srgb, var(--border) 58%, transparent)',
-  },
-  statValueRow: { display: 'flex', alignItems: 'center', gap: 6 },
-  statIcon: { color: 'var(--accent)', opacity: 0.85, flexShrink: 0 },
-  statValue: { fontWeight: 700, fontSize: 22, color: 'var(--text)', fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.4px' },
-  statLabel: { fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.9, marginTop: 3 },
-  filterBar: {
-    display: 'flex',
-    gap: 10,
-    padding: '22px 24px 16px',
-    borderBottom: '1px solid color-mix(in srgb, var(--border) 56%, transparent)',
-    flexWrap: 'wrap',
-    flexShrink: 0,
-    position: 'relative' as const,
-    alignItems: 'flex-start',
-    background: [
-      'radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 34%)',
-      'linear-gradient(180deg, color-mix(in srgb, var(--surface) 28%, transparent) 0%, color-mix(in srgb, var(--surface) 12%, transparent) 100%)',
-    ].join(','),
-  },
   searchWrap: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    flex: 1,
-    minWidth: 220,
+    flex: '1 1 260px',
+    minWidth: 200,
     backgroundColor: 'color-mix(in srgb, var(--surface) 82%, var(--bg))',
     border: '1px solid color-mix(in srgb, var(--border) 74%, transparent)',
     borderRadius: 999,
     padding: '0 16px',
-    minHeight: 48,
+    minHeight: 38,
     boxShadow: '0 12px 24px rgba(0,0,0,0.08)',
   },
   searchModeBar: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const },
@@ -2288,7 +2185,7 @@ const S: Record<string, React.CSSProperties> = {
     color: 'var(--text)',
     borderColor: 'color-mix(in srgb, var(--accent) 44%, var(--border))',
   },
-  searchInput: { flex: 1, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 16, padding: '12px 0', fontFamily: 'inherit' },
+  searchInput: { flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 16, padding: '7px 0', fontFamily: 'inherit' },
   clearBtn: { background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 },
   select: {
     backgroundColor: 'color-mix(in srgb, var(--surface) 64%, var(--bg))',
@@ -2300,6 +2197,8 @@ const S: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     outline: 'none',
   },
+  // Search filter selects inside the CommandBar: shrink before anything wraps.
+  commandSelect: { minWidth: 120, flex: '0 1 auto' },
   resultsMeta: { padding: '12px 20px 8px', flexShrink: 0 },
   resultsMetaRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' as const },
   muted: { color: 'var(--text-muted)' },

@@ -823,8 +823,12 @@ pub struct ListArtistsParams<'a> {
 
 /// Documents the List Artists public API surface.
 pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Result<ArtistList> {
+    // Track-level filters select the tracks that make an artist visible; artist-level
+    // filters apply to the artist row itself.
     let mut conditions: Vec<String> = Vec::new();
     let mut filter_params: Vec<Value> = Vec::new();
+    let mut artist_conditions: Vec<String> = Vec::new();
+    let mut artist_params: Vec<Value> = Vec::new();
 
     if !p.library_ids.is_empty() {
         let ph = p
@@ -840,12 +844,12 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
     }
     push_genre_filter(&mut conditions, &mut filter_params, p.genres);
     if let Some(sw) = p.starts_with {
-        conditions.push("UPPER(SUBSTR(TRIM(COALESCE(ar.name,'')),1,1)) = ?".into());
-        filter_params.push(Value::Text(sw.to_uppercase()));
+        artist_conditions.push("UPPER(SUBSTR(TRIM(COALESCE(ar.name,'')),1,1)) = ?".into());
+        artist_params.push(Value::Text(sw.to_uppercase()));
     }
     if let Some(q) = p.name_query {
-        conditions.push("LOWER(TRIM(COALESCE(ar.name,''))) LIKE ?".into());
-        filter_params.push(Value::Text(format!("%{}%", q.to_lowercase())));
+        artist_conditions.push("LOWER(TRIM(COALESCE(ar.name,''))) LIKE ?".into());
+        artist_params.push(Value::Text(format!("%{}%", q.to_lowercase())));
     }
     if p.sonic_fingerprint_only {
         conditions.push(
@@ -854,24 +858,38 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
         );
     }
     if p.hide_compilation_only && p.name_query.is_none() {
-        conditions.push("EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)".into());
+        artist_conditions
+            .push("EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ar.id)".into());
     }
 
-    let where_clause = if conditions.is_empty() {
+    let track_where = if conditions.is_empty() {
         String::new()
     } else {
         format!("WHERE {}", conditions.join(" AND "))
     };
+    // An artist is visible through tracks credited to them or through albums they own
+    // (album artist differs from every track artist, e.g. "Bryan Ferry + Roxy Music"),
+    // matching the stats-bar artist count.
+    let artist_source = format!(
+        "artists ar JOIN (SELECT t.artist_id AS aid FROM tracks t {track_where} \
+         UNION SELECT oa.artist_id FROM tracks t JOIN albums oa ON oa.id = t.album_id {track_where}) m \
+         ON m.aid = ar.id"
+    );
+    let where_clause = if artist_conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", artist_conditions.join(" AND "))
+    };
+    let mut source_params: Vec<Value> = filter_params.clone();
+    source_params.extend(filter_params);
 
     let wants_paged = p.page_limit.is_some() || p.page_offset > 0;
 
     let total: Option<i64> = if wants_paged {
-        let count_sql = format!(
-            "SELECT COUNT(DISTINCT ar.id) FROM artists ar JOIN tracks t ON t.artist_id = ar.id {where_clause}"
-        );
+        let count_sql = format!("SELECT COUNT(DISTINCT ar.id) FROM {artist_source} {where_clause}");
         Some(conn.query_row(
             &count_sql,
-            params_from_iter(filter_params.iter().cloned()),
+            params_from_iter(source_params.iter().chain(&artist_params).cloned()),
             |row| row.get(0),
         )?)
     } else {
@@ -895,15 +913,16 @@ pub fn list_artists(conn: &Connection, p: ListArtistsParams<'_>) -> rusqlite::Re
 
     let sql = format!(
         "SELECT {meta_fields}
-         FROM artists ar JOIN tracks t ON t.artist_id = ar.id
+         FROM {artist_source}
          LEFT JOIN artist_ratings arr ON arr.artist_id = ar.id AND arr.user_id = ?
          {where_clause}
          GROUP BY ar.id ORDER BY ar.name {order}, ar.id {order}
          {limit_clause}"
     );
 
-    let mut full_params: Vec<Value> = vec![Value::Text(p.user_id.to_owned())];
-    full_params.extend(filter_params.iter().cloned());
+    let mut full_params: Vec<Value> = source_params;
+    full_params.push(Value::Text(p.user_id.to_owned()));
+    full_params.extend(artist_params);
     if wants_paged {
         full_params.push(Value::Integer(p.page_limit.unwrap_or(100)));
         full_params.push(Value::Integer(p.page_offset));
@@ -4237,6 +4256,44 @@ mod tests {
             ],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn list_artists_includes_album_owners_without_own_track_credits() {
+        let conn = merge_test_conn("browse-owner");
+        insert_test_library(&conn, "lib");
+        insert_test_artist(&conn, "owner", "Bryan Ferry + Roxy Music");
+        insert_test_artist(&conn, "performer", "Roxy Music");
+        insert_test_album(&conn, "alb", "Collab", "owner", "Bryan Ferry + Roxy Music");
+        insert_test_track(&conn, "t1", "lib", "performer", "alb", "Song");
+
+        let library_ids = [coerce_entity_id("lib")];
+        for (hide, library_ids, expected) in [
+            (true, &[][..], vec!["owner"]),
+            (false, &[][..], vec!["owner", "performer"]),
+            (true, &library_ids[..], vec!["owner"]),
+        ] {
+            let params = ListArtistsParams {
+                user_id: "u",
+                genres: &[],
+                library_ids,
+                starts_with: None,
+                name_query: None,
+                order_dir: "ASC",
+                full_view: false,
+                page_limit: Some(10),
+                page_offset: 0,
+                sonic_fingerprint_only: false,
+                hide_compilation_only: hide,
+            };
+            let ArtistList::Page(page) = list_artists(&conn, params).unwrap() else {
+                panic!("expected page");
+            };
+            let ids: Vec<_> = page.items.iter().map(|a| a.id.clone()).collect();
+            let expected: Vec<_> = expected.into_iter().map(coerce_entity_id).collect();
+            assert_eq!(ids, expected);
+            assert_eq!(page.total, expected.len() as i64);
+        }
     }
 
     #[test]

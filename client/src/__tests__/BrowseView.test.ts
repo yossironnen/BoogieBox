@@ -5,6 +5,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyAlbumRating,
+  buildBrowseFilterChips,
+  buildRootListFilterKey,
+  fitChipCount,
   applyArtistRating,
   applyTrackRating,
   buildLetterFirstIndexMap,
@@ -523,3 +526,83 @@ describe('isVariousArtistsName', () => {
   });
 });
 
+describe('buildBrowseFilterChips', () => {
+  const base = { tab: 'albums' as const, selectedGenres: [], libraryNames: [], ratingFilter: 'all' as const, groupBy: 'album_artist' as const };
+
+  it('returns no chips with default filters', () => {
+    expect(buildBrowseFilterChips(base)).toEqual([]);
+  });
+
+  it('folds many genres into one chip with a +N count and lists them all in the title', () => {
+    expect(buildBrowseFilterChips({ ...base, selectedGenres: ['Synth-pop'] })).toEqual([
+      { key: 'genre', label: 'Synth-pop', extraCount: 0, title: 'Genre: Synth-pop' },
+    ]);
+    const [chip] = buildBrowseFilterChips({ ...base, selectedGenres: ['Synth-pop', 'New Wave', 'Electronic', 'Post-punk', 'Italo Disco'] });
+    expect(chip).toEqual({
+      key: 'genre',
+      label: 'Synth-pop',
+      extraCount: 4,
+      title: 'Genre: Synth-pop, New Wave, Electronic, Post-punk, Italo Disco',
+    });
+  });
+
+  it('orders library, genre, rating, group-by, one chip per type', () => {
+    const chips = buildBrowseFilterChips({
+      ...base,
+      selectedGenres: ['Rock', 'Jazz'],
+      libraryNames: ['Main', 'Jazz'],
+      ratingFilter: 'gte4',
+      groupBy: 'artist',
+    });
+    expect(chips.map((chip) => [chip.key, chip.label, chip.extraCount])).toEqual([
+      ['library', 'Main', 1],
+      ['genre', 'Rock', 1],
+      ['rating', '4+', 0],
+      ['groupBy', 'Group: Artist', 0],
+    ]);
+  });
+
+  it('only offers the group-by chip on the albums tab', () => {
+    expect(buildBrowseFilterChips({ ...base, tab: 'artists', groupBy: 'artist' })).toEqual([]);
+  });
+});
+
+describe('fitChipCount', () => {
+  it('shows every chip when unmeasured (zero widths or zero space)', () => {
+    expect(fitChipCount([0, 0, 0], 500, 96)).toBe(3);
+    expect(fitChipCount([100, 100], 0, 96)).toBe(2);
+  });
+
+  it('shows every chip when they all fit, without reserving overflow space', () => {
+    expect(fitChipCount([100, 100, 100], 316, 96, 8)).toBe(3);
+  });
+
+  it('reserves room for the overflow chip when not all fit', () => {
+    // 96 (more) + 8 + 100 = 204 fits; + 8 + 100 = 312 > 300.
+    expect(fitChipCount([100, 100, 100], 300, 96, 8)).toBe(1);
+  });
+
+  it('can fold every chip when even one does not fit beside the overflow chip', () => {
+    expect(fitChipCount([200, 200], 250, 96, 8)).toBe(0);
+  });
+});
+
+describe('buildRootListFilterKey', () => {
+  const state = { genres: ['Rock', 'jazz'], libraryIds: ['2', '1'], sonicFingerprintOnly: false, groupBy: 'album_artist' as const, hideCompilationOnlyArtists: true };
+
+  it('ignores genre case and selection order', () => {
+    expect(buildRootListFilterKey('albums', state)).toBe(buildRootListFilterKey('albums', { ...state, genres: ['JAZZ', 'rock'], libraryIds: ['1', '2'] }));
+  });
+
+  it('changes when a server-side filter changes', () => {
+    const key = buildRootListFilterKey('albums', state);
+    expect(buildRootListFilterKey('albums', { ...state, sonicFingerprintOnly: true })).not.toBe(key);
+    expect(buildRootListFilterKey('albums', { ...state, groupBy: 'artist' })).not.toBe(key);
+    expect(buildRootListFilterKey('artists', state)).not.toBe(key);
+  });
+
+  it('only lets group-by affect albums and compilation hiding affect artists', () => {
+    expect(buildRootListFilterKey('artists', state)).toBe(buildRootListFilterKey('artists', { ...state, groupBy: 'artist' }));
+    expect(buildRootListFilterKey('albums', state)).toBe(buildRootListFilterKey('albums', { ...state, hideCompilationOnlyArtists: false }));
+  });
+});

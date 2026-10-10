@@ -7,7 +7,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowseView, { AlbumGrid, AlbumList, mergeAlbumChanges } from '../components/BrowseView';
 import { ContextMenuRoot } from '../components/ContextMenu';
-import type { Album, ClientEntityId, Library, Track } from '../types';
+import type { Album, ClientEntityId, Library, Stats, Track } from '../types';
 import { VINTAGE_STYLES, VintageStyleContext } from '../vintageThemes';
 
 const { apiMock } = vi.hoisted(() => ({
@@ -654,12 +654,14 @@ describe('BrowseView component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch to table view' }));
 
     await waitFor(() => expect(screen.queryByTitle('Album One')).not.toBeInTheDocument());
-    expect(screen.getByText('View: Table')).toBeInTheDocument();
+    // View mode is shown by its own toggle, not by a filter chip.
+    expect(screen.getByRole('button', { name: 'Switch to grid view' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('button', { name: 'Clear all refine filters' })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clear all refine filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to grid view' }));
 
     await waitFor(() => expect(screen.getByTitle('Album One')).toBeInTheDocument());
-    expect(screen.queryByText('View: Table')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Switch to table view' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('exercises root refinement chips, multi-select filters, layout, grouping, and sort directions', async () => {
@@ -711,12 +713,17 @@ describe('BrowseView component flows', () => {
     fireEvent.click(within(genreMenu).getByRole('button', { name: 'Clear genre selection' }));
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Browse refine options' })).not.toBeInTheDocument();
-    expect(screen.getByText('✦ Sonic Fingerprint')).toBeInTheDocument();
-    expect(screen.getByText('Rating: Unrated')).toBeInTheDocument();
-    expect(screen.getByText('Sort: Name ↓')).toBeInTheDocument();
-    expect(screen.getByText('View: Table')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Rating: Unrated'));
-    fireEvent.click(screen.getByText('Sort: Name ↓'));
+    // Sonic Fingerprint and view mode show on their own buttons, not as chips.
+    expect(screen.getByRole('button', { name: 'Filter by Sonic Fingerprint' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Switch to grid view' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('✦ Sonic Fingerprint')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rating filter: Unrated' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse refine options' })).toHaveAttribute('title', 'Filters — 2 active');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear rating filter' }));
+    expect(screen.queryByRole('button', { name: 'Rating filter: Unrated' })).not.toBeInTheDocument();
+    // The always-visible sort chip flips the artist sort direction.
+    fireEvent.click(screen.getByRole('button', { name: 'Sort: Name ↓' }));
+    expect(screen.getByRole('button', { name: 'Sort: Name ↑' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
     await waitFor(() => expect(apiMock.albums).toHaveBeenCalled());
@@ -732,6 +739,101 @@ describe('BrowseView component flows', () => {
     expect(screen.queryByRole('dialog', { name: 'Browse refine options' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Clear all refine filters' }));
     await waitFor(() => expect(screen.getByTitle('Album One')).toBeInTheDocument());
+  });
+
+  it('groups many genres into one command bar chip with a checklist popover', async () => {
+    apiMock.genres.mockResolvedValue([
+      { genre: 'Rock', track_count: 2 },
+      { genre: 'Jazz', track_count: 1 },
+      { genre: 'Pop', track_count: 3 },
+    ]);
+
+    render(
+      <BrowseView
+        libraries={[]}
+        playTrack={vi.fn()}
+        playAlbumInVinylMode={vi.fn()}
+        addToQueue={vi.fn()}
+        lastfmKey="test-lastfm-key"
+      />,
+    );
+    await screen.findByTitle('Artist One');
+    await waitFor(() => expect(apiMock.genres).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Genre filter menu' }));
+    const genreMenu = await screen.findByRole('menu', { name: 'Genre filter options' });
+    for (const checkbox of within(genreMenu).getAllByRole('checkbox')) fireEvent.click(checkbox);
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    const chip = screen.getByRole('button', { name: 'Genre filter: Rock and 2 more' });
+    expect(chip).toHaveAttribute('title', 'Genre: Rock, Jazz, Pop');
+    await waitFor(() => expect(apiMock.artists).toHaveBeenLastCalledWith(expect.objectContaining({ genres: ['Rock', 'Jazz', 'Pop'] })));
+
+    fireEvent.click(chip);
+    const popover = screen.getByRole('dialog', { name: 'Selected genres' });
+    expect(within(popover).getByText('3 selected')).toBeInTheDocument();
+    fireEvent.click(within(popover).getAllByRole('checkbox')[0]);
+    expect(screen.getByRole('button', { name: 'Genre filter: Jazz and 1 more' })).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog', { name: 'Selected genres' })).getAllByRole('checkbox')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear genres' }));
+    expect(screen.queryByRole('button', { name: /Genre filter:/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Selected genres' })).not.toBeInTheDocument();
+  });
+
+  it('shows tab counts only for lists loaded under the current filters', async () => {
+    apiMock.artists.mockResolvedValue([
+      { id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: 3.5 },
+      { id: '2', name: 'Artist Two', track_count: 1, album_count: 1, rating: null },
+    ]);
+
+    render(
+      <BrowseView
+        libraries={[]}
+        playTrack={vi.fn()}
+        playAlbumInVinylMode={vi.fn()}
+        addToQueue={vi.fn()}
+        lastfmKey="test-lastfm-key"
+      />,
+    );
+    await screen.findByTitle('Artist One');
+    expect(screen.getByRole('button', { name: 'Artists' })).toHaveAttribute('title', '2 artists');
+    expect(screen.getByRole('button', { name: 'Albums' })).toHaveAttribute('title', 'Albums');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
+    await screen.findByTitle('Album One');
+    expect(screen.getByRole('button', { name: 'Albums' })).toHaveAttribute('title', '1 albums');
+    // The artist list loaded earlier still matches the current filters, so its count stays.
+    expect(screen.getByRole('button', { name: 'Artists' })).toHaveAttribute('title', '2 artists');
+
+    // A server-side filter change invalidates the other tab's count until it reloads.
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by Sonic Fingerprint' }));
+    expect(screen.getByRole('button', { name: 'Artists' })).toHaveAttribute('title', 'Artists');
+    await waitFor(() => expect(apiMock.albums).toHaveBeenLastCalledWith(expect.objectContaining({ sonic_fingerprint_only: true })));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Albums' })).toHaveAttribute('title', '1 albums'));
+  });
+
+  it('puts the drill-down breadcrumb in a command bar with the library totals', async () => {
+    render(
+      <BrowseView
+        libraries={[]}
+        stats={{ total_tracks: 10, total_artists: 2, total_albums: 3, total_hours: 1, total_gb: 0.5 } as Stats}
+        playTrack={vi.fn()}
+        playAlbumInVinylMode={vi.fn()}
+        addToQueue={vi.fn()}
+        lastfmKey="test-lastfm-key"
+      />,
+    );
+    expect(screen.getByLabelText('10 tracks')).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByText('Artist One'));
+    const breadcrumb = await screen.findByRole('navigation', { name: 'Breadcrumb' });
+    const bar = breadcrumb.closest('[data-command-bar="browse"]') as HTMLElement;
+    expect(bar).toBeInTheDocument();
+    expect(within(bar).getByLabelText('3 albums')).toBeInTheDocument();
+    expect(within(bar).getByTestId('command-bar-watermark')).toHaveTextContent('Browse');
+    expect(screen.queryByRole('group', { name: 'Browse by' })).not.toBeInTheDocument();
   });
 
   it('shows root browse kebab actions for artist and album grid cards', async () => {
@@ -1065,7 +1167,7 @@ describe('BrowseView component flows', () => {
     expect(screen.getByRole('button', { name: 'Library filter menu' })).not.toBeDisabled();
   });
 
-  it('shows available libraries in the music browse library filter and labels the hero for music browsing', async () => {
+  it('shows available libraries in the music browse library filter and labels the command bar for music browsing', async () => {
     const playTrack = vi.fn();
     const playAlbumInVinylMode = vi.fn();
     const addToQueue = vi.fn();
@@ -1084,9 +1186,14 @@ describe('BrowseView component flows', () => {
       />
     );
 
-    expect(screen.getByText('Browse Music')).toBeInTheDocument();
+    // The old hero copy is gone; the bar carries a decorative watermark instead.
+    expect(screen.queryByText('Browse Music')).not.toBeInTheDocument();
+    expect(screen.getByTestId('command-bar-watermark')).toHaveTextContent('Browse');
+    expect(screen.getByRole('group', { name: 'Browse by' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Browse refine options' }));
+    // The Refine dialog must not clip the menus nested inside it.
+    expect(screen.getByRole('dialog', { name: 'Browse refine options' }).style.overflow).not.toBe('hidden');
     fireEvent.click(screen.getByRole('button', { name: 'Library filter menu' }));
     const menu = screen.getByRole('menu', { name: 'Library filter options' });
     expect(within(menu).getByText('Main Music')).toBeInTheDocument();

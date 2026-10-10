@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../api';
-import type { Artist, ArtistRadioOptions, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
+import type { Artist, ArtistRadioOptions, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult, Stats } from '../types';
 import type { EntityId } from '../entityId';
 import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
@@ -16,12 +16,13 @@ import { getArtistPhotoVersion, bumpArtistPhotoVersion } from '../artistPhotoVer
 import ConfirmModal from './ConfirmModal';
 import { useAdaptiveAccentEnabled } from '../hooks/useAdaptiveAccent';
 import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
+import { useContainerSize } from '../hooks/useContainerSize';
+import CommandBar from './CommandBar';
 import { groupArtistDiscographyByReleaseType } from '../releaseTypes';
 import { findTopTrackMatch, matchesTrackArtist, resolveTopTrackFromLibrarySearch } from '../artistTrackMatching';
 import ArtImage from './ArtImage';
 import { ArtistRadioSplitButton } from './ArtistRadioControls';
 import StarRating from './StarRating';
-import { phase2 } from '../uiPhase2';
 import { HYBRID_ARTWORK_HOVER, hybridBrowseStyles } from '../hybridPreview';
 import { useVintageStyle } from '../vintageThemes';
 import VintageRecord, { VINTAGE_SLEEVE_COVER_STYLE } from './VintageRecord';
@@ -112,66 +113,6 @@ export function computeVisibleRowRange(
   const first = Math.max(0, Math.floor(scrollTop / rowHeight) - overscanRows);
   const last = Math.min(totalRows - 1, Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscanRows);
   return [first, last];
-}
-
-/** Measures a scroll container's `clientWidth`/`clientHeight` (padding-box,
- * matching the CSS `padding` on the same element), synchronously as soon as
- * the element is attached (before paint, so real layouts never flash a full
- * unwindowed render first) and on every resize thereafter. Returns `{0, 0}`
- * until a real measurement is available.
- *
- * Takes an existing stable ref object (kept for every other imperative use
- * already in this file — scroll manipulation, event listeners, etc.) and
- * returns an `attachRef` callback to place on the JSX element *instead of*
- * that ref directly. This is not cosmetic: `AlbumGrid`/`AlbumList` both have
- * an early return (`if (!albums.length) return <div>No albums found</div>`)
- * *after* their hooks — so on first mount, before the root Browse fetch has
- * resolved, `albums` is still `[]` and the real scroll container never
- * renders at all that pass. A plain `useLayoutEffect(..., [ref])` already
- * ran once against `ref.current === null` on that pass and, since a `useRef`
- * object's identity never changes, never runs again — so once the container
- * *does* mount (album data arrives, a later render takes the other branch),
- * nothing ever measures it and windowing is stuck computing from `{0, 0}`
- * forever. Routing attachment through `useState` instead makes "the element
- * showed up" a real dependency change the effect below reacts to. */
-function useContainerSize(stableRef: React.RefObject<HTMLElement | null>): {
-  size: { width: number; height: number };
-  attachRef: (el: HTMLElement | null) => void;
-} {
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const [node, setNode] = useState<HTMLElement | null>(null);
-
-  const attachRef = useCallback((el: HTMLElement | null) => {
-    stableRef.current = el;
-    setNode(el);
-  }, [stableRef]);
-
-  useLayoutEffect(() => {
-    if (!node) return;
-    const measure = () => {
-      setSize((prev) => {
-        const width = node.clientWidth;
-        const height = node.clientHeight;
-        return prev.width === width && prev.height === height ? prev : { width, height };
-      });
-    };
-    measure();
-    // Belt-and-suspenders: the synchronous measurement above can still
-    // occasionally run before an ancestor's layout has fully settled. A
-    // one-time re-check on the next animation frame self-heals that.
-    const raf = requestAnimationFrame(measure);
-    if (typeof ResizeObserver === 'undefined') {
-      return () => cancelAnimationFrame(raf);
-    }
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => {
-      cancelAnimationFrame(raf);
-      observer.disconnect();
-    };
-  }, [node]);
-
-  return { size, attachRef };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -357,6 +298,83 @@ export function toggleLibrarySelection(selectedLibraryIds: ClientEntityId[], lib
   return [...selectedLibraryIds, libraryId];
 }
 
+// ─── Command bar filter chips (wip/browse-command-bar-plan.md §5.6–5.8) ──────
+
+export type BrowseFilterChipKey = 'library' | 'genre' | 'rating' | 'groupBy';
+
+export interface BrowseFilterChipModel {
+  key: BrowseFilterChipKey;
+  /** Visible label: the first value only. */
+  label: string;
+  /** Number of further values folded behind the label ("+4"). */
+  extraCount: number;
+  /** Every value, for the hover title. */
+  title: string;
+}
+
+/** One chip per filter type, never one per value. Sonic Fingerprint, view mode
+ * and sort are deliberately absent: their own controls show their state. */
+export function buildBrowseFilterChips(state: {
+  tab: 'artists' | 'albums';
+  selectedGenres: string[];
+  /** Names of user-selected libraries; empty when none or when sidebar-forced. */
+  libraryNames: string[];
+  ratingFilter: RatingFilter;
+  groupBy: 'artist' | 'album_artist';
+}): BrowseFilterChipModel[] {
+  const chips: BrowseFilterChipModel[] = [];
+  const multi = (key: BrowseFilterChipKey, kind: string, values: string[]) => {
+    if (!values.length) return;
+    chips.push({ key, label: values[0], extraCount: values.length - 1, title: `${kind}: ${values.join(', ')}` });
+  };
+  multi('library', 'Library', state.libraryNames);
+  multi('genre', 'Genre', state.selectedGenres);
+  if (state.ratingFilter !== 'all') {
+    const label = getRatingFilterLabel(state.ratingFilter);
+    chips.push({ key: 'rating', label, extraCount: 0, title: `Rating: ${label}` });
+  }
+  if (state.tab === 'albums' && state.groupBy !== 'album_artist') {
+    chips.push({ key: 'groupBy', label: 'Group: Artist', extraCount: 0, title: 'Albums grouped by track artist' });
+  }
+  return chips;
+}
+
+/** How many chips fit in `available` px without wrapping. When not all fit,
+ * room is reserved for the "+N filters" overflow chip. Zero widths (no layout,
+ * e.g. jsdom) mean "unmeasured": every chip is shown. */
+export function fitChipCount(chipWidths: number[], available: number, moreChipWidth: number, gap = 8): number {
+  if (available <= 0 || chipWidths.every((width) => width <= 0)) return chipWidths.length;
+  const total = chipWidths.reduce((sum, width, index) => sum + width + (index ? gap : 0), 0);
+  if (total <= available) return chipWidths.length;
+  let used = moreChipWidth;
+  let count = 0;
+  for (const width of chipWidths) {
+    if (used + gap + width > available) break;
+    used += gap + width;
+    count += 1;
+  }
+  return count;
+}
+
+/** Server-side filter identity of a root list fetch. A tab's count is only shown
+ * while its loaded list was fetched under the current key (cache-only counts,
+ * plan §5.4). */
+export function buildRootListFilterKey(tab: 'artists' | 'albums', state: {
+  genres: string[];
+  libraryIds: ClientEntityId[] | undefined;
+  sonicFingerprintOnly: boolean;
+  groupBy: 'artist' | 'album_artist';
+  hideCompilationOnlyArtists: boolean;
+}): string {
+  return JSON.stringify([
+    tab,
+    [...state.genres].map((genre) => genre.toLowerCase()).sort(),
+    (state.libraryIds ?? []).map(String).sort(),
+    state.sonicFingerprintOnly,
+    tab === 'albums' ? state.groupBy : state.hideCompilationOnlyArtists,
+  ]);
+}
+
 /** Should Apply Browse Root Fetch Result is part of this module's public API. */
 export function shouldApplyBrowseRootFetchResult(fetchToken: number, activeToken: number): boolean {
   return fetchToken === activeToken;
@@ -523,30 +541,198 @@ const TrashIcon = () => (
   </svg>
 );
 
+// Command bar chip icons (one generic glyph per filter type — genres share the tag).
+const TagIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z" /><circle cx="7.5" cy="7.5" r="1.5" />
+  </svg>
+);
+const StarIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M12 2.5l2.9 6.1 6.6.8-4.9 4.5 1.3 6.6L12 17.2l-5.9 3.3 1.3-6.6-4.9-4.5 6.6-.8z" />
+  </svg>
+);
+const FolderIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </svg>
+);
+const GroupIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="8" height="8" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /><path d="M7 11v4a2 2 0 0 0 2 2h4" />
+  </svg>
+);
+const SortIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M7 4v16M3 16l4 4 4-4M14 6h7M14 12h5M14 18h3" />
+  </svg>
+);
+
 // ─── Breadcrumb ───────────────────────────────────────────────────────────────
 
+// Rendered inside the drill-down CommandBar, which supplies padding and border.
+// Never wraps: the middle crumbs truncate with an ellipsis instead.
 function Breadcrumb({ items }: { items: { label: string; onClick: () => void }[] }) {
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px',
-      borderBottom: '1px solid var(--border)', flexShrink: 0, flexWrap: 'wrap',
-    }}>
-      {items.map((item, i) => (
-        <React.Fragment key={i}>
-          {i > 0 && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>/</span>}
-          <button
-            onClick={item.onClick}
-            style={{
-              background: 'none', border: 'none', padding: '2px 6px', borderRadius: 4,
-              color: i === items.length - 1 ? 'var(--text)' : 'var(--accent)',
-              cursor: i === items.length - 1 ? 'default' : 'pointer',
-              fontSize: 14, fontFamily: 'inherit', fontWeight: i === items.length - 1 ? 600 : 400,
-            }}
-          >
-            {item.label}
-          </button>
-        </React.Fragment>
+    <nav aria-label="Breadcrumb" style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'nowrap' }}>
+      {items.map((item, i) => {
+        const last = i === items.length - 1;
+        return (
+          <React.Fragment key={i}>
+            {i > 0 && <span style={{ color: 'var(--text-muted)', fontSize: 13, flexShrink: 0 }}>/</span>}
+            <button
+              onClick={item.onClick}
+              title={item.label}
+              style={{
+                background: 'none', border: 'none', padding: '2px 6px', borderRadius: 4,
+                color: last ? 'var(--text)' : 'var(--accent)',
+                cursor: last ? 'default' : 'pointer',
+                fontSize: 14, fontFamily: 'inherit', fontWeight: last ? 600 : 400,
+                minWidth: 0, flexShrink: i === 0 ? 0 : 1,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}
+            >
+              {item.label}
+            </button>
+          </React.Fragment>
+        );
+      })}
+    </nav>
+  );
+}
+
+// ─── Command bar filter chips ─────────────────────────────────────────────────
+
+const FILTER_CHIP_GAP = 8;
+const MORE_CHIP_WIDTH = 96;
+const CLEAR_ALL_WIDTH = 34;
+const FILTER_CHIP_KIND: Record<BrowseFilterChipKey, string> = {
+  library: 'Library',
+  genre: 'Genre',
+  rating: 'Rating',
+  groupBy: 'Group by',
+};
+const FILTER_CHIP_ICON: Record<BrowseFilterChipKey, React.ReactNode> = {
+  library: <FolderIcon />,
+  genre: <TagIcon />,
+  rating: <StarIcon />,
+  groupBy: <GroupIcon />,
+};
+
+interface FilterChipView extends BrowseFilterChipModel {
+  onOpen: () => void;
+  onClear: () => void;
+  open?: boolean;
+  /** Rendered under the chip while `open`. */
+  popover?: React.ReactNode;
+  anchorRef?: React.Ref<HTMLDivElement>;
+}
+
+function FilterChipFace({ chip, measuring = false }: { chip: FilterChipView; measuring?: boolean }) {
+  const kind = FILTER_CHIP_KIND[chip.key];
+  const content = (
+    <>
+      {FILTER_CHIP_ICON[chip.key]}
+      <span style={L.cmdChipLabel}>{chip.label}</span>
+      {chip.extraCount > 0 && <span style={L.cmdChipMore}>+{chip.extraCount}</span>}
+    </>
+  );
+  if (measuring) {
+    return (
+      <span style={L.cmdChip}>
+        <span style={L.cmdChipMain}>{content}</span>
+        <span style={L.cmdChipClear}><XIcon size={9} /></span>
+      </span>
+    );
+  }
+  return (
+    <span style={{ ...L.cmdChip, ...(chip.open ? L.cmdChipOpen : {}) }}>
+      <button
+        type="button"
+        style={L.cmdChipMain}
+        onClick={chip.onOpen}
+        title={chip.title}
+        aria-label={`${kind} filter: ${chip.label}${chip.extraCount > 0 ? ` and ${chip.extraCount} more` : ''}`}
+        aria-haspopup="dialog"
+        aria-expanded={chip.open ?? false}
+      >
+        {content}
+      </button>
+      <button
+        type="button"
+        style={L.cmdChipClear}
+        onClick={chip.onClear}
+        title={`Clear ${kind.toLowerCase()} filter`}
+        aria-label={`Clear ${kind.toLowerCase()} filter`}
+      >
+        <XIcon size={9} />
+      </button>
+    </span>
+  );
+}
+
+/** Active filter chips for the command bar. Never wraps: chips that do not fit
+ * fold into a "+N filters" chip that opens the Refine dialog. */
+function FilterChipZone({ chips, onClearAll, onOpenMore }: {
+  chips: FilterChipView[];
+  onClearAll: () => void;
+  onOpenMore: () => void;
+}) {
+  const zoneRef = useRef<HTMLDivElement | null>(null);
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  const { size, attachRef } = useContainerSize(zoneRef);
+  const [widths, setWidths] = useState<number[]>([]);
+  const signature = chips.map((chip) => `${chip.key}:${chip.label}:${chip.extraCount}`).join('|');
+
+  useLayoutEffect(() => {
+    const row = measureRef.current;
+    if (!row) return;
+    setWidths(Array.from(row.children).map((child) => (child as HTMLElement).offsetWidth));
+  }, [signature]);
+
+  if (!chips.length) return <div ref={attachRef} style={L.cmdChipZone} />;
+
+  const showClearAll = chips.length >= 2;
+  const measured = widths.length === chips.length ? widths : chips.map(() => 0);
+  const reserved = showClearAll ? CLEAR_ALL_WIDTH + FILTER_CHIP_GAP : 0;
+  const visibleCount = fitChipCount(measured, size.width - reserved, MORE_CHIP_WIDTH, FILTER_CHIP_GAP);
+  const hiddenCount = chips.length - visibleCount;
+
+  return (
+    <div ref={attachRef} style={L.cmdChipZone}>
+      <div aria-hidden="true" style={L.cmdChipMeasureClip}>
+        <div ref={measureRef} style={L.cmdChipMeasureRow}>
+          {chips.map((chip) => <FilterChipFace key={chip.key} chip={chip} measuring />)}
+        </div>
+      </div>
+      {chips.slice(0, visibleCount).map((chip) => (
+        <div key={chip.key} ref={chip.anchorRef} style={L.cmdChipWrap}>
+          <FilterChipFace chip={chip} />
+          {chip.open && chip.popover}
+        </div>
       ))}
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          style={{ ...L.cmdChip, ...L.cmdChipMain, ...L.cmdChipOverflow }}
+          onClick={onOpenMore}
+          title={chips.slice(visibleCount).map((chip) => chip.title).join('\n')}
+          aria-label={`${hiddenCount} more filter${hiddenCount === 1 ? '' : 's'}`}
+        >
+          +{hiddenCount} filter{hiddenCount === 1 ? '' : 's'}
+        </button>
+      )}
+      {showClearAll && (
+        <button
+          type="button"
+          style={L.cmdClearAll}
+          onClick={onClearAll}
+          title="Clear all refine filters"
+          aria-label="Clear all refine filters"
+        >
+          <TrashIcon />
+        </button>
+      )}
     </div>
   );
 }
@@ -2374,6 +2560,8 @@ type DrillState =
 
 interface Props {
   libraries: Library[];
+  /** Library totals for the command bar's stats strip. */
+  stats?: Stats | null;
   playTrack: (track: Track, allTracks?: Track[], source?: import('../types').QueueSource) => void;
   playAlbumInVinylMode: (tracks: Track[], albumId: ClientEntityId) => void;
   addToQueue: (track: Track) => void;
@@ -2395,6 +2583,7 @@ interface Props {
 /** Browse View is part of this module's public API. */
 export default function BrowseView({
   libraries,
+  stats = null,
   playTrack,
   playAlbumInVinylMode,
   addToQueue,
@@ -2440,10 +2629,16 @@ export default function BrowseView({
   const [genreFilterOpen, setGenreFilterOpen] = useState(false);
   const [libraryFilterOpen, setLibraryFilterOpen] = useState(false);
   const [refineOpen, setRefineOpen] = useState(false);
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const [genreChipOpen, setGenreChipOpen] = useState(false);
   const genreFilterRef = useRef<HTMLDivElement | null>(null);
   const libraryFilterRef = useRef<HTMLDivElement | null>(null);
   const refinePanelRef = useRef<HTMLDivElement | null>(null);
+  const sortMenuRef = useRef<HTMLDivElement | null>(null);
+  const genreChipRef = useRef<HTMLDivElement | null>(null);
   const rootFetchTokenRef = useRef(0);
+  // Filter key each tab's loaded root list was fetched under (cache-only tab counts).
+  const rootLoadedKeyRef = useRef<Partial<Record<BrowseTab, string>>>({});
   const albumChangeCursorRef = useRef<number | null>(null);
   // Guards drill-down (artist/album) fetches the same way rootFetchTokenRef guards the
   // root lists: a slow background refresh must not overwrite a newer navigation's data.
@@ -2565,11 +2760,19 @@ export default function BrowseView({
   const loadRootData = useCallback((showLoading: boolean) => {
     if (drill.level !== 'root') return;
     const fetchToken = ++rootFetchTokenRef.current;
+    const requestKey = buildRootListFilterKey(tab, {
+      genres: selectedGenres,
+      libraryIds: activeLibraryIds,
+      sonicFingerprintOnly,
+      groupBy,
+      hideCompilationOnlyArtists,
+    });
     if (showLoading) setLoading(true);
     if (tab === 'artists') {
       api.artists({ genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined, hide_compilation_only: hideCompilationOnlyArtists })
         .then((rows) => {
           if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
+          rootLoadedKeyRef.current.artists = requestKey;
           setArtists(rows);
         })
         .catch(() => {})
@@ -2587,6 +2790,7 @@ export default function BrowseView({
           const rows = await api.albums({ group_by: groupBy, genres: selectedGenres, library_ids: activeLibraryIds, sonic_fingerprint_only: sonicFingerprintOnly || undefined });
           if (!shouldApplyBrowseRootFetchResult(fetchToken, rootFetchTokenRef.current)) return;
           albumChangeCursorRef.current = cursor;
+          rootLoadedKeyRef.current.albums = requestKey;
           setAllAlbums(rows);
         } catch {
           // Keep the last successful collection visible across transient failures.
@@ -2839,7 +3043,7 @@ export default function BrowseView({
   }, [rootScrollViewKey]);
 
   useEffect(() => {
-    if (!genreFilterOpen && !libraryFilterOpen && !refineOpen) return;
+    if (!genreFilterOpen && !libraryFilterOpen && !refineOpen && !sortMenuOpen && !genreChipOpen) return;
     const handleMouseDown = (event: MouseEvent) => {
       if (genreFilterRef.current && !genreFilterRef.current.contains(event.target as Node)) {
         setGenreFilterOpen(false);
@@ -2850,12 +3054,20 @@ export default function BrowseView({
       if (refinePanelRef.current && !refinePanelRef.current.contains(event.target as Node)) {
         setRefineOpen(false);
       }
+      if (sortMenuRef.current && !sortMenuRef.current.contains(event.target as Node)) {
+        setSortMenuOpen(false);
+      }
+      if (genreChipRef.current && !genreChipRef.current.contains(event.target as Node)) {
+        setGenreChipOpen(false);
+      }
     };
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setGenreFilterOpen(false);
         setLibraryFilterOpen(false);
         setRefineOpen(false);
+        setSortMenuOpen(false);
+        setGenreChipOpen(false);
       }
     };
     document.addEventListener('mousedown', handleMouseDown);
@@ -2864,7 +3076,7 @@ export default function BrowseView({
       document.removeEventListener('mousedown', handleMouseDown);
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [genreFilterOpen, libraryFilterOpen, refineOpen]);
+  }, [genreFilterOpen, libraryFilterOpen, refineOpen, sortMenuOpen, genreChipOpen]);
 
   const playArtistRadio = useCallback(async (artist: Artist, options: Partial<ArtistRadioOptions> = {}) => {
     setArtistRadioLoading(true);
@@ -2998,6 +3210,19 @@ export default function BrowseView({
       ? 'All'
       : `${selectedLibraryIds.length} selected`;
 
+  // Shared by the Refine dialog (every genre) and the genre chip popover (selected only).
+  const renderGenreChecklist = (items: { genre: string; track_count?: number }[]) => items.map((genreItem) => (
+    <label key={genreItem.genre} style={L.genreOptionRow}>
+      <input
+        type="checkbox"
+        checked={selectedGenreSet.has(genreItem.genre.toLowerCase())}
+        onChange={() => toggleGenreFilterSelection(genreItem.genre)}
+      />
+      <span style={L.genreOptionName}>{genreItem.genre}</span>
+      {genreItem.track_count != null && <span style={L.genreOptionCount}>{genreItem.track_count}</span>}
+    </label>
+  ));
+
   const genreFilterControl = (
     <div ref={genreFilterRef} style={{ ...L.toggleWrap, ...L.genreWrap }} title="Filter by genre">
       <span style={L.toggleLabel}>Genre</span>
@@ -3025,20 +3250,7 @@ export default function BrowseView({
             {genreOptions.length === 0 && (
               <div style={L.genreEmpty}>No genres available.</div>
             )}
-            {genreOptions.map((genreItem) => {
-              const checked = selectedGenreSet.has(genreItem.genre.toLowerCase());
-              return (
-                <label key={genreItem.genre} style={L.genreOptionRow}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleGenreFilterSelection(genreItem.genre)}
-                  />
-                  <span style={L.genreOptionName}>{genreItem.genre}</span>
-                  <span style={L.genreOptionCount}>{genreItem.track_count}</span>
-                </label>
-              );
-            })}
+            {renderGenreChecklist(genreOptions)}
           </div>
         </div>
       )}
@@ -3176,30 +3388,126 @@ export default function BrowseView({
     || libraryRefineActive
     || groupBy !== 'album_artist';
   const refineActive = tab === 'artists' ? artistRefineActive : albumRefineActive;
-  const libraryRefineChip = libraryRefineActive
-    ? [{ key: 'library', label: `Library: ${librarySummary}`, onClear: clearLibraryFilter }]
-    : [];
-  const activeRefinementChips = tab === 'artists'
-    ? [
-      ...(sonicFingerprintOnly ? [{ key: 'sfp', label: '✦ Sonic Fingerprint', onClear: () => setSonicFingerprintOnly(false) }] : []),
-      ...libraryRefineChip,
-      ...(selectedGenres.length > 0 ? [{ key: 'genre', label: `Genre: ${selectedGenres.length} selected`, onClear: clearGenreFilter }] : []),
-      ...(artistRatingFilter !== 'all' ? [{ key: 'rating', label: `Rating: ${getRatingFilterLabel(artistRatingFilter)}`, onClear: () => setArtistRatingFilter('all') }] : []),
-      ...(artistSortDir !== 'asc' ? [{ key: 'sort', label: 'Sort: Name ↓', onClear: () => setArtistSortDir('asc') }] : []),
-      ...(rootViewMode !== 'grid' ? [{ key: 'view', label: 'View: Table', onClear: () => setPersistedRootViewMode('grid') }] : []),
-    ]
-    : [
-      ...(sonicFingerprintOnly ? [{ key: 'sfp', label: '✦ Sonic Fingerprint', onClear: () => setSonicFingerprintOnly(false) }] : []),
-      ...libraryRefineChip,
-      ...(selectedGenres.length > 0 ? [{ key: 'genre', label: `Genre: ${selectedGenres.length} selected`, onClear: clearGenreFilter }] : []),
-      ...(albumRatingFilter !== 'all' ? [{ key: 'rating', label: `Rating: ${getRatingFilterLabel(albumRatingFilter)}`, onClear: () => setAlbumRatingFilter('all') }] : []),
-      ...((albumSortField !== 'title' || albumSortDir !== 'asc') ? [{ key: 'sort', label: `Sort: ${getAlbumSortLabel(albumSortField, albumSortDir)}`, onClear: () => { setAlbumSortField('title'); setAlbumSortDir('asc'); } }] : []),
-      ...(groupBy !== 'album_artist' ? [{ key: 'groupBy', label: `Group: ${groupBy === 'artist' ? 'Artist' : 'Album Artist'}`, onClear: () => setGroupBy('album_artist') }] : []),
-      ...(rootViewMode !== 'grid' ? [{ key: 'view', label: 'View: Table', onClear: () => setPersistedRootViewMode('grid') }] : []),
-    ];
-  // Badge count on the Filters icon: everything the Refine dialog controls,
-  // excluding Sonic Fingerprint (its own icon) and View (its own toggle in the bar).
-  const refineBadgeCount = activeRefinementChips.filter((chip) => chip.key !== 'sfp' && chip.key !== 'view').length;
+  const artistSortDefault = artistSortDir === 'asc';
+  const albumSortDefault = albumSortField === 'title' && albumSortDir === 'asc';
+  const sortIsDefault = tab === 'artists' ? artistSortDefault : albumSortDefault;
+  const filterChipModels = buildBrowseFilterChips({
+    tab,
+    selectedGenres,
+    libraryNames: libraryRefineActive
+      ? selectedLibraryIds.map((id) => libraries.find((library) => library.id === id)?.name ?? String(id))
+      : [],
+    ratingFilter: tab === 'artists' ? artistRatingFilter : albumRatingFilter,
+    groupBy,
+  });
+  const openRefine = () => {
+    setGenreChipOpen(false);
+    setSortMenuOpen(false);
+    setRefineOpen(true);
+  };
+  const filterChips: FilterChipView[] = filterChipModels.map((chip) => {
+    switch (chip.key) {
+      case 'library':
+        return { ...chip, onOpen: openRefine, onClear: clearLibraryFilter };
+      case 'genre':
+        return {
+          ...chip,
+          open: genreChipOpen,
+          anchorRef: genreChipRef,
+          onOpen: () => {
+            setRefineOpen(false);
+            setSortMenuOpen(false);
+            setGenreChipOpen((open) => !open);
+          },
+          onClear: () => {
+            setGenreChipOpen(false);
+            clearGenreFilter();
+          },
+          popover: (
+            <div style={L.cmdGenrePopover} role="dialog" aria-label="Selected genres">
+              <div style={L.cmdGenrePopoverHead}>
+                <TagIcon />
+                <span>Genres</span>
+                <span style={L.cmdGenrePopoverCount}>{selectedGenres.length} selected</span>
+              </div>
+              <div style={L.genrePopoverList}>
+                {renderGenreChecklist(selectedGenres.map((genre) => ({
+                  genre,
+                  track_count: genreOptions.find((option) => option.genre.toLowerCase() === genre.toLowerCase())?.track_count,
+                })))}
+              </div>
+              <div style={L.cmdGenrePopoverFoot}>
+                <button type="button" style={L.cmdTextBtn} onClick={() => { setGenreChipOpen(false); clearGenreFilter(); }}>
+                  Clear genres
+                </button>
+                <button type="button" style={{ ...L.cmdTextBtn, color: 'var(--accent)' }} onClick={openRefine}>
+                  <FilterIcon />
+                  All filters
+                </button>
+              </div>
+            </div>
+          ),
+        };
+      case 'rating':
+        return {
+          ...chip,
+          onOpen: openRefine,
+          onClear: () => (tab === 'artists' ? setArtistRatingFilter('all') : setAlbumRatingFilter('all')),
+        };
+      case 'groupBy':
+        return { ...chip, onOpen: openRefine, onClear: () => setGroupBy('album_artist') };
+    }
+  });
+  // Badge count on the Filters icon: everything the Refine dialog controls.
+  // Sonic Fingerprint and View have their own buttons, so they are not counted.
+  const refineBadgeCount = filterChipModels.length + (sortIsDefault ? 0 : 1);
+
+  const sortLabel = tab === 'artists'
+    ? `Name ${artistSortDir === 'asc' ? '↑' : '↓'}`
+    : getAlbumSortLabel(albumSortField, albumSortDir);
+  const sortChip = (
+    <div ref={sortMenuRef} style={L.cmdChipWrap}>
+      <button
+        type="button"
+        style={{ ...L.cmdChip, ...L.cmdChipMain, ...(sortIsDefault ? L.cmdChipGhost : {}), ...(sortMenuOpen ? L.cmdChipOpen : {}) }}
+        onClick={() => {
+          if (tab === 'artists') {
+            setArtistSortDir(artistSortDir === 'asc' ? 'desc' : 'asc');
+            return;
+          }
+          setRefineOpen(false);
+          setGenreChipOpen(false);
+          setSortMenuOpen((open) => !open);
+        }}
+        title={tab === 'artists' ? 'Sort artists by name - click to flip direction' : 'Sort albums'}
+        aria-label={`Sort: ${sortLabel}`}
+        aria-haspopup={tab === 'albums' ? 'dialog' : undefined}
+        aria-expanded={tab === 'albums' ? sortMenuOpen : undefined}
+      >
+        <SortIcon />
+        <span style={L.cmdChipLabel}>{sortLabel}</span>
+      </button>
+      {tab === 'albums' && sortMenuOpen && (
+        <div style={L.cmdSortPopover} role="dialog" aria-label="Sort albums">
+          {albumSortControl}
+        </div>
+      )}
+    </div>
+  );
+
+  // Tab counts are cache-only (plan §5.4): a number shows only while that tab's
+  // loaded list was fetched under the current filters; never a stale count.
+  const tabCount = (target: BrowseTab): number | null => {
+    const key = buildRootListFilterKey(target, {
+      genres: selectedGenres,
+      libraryIds: activeLibraryIds,
+      sonicFingerprintOnly,
+      groupBy,
+      hideCompilationOnlyArtists,
+    });
+    if (rootLoadedKeyRef.current[target] !== key) return null;
+    return target === 'artists' ? sortedArtists.length : sortedAlbums.length;
+  };
 
   const refineControl = (
     <div ref={refinePanelRef} style={{ ...L.toggleWrap, ...L.refineWrap }} title="Browse refinements">
@@ -3311,99 +3619,100 @@ export default function BrowseView({
         } as React.CSSProperties : {}),
       }}
     >
-      {/* Tab bar + optional groupBy toggle — only visible at root */}
+      {/* Command bar — tabs, sort, filter chips, library totals, actions (root only) */}
       {drill.level === 'root' && (
         <>
-          <div style={{ ...L.rootHero, ...(hybridPreview ? hybridBrowseStyles.hero : {}) }}>
-            <div style={{ ...L.rootHeroInner, ...(hybridPreview ? hybridBrowseStyles.heroInner : {}) }}>
-              <div style={L.rootHeroCopy}>
-                <div style={L.rootHeroEyebrow}>Collection</div>
-                <div style={{ ...L.rootHeroTitle, ...(hybridPreview ? hybridBrowseStyles.heroTitle : {}) }}>Browse Music</div>
-                <div style={{ ...L.rootHeroBody, ...(hybridPreview ? hybridBrowseStyles.heroBody : {}) }}>
-                  {tab === 'artists'
-                    ? 'Dig deep into your collection.'
-                    : 'Hey, those are not true vinyl albums, but they sure make a nice wall!'}
-                </div>
-              </div>
-              <div style={{ ...L.rootHeroStats, ...(hybridPreview ? hybridBrowseStyles.heroStats : {}) }}>
-                <div style={L.rootHeroStat}>{tab === 'artists' ? `${sortedArtists.length} artists` : `${sortedAlbums.length} albums`}</div>
-                <div style={L.rootHeroStatMuted}>{selectedGenres.length ? `${selectedGenres.length} genres active` : 'Full library view'}</div>
-              </div>
-            </div>
-          </div>
-          <div style={{ ...L.rootToolbar, ...(hybridPreview ? hybridBrowseStyles.toolbar : {}) }}>
-            <div style={L.rootToolbarLeft}>
-              {(['artists', 'albums'] as BrowseTab[]).map(t => (
-                <button
-                  key={t}
-                  style={{ ...L.tab, ...(tab === t ? L.tabActive : {}) }}
-                  onClick={() => setTab(t)}
-                  aria-pressed={tab === t}
-                >
-                  {t === 'artists' ? <ArtistIcon size={15} /> : <AlbumIcon />}
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
-                </button>
-              ))}
-            </div>
-            <div style={L.rootToolbarRight}>
-              <button
-                style={{
-                  ...L.compactButton,
-                  ...L.iconOnlyButton,
-                  fontSize: 16,
-                  ...(sonicFingerprintOnly ? {
-                    ...L.compactButtonActive,
-                    color: 'var(--accent)',
-                    borderColor: 'color-mix(in srgb, var(--accent) 50%, var(--border))',
-                  } : {}),
-                }}
-                onClick={() => setSonicFingerprintOnly(v => !v)}
-                title="Show only artists/albums with Sonic Fingerprint (AI stem analysis)"
-                aria-label="Filter by Sonic Fingerprint"
-                aria-pressed={sonicFingerprintOnly}
-              >
-                ✦
-              </button>
-              {tab === 'artists' && canEditMetadata && (
+          <CommandBar
+            watermark="Browse"
+            stats={stats}
+            style={hybridPreview ? hybridBrowseStyles.toolbar : undefined}
+            actions={(
+              <>
                 <button
                   style={{
                     ...L.compactButton,
                     ...L.iconOnlyButton,
-                    position: 'relative',
-                    ...(artistSelectMode ? {
+                    fontSize: 16,
+                    ...(sonicFingerprintOnly ? {
                       ...L.compactButtonActive,
                       color: 'var(--accent)',
                       borderColor: 'color-mix(in srgb, var(--accent) 50%, var(--border))',
                     } : {}),
                   }}
-                  onClick={() => (artistSelectMode ? exitArtistSelectMode() : setArtistSelectMode(true))}
-                  title={artistSelectMode ? `Select artists to merge — ${selectedArtistIds.size} selected` : 'Select artists to merge duplicate entries'}
-                  aria-label="Select artists to merge"
-                  aria-pressed={artistSelectMode}
+                  onClick={() => setSonicFingerprintOnly(v => !v)}
+                  title="Show only artists/albums with Sonic Fingerprint (AI stem analysis)"
+                  aria-label="Filter by Sonic Fingerprint"
+                  aria-pressed={sonicFingerprintOnly}
                 >
-                  <SelectModeIcon />
-                  {artistSelectMode && selectedArtistIds.size > 0 && (
-                    <span style={L.refineBadge}>{selectedArtistIds.size}</span>
-                  )}
+                  ✦
                 </button>
-              )}
-              <span style={L.toolbarDivider} />
-              <button
-                style={{
-                  ...L.compactButton,
-                  ...L.iconOnlyButton,
-                  ...(rootViewMode === 'table' ? L.compactButtonActive : {}),
-                }}
-                onClick={() => setPersistedRootViewMode(rootViewMode === 'grid' ? 'table' : 'grid')}
-                title={rootViewMode === 'grid' ? 'Table view' : 'Grid view'}
-                aria-label={rootViewMode === 'grid' ? 'Switch to table view' : 'Switch to grid view'}
-                aria-pressed={rootViewMode === 'table'}
-              >
-                {rootViewMode === 'grid' ? <GridViewIcon /> : <TableViewIcon />}
-              </button>
-              {refineControl}
+                {tab === 'artists' && canEditMetadata && (
+                  <button
+                    style={{
+                      ...L.compactButton,
+                      ...L.iconOnlyButton,
+                      position: 'relative',
+                      ...(artistSelectMode ? {
+                        ...L.compactButtonActive,
+                        color: 'var(--accent)',
+                        borderColor: 'color-mix(in srgb, var(--accent) 50%, var(--border))',
+                      } : {}),
+                    }}
+                    onClick={() => (artistSelectMode ? exitArtistSelectMode() : setArtistSelectMode(true))}
+                    title={artistSelectMode ? `Select artists to merge — ${selectedArtistIds.size} selected` : 'Select artists to merge duplicate entries'}
+                    aria-label="Select artists to merge"
+                    aria-pressed={artistSelectMode}
+                  >
+                    <SelectModeIcon />
+                    {artistSelectMode && selectedArtistIds.size > 0 && (
+                      <span style={L.refineBadge}>{selectedArtistIds.size}</span>
+                    )}
+                  </button>
+                )}
+                <span style={L.toolbarDivider} />
+                <button
+                  style={{
+                    ...L.compactButton,
+                    ...L.iconOnlyButton,
+                    ...(rootViewMode === 'table' ? L.compactButtonActive : {}),
+                  }}
+                  onClick={() => setPersistedRootViewMode(rootViewMode === 'grid' ? 'table' : 'grid')}
+                  title={rootViewMode === 'grid' ? 'Table view' : 'Grid view'}
+                  aria-label={rootViewMode === 'grid' ? 'Switch to table view' : 'Switch to grid view'}
+                  aria-pressed={rootViewMode === 'table'}
+                >
+                  {rootViewMode === 'grid' ? <GridViewIcon /> : <TableViewIcon />}
+                </button>
+                {refineControl}
+              </>
+            )}
+          >
+            <div style={L.cmdSeg} role="group" aria-label="Browse by">
+              {(['artists', 'albums'] as BrowseTab[]).map((t) => {
+                const label = t === 'artists' ? 'Artists' : 'Albums';
+                const count = tabCount(t);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    style={{ ...L.cmdSegBtn, ...(tab === t ? L.cmdSegBtnActive : {}) }}
+                    onClick={() => setTab(t)}
+                    aria-pressed={tab === t}
+                    aria-label={label}
+                    title={count != null ? `${count.toLocaleString()} ${label.toLowerCase()}` : label}
+                  >
+                    {t === 'artists' ? <ArtistIcon size={15} /> : <AlbumIcon />}
+                    {label}
+                    {count != null && (
+                      <span style={{ ...L.cmdSegCount, ...(tab === t ? L.cmdSegCountActive : {}) }}>{count.toLocaleString()}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          </div>
+            {sortChip}
+            <FilterChipZone chips={filterChips} onClearAll={clearBrowseRefinements} onOpenMore={openRefine} />
+          </CommandBar>
           {tab === 'artists' && artistSelectMode && (
             <div style={L.artistSelectBar}>
               <div style={L.artistSelectBarText}>
@@ -3424,28 +3733,14 @@ export default function BrowseView({
               </div>
             </div>
           )}
-          {activeRefinementChips.length > 0 && (
-            <div style={L.activeChipRow}>
-              {activeRefinementChips.map((chip) => (
-                <button key={chip.key} style={L.activeChip} onClick={chip.onClear}>
-                  <span>{chip.label}</span>
-                  <span style={L.activeChipDismiss}><XIcon size={9} /></span>
-                </button>
-              ))}
-              <button
-                style={L.activeChipClearAll}
-                onClick={clearBrowseRefinements}
-                title="Clear all refine filters"
-                aria-label="Clear all refine filters"
-              >
-                <TrashIcon />
-              </button>
-            </div>
-          )}
         </>
       )}
       {/* Breadcrumb — visible when drilled in */}
-      {drill.level !== 'root' && <Breadcrumb items={breadcrumb} />}
+      {drill.level !== 'root' && (
+        <CommandBar watermark="Browse" stats={stats} style={hybridPreview ? hybridBrowseStyles.toolbar : undefined}>
+          <Breadcrumb items={breadcrumb} />
+        </CommandBar>
+      )}
 
       {/* Content */}
       {drill.level === 'root' && tab === 'artists' && (
@@ -3635,65 +3930,206 @@ export default function BrowseView({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const L: Record<string, React.CSSProperties> = {
-  rootHero: {
-    ...phase2.desktopHero,
+  // ── Command bar (wip/browse-command-bar-plan.md) ──
+  cmdSeg: {
+    display: 'inline-flex',
+    flexShrink: 0,
+    padding: 3,
+    borderRadius: 11,
+    border: '1px solid var(--border)',
+    background: 'color-mix(in srgb, var(--surface) 84%, var(--bg))',
+  },
+  cmdSegBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 7,
+    padding: '6px 12px',
+    borderRadius: 8,
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
+  },
+  cmdSegBtnActive: {
+    background: 'color-mix(in srgb, var(--accent) 20%, transparent)',
+    color: 'var(--text)',
+  },
+  cmdSegCount: {
+    fontSize: 12,
+    fontWeight: 500,
+    fontVariantNumeric: 'tabular-nums',
+    color: 'var(--text-muted)',
+  },
+  cmdSegCountActive: {
+    color: 'color-mix(in srgb, var(--text) 70%, transparent)',
+  },
+  cmdChipZone: {
+    position: 'relative',
+    flex: '1 1 auto',
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'nowrap',
+  },
+  cmdChipWrap: {
+    position: 'relative',
     flexShrink: 0,
   },
-  rootHeroInner: {
-    ...phase2.desktopHeroInner,
-  },
-  rootHeroCopy: {
-    minWidth: 260,
-    maxWidth: 760,
-  },
-  rootHeroEyebrow: phase2.eyebrow,
-  rootHeroTitle: {
-    ...phase2.heroTitle,
-  },
-  rootHeroBody: {
-    ...phase2.heroBody,
-  },
-  rootHeroStats: {
-    ...phase2.tray,
-    padding: '14px 16px',
-    minWidth: 180,
-    display: 'grid',
-    gap: 6,
-    alignSelf: 'flex-start',
-  },
-  rootHeroStat: {
-    fontSize: 22,
-    fontWeight: 800,
+  cmdChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    flexShrink: 0,
+    borderRadius: 999,
+    background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))',
     color: 'var(--text)',
-    letterSpacing: -0.5,
+    whiteSpace: 'nowrap',
   },
-  rootHeroStatMuted: {
-    fontSize: 14,
+  cmdChipGhost: {
+    background: 'transparent',
+    border: '1px solid var(--border)',
     color: 'var(--text-muted)',
+  },
+  cmdChipOpen: {
+    boxShadow: '0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent)',
+  },
+  cmdChipMain: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '5px 4px 5px 10px',
+    border: 'none',
+    background: 'none',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: 13,
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
+  },
+  cmdChipLabel: {
+    maxWidth: 160,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  cmdChipMore: {
+    padding: '1px 6px',
+    borderRadius: 6,
+    fontSize: 12,
+    fontVariantNumeric: 'tabular-nums',
+    background: 'color-mix(in srgb, var(--accent) 35%, transparent)',
+  },
+  cmdChipClear: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '5px 9px 5px 4px',
+    border: 'none',
+    background: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+  },
+  cmdChipOverflow: {
+    padding: '5px 10px',
+    background: 'transparent',
+    border: '1px dashed var(--border)',
+    color: 'var(--text-muted)',
+  },
+  cmdChipMeasureClip: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+    overflow: 'hidden',
+    visibility: 'hidden',
+    pointerEvents: 'none',
+  },
+  cmdChipMeasureRow: {
+    display: 'flex',
+    gap: 8,
+    width: 'max-content',
+  },
+  cmdClearAll: {
+    width: 30,
+    height: 30,
+    flexShrink: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    borderRadius: 999,
+    border: '1px solid var(--border)',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+  },
+  cmdGenrePopover: {
+    position: 'absolute',
+    top: 'calc(100% + 8px)',
+    left: 0,
+    zIndex: 25,
+    width: 260,
+    maxHeight: 320,
+    display: 'flex',
+    flexDirection: 'column',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    boxShadow: '0 16px 36px rgba(0, 0, 0, 0.4)',
+  },
+  cmdGenrePopoverHead: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 7,
+    padding: '9px 12px',
+    borderBottom: '1px solid var(--border)',
+    fontSize: 14,
+    fontWeight: 700,
+    color: 'var(--text)',
+  },
+  cmdGenrePopoverCount: {
+    marginLeft: 'auto',
+    fontSize: 12,
+    fontWeight: 500,
+    color: 'var(--text-muted)',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  cmdGenrePopoverFoot: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '8px 10px',
+    borderTop: '1px solid var(--border)',
+  },
+  cmdTextBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    padding: '4px 6px',
+    border: 'none',
+    background: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: 13,
     fontWeight: 600,
   },
-  tabBar: { display: 'flex', borderBottom: '1px solid var(--border)', flexShrink: 0 },
-  rootToolbar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    borderBottom: '1px solid color-mix(in srgb, var(--border) 62%, transparent)',
-    flexShrink: 0,
-    flexWrap: 'wrap',
-    padding: '14px 24px',
-    background: 'color-mix(in srgb, var(--surface) 26%, transparent)',
-  },
-  rootToolbarLeft: {
-    display: 'flex',
-    alignItems: 'stretch',
-  },
-  rootToolbarRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    marginLeft: 'auto',
-    flexWrap: 'wrap',
+  cmdSortPopover: {
+    position: 'absolute',
+    top: 'calc(100% + 8px)',
+    left: 0,
+    zIndex: 25,
+    padding: '10px 4px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    boxShadow: '0 16px 36px rgba(0, 0, 0, 0.4)',
   },
   // Artist consolidation multi-select contextual bar (see
   // wip/artist-consolidation-implementation-plan.md).
@@ -3721,13 +4157,6 @@ const L: Record<string, React.CSSProperties> = {
   artistSelectBarMergeDisabled: {
     opacity: 0.5, cursor: 'not-allowed', boxShadow: 'none',
   },
-  tab: {
-    display: 'flex', alignItems: 'center', gap: 7,
-    padding: '10px 16px', background: 'rgba(255,255,255,0.03)', border: '1px solid color-mix(in srgb, var(--border) 74%, transparent)',
-    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 15,
-    fontFamily: 'inherit', borderRadius: 999, fontWeight: 700,
-  },
-  tabActive: { color: 'var(--text)', background: 'color-mix(in srgb, var(--accent) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))' },
   toggleWrap: {
     display: 'flex', alignItems: 'center', gap: 8,
     padding: '0 16px',
@@ -3919,7 +4348,8 @@ const L: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     display: 'flex',
     flexDirection: 'column',
-    overflow: 'hidden',
+    // No overflow clipping: the genre/library menus nested inside must be able
+    // to extend past the popover's bottom edge.
   },
   refinePopoverHead: {
     display: 'flex',
@@ -3963,42 +4393,6 @@ const L: Record<string, React.CSSProperties> = {
   refineSectionBody: {
     display: 'grid',
     gap: 10,
-  },
-  activeChipRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '8px 16px 10px',
-    borderBottom: '1px solid var(--border)',
-    flexWrap: 'wrap',
-  },
-  activeChip: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '5px 10px',
-    background: 'var(--surface)',
-    color: 'var(--text)',
-    border: '1px solid var(--border)',
-    borderRadius: 999,
-    cursor: 'pointer',
-    fontSize: 13,
-    fontFamily: 'inherit',
-  },
-  activeChipDismiss: {
-    display: 'flex', alignItems: 'center',
-    color: 'var(--text-muted)',
-    lineHeight: 1,
-  },
-  activeChipClearAll: {
-    width: 24, height: 24, padding: 0, flexShrink: 0,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    background: 'transparent',
-    color: 'var(--accent)',
-    border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)',
-    borderRadius: 999,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
   },
   alphaShellFill: { position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
   alphaShellStatic: { position: 'relative' },
