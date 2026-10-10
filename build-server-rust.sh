@@ -49,6 +49,16 @@ if ! command -v pkg-config &>/dev/null; then
   exit 1
 fi
 
+# Reinstall root/client npm dependencies when missing or stale (e.g. package.json /
+# package-lock.json changed by a pull, or node_modules was installed on Windows and
+# lacks the Linux native Vite binding); see scripts/node-deps-stale.mjs.
+for dir in . client; do
+  if ! node scripts/node-deps-stale.mjs "$dir"; then
+    npm --prefix "$dir" install
+    node scripts/node-deps-stale.mjs --mark "$dir"
+  fi
+done
+
 # ------------------------------------------------------------------
 # [1/8] Quality checks
 # ------------------------------------------------------------------
@@ -87,12 +97,6 @@ fi
 echo ""
 echo " [2/8] Building React client..."
 pushd client >/dev/null
-# Reinstall if the Linux native rollup binary is missing (node_modules was
-# installed on Windows and lacks linux-x64-gnu optional dependencies).
-if [ ! -d node_modules/@rollup/rollup-linux-x64-gnu ] && [ ! -d node_modules/@rollup/rollup-linux-arm64-gnu ]; then
-  echo "  Native rollup binary missing — reinstalling client dependencies for Linux..."
-  npm install
-fi
 npx vite build
 popd >/dev/null
 

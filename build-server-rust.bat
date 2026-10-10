@@ -35,6 +35,17 @@ IF ERRORLEVEL 1 (
   exit /b 1
 )
 
+REM Reinstall root/client npm dependencies when missing or stale (e.g. package.json /
+REM package-lock.json changed by a pull); see scripts\node-deps-stale.mjs.
+for %%D in (. client) do (
+  node scripts\node-deps-stale.mjs "%%D"
+  IF ERRORLEVEL 1 (
+    call npm.cmd --prefix "%%D" install
+    IF ERRORLEVEL 1 (echo [ERROR] npm install failed in %%D & exit /b 1)
+    node scripts\node-deps-stale.mjs --mark "%%D"
+  )
+)
+
 if "%SKIP_TESTS%"=="1" (
   echo  [1/8] Skipping quality checks ^(--no-test^).
 ) ELSE (
@@ -72,11 +83,6 @@ if "%SKIP_TESTS%"=="1" (
 
 echo.
 echo  [2/8] Building React client...
-IF NOT EXIST "client\node_modules\@rollup\rollup-win32-x64-msvc" (
-    echo   Native rollup binary missing -- reinstalling client dependencies for Windows...
-    call npm.cmd --prefix client install
-    IF ERRORLEVEL 1 (echo [ERROR] npm install failed & exit /b 1)
-)
 call npm.cmd --prefix client run build
 IF ERRORLEVEL 1 (echo [ERROR] Client build failed & exit /b 1)
 

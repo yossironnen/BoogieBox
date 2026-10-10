@@ -90,19 +90,18 @@ if errorlevel 1 (
   exit /b 0
 )
 
-:: Vite 8 uses a platform-specific Rolldown optional dependency. npm can
-:: occasionally leave that native package absent even though it is present in
-:: package-lock.json. Preflight the real Vite import and repair optional
-:: dependencies before opening the client window.
+:: Reinstall client dependencies when missing or stale (package.json /
+:: package-lock.json changed by a pull) or when Vite 8's platform-specific
+:: Rolldown optional dependency is absent (npm occasionally leaves it out even
+:: though it is in package-lock.json); see scripts\node-deps-stale.mjs.
 pushd "%ROOT_DIR%client"
-node -e "import('vite').then(() => process.exit(0)).catch(() => process.exit(1))" >nul 2>nul
+node "%ROOT_DIR%scripts\node-deps-stale.mjs" "%ROOT_DIR%client"
 if errorlevel 1 (
   echo.
-  echo  Vite native dependency is missing. Repairing client dependencies...
   call npm install --include=optional
   if errorlevel 1 (
     echo.
-    echo [ERROR] Could not repair the Vite native dependency.
+    echo [ERROR] Could not repair the client dependencies.
     echo         Run npm install --include=optional from:
     echo         %ROOT_DIR%client
     echo.
@@ -121,6 +120,7 @@ if errorlevel 1 (
     pause
     exit /b 1
   )
+  node "%ROOT_DIR%scripts\node-deps-stale.mjs" --mark "%ROOT_DIR%client"
 )
 popd
 

@@ -86,8 +86,10 @@ echo ""
 trap "kill $SERVER_PID 2>/dev/null || true" EXIT
 
 cd "$ROOT_DIR/client"
-if [ ! -d node_modules/@rollup/rollup-linux-x64-gnu ] && [ ! -d node_modules/@rollup/rollup-linux-arm64-gnu ]; then
-  echo "  Native rollup binary missing — reinstalling client dependencies for Linux..."
-  npm install
+# Reinstall client dependencies when missing or stale (e.g. package.json /
+# package-lock.json changed by a pull, or the Linux native Vite binding is absent).
+if ! node "$ROOT_DIR/scripts/node-deps-stale.mjs" "$ROOT_DIR/client"; then
+  npm install --include=optional
+  node "$ROOT_DIR/scripts/node-deps-stale.mjs" --mark "$ROOT_DIR/client"
 fi
 npx vite --port 3000
