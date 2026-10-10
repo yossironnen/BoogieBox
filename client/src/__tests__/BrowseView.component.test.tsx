@@ -7,7 +7,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowseView, { AlbumGrid, AlbumList, mergeAlbumChanges } from '../components/BrowseView';
 import { ContextMenuRoot } from '../components/ContextMenu';
-import type { Album, ClientEntityId, Library, Stats, Track } from '../types';
+import type { Album, ClientEntityId, Library, Track } from '../types';
 import { VINTAGE_STYLES, VintageStyleContext } from '../vintageThemes';
 
 const { apiMock } = vi.hoisted(() => ({
@@ -814,24 +814,21 @@ describe('BrowseView component flows', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Albums' })).toHaveAttribute('title', '1 albums'));
   });
 
-  it('puts the drill-down breadcrumb in a command bar with the library totals', async () => {
+  it('puts the drill-down breadcrumb in the command bar', async () => {
     render(
       <BrowseView
         libraries={[]}
-        stats={{ total_tracks: 10, total_artists: 2, total_albums: 3, total_hours: 1, total_gb: 0.5 } as Stats}
         playTrack={vi.fn()}
         playAlbumInVinylMode={vi.fn()}
         addToQueue={vi.fn()}
         lastfmKey="test-lastfm-key"
       />,
     );
-    expect(screen.getByLabelText('10 tracks')).toBeInTheDocument();
 
     fireEvent.click(await screen.findByText('Artist One'));
     const breadcrumb = await screen.findByRole('navigation', { name: 'Breadcrumb' });
     const bar = breadcrumb.closest('[data-command-bar="browse"]') as HTMLElement;
     expect(bar).toBeInTheDocument();
-    expect(within(bar).getByLabelText('3 albums')).toBeInTheDocument();
     expect(within(bar).getByTestId('command-bar-watermark')).toHaveTextContent('Browse');
     expect(screen.queryByRole('group', { name: 'Browse by' })).not.toBeInTheDocument();
   });

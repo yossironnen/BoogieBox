@@ -169,6 +169,20 @@ describe('PlaylistsView integration flows', () => {
     vi.useRealTimers();
   });
 
+  it('uses the shared command bar header instead of the old hero', async () => {
+    apiMock.playlists.list.mockResolvedValue([playlist, { ...playlist, id: '2', name: 'Focus' }]);
+    const { container } = render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} />);
+    await screen.findByText('Road Trip');
+
+    const bar = container.querySelector('[data-command-bar="playlists"]') as HTMLElement;
+    expect(bar).toBeInTheDocument();
+    expect(within(bar).getByTestId('command-bar-watermark')).toHaveTextContent('Playlists');
+    expect(within(bar).getByLabelText('Search playlists')).toBeInTheDocument();
+    expect(within(bar).getByLabelText('2 playlists')).toHaveTextContent('2');
+    expect(within(bar).getByRole('button', { name: 'New playlist' })).toBeInTheDocument();
+    expect(screen.queryByText('Browse and create playlists. Click a cover to open it.')).not.toBeInTheDocument();
+  });
+
   it('shares grid card artwork with the opened playlist header without extra track fetches', async () => {
     apiMock.playlists.list.mockResolvedValue([playlist, { ...playlist, id: '2', name: 'Focus', art_album_ids: ['501'] }]);
     render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} />);
@@ -236,6 +250,22 @@ describe('PlaylistsView integration flows', () => {
     openMix();
     expect(screen.getByTitle('BoogieMix is experimental')).toBeDisabled();
     expect(screen.getByTitle(/Run Demucs/)).toBeDisabled();
+  });
+
+  it('puts the opened playlist header in the shared command bar', async () => {
+    const { container } = render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} initialPlaylistId="1" />);
+    await screen.findByText('Alpha One');
+
+    const bar = container.querySelector('[data-command-bar="playlists"]') as HTMLElement;
+    expect(bar).toBeInTheDocument();
+    expect(within(bar).getByTestId('command-bar-watermark')).toHaveTextContent('Playlists');
+    expect(within(bar).getByRole('button', { name: 'Back to Playlists' })).toBeInTheDocument();
+    expect(within(bar).getByLabelText('Road Trip artwork')).toBeInTheDocument();
+    expect(within(bar).getByText('Road Trip').parentElement).toHaveAttribute('title', 'Travel songs');
+    for (const name of ['Play All', 'Add tracks', 'BoogieMix (Experimental)', 'More actions']) {
+      expect(within(bar).getByRole('button', { name })).toBeInTheDocument();
+    }
+    expect(screen.queryByText('Curated Collection')).not.toBeInTheDocument();
   });
 
   it('restores focus on popup dismissal and preserves mix configuration', async () => {

@@ -4,11 +4,21 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import SidebarStatusPanel, {
+  buildLibraryStatItems,
   describeDeepAnalysis,
   describeScan,
   describeTranscoding,
+  formatLibraryStatsTitle,
 } from './SidebarStatusPanel';
-import type { BoogieMixDeepAnalysisStatus, Library, ScanJob } from '../types';
+import type { BoogieMixDeepAnalysisStatus, Library, ScanJob, Stats } from '../types';
+
+const stats = {
+  total_tracks: 4662,
+  total_artists: 3360,
+  total_albums: 274,
+  total_hours: 369.3,
+  total_gb: 170.05,
+} as Stats;
 
 const user = {
   id: 'user-1',
@@ -76,6 +86,7 @@ function renderPanel(
       activeScanJobs={scanJobs}
       libraries={libraries}
       deepAnalysisStatus={deepStatus}
+      stats={stats}
       onLogout={onLogout}
     />,
   );
@@ -94,8 +105,8 @@ describe('SidebarStatusPanel', () => {
   it('renders status icons above the bottom identity row and reveals details on hover', () => {
     renderPanel();
     const panel = screen.getByTestId('sidebar-status-panel');
-    expect(panel.children[0]).toContainElement(screen.getByTestId('sidebar-status-scan'));
-    expect(panel.children[1]).toHaveTextContent('admin');
+    expect(panel.children[1]).toContainElement(screen.getByTestId('sidebar-status-scan'));
+    expect(panel.children[2]).toHaveTextContent('admin');
     expect(screen.getByTestId('sidebar-status-deep-analysis')).toHaveTextContent('2');
 
     fireEvent.mouseEnter(screen.getByTestId('sidebar-status-scan'));
@@ -132,6 +143,37 @@ describe('SidebarStatusPanel', () => {
     expect(pendingIndicator).toHaveAttribute('data-active', 'false');
     expect(pendingIndicator.querySelector('svg')).not.toHaveClass('sidebar-scan-spin');
     expect(pendingIndicator).toHaveAttribute('aria-label', 'Library scan: Idle');
+  });
+
+  it('formats the five library totals with dash placeholders while loading', () => {
+    expect(buildLibraryStatItems(stats).map((item) => item.display)).toEqual([
+      (4662).toLocaleString(), (3360).toLocaleString(), '274', '369h', `${(170.05).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`,
+    ]);
+    expect(buildLibraryStatItems(null).map((item) => item.display)).toEqual(['–', '–', '–', '–', '–']);
+    expect(formatLibraryStatsTitle(null)).toBe('Library totals: – tracks, – artists, – albums, – hours, – GB');
+  });
+
+  it('shows library totals as a quiet line at the top of the expanded panel', () => {
+    renderPanel();
+    const line = screen.getByTestId('sidebar-library-stats');
+    expect(screen.getByTestId('sidebar-status-panel').children[0]).toBe(line);
+    for (const label of [`${(4662).toLocaleString()} tracks`, `${(3360).toLocaleString()} artists`, '274 albums', '369 hours']) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('sidebar-status-library')).not.toBeInTheDocument();
+  });
+
+  it('folds library totals into an indicator popover when collapsed', () => {
+    renderPanel(true);
+    expect(screen.queryByTestId('sidebar-library-stats')).not.toBeInTheDocument();
+    const indicator = screen.getByTestId('sidebar-status-library');
+    expect(indicator).toHaveAttribute('aria-label', formatLibraryStatsTitle(stats));
+
+    fireEvent.mouseEnter(indicator);
+    const tooltip = screen.getByRole('tooltip');
+    expect(tooltip).toHaveTextContent('Library totals');
+    expect(tooltip).toHaveTextContent('Albums274');
+    expect(tooltip).toHaveTextContent(`Artists${(3360).toLocaleString()}`);
   });
 
   it('keeps logout usable and hides identity text in the collapsed layout', () => {

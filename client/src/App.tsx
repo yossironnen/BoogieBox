@@ -549,9 +549,8 @@ function TrackModal({
   );
 }
 
-function SearchView({ libraries, stats, playTrack, addToQueue, onOpenArtist, onOpenAlbum }: {
+function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbum }: {
   libraries: Library[];
-  stats?: Stats | null;
   playTrack: (track: Track, allTracks?: Track[]) => void;
   addToQueue: (track: Track) => void;
   onOpenArtist: (artist: Artist) => void;
@@ -710,7 +709,6 @@ function SearchView({ libraries, stats, playTrack, addToQueue, onOpenArtist, onO
       {/* ── Filter bar ── */}
       <CommandBar
         watermark="Search"
-        stats={stats}
         style={hybridSearchStyles.filterBar}
         actions={(
           <button
@@ -749,6 +747,7 @@ function SearchView({ libraries, stats, playTrack, addToQueue, onOpenArtist, onO
         <div
           style={{
             ...S.searchWrap,
+            ...S.commandSearchWrap,
             ...hybridSearchStyles.searchWrap,
             ...(searchFocused ? hybridSearchStyles.searchWrapFocused : {}),
           }}
@@ -761,7 +760,7 @@ function SearchView({ libraries, stats, playTrack, addToQueue, onOpenArtist, onO
             autoFocus />
           {query && <button type="button" aria-label="Clear search" style={S.clearBtn} onClick={() => setQuery('')}><Icon.X /></button>}
         </div>
-        <select style={{ ...S.select, ...hybridSearchStyles.select, ...S.commandSelect }} value={libraryId ?? ''} onChange={e => setLibraryId(e.target.value || undefined)}>
+        <select style={{ ...S.select, ...hybridSearchStyles.select, ...S.commandSelect, ...S.commandFiltersStart }} value={libraryId ?? ''} onChange={e => setLibraryId(e.target.value || undefined)}>
           <option value="">All Libraries</option>
           {libraries.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
@@ -1752,6 +1751,7 @@ export default function App() {
             activeScanJobs={activeScanJobs}
             libraries={libraries}
             deepAnalysisStatus={deepAnalysisStatus}
+            stats={stats}
             onLogout={handleLogout}
           />
         </aside>
@@ -1819,7 +1819,6 @@ export default function App() {
           {view === 'search'    && (
             <SearchView
               libraries={libraries}
-              stats={stats}
               playTrack={playTrack}
               addToQueue={addToQueue}
               onOpenArtist={artist => { setBrowseOpenArtistRequest({ artist, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
@@ -1829,7 +1828,6 @@ export default function App() {
           {view === 'browse'    && (
               <BrowseView
                 libraries={libraries}
-                stats={stats}
                 forcedLibraryIds={activeSidebarLibraryId ? [activeSidebarLibraryId] : null}
                 playTrack={playTrack}
                 playAlbumInVinylMode={playAlbumInVinylMode}
@@ -2199,6 +2197,11 @@ const S: Record<string, React.CSSProperties> = {
   },
   // Search filter selects inside the CommandBar: shrink before anything wraps.
   commandSelect: { minWidth: 120, flex: '0 1 auto' },
+  // Keep the centred "Search" watermark clear on wide bars: the input stops
+  // short of the middle (~half the word's width + a gap) and the filters sit
+  // flush right. On narrow bars `minWidth` wins and the controls overlap it.
+  commandSearchWrap: { maxWidth: 'calc(50% - 185px)' },
+  commandFiltersStart: { marginLeft: 'auto' },
   resultsMeta: { padding: '12px 20px 8px', flexShrink: 0 },
   resultsMetaRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' as const },
   muted: { color: 'var(--text-muted)' },

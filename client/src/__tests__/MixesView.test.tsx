@@ -5,7 +5,7 @@
  */
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MixesView from '../components/MixesView';
 import type { BoogieMixOutput, MixTimelineResponse } from '../types';
@@ -81,6 +81,27 @@ describe('MixesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Back to Mixes/i }));
 
-    expect(screen.getByText('Manage the BoogieMix collection')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search mixes or playlists…')).toBeInTheDocument();
+  });
+
+  it('uses the shared command bar for the Mixes list and the Mix Story header', async () => {
+    const { container } = render(<MixesView playTrack={() => {}} onOpenPlaylist={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Electronic House')).toBeInTheDocument());
+
+    let bar = container.querySelector('[data-command-bar="mixes"]') as HTMLElement;
+    expect(within(bar).getByTestId('command-bar-watermark')).toHaveTextContent('Mixes');
+    expect(within(bar).getByPlaceholderText('Search mixes or playlists…')).toBeInTheDocument();
+    expect(within(bar).getByLabelText('1 mix')).toHaveTextContent('1');
+    expect(within(bar).getByLabelText('Sort mixes')).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: 'Switch to table view' })).toBeInTheDocument();
+    expect(screen.queryByText('Manage the BoogieMix collection')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /View breakdown of Electronic House/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Back to Mixes/i })).toBeInTheDocument());
+    bar = container.querySelector('[data-command-bar="mixes"]') as HTMLElement;
+    expect(within(bar).getByRole('button', { name: /Back to Mixes/i })).toBeInTheDocument();
+    expect(within(bar).getByLabelText('Electronic House artwork')).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: 'Play Electronic House' })).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: 'Delete Electronic House' })).toBeInTheDocument();
   });
 });

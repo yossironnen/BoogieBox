@@ -196,7 +196,7 @@ describe('HomeView boogie visuals', () => {
     await waitFor(() => expect(screen.getByText('Recent Albums')).toBeInTheDocument());
     const root = container.querySelector('[data-ui-design="hybrid"]');
     expect(root).toHaveStyle({ background: 'var(--bg)', padding: '24px 28px 32px' });
-    expect(screen.getByText('Library').parentElement?.parentElement).toHaveStyle({
+    expect(screen.getByText('Recent Albums').parentElement?.parentElement).toHaveStyle({
       boxShadow: 'none',
       borderRadius: '16px',
     });

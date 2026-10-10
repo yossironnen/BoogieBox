@@ -3,7 +3,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { Stats } from '../types';
 import {
   buildBoogieSnapshot,
   formatMinutes,
@@ -26,33 +25,6 @@ import {
 // that powers them (sorting, slicing, formatting).
 
 describe('HomeView Dashboard', () => {
-  describe('StatsWidget formatting', () => {
-    it('should format stats values with toLocaleString', () => {
-      const stats: Stats = {
-        total_tracks: 12345,
-        total_artists: 678,
-        total_albums: 234,
-        total_libraries: 3,
-        total_hours: 891,
-        total_gb: 45.2,
-      };
-      expect(stats.total_tracks.toLocaleString()).toBe('12,345');
-      expect(stats.total_artists.toLocaleString()).toBe('678');
-      expect(stats.total_albums.toLocaleString()).toBe('234');
-    });
-
-    it('should handle missing video counts gracefully', () => {
-      const stats: Stats = {
-        total_tracks: 0,
-        total_artists: 0,
-        total_albums: 0,
-        total_libraries: 0,
-        total_hours: null,
-        total_gb: null,
-      };
-    });
-  });
-
   describe('Top rated widget labels', () => {
     it('should build accessible artist link labels', () => {
       expect(topArtistAriaLabel('Daft Punk')).toBe('Open artist Daft Punk');

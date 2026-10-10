@@ -261,6 +261,31 @@ describe('SettingsPage component flows', () => {
     apiMock.boogiemix.clearDeepAnalysisCache.mockResolvedValue({ ok: true, deletedCacheRows: 12, deletedJobRows: 5 });
   });
 
+  it('pins the shared command bar with the icon tabs underneath it', () => {
+    const { container } = render(
+      <SettingsPage
+        currentUser={{ id: '2', username: 'listener', role: 'user', canManageLibraries: false, canEditMetadata: false }}
+        onLogout={() => {}}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={() => {}}
+      />
+    );
+
+    const bar = container.querySelector('[data-command-bar="settings"]') as HTMLElement;
+    const header = bar.parentElement as HTMLElement;
+    expect(header).toHaveStyle({ position: 'sticky', top: '0px' });
+    expect(within(bar).getByTestId('command-bar-watermark')).toHaveTextContent('Settings');
+    expect(within(bar).getByRole('button', { name: 'Log out' })).toBeInTheDocument();
+    expect(within(bar).queryByRole('tab')).not.toBeInTheDocument();
+
+    const tablist = within(header).getByRole('tablist', { name: 'Settings sections' });
+    expect(bar.compareDocumentPosition(tablist) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const tabs = within(tablist).getAllByRole('tab');
+    expect(tabs).toHaveLength(2);
+    for (const tab of tabs) expect(tab.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByText('Personalize BoogieBox and manage this server.')).not.toBeInTheDocument();
+  });
+
   it('shows the About tab with the Ko-fi support link', () => {
     const { rerender } = render(
       <SettingsPage

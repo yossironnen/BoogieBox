@@ -150,36 +150,6 @@ function WidgetCard({ title, span, className, titleClassName, hybridDesign = fal
   );
 }
 
-// ─── Stats Widget ────────────────────────────────────────────────────────────
-
-function TrackStatIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <path d="M9 18V5l12-2v13" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="16" r="3" />
-    </svg>
-  );
-}
-
-function ArtistStatIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <path d="M20 21a8 8 0 0 0-16 0" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  );
-}
-
-function AlbumStatIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="12" r="2.5" />
-    </svg>
-  );
-}
-
 function StreakIcon({ size = 14, style }: { size?: number; style?: React.CSSProperties }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
@@ -298,45 +268,6 @@ function OffModeIcon({ size = 16, style }: { size?: number; style?: React.CSSPro
       <line x1="4" y1="4" x2="20" y2="20" />
       <line x1="20" y1="4" x2="4" y2="20" />
     </svg>
-  );
-}
-
-function StatsWidget({ stats }: { stats: Stats | null }) {
-  const vintage = useVintageStyle();
-  const items = [
-    { label: 'Tracks',  value: stats?.total_tracks?.toLocaleString()  ?? '--', Icon: TrackStatIcon },
-    { label: 'Artists', value: stats?.total_artists?.toLocaleString() ?? '--', Icon: ArtistStatIcon },
-    { label: 'Albums',  value: stats?.total_albums?.toLocaleString()  ?? '--', Icon: AlbumStatIcon },
-  ];
-  return (
-    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-      {items.map(({ label, value, Icon }, index) => (
-        <div key={label} data-vintage-stat={vintage ? label : undefined} style={{
-          flex: '1 1 100px', textAlign: 'center', padding: '14px 8px',
-          backgroundColor: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)',
-          ...(vintage ? vintage.styles.statTile : {}),
-          ...(vintage && vintage.stickerShadows.length > 0
-            ? { boxShadow: `4px 4px 0 ${vintage.stickerShadows[index % vintage.stickerShadows.length]}` }
-            : {}),
-        }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-          }}>
-            <Icon size={18} style={{ color: 'var(--accent)', opacity: 0.85 }} />
-            <span style={{
-              fontSize: 30, fontWeight: 700, color: 'var(--accent)',
-              fontVariantNumeric: 'tabular-nums', lineHeight: 1.1,
-              ...(vintage ? vintage.styles.statValue : {}),
-            }}>{value}</span>
-          </div>
-          <div style={{
-            fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase',
-            letterSpacing: 1, marginTop: 6,
-            ...(vintage ? vintage.styles.statLabel : {}),
-          }}>{label}</div>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -1898,10 +1829,6 @@ export default function HomeView({
       style={{ ...H.root, ...(hybridDesign ? hybridHomeStyles.root : {}) }}
     >
       <div style={{ ...H.grid, ...(hybridDesign ? hybridHomeStyles.grid : {}) }}>
-        <WidgetCard title="Library" span hybridDesign={hybridDesign}>
-          <StatsWidget stats={stats} />
-        </WidgetCard>
-
         <WidgetCard title="Recent Albums" span hybridDesign={hybridDesign}>
           <RecentAlbumsWidget
             refreshKey={refreshKey}

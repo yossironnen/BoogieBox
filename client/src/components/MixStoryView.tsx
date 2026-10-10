@@ -10,6 +10,7 @@ import { api } from '../api';
 import type { BoogieMixOutput, MixOutputTrackRow, MixTimelineResponse, QueueSource, Track } from '../types';
 import { PlaylistArtwork, mixOutputToTrack } from './PlaylistsView';
 import ArtImage from './ArtImage';
+import CommandBar from './CommandBar';
 import type { PlaybackSnapshot } from './Player';
 
 // Fixed per-track sizing for the timeline band: a minimum width keeps titles,
@@ -325,219 +326,226 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
   };
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', padding: '28px 32px', overflowY: 'auto' }}>
-      <button type="button" style={S.backBtn} onClick={onBack} aria-label="Back to Mixes">
-        <ChevronLeftIcon /> Mixes
-      </button>
-
-      <div style={S.header}>
-        <div style={S.collageWrap} aria-label={`${output.name} artwork`}>
-          <PlaylistArtwork albumIds={albumIds} responsive />
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+      {/* Header: the shared single-row command bar (same as Browse/Search/Playlists). */}
+      <CommandBar
+        watermark="Mixes"
+        style={S.bar}
+        actions={(
+          <>
+            <button type="button" style={{ ...S.btn, ...S.btnPrimary }} title="Play" aria-label={`Play ${output.name}`} onClick={handlePlay}>
+              <PlayIcon />
+            </button>
+            <a style={S.btn} title="Download" aria-label={`Download ${output.name}`} href={api.boogiemix.outputDownloadUrl(output.id)}>
+              <DownloadIcon />
+            </a>
+            {timeline?.available && tracks.length > 0 && (
+              <a
+                style={S.btn}
+                title="Share image"
+                aria-label={`Download a shareable image for ${output.name}`}
+                href={api.boogiemix.storyImageUrl(output.id)}
+                download={`${output.name}.png`}
+              >
+                <ShareIcon />
+              </a>
+            )}
+            <button type="button" style={{ ...S.btn, color: 'var(--danger)' }} title="Delete" aria-label={`Delete ${output.name}`} onClick={() => onDelete(output)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+            </button>
+          </>
+        )}
+      >
+        <button type="button" style={S.backBtn} onClick={onBack} aria-label="Back to Mixes" title="Back to Mixes">
+          <ChevronLeftIcon /> Mixes
+        </button>
+        <div style={{ flexShrink: 0 }} aria-label={`${output.name} artwork`}>
+          <PlaylistArtwork albumIds={albumIds} thumb />
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={S.eyebrow}><StoryIcon /> BOOGIEMIX STORY</div>
+        <div style={S.titleBlock}>
           <div style={S.title}>{output.name}</div>
           <div style={S.metaLine}>
-            <span><ClockIcon /> {formatDuration(totalDuration)}</span>
-            <span><TracksIcon /> {tracks.length} track{tracks.length === 1 ? '' : 's'}</span>
-            <span><CalendarIcon /> {new Date(output.created_at.includes('T') ? output.created_at : `${output.created_at.replace(' ', 'T')}Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+            <span style={S.metaItem}><StoryIcon /> BoogieMix story</span>
+            <span style={S.metaItem}><ClockIcon /> {formatDuration(totalDuration)}</span>
+            <span style={S.metaItem}><TracksIcon /> {tracks.length} track{tracks.length === 1 ? '' : 's'}</span>
+            <span style={S.metaItem}><CalendarIcon /> {new Date(output.created_at.includes('T') ? output.created_at : `${output.created_at.replace(' ', 'T')}Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
           </div>
         </div>
-        <div style={S.actions}>
-          <button type="button" style={{ ...S.btn, ...S.btnPrimary }} title="Play" aria-label={`Play ${output.name}`} onClick={handlePlay}>
-            <PlayIcon />
-          </button>
-          <a style={S.btn} title="Download" aria-label={`Download ${output.name}`} href={api.boogiemix.outputDownloadUrl(output.id)}>
-            <DownloadIcon />
-          </a>
-          {timeline?.available && tracks.length > 0 && (
-            <a
-              style={S.btn}
-              title="Share image"
-              aria-label={`Download a shareable image for ${output.name}`}
-              href={api.boogiemix.storyImageUrl(output.id)}
-              download={`${output.name}.png`}
-            >
-              <ShareIcon />
-            </a>
-          )}
-          <button type="button" style={{ ...S.btn, color: 'var(--danger)' }} title="Delete" aria-label={`Delete ${output.name}`} onClick={() => onDelete(output)}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
-          </button>
-        </div>
-      </div>
+      </CommandBar>
 
-      {loading && <div style={S.empty}>Loading breakdown…</div>}
-      {!loading && (error || !timeline) && (
-        <div style={S.infoBanner}>
-          <InfoIcon /> Couldn&rsquo;t load this mix&rsquo;s breakdown right now.
-        </div>
-      )}
-
-      {!loading && timeline && !timeline.available && (
-        <div style={S.infoBanner}>
-          <InfoIcon /> A track-by-track breakdown isn&rsquo;t available for this mix — it was likely created before this view existed, and its build history has since been cleaned up.
-        </div>
-      )}
-
-      {!loading && timeline && timeline.available && tracks.length > 0 && (
-        <>
-          <div style={S.sectionTitle}><span style={{ color: 'var(--accent)', display: 'flex' }}><StoryIcon /></span> How this mix was built</div>
-          <div style={S.sectionSub}>Every crossfade and section — click anywhere to jump playback.</div>
-
-          <div style={S.timelineWrap}>
-            <div style={S.timelineScroll} className="mix-story-timeline-scroll" ref={scrollRef} data-testid="timeline-scroll">
-              <div style={{ ...S.timelineBand, width: segmentLayout.totalWidth }} ref={bandRef} onClick={handleBandClick} data-testid="timeline-band">
-                {playheadX != null && <div data-testid="playhead" style={{ ...S.playhead, left: playheadX }} />}
-                {tracks.map((t, i) => {
-                const width = segmentLayout.items[i]?.width ?? TRACK_MIN_WIDTH_PX;
-                const peaks = parsePeaks(t.waveformPeaksJson);
-                const isActive = activeIndex === i;
-                return (
-                  <div
-                    key={i}
-                    data-testid={`timeline-segment-${i}`}
-                    style={{
-                      ...S.segment,
-                      width,
-                      background: fallbackColorFor(t),
-                      ...(isActive ? S.segmentActive : {}),
-                    }}
-                    onMouseEnter={() => setActiveIndex(i)}
-                    onMouseLeave={() => setActiveIndex(prev => (prev === i ? null : prev))}
-                  >
-                    {t.albumId != null && (
-                      <ArtImage
-                        src={api.albumArtUrl(t.albumId as string, 300)}
-                        alt=""
-                        wrapperStyle={S.segmentArtWrap}
-                        imgStyle={S.segmentArt}
-                      />
-                    )}
-                    <div style={S.segmentScrim} />
-                    {peaks && peaks.length > 0 && (
-                      <svg viewBox="0 0 200 92" preserveAspectRatio="none" style={S.segmentSvg}>
-                        <path d={waveformPath(peaks, 200, 92)} fill="rgba(255,255,255,.5)" />
-                      </svg>
-                    )}
-                    <div style={S.segLabel}>{t.title}</div>
-                    <div style={S.segSub}>
-                      {t.artistName}{t.bpm ? ` · ${Math.round(t.bpm)} BPM` : ''}
-                    </div>
-                    {!t.trackId && (
-                      <div style={S.noArtMark}><RemovedIcon /> removed</div>
-                    )}
-                    {i < tracks.length - 1 && t.crossfadeOutSec > 0 && (
-                      <div
-                        style={{ ...S.xfade, right: 0 }}
-                        onMouseEnter={(e) => {
-                          const containerRect = scrollRef.current?.getBoundingClientRect();
-                          const xRect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-                          const left = containerRect ? xRect.left - containerRect.left - 100 : 0;
-                          const next = tracks[i + 1];
-                          setHoverTooltip({
-                            left: Math.max(0, left),
-                            title: `${t.title} → ${next.title}`,
-                            tags: [
-                              t.transitionOutKind === 'beatmatch' ? 'Beatmatched' : (t.transitionOutKind || 'Energy blend'),
-                              ...(t.transitionOutPhraseAligned ? ['Phrase-aligned'] : []),
-                            ],
-                            detail: `${Math.round(t.crossfadeOutSec)}s crossfade`,
-                          });
-                        }}
-                        onMouseLeave={() => setHoverTooltip(null)}
-                      >
-                        <div style={S.xfadeTag}>⇄ {Math.round(t.crossfadeOutSec)}s</div>
-                      </div>
-                    )}
-                  </div>
-                );
-                })}
-              </div>
-              <div style={{ ...S.ruler, width: segmentLayout.totalWidth }}>
-                {segmentLayout.items.map((item, i) => (
-                  <div key={i} style={{ ...S.tick, width: item.width }}>{formatRulerTime(item.startSec)}</div>
-                ))}
-              </div>
-            </div>
-            {hoverTooltip && <TransitionTooltip tooltip={hoverTooltip} />}
-            {showRecenter && (
-              <button
-                type="button"
-                data-testid="recenter-btn"
-                style={S.recenterBtn}
-                title="Recenter"
-                aria-label="Recenter timeline on the currently playing position"
-                onClick={handleRecenter}
-              >
-                <RecenterIcon />
-              </button>
-            )}
-            <div style={S.legend}>
-              <div style={S.legendItem}><div style={{ ...S.swatch, background: 'linear-gradient(135deg,#4f46a3,#a83e6e,#3f7d4a)' }} /> Segment artwork — the track&rsquo;s real cover</div>
-              <div style={S.legendItem}><div style={{ ...S.swatch, background: '#6d5ce0' }} /> No artwork — stable per-track color</div>
-            </div>
+      <div style={S.body}>
+        {loading && <div style={S.empty}>Loading breakdown…</div>}
+        {!loading && (error || !timeline) && (
+          <div style={S.infoBanner}>
+            <InfoIcon /> Couldn&rsquo;t load this mix&rsquo;s breakdown right now.
           </div>
+        )}
 
-          <div style={{ ...S.sectionTitle, marginTop: 32 }}><TracksIcon /> Track order</div>
-          <div style={S.sectionSub}>{tracks.length} tracks · click a row to jump the timeline above.</div>
+        {!loading && timeline && !timeline.available && (
+          <div style={S.infoBanner}>
+            <InfoIcon /> A track-by-track breakdown isn&rsquo;t available for this mix — it was likely created before this view existed, and its build history has since been cleaned up.
+          </div>
+        )}
 
-          <div style={S.trackList}>
-            {tracks.map((t, i) => {
-              return (
-                <React.Fragment key={i}>
-                  <div
-                    data-testid={`track-row-${i}`}
-                    style={{ ...S.trackRow, ...(activeIndex === i ? S.trackRowActive : {}) }}
-                    onClick={() => seekTo(t.outputStartSec)}
-                    onMouseEnter={() => setActiveIndex(i)}
-                    onMouseLeave={() => setActiveIndex(prev => (prev === i ? null : prev))}
-                  >
-                    <div style={S.idx}>{i + 1}</div>
-                    <div data-testid={`track-art-${i}`} style={{ ...S.art, position: 'relative', background: fallbackColorFor(t) }}>
+        {!loading && timeline && timeline.available && tracks.length > 0 && (
+          <>
+            <div style={S.sectionTitle}><span style={{ color: 'var(--accent)', display: 'flex' }}><StoryIcon /></span> How this mix was built</div>
+            <div style={S.sectionSub}>Every crossfade and section — click anywhere to jump playback.</div>
+
+            <div style={S.timelineWrap}>
+              <div style={S.timelineScroll} className="mix-story-timeline-scroll" ref={scrollRef} data-testid="timeline-scroll">
+                <div style={{ ...S.timelineBand, width: segmentLayout.totalWidth }} ref={bandRef} onClick={handleBandClick} data-testid="timeline-band">
+                  {playheadX != null && <div data-testid="playhead" style={{ ...S.playhead, left: playheadX }} />}
+                  {tracks.map((t, i) => {
+                  const width = segmentLayout.items[i]?.width ?? TRACK_MIN_WIDTH_PX;
+                  const peaks = parsePeaks(t.waveformPeaksJson);
+                  const isActive = activeIndex === i;
+                  return (
+                    <div
+                      key={i}
+                      data-testid={`timeline-segment-${i}`}
+                      style={{
+                        ...S.segment,
+                        width,
+                        background: fallbackColorFor(t),
+                        ...(isActive ? S.segmentActive : {}),
+                      }}
+                      onMouseEnter={() => setActiveIndex(i)}
+                      onMouseLeave={() => setActiveIndex(prev => (prev === i ? null : prev))}
+                    >
                       {t.albumId != null && (
                         <ArtImage
                           src={api.albumArtUrl(t.albumId as string, 300)}
                           alt=""
-                          wrapperStyle={S.artImgWrap}
-                          imgStyle={S.artImg}
+                          wrapperStyle={S.segmentArtWrap}
+                          imgStyle={S.segmentArt}
                         />
                       )}
+                      <div style={S.segmentScrim} />
+                      {peaks && peaks.length > 0 && (
+                        <svg viewBox="0 0 200 92" preserveAspectRatio="none" style={S.segmentSvg}>
+                          <path d={waveformPath(peaks, 200, 92)} fill="rgba(255,255,255,.5)" />
+                        </svg>
+                      )}
+                      <div style={S.segLabel}>{t.title}</div>
+                      <div style={S.segSub}>
+                        {t.artistName}{t.bpm ? ` · ${Math.round(t.bpm)} BPM` : ''}
+                      </div>
                       {!t.trackId && (
-                        <div style={S.removedBadge} title="Removed from library"><RemovedIcon /></div>
+                        <div style={S.noArtMark}><RemovedIcon /> removed</div>
+                      )}
+                      {i < tracks.length - 1 && t.crossfadeOutSec > 0 && (
+                        <div
+                          style={{ ...S.xfade, right: 0 }}
+                          onMouseEnter={(e) => {
+                            const containerRect = scrollRef.current?.getBoundingClientRect();
+                            const xRect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                            const left = containerRect ? xRect.left - containerRect.left - 100 : 0;
+                            const next = tracks[i + 1];
+                            setHoverTooltip({
+                              left: Math.max(0, left),
+                              title: `${t.title} → ${next.title}`,
+                              tags: [
+                                t.transitionOutKind === 'beatmatch' ? 'Beatmatched' : (t.transitionOutKind || 'Energy blend'),
+                                ...(t.transitionOutPhraseAligned ? ['Phrase-aligned'] : []),
+                              ],
+                              detail: `${Math.round(t.crossfadeOutSec)}s crossfade`,
+                            });
+                          }}
+                          onMouseLeave={() => setHoverTooltip(null)}
+                        >
+                          <div style={S.xfadeTag}>⇄ {Math.round(t.crossfadeOutSec)}s</div>
+                        </div>
                       )}
                     </div>
-                    <div style={S.trackInfo}>
-                      <div style={S.trackTitle}>
-                        {t.title}
-                        {!t.trackId && <span style={S.removedPill}><RemovedIcon /> Removed from library</span>}
-                      </div>
-                      <div style={S.trackArtist}>{t.artistName || 'Unknown artist'}</div>
-                    </div>
-                    {t.bpm != null && <div style={S.miniBadge}>{Math.round(t.bpm)} BPM</div>}
-                    <div style={S.trackRange}>{formatDuration(t.outputStartSec)} – {formatDuration(t.outputEndSec)}</div>
-                  </div>
-                  {i < tracks.length - 1 && (
-                    <div style={S.transitionRow}>
-                      <div style={S.transitionLine} />
-                      <div style={S.transitionChip}>
-                        <SwapIcon /> {humanizeTransition(t.transitionOutKind, t.transitionOutPhraseAligned, t.crossfadeOutSec)}
-                      </div>
-                      <div style={S.transitionLine} />
-                    </div>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </div>
-
-          {timeline.tier === 'reconstructed' && (
-            <div style={S.infoBanner}>
-              <InfoIcon /> Timeline reconstructed from mix history — waveform detail isn&rsquo;t available for tracks in this mix.
+                  );
+                  })}
+                </div>
+                <div style={{ ...S.ruler, width: segmentLayout.totalWidth }}>
+                  {segmentLayout.items.map((item, i) => (
+                    <div key={i} style={{ ...S.tick, width: item.width }}>{formatRulerTime(item.startSec)}</div>
+                  ))}
+                </div>
+              </div>
+              {hoverTooltip && <TransitionTooltip tooltip={hoverTooltip} />}
+              {showRecenter && (
+                <button
+                  type="button"
+                  data-testid="recenter-btn"
+                  style={S.recenterBtn}
+                  title="Recenter"
+                  aria-label="Recenter timeline on the currently playing position"
+                  onClick={handleRecenter}
+                >
+                  <RecenterIcon />
+                </button>
+              )}
+              <div style={S.legend}>
+                <div style={S.legendItem}><div style={{ ...S.swatch, background: 'linear-gradient(135deg,#4f46a3,#a83e6e,#3f7d4a)' }} /> Segment artwork — the track&rsquo;s real cover</div>
+                <div style={S.legendItem}><div style={{ ...S.swatch, background: '#6d5ce0' }} /> No artwork — stable per-track color</div>
+              </div>
             </div>
-          )}
-        </>
-      )}
+
+            <div style={{ ...S.sectionTitle, marginTop: 32 }}><TracksIcon /> Track order</div>
+            <div style={S.sectionSub}>{tracks.length} tracks · click a row to jump the timeline above.</div>
+
+            <div style={S.trackList}>
+              {tracks.map((t, i) => {
+                return (
+                  <React.Fragment key={i}>
+                    <div
+                      data-testid={`track-row-${i}`}
+                      style={{ ...S.trackRow, ...(activeIndex === i ? S.trackRowActive : {}) }}
+                      onClick={() => seekTo(t.outputStartSec)}
+                      onMouseEnter={() => setActiveIndex(i)}
+                      onMouseLeave={() => setActiveIndex(prev => (prev === i ? null : prev))}
+                    >
+                      <div style={S.idx}>{i + 1}</div>
+                      <div data-testid={`track-art-${i}`} style={{ ...S.art, position: 'relative', background: fallbackColorFor(t) }}>
+                        {t.albumId != null && (
+                          <ArtImage
+                            src={api.albumArtUrl(t.albumId as string, 300)}
+                            alt=""
+                            wrapperStyle={S.artImgWrap}
+                            imgStyle={S.artImg}
+                          />
+                        )}
+                        {!t.trackId && (
+                          <div style={S.removedBadge} title="Removed from library"><RemovedIcon /></div>
+                        )}
+                      </div>
+                      <div style={S.trackInfo}>
+                        <div style={S.trackTitle}>
+                          {t.title}
+                          {!t.trackId && <span style={S.removedPill}><RemovedIcon /> Removed from library</span>}
+                        </div>
+                        <div style={S.trackArtist}>{t.artistName || 'Unknown artist'}</div>
+                      </div>
+                      {t.bpm != null && <div style={S.miniBadge}>{Math.round(t.bpm)} BPM</div>}
+                      <div style={S.trackRange}>{formatDuration(t.outputStartSec)} – {formatDuration(t.outputEndSec)}</div>
+                    </div>
+                    {i < tracks.length - 1 && (
+                      <div style={S.transitionRow}>
+                        <div style={S.transitionLine} />
+                        <div style={S.transitionChip}>
+                          <SwapIcon /> {humanizeTransition(t.transitionOutKind, t.transitionOutPhraseAligned, t.crossfadeOutSec)}
+                        </div>
+                        <div style={S.transitionLine} />
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+
+            {timeline.tier === 'reconstructed' && (
+              <div style={S.infoBanner}>
+                <InfoIcon /> Timeline reconstructed from mix history — waveform detail isn&rsquo;t available for tracks in this mix.
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -545,13 +553,13 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const S: Record<string, React.CSSProperties> = {
-  backBtn: { display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: 13, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, marginBottom: 22, fontFamily: 'inherit' },
-  header: { display: 'flex', gap: 22, marginBottom: 26, alignItems: 'center' },
-  collageWrap: { width: 108, height: 108, borderRadius: 12, overflow: 'hidden', flexShrink: 0, boxShadow: '0 8px 24px rgba(0,0,0,.4)' },
-  eyebrow: { fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 6 },
-  title: { fontSize: 26, fontWeight: 600, color: 'var(--text)', margin: '4px 0 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  metaLine: { fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 14 },
-  actions: { display: 'flex', gap: 8, flexShrink: 0 },
+  backBtn: { display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 2px', flexShrink: 0, fontFamily: 'inherit' },
+  bar: { padding: '8px 28px' },
+  body: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 32px 28px' },
+  titleBlock: { minWidth: 0, flex: '0 1 auto', lineHeight: 1.2 },
+  title: { fontSize: 16, fontWeight: 800, letterSpacing: -0.2, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  metaLine: { marginTop: 1, fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 12, whiteSpace: 'nowrap', overflow: 'hidden' },
+  metaItem: { display: 'inline-flex', alignItems: 'center', gap: 4 },
   btn: { width: 34, height: 34, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text)', cursor: 'pointer', textDecoration: 'none' },
   btnPrimary: { background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' },
   empty: { padding: '48px 0', textAlign: 'center', color: 'var(--text-muted)' },

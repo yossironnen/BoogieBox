@@ -1,9 +1,9 @@
 /**
- * Unified desktop-sidebar identity and server activity panel.
+ * Unified desktop-sidebar identity, library totals and server activity panel.
  */
 
 import React, { useState } from 'react';
-import type { AuthUser, BoogieMixDeepAnalysisStatus, Library, ScanJob } from '../types';
+import type { AuthUser, BoogieMixDeepAnalysisStatus, Library, ScanJob, Stats } from '../types';
 
 interface Props {
   currentUser: AuthUser;
@@ -14,10 +14,134 @@ interface Props {
   activeScanJobs: ScanJob[];
   libraries: Library[];
   deepAnalysisStatus: BoogieMixDeepAnalysisStatus | null;
+  /** Library totals: a quiet line when expanded, an indicator popover when collapsed. */
+  stats?: Stats | null;
   onLogout: () => void;
 }
 
-type IndicatorKind = 'transcoding' | 'scan' | 'deep-analysis';
+type IndicatorKind = 'transcoding' | 'scan' | 'deep-analysis' | 'library';
+
+type IconProps = { size?: number; style?: React.CSSProperties };
+
+function StatsTracksIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
+function StatsArtistsIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <path d="M20 21a8 8 0 0 0-16 0" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function StatsAlbumsIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+function StatsHoursIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l4 2" />
+    </svg>
+  );
+}
+
+function StatsStorageIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
+      <rect x="3" y="4" width="18" height="7" rx="1.5" />
+      <rect x="3" y="13" width="18" height="7" rx="1.5" />
+      <circle cx="7" cy="7.5" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="16.5" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function LibraryIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 4v16M9 4v16" />
+      <path d="M13 5.2l3.9-1 4.1 15.6-3.9 1z" />
+    </svg>
+  );
+}
+
+type StatItem = {
+  key: string;
+  value: string;
+  display: string;
+  label: string;
+  name: string;
+  Icon: (props: IconProps) => React.ReactElement;
+};
+
+export function buildLibraryStatItems(stats: Stats | null | undefined): StatItem[] {
+  const count = (value: number | undefined | null) => (value != null ? value.toLocaleString() : '–');
+  const hours = stats?.total_hours != null ? stats.total_hours.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '–';
+  const gb = stats?.total_gb != null ? stats.total_gb.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '–';
+  const tracks = count(stats?.total_tracks);
+  const artists = count(stats?.total_artists);
+  const albums = count(stats?.total_albums);
+  return [
+    { key: 'tracks', value: tracks, display: tracks, label: 'tracks', name: 'Tracks', Icon: StatsTracksIcon },
+    { key: 'artists', value: artists, display: artists, label: 'artists', name: 'Artists', Icon: StatsArtistsIcon },
+    { key: 'albums', value: albums, display: albums, label: 'albums', name: 'Albums', Icon: StatsAlbumsIcon },
+    { key: 'hours', value: hours, display: hours === '–' ? hours : `${hours}h`, label: 'hours', name: 'Playtime', Icon: StatsHoursIcon },
+    { key: 'gb', value: gb, display: gb === '–' ? gb : `${gb} GB`, label: 'GB', name: 'Storage', Icon: StatsStorageIcon },
+  ];
+}
+
+export function formatLibraryStatsTitle(stats: Stats | null | undefined): string {
+  return `Library totals: ${buildLibraryStatItems(stats).map((item) => `${item.value} ${item.label}`).join(', ')}`;
+}
+
+function LibraryStatsLine({ stats }: { stats: Stats | null | undefined }) {
+  const title = formatLibraryStatsTitle(stats);
+  return (
+    <div style={styles.statsLine} title={title} role="group" aria-label={title} data-testid="sidebar-library-stats">
+      {buildLibraryStatItems(stats).map(({ key, value, display, label, Icon }) => (
+        <span
+          key={key}
+          // Storage sits alone on the last row: span both columns and centre it.
+          style={key === 'gb' ? { ...styles.statsLineItem, gridColumn: '1 / -1', justifySelf: 'center' } : styles.statsLineItem}
+          aria-label={`${value} ${label}`}
+        >
+          <Icon size={12} style={styles.statIcon} />
+          <span aria-hidden="true">{display}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function LibraryStatsPopover({ stats }: { stats: Stats | null | undefined }) {
+  return (
+    <span style={styles.statsPopover}>
+      <span style={styles.statsPopoverTitle}>Library totals</span>
+      {buildLibraryStatItems(stats).map(({ key, display, name, Icon }) => (
+        <span key={key} style={styles.statsPopoverRow}>
+          <Icon size={14} style={styles.statIcon} />
+          <span style={styles.statsPopoverName}>{name}</span>
+          <span style={styles.statsPopoverValue}>{display}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export function describeTranscoding(
   streamDirect: boolean,
@@ -81,6 +205,7 @@ function StatusIndicator({
   active = false,
   badge = 0,
   collapsed,
+  tooltip,
   children,
 }: {
   kind: IndicatorKind;
@@ -89,6 +214,8 @@ function StatusIndicator({
   active?: boolean;
   badge?: number;
   collapsed: boolean;
+  /** Rich tooltip body; defaults to `description`. */
+  tooltip?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [tooltipVisible, setTooltipVisible] = useState(false);
@@ -122,7 +249,7 @@ function StatusIndicator({
             ...(collapsed ? styles.tooltipCollapsed : {}),
           }}
         >
-          {description}
+          {tooltip ?? description}
         </span>
       )}
     </div>
@@ -138,6 +265,7 @@ export default function SidebarStatusPanel({
   activeScanJobs,
   libraries,
   deepAnalysisStatus,
+  stats = null,
   onLogout,
 }: Props) {
   const scanActive = activeScanJobs.some((job) => job.status === 'running');
@@ -171,6 +299,7 @@ export default function SidebarStatusPanel({
         ...(collapsed ? styles.panelCollapsed : {}),
       }}
     >
+      {!collapsed && <LibraryStatsLine stats={stats} />}
       <div style={{ ...styles.statusRow, ...(collapsed ? styles.statusRowCollapsed : {}) }}>
         <StatusIndicator
           kind="transcoding"
@@ -200,6 +329,17 @@ export default function SidebarStatusPanel({
         >
           <DeepAnalysisIcon />
         </StatusIndicator>
+        {collapsed && (
+          <StatusIndicator
+            kind="library"
+            description={formatLibraryStatsTitle(stats)}
+            color="var(--text-muted)"
+            collapsed={collapsed}
+            tooltip={<LibraryStatsPopover stats={stats} />}
+          >
+            <LibraryIcon />
+          </StatusIndicator>
+        )}
       </div>
 
       <div style={{ ...styles.identityRow, ...(collapsed ? styles.identityRowCollapsed : {}) }}>
@@ -239,6 +379,59 @@ const styles: Record<string, React.CSSProperties> = {
   panelCollapsed: {
     margin: '0 8px 8px',
     borderRadius: 10,
+  },
+  // Two content-sized columns, centred as a block so the left and right
+  // margins match regardless of digit count (a wrapping flex row went ragged
+  // on large libraries).
+  statsLine: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, max-content)',
+    justifyContent: 'center',
+    columnGap: 18,
+    rowGap: 5,
+    padding: '10px 12px 9px',
+    borderBottom: '1px solid color-mix(in srgb, var(--border) 68%, transparent)',
+    color: 'var(--text-muted)',
+    fontSize: 12,
+    fontWeight: 500,
+    fontVariantNumeric: 'tabular-nums',
+    lineHeight: 1.2,
+  },
+  statsLineItem: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    whiteSpace: 'nowrap',
+  },
+  statIcon: {
+    color: 'var(--accent)',
+    opacity: 0.85,
+    flexShrink: 0,
+  },
+  statsPopover: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    minWidth: 180,
+  },
+  statsPopoverTitle: {
+    marginBottom: 2,
+    fontWeight: 700,
+  },
+  statsPopoverRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontWeight: 500,
+    color: 'var(--text-muted)',
+  },
+  statsPopoverName: {
+    flex: 1,
+  },
+  statsPopoverValue: {
+    color: 'var(--text)',
+    fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums',
   },
   statusRow: {
     minHeight: 58,

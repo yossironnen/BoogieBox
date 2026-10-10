@@ -9,6 +9,7 @@ import { api } from '../api';
 import type { BoogieMixOutput, ClientEntityId, Track } from '../types';
 import { PlaylistArtwork, mixOutputToTrack } from './PlaylistsView';
 import MixStoryView from './MixStoryView';
+import CommandBar from './CommandBar';
 import type { PlaybackSnapshot } from './Player';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ const XIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" 
 const AlertTriangleIcon = () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>;
 const EmptyIcon = () => <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="12" height="4" rx="1"/><rect x="3" y="16" width="15" height="4" rx="1"/></svg>;
 const StoryIcon = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>;
+const MixesCountIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: 'var(--accent)', opacity: 0.85, flexShrink: 0 }}><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -313,12 +315,38 @@ export default function MixesView({ playTrack, playbackSnapshot, openRequest, re
     );
   }
 
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', padding: '28px 32px' }}>
-      <h1 style={S.h1}>Mixes</h1>
-      <div style={S.sub}>Manage the BoogieMix collection</div>
+  const countLabel = `${outputs.length.toLocaleString()} mix${outputs.length === 1 ? '' : 'es'}`;
 
-      <div style={S.toolbarRow}>
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+      <CommandBar
+        watermark="Mixes"
+        style={S.bar}
+        actions={(
+          <>
+            <button
+              type="button"
+              style={{ ...S.viewToggle, ...(viewMode === 'grid' ? S.viewToggleActive : {}) }}
+              onClick={() => setPersistedViewMode('grid')}
+              title="Grid view"
+              aria-label="Switch to grid view"
+              aria-pressed={viewMode === 'grid'}
+            >
+              <GridViewIcon />
+            </button>
+            <button
+              type="button"
+              style={{ ...S.viewToggle, ...(viewMode === 'table' ? S.viewToggleActive : {}) }}
+              onClick={() => setPersistedViewMode('table')}
+              title="Table view"
+              aria-label="Switch to table view"
+              aria-pressed={viewMode === 'table'}
+            >
+              <TableViewIcon />
+            </button>
+          </>
+        )}
+      >
         <div style={S.search}>
           <SearchIcon />
           <input
@@ -331,6 +359,10 @@ export default function MixesView({ playTrack, playbackSnapshot, openRequest, re
             <button type="button" aria-label="Clear search" style={S.clearBtn} onClick={() => setQuery('')}><XIcon /></button>
           )}
         </div>
+        <span style={S.count} title={countLabel} aria-label={countLabel} data-testid="mixes-count">
+          <MixesCountIcon />
+          <span aria-hidden="true">{outputs.length.toLocaleString()}</span>
+        </span>
         <label style={S.sortSelect}>
           <SortIcon />
           <select
@@ -346,29 +378,9 @@ export default function MixesView({ playTrack, playbackSnapshot, openRequest, re
             <option value="largest">Largest</option>
           </select>
         </label>
-        <button
-          type="button"
-          style={{ ...S.viewToggle, ...(viewMode === 'grid' ? S.viewToggleActive : {}) }}
-          onClick={() => setPersistedViewMode('grid')}
-          title="Grid view"
-          aria-label="Switch to grid view"
-          aria-pressed={viewMode === 'grid'}
-        >
-          <GridViewIcon />
-        </button>
-        <button
-          type="button"
-          style={{ ...S.viewToggle, ...(viewMode === 'table' ? S.viewToggleActive : {}) }}
-          onClick={() => setPersistedViewMode('table')}
-          title="Table view"
-          aria-label="Switch to table view"
-          aria-pressed={viewMode === 'table'}
-        >
-          <TableViewIcon />
-        </button>
-      </div>
+      </CommandBar>
 
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div style={S.body}>
         {loading && <div style={S.empty}>Loading…</div>}
         {!loading && filtered.length === 0 && (
           <div style={S.empty}>
@@ -544,10 +556,11 @@ function MixTable({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const S: Record<string, React.CSSProperties> = {
-  h1: { fontSize: 20, margin: '0 0 4px', color: 'var(--text)' },
-  sub: { fontSize: 13, color: 'var(--text-muted)', marginBottom: 18 },
-  toolbarRow: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' },
-  search: { display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px', color: 'var(--text-muted)', fontSize: 13, width: 240 },
+  // Same single-row command bar as Browse/Search/Playlists; the list scrolls beneath it.
+  bar: { padding: '8px 28px' },
+  body: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 28px 0' },
+  count: { display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0, color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums' },
+  search: { display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px', color: 'var(--text-muted)', fontSize: 13, flex: '0 1 260px', minWidth: 160 },
   searchInput: { flex: 1, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 13, fontFamily: 'inherit' },
   clearBtn: { background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0 },
   sortSelect: { display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px', color: 'var(--text)', fontSize: 13, marginLeft: 'auto' },

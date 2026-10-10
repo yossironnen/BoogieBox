@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../api';
-import type { Artist, ArtistRadioOptions, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult, Stats } from '../types';
+import type { Artist, ArtistRadioOptions, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
 import type { EntityId } from '../entityId';
 import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
@@ -2560,8 +2560,6 @@ type DrillState =
 
 interface Props {
   libraries: Library[];
-  /** Library totals for the command bar's stats strip. */
-  stats?: Stats | null;
   playTrack: (track: Track, allTracks?: Track[], source?: import('../types').QueueSource) => void;
   playAlbumInVinylMode: (tracks: Track[], albumId: ClientEntityId) => void;
   addToQueue: (track: Track) => void;
@@ -2583,7 +2581,6 @@ interface Props {
 /** Browse View is part of this module's public API. */
 export default function BrowseView({
   libraries,
-  stats = null,
   playTrack,
   playAlbumInVinylMode,
   addToQueue,
@@ -3624,7 +3621,6 @@ export default function BrowseView({
         <>
           <CommandBar
             watermark="Browse"
-            stats={stats}
             style={hybridPreview ? hybridBrowseStyles.toolbar : undefined}
             actions={(
               <>
@@ -3737,7 +3733,7 @@ export default function BrowseView({
       )}
       {/* Breadcrumb — visible when drilled in */}
       {drill.level !== 'root' && (
-        <CommandBar watermark="Browse" stats={stats} style={hybridPreview ? hybridBrowseStyles.toolbar : undefined}>
+        <CommandBar watermark="Browse" style={hybridPreview ? hybridBrowseStyles.toolbar : undefined}>
           <Breadcrumb items={breadcrumb} />
         </CommandBar>
       )}

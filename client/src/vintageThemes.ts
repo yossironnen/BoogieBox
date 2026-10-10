@@ -65,9 +65,6 @@ export interface VintageSurfaceStyles {
   homeCard: React.CSSProperties;
   homeCardTitle: React.CSSProperties;
   homeHeroTitle: React.CSSProperties;
-  statTile: React.CSSProperties;
-  statValue: React.CSSProperties;
-  statLabel: React.CSSProperties;
   /** Home "Recently Added" row: room for the record peeking out of each sleeve. */
   recentAlbumRow: React.CSSProperties;
   recentAlbumTile: React.CSSProperties;
@@ -108,7 +105,7 @@ export interface VintageStyleDefinition {
   tokens: VintageTokens;
   /** Colors of the decorative stripe band, top to bottom. */
   stripes: readonly string[];
-  /** Offset-shadow colors cycled across stat tiles (empty = no sticker shadow). */
+  /** Accent "price sticker" colors shown as swatches in the style picker. */
   stickerShadows: readonly string[];
   /** CSS custom properties scoped to the player dock (a dark surface on a light theme). */
   dockVars: Record<string, string>;
@@ -276,20 +273,6 @@ const RECORD_SHOP: VintageStyleDefinition = {
       fontStyle: 'italic',
       fontSize: 30,
       letterSpacing: -0.8,
-    },
-    statTile: {
-      backgroundColor: 'var(--surface-raised)',
-      border: '2px solid var(--text)',
-      borderRadius: 6,
-    },
-    statValue: {
-      fontFamily: 'var(--font-display)',
-      fontWeight: 800,
-      color: 'var(--text)',
-    },
-    statLabel: {
-      color: 'var(--text-muted)',
-      fontWeight: 700,
     },
     recentAlbumRow: { gap: 40, paddingRight: 36, paddingTop: 2 },
     recentAlbumTile: {
@@ -557,23 +540,6 @@ const HIFI_CONSOLE: VintageStyleDefinition = {
       fontSize: 34,
       color: '#e6c97a',
       letterSpacing: -0.5,
-    },
-    // Recessed meter window with lit numerals.
-    statTile: {
-      backgroundColor: HIFI_PANEL,
-      border: '1px solid #2a2e33',
-      borderRadius: 8,
-      boxShadow: 'inset 0 3px 10px rgba(0,0,0,0.9), 0 1px 0 rgba(255,255,255,0.05)',
-    },
-    statValue: {
-      fontWeight: 300,
-      color: HIFI_LAMP,
-      textShadow: '0 0 10px rgba(255,150,40,0.55)',
-    },
-    statLabel: {
-      color: 'var(--text-muted)',
-      fontWeight: 500,
-      letterSpacing: 2.5,
     },
     // The record rises out of the top of the sleeve, like a slot-loading changer.
     recentAlbumRow: { gap: 24, paddingTop: 46 },

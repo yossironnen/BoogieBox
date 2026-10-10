@@ -1491,25 +1491,6 @@ export const hybridPlaylistStyles: Record<string, React.CSSProperties> = {
     boxShadow: 'inset 3px 0 0 var(--accent)',
     transform: 'none',
   },
-  detailHeader: {
-    gap: 20,
-    padding: '24px 28px 20px',
-    borderBottom: '1px solid var(--divider-subtle)',
-    background: 'transparent',
-    boxShadow: 'none',
-  },
-  detailName: {
-    fontSize: 32,
-    fontWeight: 800,
-    letterSpacing: -0.8,
-  },
-  actionGroup: {
-    display: 'flex',
-    gap: 8,
-    alignItems: 'center',
-    flexShrink: 0,
-    flexWrap: 'wrap',
-  },
   statusPanel: {
     margin: '10px 16px',
     padding: '12px 14px',
@@ -1525,33 +1506,6 @@ export const hybridPlaylistStyles: Record<string, React.CSSProperties> = {
 };
 
 export const hybridSettingsStyles: Record<string, React.CSSProperties> = {
-  page: {
-    width: '100%',
-    maxWidth: 1040,
-    padding: '28px 36px 40px',
-    background: 'var(--bg)',
-  },
-  pageHeader: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 20,
-    marginBottom: 20,
-  },
-  title: {
-    margin: 0,
-    color: 'var(--text)',
-    fontSize: 30,
-    fontWeight: 800,
-    letterSpacing: -0.7,
-    lineHeight: 1.1,
-  },
-  subtitle: {
-    marginTop: 6,
-    color: 'var(--text-muted)',
-    fontSize: 14,
-    lineHeight: 1.5,
-  },
   account: {
     display: 'flex',
     alignItems: 'center',

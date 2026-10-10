@@ -20,6 +20,7 @@ import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
 import FolderPickerModal from './FolderPickerModal';
 import ConfirmModal from './ConfirmModal';
+import CommandBar from './CommandBar';
 import RadioMetadataSettings from './RadioMetadataSettings';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -755,6 +756,28 @@ export function isValidDlnaPort(rawPort: string): boolean {
 }
 
 /** Settings Page is part of this module's public API. */
+// ─── Settings tab icons ───────────────────────────────────────────────────────
+// Neutral chrome: inherit the tab's text colour so active/inactive is automatic.
+
+type SettingsTabKey = 'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users';
+
+function SettingsTabIcon({ tab }: { tab: SettingsTabKey }) {
+  const paths: Record<SettingsTabKey, React.ReactElement> = {
+    theme: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
+    libraries: <><path d="M5 4v16M9 4v16" /><path d="M13 5.2l3.9-1 4.1 15.6-3.9 1z" /></>,
+    schedules: <><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2.5 2.5" /><path d="M9 2h6" /></>,
+    integrations: <><path d="M9 7V3M15 7V3" /><path d="M6 7h12v4a6 6 0 0 1-12 0z" /><path d="M12 17v4" /></>,
+    advanced: <><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></>,
+    users: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6" /></>,
+    about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5h.01" /></>,
+  };
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+      {paths[tab]}
+    </svg>
+  );
+}
+
 export default function SettingsPage({
   currentUser,
   onLogout,
@@ -783,7 +806,7 @@ export default function SettingsPage({
   const isVintageMode = hybridThemeMode === 'vintage';
   const isCustomMode = hybridThemeMode === 'custom';
   const [local, setLocal] = useState<AppSettings>(settings);
-  const [activeTab, setActiveTab] = useState<'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users'>('theme');
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>('theme');
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [schedules, setSchedules] = useState<ScanSchedule[]>([]);
   const [queueSnapshot, setQueueSnapshot] = useState<AdminQueueSnapshot | null>(null);
@@ -1362,44 +1385,50 @@ export default function SettingsPage({
 
   return (
     <div data-ui-design="hybrid" data-ui-region="settings" style={P.page}>
-      <div style={P.pageHeader}>
-        <div>
-          <h2 style={P.title}>Settings</h2>
-          <div style={P.subtitle}>Personalize BoogieBox and manage this server.</div>
+      {/* Header: the shared command bar with the section tabs underneath, pinned while the page scrolls. */}
+      <div style={P.stickyHeader}>
+        <CommandBar
+          watermark="Settings"
+          style={P.bar}
+          actions={(
+            <div style={P.account}>
+              <span>{currentUser.username}</span>
+              <span style={P.roleBadge}>{currentUser.role}</span>
+              <button type="button" onClick={onLogout} style={P.logoutButton}>Log out</button>
+            </div>
+          )}
+        >
+          {null}
+        </CommandBar>
+        <div style={P.tabRow}>
+          <div role="tablist" aria-label="Settings sections" style={P.tabBar}>
+            {([
+              ['theme',        'User Settings'],
+              ...(canManageLibraries ? [
+                ['libraries',    'Libraries'],
+                ['schedules',    'Auto-Scan'],
+              ] : []),
+              ...(isAdmin ? [
+                ['integrations', 'Integrations'],
+                ['advanced',     'Advanced'],
+                ['users',        'Users'],
+              ] : []),
+              ['about',        'About'],
+            ] as [SettingsTabKey, string][]).map(([t, label]) => (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === t}
+                style={{ ...P.tab, ...(activeTab === t ? P.tabActive : {}) }}
+                onClick={() => setActiveTab(t)}
+              >
+                <SettingsTabIcon tab={t} />
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div style={P.account}>
-          <span>{currentUser.username}</span>
-          <span style={P.roleBadge}>{currentUser.role}</span>
-          <button type="button" onClick={onLogout} style={P.logoutButton}>Log out</button>
-        </div>
-      </div>
-
-      {/* Tab bar */}
-      <div role="tablist" aria-label="Settings sections" style={P.tabBar}>
-        {([
-          ['theme',        'User Settings'],
-          ...(canManageLibraries ? [
-            ['libraries',    'Libraries'],
-            ['schedules',    'Auto-Scan'],
-          ] : []),
-          ...(isAdmin ? [
-            ['integrations', 'Integrations'],
-            ['advanced',     'Advanced'],
-            ['users',        'Users'],
-          ] : []),
-          ['about',        'About'],
-        ] as [string, string][]).map(([t, label]) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === t}
-            style={{ ...P.tab, ...(activeTab === t ? P.tabActive : {}) }}
-            onClick={() => setActiveTab(t as any)}
-          >
-            {label}
-          </button>
-        ))}
       </div>
 
       {/* ── Theme Tab ─────────────────────────────────────────────────────── */}
@@ -3237,26 +3266,43 @@ export default function SettingsPage({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const P: Record<string, React.CSSProperties> = {
+  // The page is the scroll container; the command bar sticks to its top and
+  // each tab body is width-capped below it.
   page: {
     flex: 1,
+    minHeight: 0,
     overflowY: 'auto',
-    ...hybridSettingsStyles.page,
+    background: 'var(--bg)',
   },
-  pageHeader: hybridSettingsStyles.pageHeader,
-  title: hybridSettingsStyles.title,
-  subtitle: hybridSettingsStyles.subtitle,
-  account: hybridSettingsStyles.account,
+  stickyHeader: {
+    position: 'sticky',
+    top: 0,
+    zIndex: 30,
+    background: 'var(--bg)',
+  },
+  bar: { padding: '8px 28px' },
+  tabRow: {
+    padding: '10px 28px',
+    borderBottom: '1px solid var(--divider-subtle)',
+  },
+  account: { ...hybridSettingsStyles.account, flexShrink: 0, fontSize: 14 },
   roleBadge: hybridSettingsStyles.roleBadge,
-  logoutButton: { ...hybridControlStyles.secondaryButton, minHeight: 32, padding: '6px 10px' },
-  tabBar: hybridSettingsStyles.tabBar,
-  tab: hybridSettingsStyles.tab,
+  logoutButton: { ...hybridControlStyles.secondaryButton, minHeight: 30, padding: '5px 10px' },
+  tabBar: { ...hybridSettingsStyles.tabBar, marginBottom: 0, padding: 3, width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', scrollbarWidth: 'none' },
+  tab: { ...hybridSettingsStyles.tab, minHeight: 34, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 7 },
   tabActive: hybridSettingsStyles.tabActive,
-  section: hybridSettingsStyles.section,
+  section: {
+    ...hybridSettingsStyles.section,
+    maxWidth: 1040,
+    boxSizing: 'border-box',
+    padding: '24px 36px 40px',
+  },
   sectionTitle: hybridSettingsStyles.sectionTitle,
   advancedSectionTitle: {
     ...hybridSettingsStyles.sectionTitle,
     marginTop: 28,
-    scrollMarginTop: 16,
+    // Clear the sticky command bar + tab row when scrolled into view.
+    scrollMarginTop: 124,
   },
   btnPrimary: hybridControlStyles.primaryButton,
   btnSecondary: hybridControlStyles.secondaryButton,

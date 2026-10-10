@@ -228,10 +228,10 @@ describe('App component flows', () => {
     expect(await screen.findByTestId('playlists-view')).toHaveTextContent('playlist:42');
 
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    // Search uses the shared command bar: watermark + compact library totals, no hero copy.
+    // Search uses the shared command bar (watermark, no hero copy); library totals live in the sidebar.
     expect(screen.queryByText('Find artists, albums, and tracks across your music library.')).not.toBeInTheDocument();
     expect(screen.getByTestId('command-bar-watermark')).toHaveTextContent('Search');
-    expect(screen.getByTestId('library-stats-strip')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-library-stats')).toBeInTheDocument();
     const searchInput = screen.getByPlaceholderText(/Search titles, artists, albums/i);
     expect(searchInput).toBeInTheDocument();
     fireEvent.focus(searchInput);

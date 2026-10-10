@@ -596,18 +596,19 @@ describe('HomeView playback activity tabs', () => {
   });
 
   it('persists collapsed dashboard panes and expands a previously collapsed pane', async () => {
-    localStorage.setItem('boogiebox-pane-collapsed-Library', 'true');
+    localStorage.setItem('boogiebox-pane-collapsed-Recent Albums', 'true');
     renderHome();
 
     expect(screen.getByTitle('Expand')).toBeInTheDocument();
     fireEvent.click(screen.getByTitle('Expand'));
-    expect(screen.getByText('Tracks')).toBeInTheDocument();
+    expect(screen.queryByTitle('Expand')).not.toBeInTheDocument();
+    expect(localStorage.getItem('boogiebox-pane-collapsed-Recent Albums')).toBe('false');
 
     const collapseButtons = screen.getAllByTitle('Collapse');
-    expect(collapseButtons).toHaveLength(6);
+    expect(collapseButtons).toHaveLength(5);
     for (const button of collapseButtons) fireEvent.click(button);
 
-    expect(screen.getAllByTitle('Expand')).toHaveLength(6);
+    expect(screen.getAllByTitle('Expand')).toHaveLength(5);
     expect(localStorage.getItem('boogiebox-pane-collapsed-Genres')).toBe('true');
   });
 
@@ -621,7 +622,7 @@ describe('HomeView playback activity tabs', () => {
 
     renderHome(undefined, undefined, 0, undefined, undefined, null);
 
-    expect(screen.getAllByText('--')).toHaveLength(3);
+    expect(screen.getByText('Recent Albums')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('No albums yet')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText('Rate some artists, albums, or tracks to build your rankings')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText('No genre data yet')).toBeInTheDocument());
