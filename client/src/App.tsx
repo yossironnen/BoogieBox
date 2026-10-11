@@ -1957,6 +1957,7 @@ const S: Record<string, React.CSSProperties> = {
     backgroundColor: 'color-mix(in srgb, var(--surface) 92%, var(--bg))',
     borderRight: '1px solid color-mix(in srgb, var(--border) 72%, transparent)',
     display: 'flex', flexDirection: 'column', flexShrink: 0,
+    minHeight: 0, overflowY: 'auto', overflowX: 'hidden',
     boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.03)',
   },
   sidebarCollapsed: {
