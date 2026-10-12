@@ -4,7 +4,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 /// Allowed `format_policy` values.
-pub const FORMAT_POLICIES: &[&str] = &["auto", "direct", "flac", "mp3"];
+pub const FORMAT_POLICIES: &[&str] = &["auto", "direct", "lossless", "mp3"];
 
 /// One remembered renderer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub struct RendererRow {
     pub location_url: String,
     /// JSON capabilities blob (endpoints, sink formats, setNext support).
     pub capabilities: String,
-    /// `auto` | `direct` | `flac` | `mp3`.
+    /// `auto` | `direct` | `lossless` | `mp3`.
     pub format_policy: String,
     /// Hidden from the picker by an admin.
     pub hidden: bool,
@@ -202,9 +202,113 @@ pub fn delete_renderer(conn: &Connection, udn: &str) -> rusqlite::Result<bool> {
     Ok(conn.execute("DELETE FROM upnp_renderers WHERE udn = ?1", params![udn])? > 0)
 }
 
+/// Everything a renderer needs to describe and stream one library track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackMediaMeta {
+    /// Track id (stringified entity id).
+    pub id: String,
+    /// Title.
+    pub title: String,
+    /// Track artist name.
+    pub artist: Option<String>,
+    /// Album title.
+    pub album: Option<String>,
+    /// Album id (for artwork).
+    pub album_id: Option<String>,
+    /// Genre.
+    pub genre: Option<String>,
+    /// Track number.
+    pub track_number: Option<i64>,
+    /// Duration in seconds.
+    pub duration: Option<f64>,
+    /// Absolute file path.
+    pub file_path: String,
+    /// File size in bytes.
+    pub file_size: Option<i64>,
+    /// Sample rate (Hz) from the scanner's technical metadata.
+    pub sample_rate: Option<i64>,
+    /// Channel count from the scanner's technical metadata.
+    pub channels: Option<i64>,
+}
+
+fn value_to_string(v: rusqlite::types::Value) -> Option<String> {
+    match v {
+        rusqlite::types::Value::Integer(i) => Some(i.to_string()),
+        rusqlite::types::Value::Text(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// Loads renderer metadata for one track.
+pub fn get_track_media_meta(
+    conn: &Connection,
+    track_id: &str,
+) -> rusqlite::Result<Option<TrackMediaMeta>> {
+    let id = crate::music::coerce_entity_id(track_id);
+    conn.query_row(
+        "SELECT t.id, t.title, a.name, al.title, t.album_id, t.genre, t.track_number, t.duration,
+                t.file_path, t.file_size, t.sample_rate, t.channels
+         FROM tracks t
+         LEFT JOIN artists a ON a.id = t.artist_id
+         LEFT JOIN albums al ON al.id = t.album_id
+         WHERE t.id = ?1",
+        params![id],
+        |r| {
+            Ok(TrackMediaMeta {
+                id: value_to_string(r.get(0)?).unwrap_or_default(),
+                title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                artist: r.get(2)?,
+                album: r.get(3)?,
+                album_id: value_to_string(r.get(4)?),
+                genre: r.get(5)?,
+                track_number: r.get(6)?,
+                duration: r.get(7)?,
+                file_path: r.get(8)?,
+                file_size: r.get(9)?,
+                sample_rate: r.get(10)?,
+                channels: r.get(11)?,
+            })
+        },
+    )
+    .optional()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn track_media_meta_joins_artist_and_album() {
+        let root = std::env::temp_dir().join(format!("bb-remote-meta-{}", uuid::Uuid::now_v7()));
+        let crate::InitializedDatabase {
+            connection: conn, ..
+        } = crate::init_db(&root).unwrap();
+        conn.execute_batch(
+            "INSERT INTO libraries(id, path, name) VALUES('lib1', 'D:\\Music', 'Music');
+             INSERT INTO artists(id, name) VALUES('ar1', 'Massive Attack');
+             INSERT INTO albums(id, title, artist_id) VALUES('al1', 'Mezzanine', 'ar1');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracks(id, library_id, file_path, title, artist_id, album_id, genre, track_number, duration, file_size, sample_rate, channels)
+             VALUES('t1', 'lib1', 'D:\\Music\\a.flac', 'Angel', 'ar1', 'al1', 'Trip-Hop', 1, 379.5, 1000, 44100, 2)",
+            [],
+        )
+        .unwrap();
+        let m = get_track_media_meta(&conn, "t1").unwrap().unwrap();
+        assert_eq!(m.title, "Angel");
+        assert_eq!(m.artist.as_deref(), Some("Massive Attack"));
+        assert_eq!(m.album.as_deref(), Some("Mezzanine"));
+        assert_eq!(m.album_id.as_deref(), Some("al1"));
+        assert_eq!((m.sample_rate, m.channels), (Some(44100), Some(2)));
+        assert_eq!(m.duration, Some(379.5));
+        assert!(get_track_media_meta(&conn, "missing").unwrap().is_none());
+        assert_eq!(
+            value_to_string(rusqlite::types::Value::Integer(7)).as_deref(),
+            Some("7")
+        );
+        assert_eq!(value_to_string(rusqlite::types::Value::Null), None);
+    }
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -235,7 +339,7 @@ mod tests {
             "b",
             &RendererPrefs {
                 alias: Some(Some("  Bedroom ".into())),
-                format_policy: Some("flac".into()),
+                format_policy: Some("lossless".into()),
                 hidden: Some(true),
             }
         )
@@ -248,7 +352,7 @@ mod tests {
         assert_eq!(b.friendly_name, "Zeta 2");
         assert_eq!(b.location_url, "http://10.0.0.6:49152/d.xml");
         assert_eq!(b.alias.as_deref(), Some("Bedroom"));
-        assert_eq!(b.format_policy, "flac");
+        assert_eq!(b.format_policy, "lossless");
         assert!(b.hidden);
         let names: Vec<_> = list_renderers(&conn)
             .unwrap()

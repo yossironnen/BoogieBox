@@ -3,10 +3,12 @@
 //! [`RemoteManager`] owns renderer discovery and the renderer registry. It lives in `AppState`, starts after
 //! setup (and again after a database switch), and is reconfigured when the `remote*` settings change.
 
+pub mod media;
 pub mod registry;
 
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -94,6 +96,8 @@ struct Inner {
     events: broadcast::Sender<RemoteEvent>,
     runtime: Mutex<Option<Runtime>>,
     icons: Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>,
+    media: media::MediaTokens,
+    http_port: AtomicU16,
 }
 
 /// Play On coordinator stored in `AppState`.
@@ -127,6 +131,8 @@ impl RemoteManager {
                 events,
                 runtime: Mutex::new(None),
                 icons: Mutex::new(Default::default()),
+                media: media::MediaTokens::default(),
+                http_port: AtomicU16::new(crate::DEFAULT_PORT),
             }),
         }
     }
@@ -139,6 +145,21 @@ impl RemoteManager {
     /// LAN SOAP/HTTP client.
     pub fn soap(&self) -> &SoapClient {
         &self.inner.soap
+    }
+
+    /// Media token registry.
+    pub fn media(&self) -> &media::MediaTokens {
+        &self.inner.media
+    }
+
+    /// Records the main HTTP port renderers fetch media from.
+    pub fn set_http_port(&self, port: u16) {
+        self.inner.http_port.store(port, Ordering::Relaxed);
+    }
+
+    /// Main HTTP port renderers fetch media from.
+    pub fn http_port(&self) -> u16 {
+        self.inner.http_port.load(Ordering::Relaxed)
     }
 
     /// Subscribes to client-facing events.
@@ -258,6 +279,7 @@ impl RemoteManager {
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = sweep.tick() => {
+                    self.inner.media.sweep(Instant::now());
                     if !self.inner.registry.expire(Instant::now()).is_empty() {
                         self.emit(RemoteEvent::Renderers);
                     }

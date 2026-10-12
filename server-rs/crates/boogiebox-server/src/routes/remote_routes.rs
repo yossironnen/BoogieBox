@@ -28,6 +28,8 @@ pub fn remote_router(state: SharedState) -> Router {
         .route("/api/remote/renderers/refresh", post(refresh_handler))
         .route("/api/remote/renderers/{udn}", patch(patch_renderer_handler))
         .route("/api/remote/renderers/{udn}/icon", get(icon_handler))
+        // Renderers have no session cookie: the unguessable, short-lived token is the authorization.
+        .route("/media/r/{token}", get(crate::remote::media::media_handler))
         .with_state(state)
 }
 
@@ -481,14 +483,14 @@ mod tests {
             patch_req(
                 "/api/remote/renderers/a",
                 &admin,
-                r#"{"alias":" Lounge ","formatPolicy":"flac","hidden":true}"#,
+                r#"{"alias":" Lounge ","formatPolicy":"lossless","hidden":true}"#,
             ),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         let json = json_body(&body);
         assert_eq!(json["name"], "Lounge");
-        assert_eq!(json["formatPolicy"], "flac");
+        assert_eq!(json["formatPolicy"], "lossless");
         assert_eq!(json["hidden"], true);
         assert_eq!(events.recv().await.unwrap(), RemoteEvent::Renderers);
 
@@ -553,6 +555,88 @@ mod tests {
         .await;
         // The auth extractor runs first and has no DB to check the session against.
         assert!(status == StatusCode::SERVICE_UNAVAILABLE || status == StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn media_route_serves_issued_tokens_only() {
+        use crate::remote::media::{Delivery, MediaTarget};
+        let (app, _db, remote) = app("remote-routes-media");
+        let dir = std::env::temp_dir().join(format!("bb-media-route-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.flac");
+        std::fs::write(&file, b"0123456789").unwrap();
+        let token = remote.media().issue(
+            MediaTarget::Audio {
+                log_id: "t1".into(),
+                file_path: file.clone(),
+                duration: Some(1.0),
+                sample_rate: None,
+                channels: None,
+            },
+            Delivery::Direct,
+            "audio/flac".into(),
+            "wiim",
+            std::time::Duration::from_secs(60),
+        );
+
+        let req = |method: &str, uri: String, extra: &[(&str, &str)]| {
+            let mut b = Request::builder().method(method).uri(uri);
+            for (k, v) in extra {
+                b = b.header(*k, *v);
+            }
+            b.body(Body::empty()).unwrap()
+        };
+        let (status, headers, body) = crate::test_support::send_full(
+            app.clone(),
+            req(
+                "GET",
+                format!("/media/r/{token}"),
+                &[("range", "bytes=2-4"), ("getcontentFeatures.dlna.org", "1")],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(body, b"234");
+        assert_eq!(headers["content-type"], "audio/flac");
+        assert_eq!(headers["transferMode.dlna.org"], "Streaming");
+        assert!(headers["contentFeatures.dlna.org"]
+            .to_str()
+            .unwrap()
+            .contains("DLNA.ORG_OP=01"));
+
+        let (status, headers, body) = crate::test_support::send_full(
+            app.clone(),
+            req("HEAD", format!("/media/r/{token}"), &[]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["content-length"], "10");
+        assert!(body.is_empty());
+
+        for bad in ["nope".to_string(), "0".repeat(48)] {
+            let (status, _) = send(app.clone(), req("GET", format!("/media/r/{bad}"), &[])).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+
+        std::fs::remove_file(&file).unwrap();
+        let (status, _) = send(app.clone(), req("GET", format!("/media/r/{token}"), &[])).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "file vanished");
+
+        remote.media().revoke_owner("wiim");
+        let art = remote.media().issue(
+            MediaTarget::AlbumArt {
+                album_id: "missing".into(),
+            },
+            Delivery::Direct,
+            "image/jpeg".into(),
+            "wiim",
+            std::time::Duration::from_secs(60),
+        );
+        let (status, _) = send(app, req("GET", format!("/media/r/{art}"), &[])).await;
+        assert!(
+            status.is_client_error() || status.is_server_error(),
+            "unknown album has no art: {status}"
+        );
     }
 
     #[test]

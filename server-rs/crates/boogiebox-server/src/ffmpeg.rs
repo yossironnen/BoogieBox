@@ -433,9 +433,73 @@ pub fn spawn_transcode(
         .spawn()
 }
 
+/// Builds the ffmpeg arguments for raw little-endian PCM output (no container; the caller writes the WAV
+/// header so byte offsets stay exact).
+pub fn pcm_args(seek_seconds: f64, sample_rate: u32, channels: u16, bits: u16) -> Vec<String> {
+    let (codec, format) = if bits >= 24 {
+        ("pcm_s24le", "s24le")
+    } else {
+        ("pcm_s16le", "s16le")
+    };
+    let mut args: Vec<String> = vec!["-loglevel".into(), "error".into(), "-hide_banner".into()];
+    if seek_seconds > 0.001 {
+        args.extend(["-ss".into(), format!("{seek_seconds:.6}")]);
+    }
+    args.push("-i".into());
+    args.push(String::new()); // placeholder for the input path (kept as OsStr by the caller)
+    for a in ["-map", "0:a", "-vn", "-acodec", codec, "-ar"] {
+        args.push(a.to_string());
+    }
+    args.push(sample_rate.to_string());
+    args.push("-ac".into());
+    args.push(channels.to_string());
+    for a in ["-f", format, "pipe:1"] {
+        args.push(a.to_string());
+    }
+    args
+}
+
+/// Spawns ffmpeg decoding `file_path` to raw PCM on stdout (see [`pcm_args`]).
+pub fn spawn_pcm(
+    ffmpeg: &Path,
+    file_path: &Path,
+    seek_seconds: f64,
+    sample_rate: u32,
+    channels: u16,
+    bits: u16,
+) -> std::io::Result<std::process::Child> {
+    let mut cmd = std::process::Command::new(ffmpeg); // nosemgrep: boogiebox-rust-dynamic-command
+    for arg in pcm_args(seek_seconds, sample_rate, channels, bits) {
+        if arg.is_empty() {
+            cmd.arg(file_path);
+        } else {
+            cmd.arg(arg);
+        }
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcm_args_select_codec_and_seek() {
+        let a = pcm_args(0.0, 44_100, 2, 16);
+        assert!(!a.contains(&"-ss".to_string()));
+        assert!(a.contains(&"pcm_s16le".to_string()) && a.contains(&"s16le".to_string()));
+        assert_eq!(
+            a.iter().filter(|s| s.is_empty()).count(),
+            1,
+            "one input placeholder"
+        );
+        let b = pcm_args(12.5, 96_000, 2, 24);
+        assert!(b.windows(2).any(|w| w[0] == "-ss" && w[1] == "12.500000"));
+        assert!(b.contains(&"pcm_s24le".to_string()) && b.contains(&"96000".to_string()));
+    }
 
     #[test]
     fn bitrate_low_default() {

@@ -43,6 +43,7 @@ pub mod ffmpeg;
 pub mod home_cache;
 pub mod image_thumb;
 pub mod logging;
+pub mod media_serve;
 pub mod mix_priority_gate;
 pub mod mix_worker;
 pub mod post_scan;
@@ -61,7 +62,7 @@ pub mod test_support;
 pub mod upnp;
 pub mod waveform_map;
 
-const DEFAULT_PORT: u16 = 3001;
+pub(crate) const DEFAULT_PORT: u16 = 3001;
 
 /// Shared SQLite connection wrapper used by route handlers and background workers.
 pub type DbPool = Arc<Mutex<rusqlite::Connection>>;
@@ -273,6 +274,7 @@ pub async fn run_from_env() -> Result<(), ServerError> {
     let log_file = init_logging();
     let config = ServerConfig::from_env()?;
     let state = AppState::default();
+    state.remote.set_http_port(config.port);
     let startup_banner = format!(
         "BoogieBox Rust server starting; version={}; log_file={}; ffmpeg_path={}; ffmpeg_available={}; ffprobe_available={}",
         env!("CARGO_PKG_VERSION"),

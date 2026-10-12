@@ -362,16 +362,24 @@ impl SinkCaps {
     /// An empty list (device did not answer `GetProtocolInfo`) is treated as "unknown" and returns false so the
     /// caller falls back to a safe transcode.
     pub fn accepts(&self, mime: &str) -> bool {
+        self.listed_alias(mime).is_some()
+    }
+
+    /// The exact MIME spelling the renderer lists for `mime`'s family (e.g. `audio/m4a` for `audio/mp4`), so
+    /// `protocolInfo` matches what the device expects. Wildcards return `mime` unchanged.
+    pub fn listed_alias(&self, mime: &str) -> Option<String> {
         let mime = base_mime(mime);
-        if self.mimes.contains("*") || self.mimes.contains("audio/*") || self.mimes.contains(&mime)
-        {
-            return true;
+        if self.mimes.contains(&mime) {
+            return Some(mime);
         }
-        MIME_FAMILIES
+        if let Some(alias) = MIME_FAMILIES
             .iter()
             .find(|family| family.contains(&mime.as_str()))
-            .map(|family| family.iter().any(|alias| self.mimes.contains(*alias)))
-            .unwrap_or(false)
+            .and_then(|family| family.iter().find(|alias| self.mimes.contains(**alias)))
+        {
+            return Some((*alias).to_string());
+        }
+        (self.mimes.contains("*") || self.mimes.contains("audio/*")).then_some(mime)
     }
 }
 
@@ -541,6 +549,28 @@ mod tests {
         assert!(only_flac.accepts("audio/flac"));
         assert!(!only_flac.accepts("audio/mpeg"));
         assert!(!only_flac.accepts("video/mp4"));
+    }
+
+    #[test]
+    fn listed_alias_matches_device_spelling() {
+        let wiim = SinkCaps::parse(
+            "http-get:*:audio/m4a:*,http-get:*:audio/mp3:*,http-get:*:audio/flac:*",
+        );
+        assert_eq!(wiim.listed_alias("audio/mp4").as_deref(), Some("audio/m4a"));
+        assert_eq!(
+            wiim.listed_alias("audio/mpeg").as_deref(),
+            Some("audio/mp3")
+        );
+        assert_eq!(
+            wiim.listed_alias("audio/flac; x=1").as_deref(),
+            Some("audio/flac")
+        );
+        assert_eq!(wiim.listed_alias("audio/aiff"), None);
+        let any = SinkCaps::parse("http-get:*:audio/*:*");
+        assert_eq!(
+            any.listed_alias("audio/aiff").as_deref(),
+            Some("audio/aiff")
+        );
     }
 
     #[test]

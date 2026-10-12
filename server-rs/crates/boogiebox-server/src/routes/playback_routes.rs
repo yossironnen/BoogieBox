@@ -1,7 +1,6 @@
 //! Defines Rust API routes for Playback Routes server behavior.
 
 use axum::{
-    body::Body,
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -10,14 +9,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{io::SeekFrom, path};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio_util::io::ReaderStream;
+use std::path;
 
 use crate::{
-    artwork_cache::http_date_secs,
     auth::AuthenticatedUser,
-    bpm_analysis, ffmpeg,
+    bpm_analysis, ffmpeg, media_serve,
     providers::{fetch_lrclib_lyrics, fetch_lyricsovh},
     waveform_map, DbPool, ErrorResponse, OkResponse, SharedState,
 };
@@ -156,195 +152,18 @@ async fn stream_track_handler(
             .await
             .unwrap_or_else(|_| ("low".into(), false))
         };
-
-        let total_bytes = track.duration.and_then(|duration| {
-            if duration > 0.0 {
-                let total = ffmpeg::transcoded_total_bytes(duration, &quality);
-                (total > 0).then_some(total)
-            } else {
-                None
-            }
-        });
-        let parsed_transcode_range = range_header
-            .as_ref()
-            .and_then(|rh| total_bytes.and_then(|total| ffmpeg::parse_byte_range(rh, total)));
-        let seek_seconds = parsed_transcode_range
-            .filter(|(start, _)| *start > 0)
-            .map(|(start, _)| ffmpeg::byte_offset_to_seconds(start, &quality))
-            .unwrap_or(0.0);
-        if range_header.is_some() && total_bytes.is_some() && parsed_transcode_range.is_none() {
-            tracing::warn!(
-                track_id = %id,
-                ext = %track_ext,
-                range = range_header.as_deref().unwrap_or(""),
-                duration = track.duration.unwrap_or(0.0),
-                estimated_total_bytes = total_bytes.unwrap_or(0),
-                "invalid audio transcode range request"
-            );
-            return Response::builder()
-                .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                .header(header::ACCEPT_RANGES, "bytes")
-                .body(Body::empty())
-                .unwrap_or_else(|_| internal_error().into_response());
-        }
-
-        let ffmpeg_path = ffmpeg::resolve_ffmpeg();
-        tracing::info!(
-            track_id = %id,
-            ext = %track_ext,
-            quality = %quality,
+        return media_serve::serve_mp3_transcode(media_serve::Mp3Transcode {
+            file_path: &file_path,
+            duration: track.duration,
+            range: range_header.as_deref(),
+            quality: &quality,
             replay_gain,
-            seek_seconds,
-            duration = track.duration.unwrap_or(0.0),
-            estimated_total_bytes = total_bytes.unwrap_or(0),
-            ffmpeg = %ffmpeg_path.display(),
-            "audio stream using ffmpeg transcode"
-        );
-        let mut child = match ffmpeg::spawn_transcode(
-            &ffmpeg_path,
-            &file_path,
-            seek_seconds,
-            &quality,
-            replay_gain,
-        ) {
-            Ok(c) => c,
-            Err(error) => {
-                tracing::error!(
-                    track_id = %id,
-                    ext = %track_ext,
-                    ffmpeg = %ffmpeg_path.display(),
-                    error = %error,
-                    "failed to spawn ffmpeg audio transcode"
-                );
-                return internal_error().into_response();
-            }
-        };
-        tracing::info!(
-            track_id = %id,
-            ext = %track_ext,
-            pid = child.id(),
-            "spawned ffmpeg audio transcode"
-        );
-
-        // Bridge sync std::process::Child stdout → async DuplexStream.
-        // std::process avoids IOCP-named-pipe incompatibility with FFmpeg 8.x
-        // async muxer tasks (caused EINVAL after ~1 KB on Tokio async pipes).
-        let (read_side, write_side) = tokio::io::duplex(64 * 1024);
-        let mut child_stdout = child.stdout.take().expect("stdout piped");
-        let mut child_stderr = child.stderr.take();
-        let log_track_id = id.clone();
-        let log_ext = track_ext.clone();
-        tokio::task::spawn_blocking(move || {
-            use std::io::{Read, Write};
-            let mut sync_writer = tokio_util::io::SyncIoBridge::new(write_side);
-            let mut buf = [0u8; 8192];
-            let mut bytes_written: u64 = 0;
-            loop {
-                match child_stdout.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if sync_writer.write_all(&buf[..n]).is_err() {
-                            break;
-                        }
-                        bytes_written += n as u64;
-                    }
-                    Err(_) => break,
-                }
-            }
-            drop(sync_writer);
-            let mut stderr_text = String::new();
-            if let Some(ref mut e) = child_stderr {
-                let _ = e.read_to_string(&mut stderr_text);
-            }
-            match child.wait() {
-                Ok(s) if !s.success() => {
-                    tracing::warn!(
-                        track_id = %log_track_id,
-                        ext = %log_ext,
-                        status = ?s,
-                        bytes_written,
-                        stderr = %stderr_text.trim(),
-                        "ffmpeg audio transcode exited unsuccessfully"
-                    )
-                }
-                Ok(s) => {
-                    tracing::info!(
-                        track_id = %log_track_id,
-                        ext = %log_ext,
-                        status = ?s,
-                        bytes_written,
-                        "ffmpeg audio transcode completed"
-                    )
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        track_id = %log_track_id,
-                        ext = %log_ext,
-                        bytes_written,
-                        error = %error,
-                        stderr = %stderr_text.trim(),
-                        "failed waiting for ffmpeg audio transcode"
-                    )
-                }
-            }
-        });
-
-        let start_byte = ffmpeg::transcoded_byte_offset(seek_seconds, &quality);
-
-        let mut builder = Response::builder()
-            .header(header::CONTENT_TYPE, "audio/mpeg")
-            .header(header::ACCEPT_RANGES, "bytes")
-            .header("Cache-Control", "no-cache");
-
-        if range_header.is_some() {
-            if let (Some(total), Some((range_start, range_end))) =
-                (total_bytes, parsed_transcode_range)
-            {
-                let response_start = start_byte.max(range_start);
-                let response_end = range_end.max(response_start).min(total.saturating_sub(1));
-                let remaining = response_end.saturating_sub(response_start) + 1;
-                tracing::info!(
-                    track_id = %id,
-                    ext = %track_ext,
-                    status = 206,
-                    content_range = %format!("bytes {response_start}-{response_end}/{total}"),
-                    content_length = remaining,
-                    "audio transcode range response"
-                );
-                builder = builder
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(
-                        header::CONTENT_RANGE,
-                        format!("bytes {response_start}-{response_end}/{total}"),
-                    )
-                    .header(header::CONTENT_LENGTH, remaining.to_string());
-            } else {
-                tracing::info!(
-                    track_id = %id,
-                    ext = %track_ext,
-                    status = 200,
-                    duration = track.duration.unwrap_or(0.0),
-                    "audio transcode range requested without known duration"
-                );
-                builder = builder.status(StatusCode::OK);
-            }
-        } else {
-            tracing::info!(
-                track_id = %id,
-                ext = %track_ext,
-                status = 200,
-                content_length = total_bytes.unwrap_or(0),
-                "audio transcode full response"
-            );
-            builder = builder.status(StatusCode::OK);
-            if let Some(total) = total_bytes {
-                builder = builder.header(header::CONTENT_LENGTH, total.to_string());
-            }
-        }
-
-        return builder
-            .body(Body::from_stream(ReaderStream::new(read_side)))
-            .unwrap_or_else(|_| internal_error().into_response());
+            head_only: false,
+            log_id: &id,
+            log_ext: &track_ext,
+            extra: &[],
+        })
+        .await;
     }
 
     // Native file stream
@@ -355,88 +174,8 @@ async fn stream_track_handler(
         needs_transcode,
         "audio stream using native file response"
     );
-    let meta = match tokio::fs::metadata(&file_path).await {
-        Ok(m) => m,
-        Err(_) => return internal_error().into_response(),
-    };
-    let file_size = meta.len();
-    let modified_secs = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let etag = format!("\"{file_size}-{modified_secs}\"");
-    let last_modified = http_date_secs(modified_secs);
-
-    // M-03: Handle conditional requests so browsers/clients get 304 on unchanged files.
-    let if_none_match = req_headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-    if let Some(ref inm) = if_none_match {
-        if inm.as_str() == etag || inm == "*" {
-            return Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
-                .header(header::ETAG, &etag)
-                .header("Last-Modified", &last_modified)
-                .body(Body::empty())
-                .unwrap_or_else(|_| internal_error().into_response());
-        }
-    }
-
     let mime = ffmpeg::audio_mime_type(&file_path);
-
-    if let Some(ref rh) = range_header {
-        match ffmpeg::parse_byte_range(rh, file_size) {
-            None => {
-                return Response::builder()
-                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                    .header(header::CONTENT_RANGE, format!("bytes */{file_size}"))
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .body(Body::empty())
-                    .unwrap_or_else(|_| internal_error().into_response());
-            }
-            Some((start, end)) => {
-                let mut file = match tokio::fs::File::open(&file_path).await {
-                    Ok(f) => f,
-                    Err(_) => return internal_error().into_response(),
-                };
-                if file.seek(SeekFrom::Start(start)).await.is_err() {
-                    return internal_error().into_response();
-                }
-                let len = end - start + 1;
-                let reader = file.take(len);
-                return Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(
-                        header::CONTENT_RANGE,
-                        format!("bytes {start}-{end}/{file_size}"),
-                    )
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .header(header::CONTENT_LENGTH, len.to_string())
-                    .header(header::CONTENT_TYPE, mime)
-                    .header(header::ETAG, &etag)
-                    .header("Last-Modified", &last_modified)
-                    .body(Body::from_stream(ReaderStream::new(reader)))
-                    .unwrap_or_else(|_| internal_error().into_response());
-            }
-        }
-    }
-
-    let file = match tokio::fs::File::open(&file_path).await {
-        Ok(f) => f,
-        Err(_) => return internal_error().into_response(),
-    };
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_LENGTH, file_size.to_string())
-        .header(header::CONTENT_TYPE, mime)
-        .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::ETAG, &etag)
-        .header("Last-Modified", &last_modified)
-        .body(Body::from_stream(ReaderStream::new(file)))
-        .unwrap_or_else(|_| internal_error().into_response())
+    media_serve::serve_file(&file_path, mime, &req_headers, false, &[]).await
 }
 
 async fn user_history_handler(

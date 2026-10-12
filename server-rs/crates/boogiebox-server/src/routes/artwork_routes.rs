@@ -71,10 +71,10 @@ pub fn artwork_router(state: SharedState) -> Router {
 
 // -- Query params --------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct ArtParams {
-    size: Option<String>,
-    refresh: Option<String>,
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ArtParams {
+    pub(crate) size: Option<String>,
+    pub(crate) refresh: Option<String>,
 }
 
 // -- Album cover (original) ----------------------------------------------------
@@ -214,7 +214,7 @@ async fn album_cover_handler(
 
 // -- Album art thumbnail -------------------------------------------------------
 
-async fn album_art_handler(
+pub(crate) async fn album_art_handler(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     Query(params): Query<ArtParams>,

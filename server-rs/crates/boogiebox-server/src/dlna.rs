@@ -14,8 +14,6 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
 };
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::upnp::didl::{format_duration, wrap_didl, xml_escape};
@@ -607,64 +605,8 @@ async fn audio_stream_handler(
         return (StatusCode::NOT_FOUND, "File not found on disk").into_response();
     }
 
-    let file_size = match tokio::fs::metadata(&file_path).await {
-        Ok(m) => m.len(),
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Stat failed").into_response(),
-    };
-
     let mime = crate::ffmpeg::audio_mime_type(&file_path);
-    let range_header = headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-
-    if let Some(ref rh) = range_header {
-        match crate::ffmpeg::parse_byte_range(rh, file_size) {
-            None => {
-                return Response::builder()
-                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                    .header(header::CONTENT_RANGE, format!("bytes */{file_size}"))
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .body(Body::empty())
-                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
-            }
-            Some((start, end)) => {
-                let mut file = match tokio::fs::File::open(&file_path).await {
-                    Ok(f) => f,
-                    Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-                };
-                use std::io::SeekFrom;
-                if file.seek(SeekFrom::Start(start)).await.is_err() {
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-                let len = end - start + 1;
-                let reader = file.take(len);
-                return Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(
-                        header::CONTENT_RANGE,
-                        format!("bytes {start}-{end}/{file_size}"),
-                    )
-                    .header(header::ACCEPT_RANGES, "bytes")
-                    .header(header::CONTENT_LENGTH, len.to_string())
-                    .header(header::CONTENT_TYPE, mime)
-                    .body(Body::from_stream(ReaderStream::new(reader)))
-                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
-            }
-        }
-    }
-
-    let file = match tokio::fs::File::open(&file_path).await {
-        Ok(f) => f,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_LENGTH, file_size.to_string())
-        .header(header::CONTENT_TYPE, mime)
-        .header(header::ACCEPT_RANGES, "bytes")
-        .body(Body::from_stream(ReaderStream::new(file)))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    crate::media_serve::serve_file(&file_path, mime, &headers, false, &[]).await
 }
 
 async fn event_stub_handler(_headers: HeaderMap) -> impl IntoResponse {
