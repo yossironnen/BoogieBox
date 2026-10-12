@@ -10,6 +10,7 @@ use super::UpnpError;
 /// Per-action timeout. Renderers answer in tens of milliseconds; anything slower is treated as unreachable.
 pub const SOAP_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const SEND_RETRY_DELAY: Duration = Duration::from_millis(150);
 
 /// Builds the SOAP envelope for `action` with already-unescaped `args` (escaped here).
 pub fn build_envelope(service_type: &str, action: &str, args: &[(&str, &str)]) -> String {
@@ -127,6 +128,9 @@ impl SoapClient {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
             .no_proxy()
+            // Renderer HTTP stacks (WiiM/LinkPlay among them) drop idle keep-alive connections without
+            // closing them cleanly; reusing one fails with "error sending request". One connection per call.
+            .pool_max_idle_per_host(0)
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(SOAP_TIMEOUT)
             .user_agent(concat!(
@@ -175,18 +179,29 @@ impl SoapClient {
         args: &[(&str, &str)],
     ) -> Result<XmlNode, UpnpError> {
         let body = build_envelope(&endpoint.service_type, action, args);
-        let resp = self
-            .http
-            .post(&endpoint.control_url)
-            .header("Content-Type", "text/xml; charset=\"utf-8\"")
-            .header(
-                "SOAPACTION",
-                format!("\"{}#{}\"", endpoint.service_type, action),
-            )
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| UpnpError::Http(e.without_url().to_string()))?;
+        let send = || {
+            self.http
+                .post(&endpoint.control_url)
+                .header("Content-Type", "text/xml; charset=\"utf-8\"")
+                .header("Connection", "close")
+                .header(
+                    "SOAPACTION",
+                    format!("\"{}#{}\"", endpoint.service_type, action),
+                )
+                .body(body.clone())
+                .send()
+        };
+        // A send failure (connection refused/reset before any response) is retried once: every UPnP action
+        // Play On uses is safe to repeat. Timeouts are not retried.
+        let resp = match send().await {
+            Ok(r) => Ok(r),
+            Err(e) if !e.is_timeout() => {
+                tokio::time::sleep(SEND_RETRY_DELAY).await;
+                send().await
+            }
+            Err(e) => Err(e),
+        }
+        .map_err(|e| UpnpError::Http(e.without_url().to_string()))?;
         let status = resp.status();
         let bytes = read_capped(resp, MAX_XML_BYTES).await?;
         let text = String::from_utf8_lossy(&bytes);
@@ -635,6 +650,46 @@ pub(crate) mod tests {
         assert!(body_of("SetVolume").contains("<DesiredVolume>100</DesiredVolume>"));
         assert!(body_of("SetMute").contains("<DesiredMute>0</DesiredMute>"));
         assert!(body_of("Play").contains("<Speed>1</Speed>"));
+    }
+
+    /// Renderers drop connections abruptly (WiiM, Phase 0.3 live run): the first connection is closed without a
+    /// response, the retry on a fresh connection succeeds.
+    #[tokio::test]
+    async fn send_failure_is_retried_once_on_a_new_connection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connections = Arc::new(Mutex::new(0u32));
+        let counter = connections.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let n = {
+                    let mut c = counter.lock().unwrap();
+                    *c += 1;
+                    *c
+                };
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                if n == 1 {
+                    drop(sock); // reset without a response
+                    continue;
+                }
+                let body = ok_response("Play", "");
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        let c = SoapClient::new();
+        c.play(&endpoint(&format!("http://{addr}/ctl")))
+            .await
+            .unwrap();
+        assert_eq!(*connections.lock().unwrap(), 2);
     }
 
     #[tokio::test]

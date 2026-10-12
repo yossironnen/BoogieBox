@@ -165,6 +165,7 @@ pub(crate) mod mock {
         base: f64,
         started: Option<Instant>,
         volume: u8,
+        fixed_volume: bool,
         muted: bool,
         offline: bool,
         fault_uri_contains: Option<String>,
@@ -202,6 +203,7 @@ pub(crate) mod mock {
                     base: 0.0,
                     started: None,
                     volume: 30,
+                    fixed_volume: false,
                     muted: false,
                     offline: false,
                     fault_uri_contains: None,
@@ -376,8 +378,18 @@ pub(crate) mod mock {
         }
 
         pub(crate) fn set_volume(&self, v: u8) -> Result<(), UpnpError> {
-            self.guard(format!("SetVolume {v}"))?.volume = v.min(100);
+            let mut s = self.guard(format!("SetVolume {v}"))?;
+            if !s.fixed_volume {
+                s.volume = v.min(100);
+            }
             Ok(())
+        }
+
+        /// Simulates a fixed-volume output: SetVolume succeeds but changes nothing.
+        pub fn fix_volume(&self, at: u8) {
+            let mut s = self.lock();
+            s.fixed_volume = true;
+            s.volume = at;
         }
 
         pub(crate) fn set_mute(&self, m: bool) -> Result<(), UpnpError> {

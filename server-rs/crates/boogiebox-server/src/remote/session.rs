@@ -785,7 +785,7 @@ impl Actor {
                 Ok(())
             }
             Command::SetVolume(v) => {
-                if !self.link.has_volume() {
+                if !self.link.has_volume() || !self.state.can_set_volume {
                     return Err(SessionError::Unsupported("volume"));
                 }
                 let v = v.min(100);
@@ -793,6 +793,19 @@ impl Actor {
                     .set_volume(v)
                     .await
                     .map_err(|e| SessionError::Renderer(e.to_string()))?;
+                // Fixed-volume outputs (e.g. a WiiM feeding an amplifier) accept SetVolume and ignore it.
+                if let Ok((actual, muted)) = self.link.volume().await {
+                    self.state.muted = Some(muted);
+                    if actual.abs_diff(v) > 2 {
+                        self.state.volume = Some(actual);
+                        self.state.can_set_volume = false;
+                        self.notice(
+                            "info",
+                            format!("{}'s volume is fixed; use your amplifier", self.cfg.name),
+                        );
+                        return Err(SessionError::Unsupported("volume (it is fixed)"));
+                    }
+                }
                 self.state.volume = Some(v);
                 Ok(())
             }
@@ -1540,6 +1553,36 @@ pub(crate) mod tests {
         ));
         let st = h.handle.send(Command::Stop, alice(), false).await.unwrap();
         assert_eq!(st.status, SessionStatus::Stopped);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fixed_volume_output_is_detected() {
+        let mut h = harness(true);
+        h.mock.fix_volume(100);
+        h.handle
+            .send(load(vec![timed("a", 60.0)], 0), alice(), false)
+            .await
+            .unwrap();
+        assert_eq!(h.handle.snapshot().volume, Some(100));
+        assert!(h.handle.snapshot().can_set_volume);
+        assert_eq!(
+            h.handle.send(Command::SetVolume(15), alice(), false).await,
+            Err(SessionError::Unsupported("volume (it is fixed)"))
+        );
+        let s = h.handle.snapshot();
+        assert!(!s.can_set_volume, "volume control switched off");
+        assert_eq!(s.volume, Some(100));
+        assert!(matches!(
+            h.handle.send(Command::SetVolume(20), alice(), false).await,
+            Err(SessionError::Unsupported("volume"))
+        ));
+        let mut fixed_notice = false;
+        while let Ok(e) = h.events.try_recv() {
+            if let RemoteEvent::Notice { message, .. } = e {
+                fixed_notice |= message.contains("volume is fixed");
+            }
+        }
+        assert!(fixed_notice);
     }
 
     #[tokio::test(start_paused = true)]
