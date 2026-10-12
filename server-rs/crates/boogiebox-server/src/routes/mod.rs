@@ -11,4 +11,5 @@ pub mod music_routes;
 pub mod playback_routes;
 pub mod playlist_routes;
 pub mod provider_routes;
+pub mod remote_routes;
 pub mod settings_routes;

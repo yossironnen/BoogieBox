@@ -1,0 +1,6 @@
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>
+<u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
+<Source></Source>
+<Sink>http-get:*:audio/wav:DLNA.ORG_PN=LPCM,http-get:*:audio/x-wav:DLNA.ORG_PN=LPCM,http-get:*:audio/mpeg:DLNA.ORG_PN=MP3,http-get:*:audio/mpeg:DLNA.ORG_PN=MP3X,http-get:*:audio/x-ms-wma:DLNA.ORG_PN=WMABASE,http-get:*:audio/x-ms-wma:DLNA.ORG_PN=WMAFULL,http-get:*:audio/x-ms-wma:DLNA.ORG_PN=WMAPRO,http-get:*:audio/mpeg:DLNA.ORG_PN=MP2_MPS,http-get:*:audio/mp3:*,http-get:*:audio/wma:*,http-get:*:audio/mpeg:*,http-get:*:audio/vnd.dlna.adts:DLNA.ORG_PN=AAC_ADTS,http-get:*:audio/vnd.dlna.adts:DLNA.ORG_PN=AAC_ADTS_320,http-get:*:audio/m4a:DLNA.ORG_PN=AAC_ISO,http-get:*:audio/aac:DLNA.ORG_PN=AAC_ISO,http-get:*:audio/ac3:DLNA.ORG_PN=AC3,http-get:*:audio/ogg:*,http-get:*:audio/ape:*,http-get:*:audio/x-ape:*,http-get:*:audio/flac:*,http-get:*:audio/x-dsd:*</Sink>
+</u:GetProtocolInfoResponse>
+</s:Body> </s:Envelope>

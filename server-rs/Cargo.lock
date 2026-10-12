@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-db"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "rusqlite",
  "serde",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-server"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "ab_glyph",
  "axum",
@@ -218,6 +218,7 @@ dependencies = [
  "imageproc",
  "libc",
  "pbkdf2",
+ "quick-xml",
  "rand 0.10.2",
  "reqwest",
  "rusqlite",
@@ -1470,6 +1471,15 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "quote"

@@ -58,6 +58,7 @@ pub fn build_test_state(db_path: &std::path::Path) -> AppState {
         http_client: reqwest::Client::default(),
         db_folder: Some(folder.to_path_buf()),
         dlna_manager: dlna::new_dlna_manager(),
+        remote: crate::remote::RemoteManager::new(),
         worker_cancel: tokio_util::sync::CancellationToken::new(),
     }
 }

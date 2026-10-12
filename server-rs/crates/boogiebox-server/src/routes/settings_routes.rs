@@ -96,6 +96,11 @@ async fn put_settings_handler(
         "dlnaMediaMode",
     ];
     let dlna_changed = validated.keys().any(|k| DLNA_KEYS.contains(&k.as_str()));
+    // remotePollMs / remoteReleaseStopsRenderer are read per session; only discovery settings need a restart.
+    const REMOTE_RESTART_KEYS: &[&str] = &["remotePlaybackEnabled", "remoteInterfaceIp"];
+    let remote_changed = validated
+        .keys()
+        .any(|k| REMOTE_RESTART_KEYS.contains(&k.as_str()));
     let scan_debug_toggle = validated
         .get("scanDebugLoggingEnabled")
         .map(|v| v == "true");
@@ -119,6 +124,15 @@ async fn put_settings_handler(
             }
             if let Some(enabled) = deep_debug_toggle {
                 crate::logging::set_deep_debug_enabled(enabled);
+            }
+            if remote_changed {
+                let (remote, remote_db, cancel) = {
+                    let s = state.read().unwrap_or_else(|p| p.into_inner());
+                    (s.remote.clone(), s.db.clone(), s.worker_cancel.clone())
+                };
+                if let Some(remote_db) = remote_db {
+                    crate::remote::start_in_background(remote, remote_db, cancel);
+                }
             }
             if dlna_changed {
                 let (dlna_manager, dlna_db) = {

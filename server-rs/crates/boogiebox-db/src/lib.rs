@@ -7,6 +7,7 @@ pub mod music;
 pub mod playback;
 pub mod playlists;
 pub mod radio;
+pub mod remote;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -787,6 +788,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
         Migration {
             id: "2026-09-30-deep-analysis-covering-indexes",
             apply: ensure_deep_analysis_covering_indexes,
+        },
+        Migration {
+            id: "2026-10-12-upnp-renderers-schema",
+            apply: remote::ensure_upnp_renderers_schema,
         },
     ];
 

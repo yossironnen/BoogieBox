@@ -48,6 +48,7 @@ pub mod mix_worker;
 pub mod post_scan;
 pub mod providers;
 pub mod radio_metadata;
+pub mod remote;
 pub mod routes;
 pub mod scanner;
 pub mod server_config;
@@ -57,6 +58,7 @@ pub mod story_image;
 pub mod tag_taxonomy;
 #[cfg(test)]
 pub mod test_support;
+pub mod upnp;
 pub mod waveform_map;
 
 const DEFAULT_PORT: u16 = 3001;
@@ -133,6 +135,8 @@ pub struct AppState {
     pub db_folder: Option<PathBuf>,
     /// DLNA manager used to start, stop, and report the optional music server.
     pub dlna_manager: dlna::DlnaManager,
+    /// Play On (UPnP renderer playback) coordinator.
+    pub remote: remote::RemoteManager,
     /// Cancelled and replaced whenever the active database is switched, so background
     /// workers bound to the previous pool stop instead of continuing to run against it.
     pub worker_cancel: tokio_util::sync::CancellationToken,
@@ -182,6 +186,7 @@ impl Default for AppState {
             http_client,
             db_folder,
             dlna_manager: dlna::new_dlna_manager(),
+            remote: remote::RemoteManager::new(),
             worker_cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
@@ -350,6 +355,7 @@ pub async fn run_from_env() -> Result<(), ServerError> {
         deep_analysis::start_deep_analysis_worker(ps_state.clone());
         mix_worker::start_mix_worker(ps_state);
         let dlna_mgr = state.dlna_manager.clone();
+        remote::start_in_background(state.remote.clone(), dlna_db.clone(), cancel);
         tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
     }
     let app = build_app(state, config.client_build_dir.clone());
@@ -523,6 +529,7 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         .merge(routes::boogiemix_routes::boogiemix_router(
             shared_state.clone(),
         ))
+        .merge(routes::remote_routes::remote_router(shared_state.clone()))
         .merge(routes::dlna_routes::dlna_router(shared_state))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer);
@@ -783,6 +790,7 @@ async fn setup_handler(
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
                 let dlna_db = s.db.as_ref().expect("db set").clone();
+                remote::start_in_background(s.remote.clone(), dlna_db.clone(), cancel.clone());
                 tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
                 (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
             }
@@ -884,6 +892,7 @@ async fn switch_db_handler(
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
                 let dlna_db = s.db.as_ref().expect("db set").clone();
+                remote::start_in_background(s.remote.clone(), dlna_db.clone(), cancel.clone());
                 tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
                 (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
             }

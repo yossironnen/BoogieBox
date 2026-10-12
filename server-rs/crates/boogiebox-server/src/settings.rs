@@ -18,6 +18,11 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "dlnaFriendlyName",
     "dlnaPort",
     "dlnaMediaMode",
+    // Play On (UPnP renderer playback)
+    "remotePlaybackEnabled",
+    "remoteInterfaceIp",
+    "remotePollMs",
+    "remoteReleaseStopsRenderer",
     // BoogieMix
     "boogiemixCrossfadeDuration",
     "boogiemixDefaultStyle",
@@ -163,6 +168,8 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
     match key {
         // Boolean flags
         "dlnaEnabled"
+        | "remotePlaybackEnabled"
+        | "remoteReleaseStopsRenderer"
         | "waveformGenerateOnMissing"
         | "waveformBackgroundEnabled"
         | "bpmAnalysisEnabled"
@@ -224,6 +231,32 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
                 return Err(format!("Setting '{key}' must be between 1024 and 65535"));
             }
             Ok(n.to_string())
+        }
+
+        // Play On poll interval while playing: 500–5000 ms
+        "remotePollMs" => {
+            let n: u32 = value
+                .trim()
+                .parse()
+                .map_err(|_| format!("Setting '{key}' must be an integer"))?;
+            if !(500..=5000).contains(&n) {
+                return Err(format!("Setting '{key}' must be between 500 and 5000"));
+            }
+            Ok(n.to_string())
+        }
+
+        // Play On interface override: empty (auto) or a private/link-local IPv4 address
+        "remoteInterfaceIp" => {
+            let v = value.trim();
+            if v.is_empty() {
+                return Ok(String::new());
+            }
+            match v.parse::<std::net::Ipv4Addr>() {
+                Ok(ip) if ip.is_private() || ip.is_link_local() => Ok(ip.to_string()),
+                _ => Err(format!(
+                    "Setting '{key}' must be empty or a private IPv4 address"
+                )),
+            }
         }
 
         // dlnaMediaMode: enum
@@ -359,6 +392,33 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("dlnaPort".into(), "80".into());
         assert!(normalize_settings_payload(&map).is_err());
+    }
+
+    #[test]
+    fn validates_play_on_settings() {
+        let check = |key: &str, value: &str| {
+            let mut map = HashMap::new();
+            map.insert(key.to_string(), value.to_string());
+            normalize_settings_payload(&map).map(|m| m[key].clone())
+        };
+        assert_eq!(check("remotePlaybackEnabled", "false").unwrap(), "false");
+        assert!(check("remoteReleaseStopsRenderer", "yes").is_err());
+        assert_eq!(check("remotePollMs", " 1000 ").unwrap(), "1000");
+        assert!(check("remotePollMs", "499").is_err());
+        assert!(check("remotePollMs", "5001").is_err());
+        assert!(check("remotePollMs", "fast").is_err());
+        assert_eq!(check("remoteInterfaceIp", "  ").unwrap(), "");
+        assert_eq!(
+            check("remoteInterfaceIp", "192.168.1.10").unwrap(),
+            "192.168.1.10"
+        );
+        assert_eq!(
+            check("remoteInterfaceIp", "169.254.0.2").unwrap(),
+            "169.254.0.2"
+        );
+        assert!(check("remoteInterfaceIp", "8.8.8.8").is_err());
+        assert!(check("remoteInterfaceIp", "fe80::1").is_err());
+        assert!(check("remoteInterfaceIp", "router").is_err());
     }
 
     #[test]

@@ -8,7 +8,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "UNLICENSED"
-version = "0.9.4"
+version = "0.9.5"
 
 [workspace.dependencies]
 axum = "0.8"
@@ -38,3 +38,4 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7"] }
 socket2 = "0.6"
+quick-xml = "0.42"

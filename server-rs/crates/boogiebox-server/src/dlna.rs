@@ -18,6 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
+use crate::upnp::didl::{format_duration, wrap_didl, xml_escape};
 use crate::DbPool;
 
 // -- Constants -----------------------------------------------------------------
@@ -1142,12 +1143,6 @@ fn track_to_didl(track: &TrackRow, parent_id: &str, local_ip: &IpAddr, port: u16
     )
 }
 
-fn wrap_didl(inner: &str) -> String {
-    format!(
-        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">{inner}</DIDL-Lite>"#
-    )
-}
-
 fn wrap_browse_response(items: &[String], number_returned: usize, total: i64) -> String {
     let inner = items.join("");
     let didl = wrap_didl(&inner);
@@ -1163,28 +1158,12 @@ fn soap_error(code: u32, desc: &str) -> String {
     )
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
 fn entity_id_to_string(v: rusqlite::types::Value) -> String {
     match v {
         rusqlite::types::Value::Integer(i) => i.to_string(),
         rusqlite::types::Value::Text(s) => s,
         _ => String::new(),
     }
-}
-
-fn format_duration(seconds: f64) -> String {
-    let total = seconds as u64;
-    let h = total / 3600;
-    let m = (total % 3600) / 60;
-    let s = total % 60;
-    format!("{}:{:02}:{:02}", h, m, s)
 }
 
 // -- SOAP parsing --------------------------------------------------------------
