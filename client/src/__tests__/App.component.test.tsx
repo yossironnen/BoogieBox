@@ -10,6 +10,12 @@ import { DEFAULT_SETTINGS } from '../types';
 
 const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi.hoisted(() => ({
   apiMock: {
+    remote: {
+      renderers: vi.fn().mockResolvedValue({ running: true, renderers: [] }),
+      session: vi.fn().mockResolvedValue(null),
+      refresh: vi.fn().mockResolvedValue({ ok: true }),
+      eventsUrl: () => '/api/remote/events',
+    },
     libraries: {
       list: vi.fn(),
       add: vi.fn(),
@@ -51,6 +57,7 @@ const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi
 vi.mock('../api', () => ({
   api: apiMock,
   getStreamDirect: getStreamDirectMock,
+  RemoteApiError: class RemoteApiError extends Error {},
 }));
 
 vi.mock('../components/HomeView', () => ({

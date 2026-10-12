@@ -7,6 +7,8 @@ import { api } from '../../api';
 import type { PlaybackSnapshot, PlayerState } from '../../components/Player';
 import ArtImage from '../../components/ArtImage';
 import { hybridMobileShellStyles } from '../../hybridPreview';
+import { OutputIcon } from '../../remote/OutputIcon';
+import { usePlayOnContext } from '../../remote/usePlayOn';
 
 /** Mobile Mini Player is part of this module's public API. */
 export default function MobileMiniPlayer({
@@ -23,6 +25,8 @@ export default function MobileMiniPlayer({
   onQuickRate?: (rating: number | null) => void;
 }) {
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const playOn = usePlayOnContext();
+  const playingOn = playOn?.target.kind === 'renderer' ? playOn.deviceName : null;
   const currentTrack = snapshot?.currentTrack ?? playerState.queue[playerState.currentIndex] ?? null;
   if (!currentTrack) return null;
 
@@ -75,6 +79,15 @@ export default function MobileMiniPlayer({
           </div>
           <div style={hybridMobileShellStyles.miniArtist}>
             {currentTrack.artist || 'Unknown artist'}
+            {playingOn ? (
+              <>
+                {' · '}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, verticalAlign: 'bottom', color: 'var(--accent)' }}>
+                  <OutputIcon size={12} />
+                  {playingOn}
+                </span>
+              </>
+            ) : null}
           </div>
         </div>
       </button>

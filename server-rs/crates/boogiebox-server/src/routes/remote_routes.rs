@@ -28,6 +28,7 @@ pub fn remote_router(state: SharedState) -> Router {
         .route("/api/remote/renderers/refresh", post(refresh_handler))
         .route("/api/remote/renderers/{udn}", patch(patch_renderer_handler))
         .route("/api/remote/renderers/{udn}/icon", get(icon_handler))
+        .route("/api/remote/diagnostics", get(diagnostics_handler))
         // Renderers have no session cookie: the unguessable, short-lived token is the authorization.
         .route("/media/r/{token}", get(crate::remote::media::media_handler))
         .with_state(state)
@@ -239,6 +240,63 @@ async fn list_renderers_handler(
     Json(RenderersResponse {
         running: remote.is_running(),
         renderers,
+    })
+    .into_response()
+}
+
+/// `GET /api/remote/diagnostics` response (admin).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsResponse {
+    /// Play On switched on in settings.
+    pub enabled: bool,
+    /// Discovery is running.
+    pub running: bool,
+    /// Private IPv4 interfaces found automatically (choices for `remoteInterfaceIp`).
+    pub detected_interfaces: Vec<String>,
+    /// Interfaces discovery is searching on.
+    pub search_interfaces: Vec<String>,
+    /// Last search burst (ms since epoch).
+    pub last_search_ms: Option<u64>,
+    /// Last discovery problem.
+    pub last_error: Option<String>,
+    /// Port renderers fetch media from.
+    pub http_port: u16,
+    /// Known renderers.
+    pub renderers: usize,
+    /// Renderers currently online.
+    pub online: usize,
+    /// Live sessions.
+    pub sessions: usize,
+}
+
+async fn diagnostics_handler(State(state): State<SharedState>, _admin: AdminUser) -> Response {
+    let Some((db, remote)) = context(&state) else {
+        return setup_required();
+    };
+    let Some((enabled, rows)) = load_rows(db).await else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+    };
+    let detected =
+        tokio::task::spawn_blocking(|| crate::upnp::discovery::candidate_ipv4_interfaces(None))
+            .await
+            .unwrap_or_default();
+    let status = remote.discovery_status().unwrap_or_default();
+    let online = rows
+        .iter()
+        .filter(|r| remote.registry().get(&r.udn).is_some_and(|e| e.online))
+        .count();
+    Json(DiagnosticsResponse {
+        enabled,
+        running: remote.is_running(),
+        detected_interfaces: detected.iter().map(ToString::to_string).collect(),
+        search_interfaces: status.interfaces.iter().map(ToString::to_string).collect(),
+        last_search_ms: status.last_search_ms,
+        last_error: status.last_error,
+        http_port: remote.http_port(),
+        renderers: rows.len(),
+        online,
+        sessions: remote.session_snapshots().len(),
     })
     .into_response()
 }
@@ -496,6 +554,36 @@ mod tests {
         let (status, body) = send(app, get("/api/remote/renderers", &user)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(json_body(&body)["error"], "Play On is disabled");
+    }
+
+    #[tokio::test]
+    async fn diagnostics_are_admin_only_and_report_counts() {
+        let (app, db, remote) = app("remote-routes-diagnostics");
+        seed(&db, "a", "Living Room");
+        seed(&db, "b", "Kitchen");
+        remote.registry().insert_described(
+            description("a", "10.0.0.5"),
+            RendererCaps::default(),
+            "http://10.0.0.5/d",
+            60,
+            Instant::now(),
+        );
+        let user = seed_user_session(&db, "u1");
+        let (status, _) = send(app.clone(), get("/api/remote/diagnostics", &user)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let admin = seed_admin_session(&db, "admin1");
+        let (status, body) = send(app, get("/api/remote/diagnostics", &admin)).await;
+        assert_eq!(status, StatusCode::OK);
+        let json = json_body(&body);
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["running"], false);
+        assert_eq!(json["renderers"], 2);
+        assert_eq!(json["online"], 1);
+        assert_eq!(json["sessions"], 0);
+        assert!(json["detectedInterfaces"].is_array());
+        assert_eq!(json["searchInterfaces"], serde_json::json!([]));
+        assert!(json["lastSearchMs"].is_null());
     }
 
     #[tokio::test]

@@ -247,6 +247,16 @@ impl RemoteManager {
             .map(|r| r.settings.clone())
     }
 
+    /// Discovery diagnostics, when running.
+    pub fn discovery_status(&self) -> Option<crate::upnp::discovery::DiscoveryStatus> {
+        self.inner
+            .runtime
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|r| r.discovery.status())
+    }
+
     /// Requests an immediate search. Returns false when Play On is not running.
     pub fn refresh(&self) -> bool {
         match self
@@ -665,6 +675,7 @@ impl RemoteManager {
                     queue_source: snap.queue_source.clone(),
                     shuffle: Some(false),
                     repeat: Some(snap.repeat),
+                    resumed: true,
                 },
                 by.clone(),
                 takeover,
@@ -1009,6 +1020,7 @@ mod tests {
             queue_source: None,
             shuffle: None,
             repeat: None,
+            resumed: false,
         };
 
         assert!(matches!(

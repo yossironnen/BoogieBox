@@ -35,6 +35,8 @@ export interface MobileSharedProps {
   playbackSnapshot: PlaybackSnapshot | null;
   openPlaylistId: EntityId | null;
   onPlaybackStateChange: (state: PlayerState) => void;
+  /** Local playback position, for the Play On handoff to a renderer. */
+  onPlaybackPosition?: (seconds: number) => void;
   onPlayTrack: (track: Track, allTracks?: Track[], source?: QueueSource) => void;
   onAddToQueue: (track: Track) => void;
   onConsumeOpenPlaylist: () => void;

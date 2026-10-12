@@ -4,23 +4,35 @@
 
 import React, { useCallback, useState } from 'react';
 import { api } from '../../api';
+import { PLAY_ON_FORMAT_OPTIONS, rendererDetail } from '../../components/PlayOnSettings';
+import type { RemoteFormatPolicy, RendererInfo } from '../../remote/remoteTypes';
 import type {
   AdminQueueSnapshot,
   BoogieMixDeepAnalysisStatus,
   Library,
 } from '../../types';
+import { MobileCheckRow } from '../components/MobilePlaybackTools';
 
 type AdminSnapshot = {
   libraries: Library[];
   queues: AdminQueueSnapshot | null;
   deepAnalysis: BoogieMixDeepAnalysisStatus | null;
+  playOn: { enabled: boolean; releaseStops: boolean; renderers: RendererInfo[] } | null;
 };
 
 const EMPTY_SNAPSHOT: AdminSnapshot = {
   libraries: [],
   queues: null,
   deepAnalysis: null,
+  playOn: null,
 };
+
+async function loadPlayOn(): Promise<NonNullable<AdminSnapshot['playOn']>> {
+  const settings = await api.settings.get();
+  const enabled = (settings.remotePlaybackEnabled ?? 'true') !== 'false';
+  const renderers = enabled ? (await api.remote.renderers()).renderers : [];
+  return { enabled, releaseStops: (settings.remoteReleaseStopsRenderer ?? 'true') !== 'false', renderers };
+}
 
 const BACKGROUND_MODES = [
   { value: 'off', label: 'Off' },
@@ -52,13 +64,16 @@ export default function MobileAdminSettingsPanel() {
       api.libraries.list(),
       api.admin.queues(),
       api.boogiemix.deepAnalysisStatus(),
+      loadPlayOn(),
     ]);
     setSnapshot((current) => ({
       libraries: results[0].status === 'fulfilled' ? results[0].value : current.libraries,
       queues: results[1].status === 'fulfilled' ? results[1].value : current.queues,
       deepAnalysis: results[2].status === 'fulfilled' ? results[2].value : current.deepAnalysis,
+      playOn: results[3].status === 'fulfilled' ? results[3].value : current.playOn,
     }));
-    const failed = results.filter((result) => result.status === 'rejected').length;
+    // Play On is optional (off, or an older server): its block just stays hidden.
+    const failed = results.slice(0, 3).filter((result) => result.status === 'rejected').length;
     setError(failed ? `Could not load ${failed} admin status ${failed === 1 ? 'source' : 'sources'}.` : '');
     setLoaded(true);
     setLoading(false);
@@ -78,6 +93,13 @@ export default function MobileAdminSettingsPanel() {
     }
   };
 
+  const playOn = snapshot.playOn;
+  const patchSpeaker = (renderer: RendererInfo, changes: { formatPolicy?: RemoteFormatPolicy; hidden?: boolean }) => {
+    void runAction(`speaker-${renderer.udn}`, async () => {
+      await api.remote.updateRenderer(renderer.udn, changes);
+      return `${renderer.name} saved.`;
+    });
+  };
   const deepStatus = snapshot.deepAnalysis;
   const backgroundMode = deepStatus?.controls?.backgroundMode ?? 'off';
   const backgroundPaused = deepStatus?.controls?.pauseBackground ?? false;
@@ -184,6 +206,81 @@ export default function MobileAdminSettingsPanel() {
                   </div>
                 ) : <div style={styles.empty}>No libraries configured.</div>}
               </div>
+
+              {playOn ? (
+                <div style={styles.subsection}>
+                  <div style={styles.subsectionHeader}>
+                    <div>
+                      <div style={styles.subsectionTitle}>Play On</div>
+                      <div style={styles.subsectionCopy}>Find speakers and streamers on your network (UPnP/DLNA) and play to them.</div>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Search for speakers"
+                      disabled={busyKey !== null || !playOn.enabled}
+                      style={styles.actionButton}
+                      onClick={() => void runAction('play-on-scan', async () => {
+                        await api.remote.refresh();
+                        await new Promise((resolve) => window.setTimeout(resolve, 2500));
+                        return 'Speaker search finished.';
+                      })}
+                    >
+                      {busyKey === 'play-on-scan' ? 'Searching…' : 'Scan'}
+                    </button>
+                  </div>
+                  <MobileCheckRow
+                    title="Enable Play On"
+                    description="Show speakers on the network as playback targets."
+                    checked={playOn.enabled}
+                    disabled={busyKey !== null}
+                    onChange={(enabled) => void runAction('play-on-enabled', async () => {
+                      await api.settings.update({ remotePlaybackEnabled: enabled ? 'true' : 'false' });
+                      return enabled ? 'Play On enabled.' : 'Play On disabled.';
+                    })}
+                  />
+                  <MobileCheckRow
+                    title="Stop the speaker when switching back"
+                    description="The speaker stops instead of continuing on its own."
+                    checked={playOn.releaseStops}
+                    disabled={busyKey !== null}
+                    onChange={(stops) => void runAction('play-on-release', async () => {
+                      await api.settings.update({ remoteReleaseStopsRenderer: stops ? 'true' : 'false' });
+                      return 'Play On setting saved.';
+                    })}
+                  />
+                  {playOn.renderers.length ? (
+                    <div role="list" aria-label="Speakers" style={styles.libraryList}>
+                      {playOn.renderers.map((renderer) => (
+                        <div role="listitem" key={renderer.udn} style={{ ...styles.libraryRow, flexWrap: 'wrap' }}>
+                          <div style={styles.libraryCopy}>
+                            <strong style={styles.libraryName}>{renderer.name}</strong>
+                            <span style={styles.libraryMeta}>{renderer.online ? 'Online' : 'Offline'} · {rendererDetail(renderer)}</span>
+                          </div>
+                          <select
+                            aria-label={`Format for ${renderer.name}`}
+                            value={renderer.formatPolicy}
+                            disabled={busyKey !== null}
+                            style={styles.select}
+                            onChange={(event) => patchSpeaker(renderer, { formatPolicy: event.target.value as RemoteFormatPolicy })}
+                          >
+                            {PLAY_ON_FORMAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                          </select>
+                          <label style={styles.libraryMeta}>
+                            <input
+                              type="checkbox"
+                              aria-label={`Hide ${renderer.name}`}
+                              checked={renderer.hidden}
+                              disabled={busyKey !== null}
+                              onChange={(event) => patchSpeaker(renderer, { hidden: event.currentTarget.checked })}
+                            />
+                            {' '}Hidden
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div style={styles.empty}>{playOn.enabled ? 'No speakers found yet.' : 'Play On is off.'}</div>}
+                </div>
+              ) : null}
 
               <div style={styles.subsection}>
                 <div style={styles.subsectionTitle}>Work queues</div>

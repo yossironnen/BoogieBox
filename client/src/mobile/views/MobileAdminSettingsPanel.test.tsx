@@ -54,6 +54,7 @@ describe('MobileAdminSettingsPanel', () => {
     vi.spyOn(api.boogiemix, 'pauseDeepAnalysisBackground').mockResolvedValue({ ok: true });
     vi.spyOn(api.boogiemix, 'resumeDeepAnalysisBackground').mockResolvedValue({ ok: true });
     vi.spyOn(api.settings, 'update').mockResolvedValue({ ok: true });
+    vi.spyOn(api.settings, 'get').mockResolvedValue({ remotePlaybackEnabled: 'false' });
   });
 
   it('loads admin status only after disclosure and renders compact operations', async () => {
@@ -158,5 +159,29 @@ describe('MobileAdminSettingsPanel', () => {
     expect(await screen.findByText('Could not load 3 admin status sources.')).toBeInTheDocument();
     expect(screen.getByText('No libraries configured.')).toBeInTheDocument();
     expect(screen.getByText('Runtime status unavailable.')).toBeInTheDocument();
+  });
+
+  it('mirrors Play On: switches, speaker format and visibility', async () => {
+    vi.spyOn(api.settings, 'get').mockResolvedValue({ remotePlaybackEnabled: 'true', remoteReleaseStopsRenderer: 'true' });
+    vi.spyOn(api.remote, 'renderers').mockResolvedValue({
+      running: true,
+      renderers: [{
+        udn: 'uuid:wiim', name: 'WiiM Ultra', friendlyName: 'WiiM Ultra', alias: null, manufacturer: 'Linkplay',
+        model: 'WiiM Ultra Receiver', vendor: 'wiim', online: true, hidden: false, formatPolicy: 'auto', hasIcon: false,
+        capabilities: { setNext: true, seek: true, volume: true }, lastSeenAt: '', session: null,
+      }],
+    });
+    vi.spyOn(api.remote, 'updateRenderer').mockResolvedValue({ ok: true });
+    render(<MobileAdminSettingsPanel />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open admin tools' }));
+
+    expect(await screen.findByText('WiiM Ultra')).toBeInTheDocument();
+    expect(screen.getByText('Online · Linkplay · WiiM Ultra Receiver · gapless, seek')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Format for WiiM Ultra' }), { target: { value: 'mp3' } });
+    await waitFor(() => expect(api.remote.updateRenderer).toHaveBeenCalledWith('uuid:wiim', { formatPolicy: 'mp3' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Hide WiiM Ultra' }));
+    await waitFor(() => expect(api.remote.updateRenderer).toHaveBeenCalledWith('uuid:wiim', { hidden: true }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Play On' }));
+    await waitFor(() => expect(api.settings.update).toHaveBeenCalledWith({ remotePlaybackEnabled: 'false' }));
   });
 });

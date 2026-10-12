@@ -2,13 +2,42 @@
  * Defines touch-safe Hybrid Equalizer and Vinyl control sheets for mobile playback.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import ParametricEqEditor from '../../components/ParametricEqEditor';
 import type { PlaybackSnapshot, PlayerEqControls } from '../../components/Player';
 import VinylTurntable from '../../components/VinylTurntable';
 import { hybridMobileContentStyles } from '../../hybridPreview';
-import MobileBottomSheet from './MobileBottomSheet';
+import { RefreshIcon } from '../../remote/OutputIcon';
+import { OutputPickerList } from '../../remote/OutputPicker';
+import type { PlayOnApi } from '../../remote/usePlayOn';
+import MobileBottomSheet, { mobileSheetHeaderButtonStyle } from './MobileBottomSheet';
+
+/** Play On picker sheet for Now Playing (plan 8.6 mobile picker). */
+export function MobilePlayOnSheet({ playOn, onClose }: { playOn: PlayOnApi; onClose: () => void }) {
+  const { watchRenderers } = playOn;
+  useEffect(() => watchRenderers(), [watchRenderers]);
+  return (
+    <MobileBottomSheet
+      title="Play on"
+      onClose={onClose}
+      closeLabel="Close Play on"
+      headerActions={(
+        <button
+          type="button"
+          aria-label="Search for speakers"
+          disabled={playOn.discovering}
+          onClick={playOn.refreshRenderers}
+          style={mobileSheetHeaderButtonStyle}
+        >
+          <RefreshIcon size={18} style={playOn.discovering ? { animation: 'sidebarScanSpin 1.15s linear infinite' } : undefined} />
+        </button>
+      )}
+    >
+      <OutputPickerList playOn={playOn} variant="mobile" onPicked={onClose} />
+    </MobileBottomSheet>
+  );
+}
 
 export function MobileEqualizerSheet({
   controls,
@@ -184,7 +213,8 @@ export function MobileVinylSheet({
   );
 }
 
-function MobileCheckRow({
+/** Touch-sized titled checkbox row shared by the mobile sheets and admin panel. */
+export function MobileCheckRow({
   title,
   description,
   checked,

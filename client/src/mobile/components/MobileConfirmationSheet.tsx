@@ -12,6 +12,9 @@ export default function MobileConfirmationSheet({
   description,
   itemLabel,
   confirmLabel,
+  cancelLabel = 'Keep it',
+  tone = 'danger',
+  mark,
   busyLabel = 'Working…',
   errorMessage = 'Could not complete this action.',
   onClose,
@@ -22,6 +25,11 @@ export default function MobileConfirmationSheet({
   description: string;
   itemLabel?: string;
   confirmLabel: string;
+  cancelLabel?: string;
+  /** `danger` (default) for destructive actions; `default` uses the accent (e.g. a Play On takeover). */
+  tone?: 'danger' | 'default';
+  /** Glyph in the leading mark; defaults to "!". */
+  mark?: React.ReactNode;
   busyLabel?: string;
   errorMessage?: string;
   onClose: () => void;
@@ -64,7 +72,7 @@ export default function MobileConfirmationSheet({
       dialogRole="alertdialog"
     >
       <div style={styles.content}>
-        <div aria-hidden="true" style={styles.warningMark}>!</div>
+        <div aria-hidden="true" style={{ ...styles.warningMark, ...(tone === 'default' ? accentTone.mark : null) }}>{mark ?? '!'}</div>
         <p style={styles.description}>{description}</p>
         {itemLabel ? <div style={styles.itemLabel}>{itemLabel}</div> : null}
         {error ? <div role="alert" style={styles.error}>{error}</div> : null}
@@ -75,12 +83,12 @@ export default function MobileConfirmationSheet({
             style={styles.cancelButton}
             onClick={requestClose}
           >
-            Keep it
+            {cancelLabel}
           </button>
           <button
             type="button"
             disabled={busy}
-            style={{ ...styles.confirmButton, ...(busy ? styles.disabled : null) }}
+            style={{ ...styles.confirmButton, ...(tone === 'default' ? accentTone.confirm : null), ...(busy ? styles.disabled : null) }}
             onClick={() => void confirm()}
           >
             {busy ? busyLabel : confirmLabel}
@@ -90,6 +98,19 @@ export default function MobileConfirmationSheet({
     </MobileBottomSheet>
   );
 }
+
+const accentTone: Record<'mark' | 'confirm', React.CSSProperties> = {
+  mark: {
+    border: '1px solid color-mix(in srgb, var(--accent) 32%, var(--divider-subtle))',
+    background: 'color-mix(in srgb, var(--accent) 9%, var(--surface))',
+    color: 'var(--accent)',
+  },
+  confirm: {
+    border: '1px solid color-mix(in srgb, var(--accent) 42%, var(--divider-subtle))',
+    background: 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+    color: 'var(--accent)',
+  },
+};
 
 const styles: Record<string, React.CSSProperties> = {
   content: {

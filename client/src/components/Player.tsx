@@ -34,6 +34,9 @@ import {
   hybridControlStyles,
   hybridPlayerStyles,
 } from '../hybridPreview';
+import { usePlayOnContext, type PlayerRemoteView, type PlayOnApi, type PlayOnNotice } from '../remote/usePlayOn';
+import { OutputIcon, RefreshIcon } from '../remote/OutputIcon';
+import { OutputPickerList, pickerRenderers } from '../remote/OutputPicker';
 
 /** Player State is part of this module's public API. */
 export interface PlayerState {
@@ -45,6 +48,9 @@ export interface PlayerState {
    *  (e.g. clicking Play All on the same album, or retrying after an error). */
   playToken: number;
   queueSource?: QueueSource;
+  /** One-shot start position for the current track (Play On handoff back to this browser). Applies only while
+   *  `playToken` and the current track still match, so later skips don't inherit it. */
+  resumeAt?: { playToken: number; trackId: ClientEntityId; sec: number };
 }
 /** Playback Snapshot is part of this module's public API. */
 export interface PlaybackSnapshot {
@@ -1832,6 +1838,105 @@ function QueuePanel({ queue, currentIndex, onSelect, onRemove, onClear, onClose,
   );
 }
 
+/** Play On picker popup, positioned and styled like the queue panel (plan 8.6). */
+function OutputPanel({ playOn, onClose, anchorRef, popupVars, bottom = DESKTOP_PLAYER_DOCK_HEIGHT }: {
+  playOn: PlayOnApi;
+  onClose: () => void;
+  anchorRef: React.RefObject<HTMLElement | null>;
+  popupVars: React.CSSProperties;
+  bottom?: number;
+}) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const { watchRenderers } = playOn;
+  useEffect(() => watchRenderers(), [watchRenderers]);
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (panelRef.current?.contains(target) || anchorRef.current?.contains(target))) return;
+      onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [anchorRef, onClose]);
+  const popupBottom = bottom + DESKTOP_PLAYER_POPUP_GAP;
+  const count = 1 + pickerRenderers(playOn.renderers).length;
+  return (
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-label="Play on"
+      data-ui-region="play-on"
+      style={{
+        ...popupVars,
+        ...hybridAudioPanelStyles.popup,
+        position: 'fixed',
+        right: 12,
+        bottom: popupBottom,
+        width: 352,
+        display: 'flex',
+        flexDirection: 'column',
+        maxHeight: `calc(100vh - ${popupBottom + 12}px)`,
+        zIndex: 200,
+        fontFamily: PLAYER_THEME_TOKENS.font,
+      }}
+    >
+      <div style={hybridAudioPanelStyles.header}>
+        <span style={hybridAudioPanelStyles.title}>Play on <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>· {count}</span></span>
+        <div style={hybridAudioPanelStyles.headerActions}>
+          <button
+            type="button"
+            aria-label="Search for speakers"
+            title="Search for speakers"
+            disabled={playOn.discovering}
+            onClick={playOn.refreshRenderers}
+            style={{ ...hybridControlStyles.iconButton, width: 32, minWidth: 32, height: 32 }}
+          >
+            <RefreshIcon style={playOn.discovering ? { animation: 'sidebarScanSpin 1.15s linear infinite' } : undefined} />
+          </button>
+          <button type="button" aria-label="Close" onClick={onClose} style={{ ...hybridControlStyles.iconButton, width: 32, minWidth: 32, height: 32 }}>
+            <CloseIcon />
+          </button>
+        </div>
+      </div>
+      <OutputPickerList playOn={playOn} onPicked={onClose} />
+    </div>
+  );
+}
+
+/** Inline Play On notice in the dock progress-row slot (no toasts, plan 8.7). */
+function PlayOnNoticeLine({ notice }: { notice: PlayOnNotice }) {
+  const color = notice.tone === 'danger' ? 'var(--danger, #ef4444)'
+    : notice.tone === 'warning' ? 'var(--warning, #f59e0b)'
+      : PLAYER_THEME_TOKENS.textMuted;
+  return (
+    <div role="status" style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, fontSize: 13, minHeight: 22 }}>
+      <span style={{ color, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{notice.text}</span>
+      {notice.action ? (
+        <button
+          type="button"
+          onClick={notice.action.run}
+          style={{ ...hybridControlStyles.secondaryButton, flexShrink: 0, minHeight: 28, padding: '4px 10px', fontSize: 13 }}
+        >
+          {notice.action.label}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Renderer position now: extrapolated while playing, clamped to the duration. */
+export function remotePositionAt(remote: PlayerRemoteView, now: number, fallbackDuration = 0): number {
+  const duration = remote.durationSec ?? fallbackDuration;
+  const elapsed = remote.status === 'playing' ? Math.max(0, now - remote.positionAt) / 1000 : 0;
+  const position = remote.positionSec + elapsed;
+  return duration > 0 ? Math.min(position, duration) : position;
+}
+
 function PlayerAdaptiveAccent({ imageUrl, enabled }: { imageUrl: string | null; enabled: boolean }) {
   useAdaptiveAccentEnabled(imageUrl, enabled);
   return null;
@@ -1984,6 +2089,16 @@ export default function Player({
   []);
 
   const { queue, currentIndex, isPlaying, playToken, queueSource } = state;
+  // Play On: while a renderer is the target the <audio> elements stay silent and controls drive the session.
+  const playOn = usePlayOnContext();
+  const isRemote = playOn?.target.kind === 'renderer';
+  const remote = isRemote ? playOn?.remoteView ?? null : null;
+  const remoteActions = playOn?.remoteActions ?? null;
+  const isRemoteRef = useRef(isRemote);
+  isRemoteRef.current = isRemote;
+  const [outputOpen, setOutputOpen] = useState(false);
+  const outputButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeOutput = useCallback(() => setOutputOpen(false), []);
   const isVinylMode = playbackMode === 'vinyl';
   const playerDockHeight = resolveDesktopPlayerDockHeight(isVinylMode);
   currentIndexRef.current = currentIndex;
@@ -1991,6 +2106,7 @@ export default function Player({
   // Always-fresh saveProgress — avoids stale closures in useCallback handlers
   const saveProgressRef = useRef<(idx: number) => void>(() => {});
   saveProgressRef.current = (idx: number) => {
+    if (isRemoteRef.current) return;
     if (queueSource?.type !== 'playlist' || !queueSource.rememberProgress) return;
     const track = queue[idx];
     if (!track) return;
@@ -2022,7 +2138,7 @@ export default function Player({
   const showWaveformProgress = waveformStatus === 'ready' || waveformStatus === 'loading' || waveformStatus === 'generating';
 
   useEffect(() => {
-    if (!currentTrack?.id) return;
+    if (!currentTrack?.id || isRemote) return;
     if (isBoogieMixSyntheticTrackId(currentTrack.id)) return;
     if (!autoEqEnabled) return;
     if (typeof (api as any).trackEqProfile !== 'function') return;
@@ -2045,10 +2161,14 @@ export default function Player({
         applyAutoProfile('Rock');
       });
     return () => { cancelled = true; };
-  }, [autoEqEnabled, currentTrack?.id, playToken]);
+  }, [autoEqEnabled, currentTrack?.id, isRemote, playToken]);
 
   const seekToTime = useCallback((timeSeconds: number, commit: boolean) => {
     if (isVinylMode && vinylHardcore) {
+      if (commit) setSeeking(false);
+      return;
+    }
+    if (isRemote && !remote?.canSeek) {
       if (commit) setSeeking(false);
       return;
     }
@@ -2056,14 +2176,18 @@ export default function Player({
     seekValueRef.current = target;
     currentTimeRef.current = target;
     setCurrentTime(target);
-    const active = getActiveAudio();
-    if (active && Number.isFinite(target)) {
-      active.currentTime = target;
+    if (isRemote) {
+      if (commit && Number.isFinite(target)) remoteActions?.seek(target);
+    } else {
+      const active = getActiveAudio();
+      if (active && Number.isFinite(target)) {
+        active.currentTime = target;
+      }
     }
     if (commit) {
       setSeeking(false);
     }
-  }, [duration, getActiveAudio, isVinylMode, vinylHardcore]);
+  }, [duration, getActiveAudio, isRemote, isVinylMode, remote?.canSeek, remoteActions, vinylHardcore]);
 
   const shouldRunVinylFx = isVinylMode && vinylNeedleDrop && !vinylAnalogFxDisabled;
   const userSettingsApi = (api as { userSettings?: { get?: () => Promise<Record<string, string>>; update?: (updates: Record<string, string>) => Promise<{ ok: boolean }> } }).userSettings;
@@ -2385,12 +2509,13 @@ export default function Player({
 
   // ─── Fetch crossfade config when queue source changes ────────────────────
   useEffect(() => {
+    if (isRemote) return;
     if (queueSource && (queueSource.type === 'album' || queueSource.type === 'playlist' || queueSource.type === 'autodj')) {
       api.crossfade.config(queueSource.type, queueSource.id).then(setCrossfadeConfig).catch(() => {});
     } else {
       api.crossfade.config().then(setCrossfadeConfig).catch(() => {});
     }
-  }, [queueSource]);
+  }, [isRemote, queueSource]);
 
   const stopWaveformPoll = useCallback(() => {
     if (waveformPollRef.current != null) {
@@ -2603,6 +2728,7 @@ export default function Player({
   // every explicit play action (Play, Play All, queue click), so even clicking
   // play on the same track forces a fresh load + play.
   useEffect(() => {
+    if (isRemote) return;
     const audio = activeSlotRef.current === 'A' ? audioRef.current : audioBRef.current;
     if (!audio || !currentTrack) return;
     const url = getPreferredTrackStreamUrl(currentTrack);
@@ -2628,7 +2754,11 @@ export default function Player({
     loadedUrlRef.current = url;
     audio.src = url;
     // Set pending seek for remember-progress playlists
-    if (queueSource?.type === 'playlist' && queueSource.rememberProgress) {
+    const resumeAt = state.resumeAt;
+    if (resumeAt && resumeAt.playToken === playToken && String(resumeAt.trackId) === String(currentTrack.id)) {
+      // Play On handoff back to this browser: continue where the renderer was.
+      pendingSeekRef.current = resumeAt.sec;
+    } else if (queueSource?.type === 'playlist' && queueSource.rememberProgress) {
       const localSaved = progressMapRef.current.get(currentTrack.id);
       const dbSaved = (currentTrack as any).progress_seconds ?? 0;
       const saved = localSaved !== undefined ? localSaved : dbSaved;
@@ -2660,10 +2790,11 @@ export default function Player({
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playToken, currentTrack?.id, isVinylMode]);
+  }, [playToken, currentTrack?.id, isVinylMode, isRemote]);
 
   // Handle pause/resume toggling (user clicks pause then play without changing track).
   useEffect(() => {
+    if (isRemote) return;
     const audio = getActiveAudio();
     if (!audio || !currentTrack) return;
     if (isPlaying) {
@@ -2714,7 +2845,39 @@ export default function Player({
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, ensureEqForElement, ensureEqContextsRunning]);
+  }, [isPlaying, ensureEqForElement, ensureEqContextsRunning, isRemote]);
+
+  // Entering Play On: silence and unload both slots; the renderer plays now.
+  useEffect(() => {
+    if (!isRemote) return;
+    cancelCrossfade();
+    for (const audio of [audioRef.current, audioBRef.current]) {
+      if (!audio) continue;
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    }
+    loadedUrlRef.current = '';
+    setLoading(false);
+    setAudioError(null);
+    setEqOpen(false);
+  }, [cancelCrossfade, isRemote]);
+
+  // Renderer position, interpolated between server ticks (paused while the user drags a seek bar).
+  useEffect(() => {
+    if (!remote || seeking) return undefined;
+    const fallbackDuration = currentTrack?.duration ?? 0;
+    setDuration(remote.durationSec ?? fallbackDuration);
+    const tick = () => {
+      const t = remotePositionAt(remote, Date.now(), fallbackDuration);
+      currentTimeRef.current = t;
+      setCurrentTime(t);
+    };
+    tick();
+    if (remote.status !== 'playing') return undefined;
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, [currentTrack?.duration, remote, seeking]);
 
   useEffect(() => {
     const active = getActiveAudio();
@@ -2731,10 +2894,10 @@ export default function Player({
   useEffect(() => {
     const transitionedToPlaying = !wasPlayingRef.current && isPlaying;
     wasPlayingRef.current = isPlaying;
-    if (!transitionedToPlaying || !isVinylMode) return;
+    if (!transitionedToPlaying || !isVinylMode || isRemote) return;
     const audio = getActiveAudio();
     triggerVinylNeedleDrop(audio, 0.8 * vinylNeedleDropIntensity);
-  }, [getActiveAudio, isPlaying, isVinylMode, triggerVinylNeedleDrop, vinylNeedleDropIntensity]);
+  }, [getActiveAudio, isPlaying, isRemote, isVinylMode, triggerVinylNeedleDrop, vinylNeedleDropIntensity]);
 
   const playIndex = (i: number) => { saveProgressRef.current(currentIndex); onStateChange({ ...state, currentIndex: i, isPlaying: true, playToken: playToken + 1 }); };
   const playNext  = useCallback(() => {
@@ -2753,6 +2916,10 @@ export default function Player({
 
   const toggleShuffle = () => {
     if (isVinylMode) return;
+    if (remote) {
+      remoteActions?.setShuffle(!remote.shuffle);
+      return;
+    }
     const next = !shuffled;
     setShuffled(next);
     if (next && queue.length > 1) {
@@ -2767,6 +2934,10 @@ export default function Player({
     }
   };
   const playPrev = () => {
+    if (isRemote) {
+      remoteActions?.prev();
+      return;
+    }
     const active = getActiveAudio();
     if ((active?.currentTime ?? 0) > 3) { if (active) active.currentTime = 0; }
     else if (currentIndex > 0) playIndex(currentIndex - 1);
@@ -2790,8 +2961,43 @@ export default function Player({
   }, [isVinylMode, shuffled]);
 
   const cycleRepeatMode = useCallback(() => {
-    setRepeatMode((mode) => (mode === 'off' ? 'one' : mode === 'one' ? 'all' : 'off'));
-  }, []);
+    const cycle = (mode: 'off' | 'one' | 'all') => (mode === 'off' ? 'one' : mode === 'one' ? 'all' : 'off');
+    if (remote) {
+      remoteActions?.setRepeat(cycle(remote.repeat));
+      return;
+    }
+    setRepeatMode(cycle);
+  }, [remote, remoteActions]);
+
+  // What the controls show and change: the renderer's state while it is the target.
+  const shownShuffle = remote ? remote.shuffle : shuffled;
+  const shownRepeat = remote ? remote.repeat : repeatMode;
+  const shownVolume = remote ? remote.volume ?? 0 : volume;
+  const shownMuted = remote ? remote.muted : muted;
+  const shownLoading = isRemote ? remote?.status === 'loading' : loading;
+  const volumeLocked = isRemote && !(remote?.canSetVolume && remote.volume != null);
+  const volumeLockedTitle = `${remote?.deviceName ?? 'This speaker'}'s volume is fixed`;
+  const playNextClick = () => {
+    if (isRemote) remoteActions?.next();
+    else playNext();
+  };
+  const changeVolume = (value: number) => {
+    if (isRemote) {
+      if (volumeLocked) return;
+      remoteActions?.setVolume(value);
+      if (remote?.muted) remoteActions?.setMuted(false);
+      return;
+    }
+    setVolume(value);
+    setMuted(false);
+  };
+  const toggleMuted = () => {
+    if (isRemote) {
+      if (!volumeLocked) remoteActions?.setMuted(!remote?.muted);
+      return;
+    }
+    setMuted((m) => !m);
+  };
 
   useEffect(() => {
     if (!lyricsOpen || !currentTrack?.id) return;
@@ -2845,12 +3051,12 @@ export default function Player({
       currentTime,
       duration,
       isPlaying,
-      volume,
-      muted,
-      loading,
+      volume: shownVolume,
+      muted: shownMuted,
+      loading: shownLoading,
       audioError,
     });
-  }, [audioError, currentTime, currentTrack, duration, isPlaying, loading, muted, onPlaybackSnapshotChange, volume]);
+  }, [audioError, currentTime, currentTrack, duration, isPlaying, onPlaybackSnapshotChange, shownLoading, shownMuted, shownVolume]);
 
   if (queue.length === 0) return null;
 
@@ -2868,6 +3074,15 @@ export default function Player({
           onClear={clearQueue} onClose={() => setShowQueue(false)}
           lockSelect={isVinylMode && vinylHardcore}
           lockEdit={isVinylMode}
+          bottom={playerDockHeight}
+        />
+      )}
+      {outputOpen && playOn && !headless && (
+        <OutputPanel
+          playOn={playOn}
+          onClose={closeOutput}
+          anchorRef={outputButtonRef}
+          popupVars={dockPopupVars}
           bottom={playerDockHeight}
         />
       )}
@@ -3075,7 +3290,7 @@ export default function Player({
         {/* Track info */}
         <div style={P.trackInfo}>
           <div style={P.trackTitle}>{currentTrackTitle}</div>
-          {getTranscodeWarning(currentTrack, ffmpegAvailable)
+          {!isRemote && getTranscodeWarning(currentTrack, ffmpegAvailable)
             ? <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>⚠ {getTranscodeWarning(currentTrack, ffmpegAvailable)}</div>
             : (
               <div style={P.trackSub}>
@@ -3114,6 +3329,21 @@ export default function Player({
                     )}
                   </>
                 )}
+                {isRemote && playOn?.deviceName && (
+                  <>
+                    <span style={P.trackSubText}> · </span>
+                    <button
+                      type="button"
+                      style={P.playingOnLink}
+                      onClick={() => { setShowQueue(false); setOutputOpen(true); }}
+                      title={`Playing on ${playOn.deviceName} · change`}
+                      aria-label={`Playing on ${playOn.deviceName}. Change speaker`}
+                    >
+                      <OutputIcon size={12} style={{ flexShrink: 0 }} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{playOn.deviceName}</span>
+                    </button>
+                  </>
+                )}
               </div>
             )
           }
@@ -3121,11 +3351,11 @@ export default function Player({
 
         {/* Transport */}
         <div style={P.controls}>
-          <button style={ctrlBtn} onClick={playPrev}><PrevIcon /></button>
-          <button style={{ ...ctrlBtn, ...P.playBtn, ...(vintage ? vintage.styles.dockPlayBtn : {}) }} onClick={() => onStateChange({ ...state, isPlaying: !isPlaying })}>
-            {loading ? <span style={{ fontSize: 14, lineHeight: 1 }}>•••</span> : isPlaying ? <PauseIcon /> : <PlayIcon />}
+          <button style={ctrlBtn} aria-label="Previous track" onClick={playPrev}><PrevIcon /></button>
+          <button style={{ ...ctrlBtn, ...P.playBtn, ...(vintage ? vintage.styles.dockPlayBtn : {}) }} aria-label={isPlaying ? 'Pause' : 'Play'} onClick={() => onStateChange({ ...state, isPlaying: !isPlaying })}>
+            {shownLoading ? <span style={{ fontSize: 14, lineHeight: 1 }}>•••</span> : isPlaying ? <PauseIcon /> : <PlayIcon />}
           </button>
-          <button style={ctrlBtn} onClick={playNext}><NextIcon /></button>
+          <button style={ctrlBtn} aria-label="Next track" onClick={playNextClick}><NextIcon /></button>
         </div>
 
                 {/* Progress */}
@@ -3142,7 +3372,7 @@ export default function Player({
               onSeekStart={() => setSeeking(true)}
               onSeekEnd={(seconds) => {
                 seekToTime(seconds, true);
-                if (isPlaying) {
+                if (isPlaying && !isRemote) {
                   const active = getActiveAudio();
                   if (active) {
                     if (!vinylHardcore) {
@@ -3259,6 +3489,7 @@ export default function Player({
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {audioError
                 ? <span style={{ color: '#ef4444', fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>? {audioError}</span>
+                : playOn?.notice ? <PlayOnNoticeLine notice={playOn.notice} />
                 : <>
                     <span style={P.timeLabel}>{fmt(currentTime)}</span>
                     {showWaveformProgress ? (
@@ -3281,7 +3512,12 @@ export default function Player({
                         thumbStyle={vintage?.styles.dockProgress.thumb}
                         onChange={v => { seekValueRef.current = v; setCurrentTime(v); }}
                         onSeekStart={() => setSeeking(true)}
-                        onSeekEnd={() => { setSeeking(false); const a = getActiveAudio(); if (a) a.currentTime = seekValueRef.current; }} />
+                        onSeekEnd={() => {
+                          if (isRemote) { seekToTime(seekValueRef.current, true); return; }
+                          setSeeking(false);
+                          const a = getActiveAudio();
+                          if (a) a.currentTime = seekValueRef.current;
+                        }} />
                     )}
                     <span style={P.timeLabel}>{fmt(duration)}</span>
                   </>
@@ -3293,7 +3529,10 @@ export default function Player({
         <div style={P.rightCluster} data-testid="player-right-cluster">
           {/* Visualizer */}
           {audioReady && showMeters && (
-            <StereoVU analyser={analyserForVu} isPlaying={isPlaying} mode={vizMode} onSelectMode={selectVizMode} />
+            // Play On: the meters can't hear the renderer, so they rest in their idle state, dimmed.
+            <div style={{ display: 'flex', alignItems: 'center', ...(isRemote ? { opacity: hybridControlStyles.disabled.opacity } : {}) }}>
+              <StereoVU analyser={isRemote ? null : analyserForVu} isPlaying={isRemote ? false : isPlaying} mode={vizMode} onSelectMode={selectVizMode} />
+            </div>
           )}
 
           {/* Playback modes + Volume + Queue */}
@@ -3301,18 +3540,18 @@ export default function Player({
             <div style={P.modeControls}>
               {/* Shuffle */}
               <button
-                style={{ ...ctrlBtn, color: shuffled ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(shuffled ? P.ctrlBtnActive : {}) }}
+                style={{ ...ctrlBtn, color: shownShuffle ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(shownShuffle ? P.ctrlBtnActive : {}) }}
                 title="Shuffle queue"
                 disabled={isVinylMode}
                 onClick={toggleShuffle}
               ><ShuffleIcon /></button>
               <button
-                style={{ ...ctrlBtn, color: repeatMode !== 'off' ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(repeatMode !== 'off' ? P.ctrlBtnActive : {}) }}
-                title={repeatMode === 'off' ? 'Repeat off' : repeatMode === 'one' ? 'Repeat track' : 'Repeat queue'}
-                aria-label={repeatMode === 'off' ? 'Repeat off' : repeatMode === 'one' ? 'Repeat track' : 'Repeat queue'}
+                style={{ ...ctrlBtn, color: shownRepeat !== 'off' ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(shownRepeat !== 'off' ? P.ctrlBtnActive : {}) }}
+                title={shownRepeat === 'off' ? 'Repeat off' : shownRepeat === 'one' ? 'Repeat track' : 'Repeat queue'}
+                aria-label={shownRepeat === 'off' ? 'Repeat off' : shownRepeat === 'one' ? 'Repeat track' : 'Repeat queue'}
                 onClick={cycleRepeatMode}
               >
-                {repeatMode === 'one' ? <RepeatOneIcon /> : <RepeatAllIcon />}
+                {shownRepeat === 'one' ? <RepeatOneIcon /> : <RepeatAllIcon />}
               </button>
               <button
                 style={{ ...ctrlBtn, color: lyricsOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(lyricsOpen ? P.ctrlBtnActive : {}) }}
@@ -3328,32 +3567,51 @@ export default function Player({
             <div style={{ width: 1, height: 20, backgroundColor: PLAYER_THEME_TOKENS.border, flexShrink: 0 }} />
             {/* Volume icon */}
             <div style={P.volumeStack}>
-              <button style={ctrlBtn} onClick={() => setMuted(m => !m)}><VolumeIcon muted={muted} /></button>
               <button
-                style={{ ...ctrlBtn, color: eqOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(eqOpen ? P.ctrlBtnActive : {}) }}
-                title="Equalizer"
+                style={{ ...ctrlBtn, ...(volumeLocked ? hybridControlStyles.disabled : {}) }}
+                disabled={volumeLocked}
+                title={volumeLocked ? volumeLockedTitle : shownMuted ? 'Unmute' : 'Mute'}
+                aria-label={shownMuted ? 'Unmute' : 'Mute'}
+                onClick={toggleMuted}
+              ><VolumeIcon muted={shownMuted} /></button>
+              <button
+                style={{
+                  ...ctrlBtn,
+                  color: eqOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted,
+                  ...(eqOpen ? P.ctrlBtnActive : {}),
+                  ...(isRemote ? hybridControlStyles.disabled : {}),
+                }}
+                disabled={isRemote}
+                title={isRemote ? 'EQ applies to this browser only' : 'Equalizer'}
                 aria-label="Equalizer"
                 onClick={() => setEqOpen((open) => !open)}
               >
                 <EqIcon />
               </button>
             </div>
-            {vintage ? (
-              <RotaryKnob
-                value={muted ? 0 : volume}
-                muted={muted}
-                onChange={v => { setVolume(v); setMuted(false); }}
-                onToggleMute={() => setMuted(m => !m)}
-              />
-            ) : (
-              /* Vertical volume slider */
-              <Slider
-                value={muted ? 0 : volume} max={1}
-                onChange={v => { setVolume(v); setMuted(false); }}
-                color={PLAYER_THEME_TOKENS.textMuted} thin
-                vertical verticalHeight={60}
-              />
-            )}
+            <div
+              title={volumeLocked ? volumeLockedTitle : undefined}
+              style={{ display: 'flex', alignItems: 'center', ...(volumeLocked ? hybridControlStyles.disabled : {}) }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', ...(volumeLocked ? { pointerEvents: 'none' } : {}) }}>
+                {vintage ? (
+                  <RotaryKnob
+                    value={shownMuted ? 0 : shownVolume}
+                    muted={shownMuted}
+                    onChange={changeVolume}
+                    onToggleMute={toggleMuted}
+                  />
+                ) : (
+                  /* Vertical volume slider */
+                  <Slider
+                    value={shownMuted ? 0 : shownVolume} max={1}
+                    onChange={changeVolume}
+                    color={PLAYER_THEME_TOKENS.textMuted} thin
+                    vertical verticalHeight={60}
+                  />
+                )}
+              </div>
+            </div>
             {eqOpen && (
               <div style={{ ...dockPopupVars, ...P.eqPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }} ref={eqPopupRef} role="dialog" aria-label="Equalizer">
                 <div style={P.eqHeader}>
@@ -3385,10 +3643,28 @@ export default function Player({
                 />
               </div>
             )}
+            {/* Play On */}
+            {playOn?.available && (
+              <button
+                ref={outputButtonRef}
+                type="button"
+                style={{
+                  ...ctrlBtn,
+                  color: outputOpen || isRemote ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted,
+                  ...(outputOpen || isRemote ? P.ctrlBtnActive : {}),
+                }}
+                onClick={() => { setShowQueue(false); setOutputOpen((open) => !open); }}
+                title={isRemote && playOn.deviceName ? `Playing on ${playOn.deviceName}` : 'Play on…'}
+                aria-label={isRemote && playOn.deviceName ? `Playing on ${playOn.deviceName}` : 'Play on…'}
+                aria-expanded={outputOpen}
+              >
+                <OutputIcon />
+              </button>
+            )}
             {/* Queue */}
             <button
               style={{ ...ctrlBtn, color: showQueue ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted, ...(showQueue ? P.ctrlBtnActive : {}) }}
-              onClick={() => setShowQueue(q => !q)}
+              onClick={() => { setOutputOpen(false); setShowQueue(q => !q); }}
               title="Playback queue"
               aria-label="Playback queue"
             >
@@ -3532,6 +3808,22 @@ const P: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
     maxWidth: '100%',
+  },
+  playingOnLink: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 0,
+    background: 'transparent',
+    border: 'none',
+    padding: 0,
+    margin: 0,
+    fontSize: 13,
+    fontFamily: 'inherit',
+    color: PLAYER_THEME_TOKENS.accent,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
   },
   trackAlbumLink: {
     background: 'transparent',

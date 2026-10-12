@@ -56,6 +56,16 @@ import type {
 } from './types';
 import type { EntityId } from './entityId';
 import { invalidateHomeData } from './homeCache';
+import type {
+  RemoteCommand,
+  RemoteDiagnostics,
+  RemoteFormatPolicy,
+  RemoteLoadBody,
+  RemoteQueueOp,
+  RemoteSessionState,
+  RenderersResponse,
+  SessionInUseInfo,
+} from './remote/remoteTypes';
 
 type ApiEntityId = ClientEntityId;
 
@@ -241,6 +251,40 @@ async function patch<T>(path: string, body?: unknown): Promise<T> {
   homeMutation(path);
   return result;
 }
+
+/** Play On request failure that keeps the HTTP status and JSON body (409 carries the takeover details). */
+export class RemoteApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string | null, readonly body: unknown) {
+    super(message);
+    this.name = 'RemoteApiError';
+  }
+
+  /** The 409 `session_in_use` details, when this is one. */
+  get inUse(): SessionInUseInfo | null {
+    return this.status === 409 && this.code === 'session_in_use' ? this.body as SessionInUseInfo : null;
+  }
+}
+
+async function remoteRequest<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api/remote${path}`, {
+      ...FETCH_OPTS,
+      method,
+      ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    });
+  } catch (error) {
+    throw new RemoteApiError(describeNetworkError(error), 0, null, null);
+  }
+  if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
+    const data = await res.json().catch(() => null) as { error?: string; code?: string } | null;
+    throw new RemoteApiError(data?.error || `Server error ${res.status}`, res.status, data?.code ?? null, data);
+  }
+  return readJson<T>(res);
+}
+
+const remoteUdn = (udn: string) => encodeURIComponent(udn);
 
 /** Encode Genres Param is part of this module's public API. */
 export function encodeGenresParam(genres?: string[]): string | undefined {
@@ -635,6 +679,37 @@ export const api = {
   dlna: {
     status:  () => get<{ running: boolean; port: number | null; friendlyName: string | null }>('/dlna/status'),
     restart: () => post<{ ok: boolean }>('/dlna/restart'),
+  },
+  /** Play On: UPnP/DLNA renderers and server-owned sessions. Errors are `RemoteApiError`. */
+  remote: {
+    renderers: () => remoteRequest<RenderersResponse>('GET', '/renderers'),
+    refresh: () => remoteRequest<{ ok: boolean }>('POST', '/renderers/refresh'),
+    updateRenderer: (udn: string, patch: { alias?: string | null; formatPolicy?: RemoteFormatPolicy; hidden?: boolean }) =>
+      remoteRequest<{ ok: boolean }>('PATCH', `/renderers/${remoteUdn(udn)}`, patch),
+    rendererIconUrl: (udn: string) => `${BASE}/api/remote/renderers/${remoteUdn(udn)}/icon`,
+    diagnostics: () => remoteRequest<RemoteDiagnostics>('GET', '/diagnostics'),
+    /** Current session, or null when the renderer is idle. */
+    session: (udn: string) =>
+      remoteRequest<RemoteSessionState>('GET', `/sessions/${remoteUdn(udn)}`).catch((error: unknown) => {
+        if (error instanceof RemoteApiError && error.status === 404) return null;
+        throw error;
+      }),
+    load: (udn: string, body: RemoteLoadBody) =>
+      remoteRequest<RemoteSessionState>('POST', `/sessions/${remoteUdn(udn)}/load`, body),
+    command: (udn: string, command: RemoteCommand, takeover = false) =>
+      remoteRequest<RemoteSessionState>('POST', `/sessions/${remoteUdn(udn)}/command`, { ...command, takeover }),
+    queue: (udn: string, op: RemoteQueueOp, takeover = false) =>
+      remoteRequest<RemoteSessionState>('POST', `/sessions/${remoteUdn(udn)}/queue`, { ...op, takeover }),
+    transfer: (udn: string, toUdn: string, takeover = false) =>
+      remoteRequest<RemoteSessionState>('POST', `/sessions/${remoteUdn(udn)}/transfer`, { toUdn, takeover }),
+    release: (udn: string, options: { stop?: boolean; takeover?: boolean } = {}) => {
+      const query = new URLSearchParams();
+      if (options.stop !== undefined) query.set('stop', String(options.stop));
+      if (options.takeover) query.set('takeover', 'true');
+      const qs = query.toString();
+      return remoteRequest<RemoteSessionState>('DELETE', `/sessions/${remoteUdn(udn)}${qs ? `?${qs}` : ''}`);
+    },
+    eventsUrl: () => `${BASE}/api/remote/events`,
   },
   crossfade: {
     config:          (entityType?: string, entityId?: ApiEntityId) =>

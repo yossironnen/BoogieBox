@@ -11,6 +11,8 @@ import type {
 import type { EntityId } from './entityId';
 import { DEFAULT_SETTINGS } from './types';
 import Player, { type PlaybackSnapshot, type PlayerState } from './components/Player';
+import { PlayOnContext, usePlayOn } from './remote/usePlayOn';
+import { PlayOnTakeoverModal } from './remote/PlayOnTakeover';
 import SettingsPage from './components/SettingsPage';
 import BrowseView from './components/BrowseView';
 import CommandBar from './components/CommandBar';
@@ -1104,6 +1106,30 @@ export default function App() {
   const [infoTrackId, setInfoTrackId] = useState<ClientEntityId | null>(null);
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(null);
   const lastRecordedPlayKeyRef = useRef<string>('');
+  const localPositionRef = useRef(0);
+  const setLocalPlayerState = useCallback((action: React.SetStateAction<PlayerState>, options?: { alreadyRecorded?: boolean }) => {
+    // A Play On handoff continues a track the renderer already counted.
+    if (options?.alreadyRecorded && typeof action !== 'function') {
+      const current = action.queue[action.currentIndex];
+      if (current) lastRecordedPlayKeyRef.current = `${action.playToken}:${action.currentIndex}:${current.id}`;
+    }
+    setPlayerState(action);
+  }, []);
+  const playOn = usePlayOn({
+    enabled: currentUser !== 'loading' && currentUser !== null && !setupRequired,
+    currentUserId: currentUser && currentUser !== 'loading' ? String(currentUser.id) : null,
+    localState: playerState,
+    setLocalState: setLocalPlayerState,
+    getLocalPosition: () => localPositionRef.current,
+  });
+  const dispatchPlayerState = playOn.dispatch;
+  const handlePlaybackSnapshot = useCallback((snapshot: PlaybackSnapshot) => {
+    if (playOn.target.kind === 'local') localPositionRef.current = snapshot.currentTime;
+    setPlaybackSnapshot(snapshot);
+  }, [playOn.target.kind]);
+  const handleMobilePlaybackPosition = useCallback((seconds: number) => {
+    if (playOn.target.kind === 'local') localPositionRef.current = seconds;
+  }, [playOn.target.kind]);
   const themeSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Apply the approved Hybrid foundation without overwriting saved Custom values.
@@ -1316,7 +1342,7 @@ export default function App() {
     if (playbackMode === 'vinyl') {
       setPlaybackMode('standard');
     }
-    setPlayerState(prev => ({
+    dispatchPlayerState(prev => ({
       queue, currentIndex: idx, isPlaying: true, playToken: prev.playToken + 1,
       queueSource: source ?? { type: 'single', id: track.id },
     }));
@@ -1325,14 +1351,14 @@ export default function App() {
   const playAlbumInVinylMode = useCallback((tracks: Track[], albumId: ClientEntityId) => {
     if (!tracks.length) return;
     setPlaybackMode('vinyl');
-    setPlayerState(prev => ({
+    dispatchPlayerState(prev => ({
       queue: tracks,
       currentIndex: 0,
       isPlaying: true,
       playToken: prev.playToken + 1,
       queueSource: { type: 'album', id: albumId },
     }));
-  }, []);
+  }, [dispatchPlayerState]);
 
   const startAutoDj = useCallback(async (selectedGenres: string[], libraryId?: ClientEntityId): Promise<number> => {
     const cleanedGenres = selectedGenres.map((genre) => genre.trim()).filter(Boolean);
@@ -1353,7 +1379,7 @@ export default function App() {
     if (playbackMode === 'vinyl') {
       setPlaybackMode('standard');
     }
-    setPlayerState((prev) => ({
+    dispatchPlayerState((prev) => ({
       queue,
       currentIndex: 0,
       isPlaying: true,
@@ -1361,37 +1387,39 @@ export default function App() {
       queueSource: { type: 'autodj', id: '0' },
     }));
     return queue.length;
-  }, [playbackMode]);
+  }, [dispatchPlayerState, playbackMode]);
 
   const startLibraryRadio = useCallback(async (libraryId: ClientEntityId): Promise<void> => {
     const response = await api.autoDjTracks({ genres: [], library_id: libraryId, limit: 200 });
     const queue = response.tracks ?? [];
     if (!queue.length) return;
     if (playbackMode === 'vinyl') setPlaybackMode('standard');
-    setPlayerState((prev) => ({
+    dispatchPlayerState((prev) => ({
       queue,
       currentIndex: 0,
       isPlaying: true,
       playToken: prev.playToken + 1,
       queueSource: { type: 'autodj', id: libraryId },
     }));
-  }, [playbackMode]);
+  }, [dispatchPlayerState, playbackMode]);
 
   useEffect(() => {
+    // On a renderer the server records plays itself.
+    if (playOn.target.kind !== 'local') return;
     const current = playerState.queue[playerState.currentIndex];
     if (!shouldRecordTrackPlay(current)) return;
     const key = `${playerState.playToken}:${playerState.currentIndex}:${current.id}`;
     if (lastRecordedPlayKeyRef.current === key) return;
     lastRecordedPlayKeyRef.current = key;
     api.markTrackPlayed(current.id).catch(() => {});
-  }, [playerState.playToken, playerState.currentIndex, playerState.queue]);
+  }, [playOn.target.kind, playerState.playToken, playerState.currentIndex, playerState.queue]);
 
   const addToQueue = (track: Track) =>
-    setPlayerState(prev => {
+    dispatchPlayerState(prev => {
       if (playbackMode === 'vinyl') return prev;
       return { ...prev, queue: [...prev.queue, track] };
     });
-  const nowPlayingTrack = playerState.queue[playerState.currentIndex] ?? null;
+  const nowPlayingTrack = playOn.playerState.queue[playOn.playerState.currentIndex] ?? null;
 
   const openArtistFromPlayer = useCallback(async (artistName: string) => {
     const normalized = normalizeArtistLookupName(artistName);
@@ -1505,6 +1533,7 @@ export default function App() {
 
   if (isMobileShell) {
     return (
+      <PlayOnContext.Provider value={playOn}>
       <MobileApp
         currentUser={currentUser as AuthUser}
         libraries={libraries}
@@ -1518,10 +1547,11 @@ export default function App() {
         vinylNeedleDrop={vinylNeedleDrop}
         vinylAnalogFxDisabled={vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={vinylNeedleDropIntensity}
-        playerState={playerState}
+        playerState={playOn.playerState}
         playbackSnapshot={playbackSnapshot}
         openPlaylistId={openPlaylistRequest?.playlistId ?? null}
-        onPlaybackStateChange={setPlayerState}
+        onPlaybackStateChange={dispatchPlayerState}
+        onPlaybackPosition={handleMobilePlaybackPosition}
         onPlayTrack={playTrack}
         onAddToQueue={addToQueue}
         onConsumeOpenPlaylist={() => setOpenPlaylistRequest(null)}
@@ -1534,10 +1564,12 @@ export default function App() {
         onVinylAnalogFxDisabledChange={setVinylAnalogFxDisabled}
         onVinylNeedleDropIntensityChange={setVinylNeedleDropIntensity}
       />
+      </PlayOnContext.Provider>
     );
   }
 
   return (
+    <PlayOnContext.Provider value={playOn}>
     <VintageStyleContext.Provider value={activeVintage}>
     <div
       data-ui-design="hybrid"
@@ -1895,8 +1927,8 @@ export default function App() {
       </div>
 
       <Player
-        state={playerState}
-        onStateChange={setPlayerState}
+        state={playOn.playerState}
+        onStateChange={dispatchPlayerState}
         ffmpegAvailable={ffmpegAvailable}
         onOpenArtist={openArtistFromPlayer}
         onOpenAlbum={openAlbumFromPlayer}
@@ -1905,11 +1937,12 @@ export default function App() {
         vinylNeedleDrop={vinylNeedleDrop}
         vinylAnalogFxDisabled={vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={vinylNeedleDropIntensity}
-        onPlaybackSnapshotChange={setPlaybackSnapshot}
+        onPlaybackSnapshotChange={handlePlaybackSnapshot}
         hybridPreview={hybridDesignActive}
         adaptiveAccentEnabled={effectiveAdaptiveAccent}
       />
       <ContextMenuRoot />
+      {playOn.takeover && <PlayOnTakeoverModal prompt={playOn.takeover} />}
       {infoTrackId && (
         <TrackInfoModal
           trackId={infoTrackId}
@@ -1919,6 +1952,7 @@ export default function App() {
       )}
     </div>
     </VintageStyleContext.Provider>
+    </PlayOnContext.Provider>
   );
 }
 

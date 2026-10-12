@@ -22,6 +22,8 @@ import FolderPickerModal from './FolderPickerModal';
 import ConfirmModal from './ConfirmModal';
 import CommandBar from './CommandBar';
 import RadioMetadataSettings from './RadioMetadataSettings';
+import PlayOnSettings from './PlayOnSettings';
+import { InlineStatus, ToggleRow } from './settingsControls';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -369,74 +371,6 @@ function connectorMessage(result: string | null): string | null {
   if (result.startsWith('✓')) return null;
   if (/^Testing/.test(result)) return result;
   return result.replace(/^✗\s*/, '');
-}
-
-// ─── Advanced-tab shared controls ──────────────────────────────────────────
-
-function ToggleSwitch({
-  checked,
-  onChange,
-  ariaLabel,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: () => void;
-  ariaLabel: string;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={ariaLabel}
-      aria-checked={checked}
-      onClick={onChange}
-      disabled={disabled}
-      style={{
-        ...hybridControlStyles.switchTrack,
-        ...(checked ? hybridControlStyles.switchTrackActive : {}),
-        ...(disabled ? { opacity: 0.6, cursor: 'default' } : {}),
-        flexShrink: 0,
-      }}
-    >
-      <span style={{ ...hybridControlStyles.switchThumb, ...(checked ? hybridControlStyles.switchThumbActive : {}) }} />
-    </button>
-  );
-}
-
-function ToggleRow({
-  title,
-  description,
-  checked,
-  onChange,
-  ariaLabel,
-  disabled,
-}: {
-  title: string;
-  description: React.ReactNode;
-  checked: boolean;
-  onChange: () => void;
-  ariaLabel?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>{title}</div>
-        <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6 }}>{description}</div>
-      </div>
-      <ToggleSwitch checked={checked} onChange={onChange} ariaLabel={ariaLabel ?? title} disabled={disabled} />
-    </div>
-  );
-}
-
-/** Renders a card's busy/result feedback line consistently: muted while busy,
- * success-toned otherwise, danger-toned for a result starting with "Error". */
-function InlineStatus({ busy, busyText, result }: { busy: boolean; busyText: string; result: string | null }) {
-  if (busy) return <div style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 6 }}>{busyText}</div>;
-  if (!result) return null;
-  const isError = result.startsWith('Error') || result.startsWith('✗');
-  return <div style={{ fontSize: 14, color: isError ? 'var(--danger)' : 'var(--success)', marginTop: 6 }}>{result}</div>;
 }
 
 const THEME_MODE_ICON_PROPS = {
@@ -1936,6 +1870,7 @@ export default function SettingsPage({
                 ['advanced-bpm', 'BPM'],
                 ['advanced-radio', 'Radio'],
                 ['advanced-dlna', 'DLNA'],
+                ...(isAdmin ? [['advanced-play-on', 'Play On']] : []),
                 ['advanced-debug', 'Diagnostics'],
                 ...(isAdmin ? [['advanced-database', 'Database']] : []),
               ].map(([target, label]) => (
@@ -2754,6 +2689,14 @@ export default function SettingsPage({
               <InlineStatus busy={false} busyText="" result={dlnaResult} />
             </div>
           </div>
+
+          {/* ── Play On ─────────────────────────────────────────────────── */}
+          {isAdmin && (
+            <>
+              <div id="advanced-play-on" style={P.advancedSectionTitle}>Play On</div>
+              <PlayOnSettings />
+            </>
+          )}
 
           {/* ── Debug Logging ───────────────────────────────────────────── */}
           <div id="advanced-debug" style={P.advancedSectionTitle}>Debug Logging</div>

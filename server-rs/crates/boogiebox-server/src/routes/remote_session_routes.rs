@@ -281,6 +281,9 @@ pub struct LoadBody {
     /// Repeat.
     #[serde(default)]
     pub repeat: Option<Repeat>,
+    /// Handoff from another player: the start item's play was already recorded there.
+    #[serde(default)]
+    pub resumed: bool,
     /// Confirmed takeover.
     #[serde(default)]
     pub takeover: bool,
@@ -324,6 +327,7 @@ async fn load_handler(
                     queue_source,
                     shuffle: body.shuffle,
                     repeat: body.repeat,
+                    resumed: body.resumed,
                 },
                 controller(&user),
                 body.takeover,

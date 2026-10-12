@@ -14,12 +14,15 @@ export default function MobileBottomSheet({
   children,
   closeLabel = 'Close',
   dialogRole = 'dialog',
+  headerActions,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   closeLabel?: string;
   dialogRole?: 'dialog' | 'alertdialog';
+  /** Extra header buttons shown before the close button (sized like it). */
+  headerActions?: React.ReactNode;
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -73,15 +76,18 @@ export default function MobileBottomSheet({
             <div style={styles.eyebrow}>BoogieBox</div>
             <h2 id={titleId} style={styles.title}>{title}</h2>
           </div>
-          <button
-            ref={closeRef}
-            type="button"
-            style={styles.close}
-            onClick={onClose}
-            aria-label={closeLabel}
-          >
-            ×
-          </button>
+          <div style={styles.headerActions}>
+            {headerActions}
+            <button
+              ref={closeRef}
+              type="button"
+              style={styles.close}
+              onClick={onClose}
+              aria-label={closeLabel}
+            >
+              ×
+            </button>
+          </div>
         </header>
         <div style={styles.body}>{children}</div>
       </section>
@@ -149,6 +155,11 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: -0.4,
     lineHeight: 1.05,
   },
+  headerActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
   close: {
     width: 44,
     minWidth: 44,
@@ -172,3 +183,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: MOBILE_BOTTOM_SHEET_BODY_PADDING,
   },
 };
+
+/** Style for `headerActions` buttons, matching the sheet's close button. */
+export const mobileSheetHeaderButtonStyle: React.CSSProperties = styles.close;

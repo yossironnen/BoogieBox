@@ -2,7 +2,7 @@
  * Defines mobile Mobile App behavior for the BoogieBox React client.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Player, { type PlaybackSnapshot, type PlayerEqControls } from '../components/Player';
 import { api } from '../api';
 import type { MobileBrowseSelection, MobilePlaylistSelection, MobileSharedProps, MobileTabId } from './mobileShell';
@@ -13,7 +13,11 @@ import MobileHomeView from './views/MobileHomeView';
 import MobileNowPlayingView from './views/MobileNowPlayingView';
 import MobilePlaylistsView from './views/MobilePlaylistsView';
 import MobileSearchView from './views/MobileSearchView';
+import MobileConfirmationSheet from './components/MobileConfirmationSheet';
 import { hybridMobileShellStyles } from '../hybridPreview';
+import { UserIcon } from '../remote/OutputIcon';
+import { takeoverDescription, takeoverTitle } from '../remote/PlayOnTakeover';
+import { usePlayOnContext } from '../remote/usePlayOn';
 
 /** Mobile App is part of this module's public API. */
 export default function MobileApp(props: MobileSharedProps) {
@@ -23,6 +27,13 @@ export default function MobileApp(props: MobileSharedProps) {
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(props.playbackSnapshot);
   const [eqControls, setEqControls] = useState<PlayerEqControls | null>(null);
   const [requestedPlaylistId, setRequestedPlaylistId] = useState<string | null>(null);
+  const takeover = usePlayOnContext()?.takeover ?? null;
+  const { onPlaybackPosition } = props;
+  // Stable: Player re-publishes its snapshot whenever this callback changes.
+  const handlePlaybackSnapshot = useCallback((snapshot: PlaybackSnapshot) => {
+    setPlaybackSnapshot(snapshot);
+    onPlaybackPosition?.(snapshot.currentTime);
+  }, [onPlaybackPosition]);
 
   useEffect(() => {
     if (props.openPlaylistId) {
@@ -137,7 +148,7 @@ export default function MobileApp(props: MobileSharedProps) {
         vinylAnalogFxDisabled={props.vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={props.vinylNeedleDropIntensity}
         headless
-        onPlaybackSnapshotChange={setPlaybackSnapshot}
+        onPlaybackSnapshotChange={handlePlaybackSnapshot}
         onEqControlsChange={setEqControls}
       />
       {tab !== 'now-playing' ? (
@@ -153,6 +164,21 @@ export default function MobileApp(props: MobileSharedProps) {
         />
       ) : null}
       <MobileTabBar activeTab={tab} onChange={setTab} />
+      {takeover ? (
+        <MobileConfirmationSheet
+          open
+          tone="default"
+          mark={<UserIcon size={20} />}
+          title={takeoverTitle(takeover)}
+          description={takeoverDescription(takeover, 'device')}
+          itemLabel={takeover.info.nowPlaying?.title}
+          confirmLabel="Take over"
+          cancelLabel="Cancel"
+          busyLabel="Taking over…"
+          onClose={takeover.cancel}
+          onConfirm={takeover.confirm}
+        />
+      ) : null}
     </div>
   );
 }

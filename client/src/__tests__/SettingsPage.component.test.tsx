@@ -41,6 +41,9 @@ vi.mock('../api', () => ({
   setStreamDirect: setStreamDirectMock,
 }));
 
+// Covered by PlayOnSettings.test.tsx.
+vi.mock('../components/PlayOnSettings', () => ({ default: () => <div data-testid="play-on-settings" /> }));
+
 function okJson(data: unknown, contentType = 'application/json') {
   return Promise.resolve({
     ok: true,

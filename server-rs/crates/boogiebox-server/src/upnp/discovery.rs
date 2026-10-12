@@ -2,7 +2,7 @@
 //! listener. Emits [`DiscoveryEvent`]s; fetching and parsing device descriptions happens in the consumer.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reqwest::Url;
@@ -248,13 +248,33 @@ fn notify_socket(ifaces: &[Ipv4Addr]) -> std::io::Result<UdpSocket> {
     UdpSocket::from_std(socket.into())
 }
 
+/// What discovery is doing, for the admin diagnostics view.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DiscoveryStatus {
+    /// Interfaces searched on.
+    pub interfaces: Vec<Ipv4Addr>,
+    /// Last `M-SEARCH` burst (ms since epoch).
+    pub last_search_ms: Option<u64>,
+    /// Last interface/socket problem.
+    pub last_error: Option<String>,
+}
+
 /// Handle to a running discovery task.
 #[derive(Clone, Debug)]
 pub struct DiscoveryHandle {
     refresh: Arc<Notify>,
+    status: Arc<Mutex<DiscoveryStatus>>,
 }
 
 impl DiscoveryHandle {
+    /// Current diagnostics.
+    pub fn status(&self) -> DiscoveryStatus {
+        self.status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     /// Requests an immediate `M-SEARCH` burst.
     pub fn refresh(&self) {
         self.refresh.notify_one();
@@ -307,22 +327,31 @@ pub fn spawn_discovery(
     cancel: CancellationToken,
 ) -> DiscoveryHandle {
     let refresh = Arc::new(Notify::new());
+    let status = Arc::new(Mutex::new(DiscoveryStatus::default()));
     let handle = DiscoveryHandle {
         refresh: refresh.clone(),
+        status: status.clone(),
+    };
+    let set_status = move |update: &dyn Fn(&mut DiscoveryStatus)| {
+        update(&mut status.lock().unwrap_or_else(|p| p.into_inner()));
     };
     tokio::spawn(async move {
         let ifaces = candidate_ipv4_interfaces(override_ip);
+        set_status(&|s| s.interfaces = ifaces.clone());
         let mut searchers = Vec::new();
         for iface in &ifaces {
             match search_socket(*iface) {
                 Ok(s) => searchers.push(Arc::new(s)),
                 Err(e) => {
-                    tracing::warn!(target: "remote", %iface, "Play On: cannot search on interface: {e}")
+                    tracing::warn!(target: "remote", %iface, "Play On: cannot search on interface: {e}");
+                    let message = format!("Cannot search on {iface}: {e}");
+                    set_status(&|s| s.last_error = Some(message.clone()));
                 }
             }
         }
         if searchers.is_empty() {
             tracing::warn!(target: "remote", "Play On discovery disabled: no usable LAN interface");
+            set_status(&|s| s.last_error = Some("No usable LAN interface".into()));
             return;
         }
         for s in &searchers {
@@ -348,6 +377,11 @@ pub fn spawn_discovery(
             for s in &searchers {
                 send_search_burst(s).await;
             }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            set_status(&|s| s.last_search_ms = Some(now));
         }
         tracing::info!(target: "remote", "Play On discovery stopped");
     });

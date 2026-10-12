@@ -138,7 +138,8 @@ impl SessionState {
             last_controller_user_id: None,
             can_seek,
             can_set_volume,
-            revision: 0,
+            // Seeded from the clock so a later session on the same renderer never reuses a lower revision.
+            revision: now_ms(),
             error: None,
             last_activity: None,
         }
@@ -199,6 +200,8 @@ pub enum Command {
         shuffle: Option<bool>,
         /// Repeat (unchanged when `None`).
         repeat: Option<Repeat>,
+        /// The start item was already playing elsewhere (handoff/transfer), so its play is not recorded again.
+        resumed: bool,
     },
     /// Resume/start.
     Play,
@@ -665,6 +668,7 @@ impl Actor {
                 queue_source,
                 shuffle,
                 repeat,
+                resumed,
             } => {
                 if items.is_empty() || items.len() > MAX_ITEMS {
                     return Err(SessionError::BadRequest("1–5000 items required".into()));
@@ -678,7 +682,13 @@ impl Actor {
                 let shuffle = shuffle.unwrap_or(self.queue.shuffle());
                 self.queue.load(items, start_index, shuffle);
                 self.state.queue_source = queue_source;
-                self.play_current(start_at.max(0.0)).await
+                let start_qid = self.queue.current().map(|e| e.qid);
+                self.play_current(start_at.max(0.0)).await?;
+                // Only when the start item itself is playing (an unplayable one may have been skipped).
+                if resumed && self.queue.current().map(|e| e.qid) == start_qid {
+                    self.played_qid = start_qid;
+                }
+                Ok(())
             }
             Command::Play => self.resume().await,
             Command::Pause => self.pause().await,
@@ -801,7 +811,7 @@ impl Actor {
                         self.state.can_set_volume = false;
                         self.notice(
                             "info",
-                            format!("{}'s volume is fixed; use your amplifier", self.cfg.name),
+                            format!("{}'s volume is fixed. Use your amplifier", self.cfg.name),
                         );
                         return Err(SessionError::Unsupported("volume (it is fixed)"));
                     }
@@ -1312,6 +1322,7 @@ pub(crate) mod tests {
             queue_source: None,
             shuffle: None,
             repeat: None,
+            resumed: false,
         }
     }
 
@@ -1385,6 +1396,31 @@ pub(crate) mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resumed_load_does_not_record_the_start_item_again() {
+        let h = harness(true);
+        let mut cmd = load(vec![timed("a", 6.0), timed("b", 6.0)], 0);
+        if let Command::Load {
+            start_at, resumed, ..
+        } = &mut cmd
+        {
+            *start_at = 2.0;
+            *resumed = true;
+        }
+        h.handle.send(cmd, alice(), false).await.unwrap();
+        sleep_s(12.0).await;
+        assert_eq!(current_title(&h).as_deref(), Some("Title b"));
+        let plays: Vec<String> = h
+            .env
+            .plays
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
+        assert_eq!(plays, vec!["b"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1909,6 +1945,7 @@ pub(crate) mod tests {
                     queue_source: Some(serde_json::json!({"type":"album","id":"al1"})),
                     shuffle: Some(false),
                     repeat: Some(Repeat::All),
+                    resumed: false,
                 },
                 alice(),
                 false,

@@ -79,6 +79,8 @@ export interface Track {
   startAtSec?: number;
   /** Why this track is in an Artist Radio queue (set only by `/artists/:id/radio`). */
   radio_reason?: RadioReason | null;
+  /** Play On queue entry id; set only on tracks mirrored from a renderer session (`remote/remoteBridge.ts`). */
+  remoteQid?: number;
 }
 
 /** Why a track is in an Artist Radio queue — rendered as a chip in the queue. */

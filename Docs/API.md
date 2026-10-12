@@ -135,8 +135,9 @@ All routes require a session and return `404` while the `remotePlaybackEnabled` 
 | `POST` | `/api/remote/renderers/refresh` | Trigger an immediate network search. |
 | `PATCH` | `/api/remote/renderers/{udn}` | Admin: set `alias` (`null` clears), `formatPolicy` (`auto`/`direct`/`lossless`/`mp3`) and `hidden`. |
 | `GET` | `/api/remote/renderers/{udn}/icon` | Renderer icon proxied from the device. |
+| `GET` | `/api/remote/diagnostics` | Admin: discovery state (`running`, `detectedInterfaces`, `searchInterfaces`, `lastSearchMs`, `lastError`, `httpPort`) and renderer/online/session counts. Works while Play On is off. |
 | `GET` | `/api/remote/sessions/{udn}` | Current session snapshot (`404` when idle). |
-| `POST` | `/api/remote/sessions/{udn}/load` | Replace the queue and play: `items: [{kind: "track"|"mix", id, radioReason?}]`, `startIndex`, `startAtSec`, `queueSource`, `shuffle`, `repeat`. |
+| `POST` | `/api/remote/sessions/{udn}/load` | Replace the queue and play: `items: [{kind: "track"|"mix", id, radioReason?}]`, `startIndex`, `startAtSec`, `queueSource`, `shuffle`, `repeat`, `resumed` (handoff: the start item's play was already recorded, so it is not counted again). |
 | `POST` | `/api/remote/sessions/{udn}/command` | `cmd`: `play`, `pause`, `toggle`, `stop`, `next`, `prev`, `seek` (value s), `jump` (value qid), `shuffle`/`mute` (bool), `repeat` (`off`/`one`/`all`), `volume` (0–100). |
 | `POST` | `/api/remote/sessions/{udn}/queue` | `op`: `enqueue` (`items`, `mode` `end`/`next`), `remove` (`qid`), `move` (`qid`, `toIndex`), `clear`. |
 | `POST` | `/api/remote/sessions/{udn}/transfer` | Move queue and position to `toUdn` (target loads first; the source is then stopped). |

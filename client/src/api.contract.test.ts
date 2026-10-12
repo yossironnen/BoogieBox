@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { api } from './api';
+import { api, RemoteApiError } from './api';
 
 function jsonResponse(body: unknown = {}) {
   return {
@@ -120,6 +120,16 @@ describe('API public endpoint contract', () => {
       () => api.boogiemix.listOutputs('playlist-1'),
       () => api.dlna.status(),
       () => api.dlna.restart(),
+      () => api.remote.renderers(),
+      () => api.remote.refresh(),
+      () => api.remote.diagnostics(),
+      () => api.remote.updateRenderer('uuid:wiim-1', { alias: null, formatPolicy: 'mp3', hidden: false }),
+      () => api.remote.session('uuid:wiim-1'),
+      () => api.remote.load('uuid:wiim-1', { items: [{ kind: 'track', id: 't1' }], startIndex: 0 }),
+      () => api.remote.command('uuid:wiim-1', { cmd: 'seek', value: 30 }),
+      () => api.remote.queue('uuid:wiim-1', { op: 'remove', qid: 3 }, true),
+      () => api.remote.transfer('uuid:wiim-1', 'uuid:tv-1'),
+      () => api.remote.release('uuid:wiim-1', { stop: false, takeover: true }),
       () => api.crossfade.config('artist', 'artist-1'),
       () => api.crossfade.overrides('album'),
       () => api.crossfade.upsertOverride({ entity_type: 'artist', entity_id: 'artist-1', mode: 'fixed', duration: 8 }),
@@ -170,5 +180,37 @@ describe('API public endpoint contract', () => {
     expect(api.trackStreamUrl('track-1')).toContain('noTranscode=1');
     expect(api.playlists.exportM3uUrl('playlist-1')).toBe('/api/playlists/playlist-1/export.m3u');
     expect(api.boogiemix.outputDownloadUrl('output-1')).toBe('/api/boogiemix/outputs/output-1/file');
+  });
+
+  it('sends Play On requests with encoded renderer ids and keeps 409 takeover details', async () => {
+    const inUse = { code: 'session_in_use', error: 'in use', udn: 'uuid:wiim-1', deviceName: 'WiiM', ownerUserId: 'u2', ownerName: 'Dana', status: 'playing', nowPlaying: { title: 'Song' } };
+    vi.mocked(fetch).mockImplementationOnce(() => Promise.resolve({
+      ok: false,
+      status: 409,
+      headers: { get: () => 'application/json' },
+      json: vi.fn().mockResolvedValue(inUse),
+    } as unknown as Response));
+
+    const error = await api.remote.command('uuid:wiim-1', { cmd: 'pause' }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RemoteApiError);
+    expect((error as RemoteApiError).inUse).toEqual(inUse);
+    const [url, options] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe('/api/remote/sessions/uuid%3Awiim-1/command');
+    expect(JSON.parse(String(options?.body))).toEqual({ cmd: 'pause', takeover: false });
+
+    await api.remote.release('uuid:wiim-1', { stop: false, takeover: true });
+    expect(String(vi.mocked(fetch).mock.calls[1][0])).toBe('/api/remote/sessions/uuid%3Awiim-1?stop=false&takeover=true');
+    expect(vi.mocked(fetch).mock.calls[1][1]?.method).toBe('DELETE');
+  });
+
+  it('treats a missing Play On session as idle', async () => {
+    vi.mocked(fetch).mockImplementationOnce(() => Promise.resolve({
+      ok: false,
+      status: 404,
+      headers: { get: () => 'application/json' },
+      json: vi.fn().mockResolvedValue({ error: 'No active session' }),
+    } as unknown as Response));
+    await expect(api.remote.session('uuid:wiim-1')).resolves.toBeNull();
+    expect(api.remote.rendererIconUrl('uuid:wiim-1')).toBe('/api/remote/renderers/uuid%3Awiim-1/icon');
   });
 });

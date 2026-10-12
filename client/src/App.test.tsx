@@ -12,7 +12,14 @@ import { api } from './api';
 
 vi.mock('./api', () => ({
   getStreamDirect: () => false,
+  RemoteApiError: class RemoteApiError extends Error {},
   api: {
+    remote: {
+      renderers: vi.fn().mockResolvedValue({ running: true, renderers: [] }),
+      session: vi.fn().mockResolvedValue(null),
+      refresh: vi.fn().mockResolvedValue({ ok: true }),
+      eventsUrl: () => '/api/remote/events',
+    },
     auth: {
       me: vi.fn().mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }),
       logout: vi.fn().mockResolvedValue(undefined),

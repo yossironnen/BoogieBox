@@ -17,9 +17,12 @@ import { phase2 } from '../../uiPhase2';
 import MobileSettingsView from './MobileSettingsView';
 import {
   MobileEqualizerSheet,
+  MobilePlayOnSheet,
   MobileVinylSheet,
 } from '../components/MobilePlaybackTools';
 import MobileConfirmationSheet from '../components/MobileConfirmationSheet';
+import { OutputIcon } from '../../remote/OutputIcon';
+import { usePlayOnContext } from '../../remote/usePlayOn';
 
 function fmt(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
@@ -104,7 +107,9 @@ export default function MobileNowPlayingView({
   const [sonicFingerprintLoading, setSonicFingerprintLoading] = useState(false);
   const settledFingerprintTrackId = useRef<ClientEntityId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [playbackTool, setPlaybackTool] = useState<'equalizer' | 'vinyl' | null>(null);
+  const [playbackTool, setPlaybackTool] = useState<'output' | 'equalizer' | 'vinyl' | null>(null);
+  const playOn = usePlayOnContext();
+  const playingOnRenderer = playOn?.target.kind === 'renderer';
   const [clearQueueOpen, setClearQueueOpen] = useState(false);
   const [queueGesture, setQueueGesture] = useState<QueueGesture | null>(null);
   const [queueSwipeOffsets, setQueueSwipeOffsets] = useState<Record<string, number>>({});
@@ -318,6 +323,22 @@ export default function MobileNowPlayingView({
           <h1 style={styles.pageTitle}>Now Playing</h1>
         </div>
         <div style={styles.topActions}>
+          {playOn?.available ? (
+            // Icon-only: with a label the header no longer fits a 390px phone next to the title.
+            <button
+              type="button"
+              style={{
+                ...styles.toolButton,
+                ...styles.toolButtonWithIcon,
+                ...(playingOnRenderer ? styles.toolButtonActive : null),
+              }}
+              onClick={() => setPlaybackTool('output')}
+              title={playingOnRenderer && playOn.deviceName ? `Playing on ${playOn.deviceName}` : 'Play on…'}
+              aria-label={playingOnRenderer && playOn.deviceName ? `Playing on ${playOn.deviceName}` : 'Play on…'}
+            >
+              <OutputIcon size={18} />
+            </button>
+          ) : null}
           <button
             type="button"
             style={styles.toolButton}
@@ -441,6 +462,23 @@ export default function MobileNowPlayingView({
           ››
         </button>
       </div>
+      {playOn?.notice ? (
+        <div
+          role="status"
+          style={{
+            ...hybridMobileContentStyles.feedback,
+            ...styles.playOnNotice,
+            color: playOn.notice.tone === 'danger' ? 'var(--danger)' : playOn.notice.tone === 'warning' ? 'var(--warning, var(--accent))' : 'var(--text-muted)',
+          }}
+        >
+          <span style={{ minWidth: 0, flex: 1 }}>{playOn.notice.text}</span>
+          {playOn.notice.action ? (
+            <button type="button" style={styles.playOnNoticeAction} onClick={playOn.notice.action.run}>
+              {playOn.notice.action.label}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <section aria-labelledby="mobile-up-next" style={styles.queueSection}>
       <div style={styles.queueTitleBar}>
         <div>
@@ -546,6 +584,9 @@ export default function MobileNowPlayingView({
           onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
         />
       ) : null}
+      {playbackTool === 'output' && playOn ? (
+        <MobilePlayOnSheet playOn={playOn} onClose={() => setPlaybackTool(null)} />
+      ) : null}
       {playbackTool === 'equalizer' ? (
         <MobileEqualizerSheet
           controls={eqControls ?? null}
@@ -634,6 +675,28 @@ const styles: Record<string, React.CSSProperties> = {
     borderColor: 'var(--accent)',
     background: 'var(--accent-soft)',
     color: 'var(--accent)',
+  },
+  toolButtonWithIcon: {
+    display: 'inline-grid',
+    placeItems: 'center',
+  },
+  playOnNotice: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+  },
+  playOnNoticeAction: {
+    flexShrink: 0,
+    minHeight: 44,
+    padding: '0 12px',
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 12,
+    background: 'var(--surface-subtle)',
+    color: 'var(--text)',
+    fontFamily: 'inherit',
+    fontSize: 13,
+    fontWeight: 750,
   },
   empty: {
     ...hybridMobileContentStyles.empty,
