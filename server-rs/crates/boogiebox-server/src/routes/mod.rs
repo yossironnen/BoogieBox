@@ -12,4 +12,5 @@ pub mod playback_routes;
 pub mod playlist_routes;
 pub mod provider_routes;
 pub mod remote_routes;
+pub mod remote_session_routes;
 pub mod settings_routes;

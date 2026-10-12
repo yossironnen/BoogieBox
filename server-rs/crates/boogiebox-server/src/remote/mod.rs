@@ -3,8 +3,11 @@
 //! [`RemoteManager`] owns renderer discovery and the renderer registry. It lives in `AppState`, starts after
 //! setup (and again after a database switch), and is reconfigured when the `remote*` settings change.
 
+pub mod link;
 pub mod media;
+pub mod queue;
 pub mod registry;
+pub mod session;
 
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
@@ -76,12 +79,57 @@ pub fn read_remote_settings(conn: &Connection) -> RemoteSettings {
     }
 }
 
-/// Events pushed to clients (the SSE stream lands in Phase 4).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Events pushed to clients over the SSE stream.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RemoteEvent {
     /// The renderer list or a renderer's online state changed.
     Renderers,
+    /// Full session snapshot (structural change).
+    Session {
+        /// Snapshot.
+        state: Box<session::SessionState>,
+    },
+    /// Lightweight position tick.
+    #[serde(rename_all = "camelCase")]
+    Position {
+        /// Renderer.
+        udn: String,
+        /// Status.
+        status: session::SessionStatus,
+        /// Position (s) at `sampled_at_ms`.
+        position_sec: f64,
+        /// Duration (s).
+        duration_sec: Option<f64>,
+        /// Sample time (ms since epoch).
+        sampled_at_ms: u64,
+    },
+    /// Another user took over a session (plan 5.5).
+    #[serde(rename_all = "camelCase")]
+    Takeover {
+        /// Renderer.
+        udn: String,
+        /// Previous holder.
+        from_user_id: String,
+        /// New holder.
+        by_user_id: String,
+        /// New holder's name.
+        by_user_name: String,
+    },
+    /// Inline notice for the dock/mini player (plan 8.7).
+    Notice {
+        /// Renderer.
+        udn: String,
+        /// `info` | `warning` | `error`.
+        level: &'static str,
+        /// Text.
+        message: String,
+    },
+    /// A session ended (released, idle, or Play On stopped).
+    SessionEnded {
+        /// Renderer.
+        udn: String,
+    },
 }
 
 struct Runtime {
@@ -98,6 +146,8 @@ struct Inner {
     icons: Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>,
     media: media::MediaTokens,
     http_port: AtomicU16,
+    sessions: Mutex<std::collections::HashMap<String, session::SessionHandle>>,
+    rate: RateLimiter,
 }
 
 /// Play On coordinator stored in `AppState`.
@@ -133,6 +183,8 @@ impl RemoteManager {
                 icons: Mutex::new(Default::default()),
                 media: media::MediaTokens::default(),
                 http_port: AtomicU16::new(crate::DEFAULT_PORT),
+                sessions: Mutex::new(Default::default()),
+                rate: RateLimiter::default(),
             }),
         }
     }
@@ -222,6 +274,18 @@ impl RemoteManager {
             .take()
         {
             rt.cancel.cancel();
+        }
+        // Dropping the handles closes every session's command channel, which ends the actors.
+        let ended: Vec<String> = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .drain()
+            .map(|(udn, _)| udn)
+            .collect();
+        for udn in &ended {
+            self.inner.media.revoke_owner(udn);
         }
         self.inner.registry.clear();
         self.inner
@@ -434,6 +498,208 @@ impl RemoteManager {
             .unwrap_or_else(|p| p.into_inner())
             .insert(udn.to_string(), (mime.clone(), bytes.clone()));
         Some((mime, bytes))
+    }
+}
+
+type SessionMap = std::collections::HashMap<String, session::SessionHandle>;
+
+impl RemoteManager {
+    fn sessions(&self) -> std::sync::MutexGuard<'_, SessionMap> {
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Per-user rate limit for state-changing requests.
+    pub fn allow_request(&self, user_id: &str) -> bool {
+        self.inner.rate.allow(user_id)
+    }
+
+    /// Live session for `udn`.
+    pub fn session(&self, udn: &str) -> Option<session::SessionHandle> {
+        self.sessions()
+            .get(udn)
+            .filter(|h| !h.tx.is_closed())
+            .cloned()
+    }
+
+    /// Latest snapshot of every live session.
+    pub fn session_snapshots(&self) -> Vec<session::SessionState> {
+        self.sessions()
+            .values()
+            .filter(|h| !h.tx.is_closed())
+            .map(|h| h.snapshot())
+            .collect()
+    }
+
+    fn open_session(
+        &self,
+        db: &DbPool,
+        udn: &str,
+    ) -> Result<session::SessionHandle, session::SessionError> {
+        let mut sessions = self.sessions();
+        if let Some(h) = sessions.get(udn).filter(|h| !h.tx.is_closed()) {
+            return Ok(h.clone());
+        }
+        let entry = self
+            .inner
+            .registry
+            .get(udn)
+            .ok_or_else(|| session::SessionError::BadRequest("unknown renderer".into()))?;
+        if !entry.online {
+            return Err(session::SessionError::Renderer(format!(
+                "{} is offline",
+                entry.description.friendly_name
+            )));
+        }
+        let poll_ms = self
+            .running_settings()
+            .map(|s| s.poll_ms)
+            .unwrap_or(DEFAULT_POLL_MS);
+        let link = link::RendererLink::Soap {
+            soap: self.inner.soap.clone(),
+            avt: entry.description.av_transport.clone(),
+            rc: entry.description.rendering_control.clone(),
+        };
+        let manager = self.clone();
+        let end_udn = udn.to_string();
+        let handle = session::spawn_session(
+            session::SessionConfig {
+                udn: udn.to_string(),
+                name: entry.description.friendly_name.clone(),
+                poll: Duration::from_millis(poll_ms),
+                set_next: entry.caps.set_next,
+                seek: entry.caps.seek,
+                seed: rand::random(),
+            },
+            link,
+            session::SessionEnv::Real {
+                manager: self.clone(),
+                db: db.clone(),
+            },
+            self.inner.events.clone(),
+            Box::new(move |tx| {
+                let mut sessions = manager.sessions();
+                if sessions
+                    .get(&end_udn)
+                    .is_some_and(|h| h.tx.same_channel(tx))
+                {
+                    sessions.remove(&end_udn);
+                    manager.inner.media.revoke_owner(&end_udn);
+                }
+            }),
+        );
+        sessions.insert(udn.to_string(), handle.clone());
+        Ok(handle)
+    }
+
+    /// Sends a command to `udn`'s session, creating the session on first use.
+    pub async fn command(
+        &self,
+        db: &DbPool,
+        udn: &str,
+        cmd: session::Command,
+        by: session::Controller,
+        takeover: bool,
+    ) -> Result<session::SessionState, session::SessionError> {
+        let handle = match self.session(udn) {
+            Some(h) => h,
+            None if matches!(cmd, session::Command::Release { .. }) => {
+                return Err(session::SessionError::Ended)
+            }
+            None => self.open_session(db, udn)?,
+        };
+        handle.send(cmd, by, takeover).await
+    }
+
+    /// Moves `from`'s queue and position to `to`. The target is loaded first, so a refused target leaves
+    /// `from` playing.
+    pub async fn transfer(
+        &self,
+        db: &DbPool,
+        from: &str,
+        to: &str,
+        by: session::Controller,
+        takeover: bool,
+    ) -> Result<session::SessionState, session::SessionError> {
+        if from == to {
+            return Err(session::SessionError::BadRequest("same renderer".into()));
+        }
+        let source = self.session(from).ok_or(session::SessionError::Ended)?;
+        let snap = source.snapshot();
+        if snap.queue.is_empty() {
+            return Err(session::SessionError::BadRequest("queue is empty".into()));
+        }
+        if !takeover && session::held_by_other(&snap, &by.user_id, tokio::time::Instant::now()) {
+            return Err(session::SessionError::InUse(Box::new(session::InUseInfo {
+                udn: snap.udn.clone(),
+                device_name: snap.renderer_name.clone(),
+                owner_user_id: snap.owner_user_id.clone().unwrap_or_default(),
+                owner_name: snap.owner_name.clone(),
+                status: snap.status,
+                now_playing: snap.now_playing_title(),
+            })));
+        }
+        let start_index = snap
+            .current_qid
+            .and_then(|q| snap.queue.iter().position(|e| e.qid == q))
+            .unwrap_or(0);
+        let elapsed = if snap.status == session::SessionStatus::Playing {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(snap.sampled_at_ms);
+            now_ms.saturating_sub(snap.sampled_at_ms) as f64 / 1000.0
+        } else {
+            0.0
+        };
+        let target = self
+            .command(
+                db,
+                to,
+                session::Command::Load {
+                    items: snap.queue.iter().map(|e| e.item.clone()).collect(),
+                    start_index,
+                    start_at: snap.position_sec + elapsed,
+                    queue_source: snap.queue_source.clone(),
+                    shuffle: Some(false),
+                    repeat: Some(snap.repeat),
+                },
+                by.clone(),
+                takeover,
+            )
+            .await?;
+        let _ = source
+            .send(session::Command::Release { stop: true }, by, true)
+            .await;
+        Ok(target)
+    }
+}
+
+/// Per-user request counter used by the rate limiter (requests per one-second window).
+#[derive(Debug, Default)]
+pub struct RateLimiter {
+    windows: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+}
+
+/// Max state-changing Play On requests per user per second.
+pub const RATE_LIMIT_PER_SEC: u32 = 20;
+
+impl RateLimiter {
+    /// Records a request; false when the user exceeded the limit in the current window.
+    pub fn allow(&self, user_id: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut w = self.windows.lock().unwrap_or_else(|p| p.into_inner());
+        if w.len() > 10_000 {
+            w.retain(|_, (start, _)| now.duration_since(*start) < Duration::from_secs(1));
+        }
+        let entry = w.entry(user_id.to_string()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= Duration::from_secs(1) {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 <= RATE_LIMIT_PER_SEC
     }
 }
 
@@ -660,6 +926,184 @@ mod tests {
         }
         parent.cancel();
         assert!(found.iter().any(|e| e.online), "no renderer found");
+    }
+
+    /// Two scripted SOAP renderers + a real DB track: sessions over the real link, takeover, transfer, release.
+    #[tokio::test]
+    async fn manager_sessions_over_soap_transfer_and_release() {
+        use crate::upnp::soap::tests::spawn_mock;
+        use session::{Command, Controller, SessionError, SessionStatus};
+
+        let ok = |action: &str, inner: &str| {
+            format!(
+                r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:{action}Response xmlns:u="urn:x">{inner}</u:{action}Response></s:Body></s:Envelope>"#
+            )
+        };
+        let responder = move |action: &str, _body: &str| {
+            match action {
+            "GetTransportInfo" => (200, ok(action, "<CurrentTransportState>TRANSITIONING</CurrentTransportState><CurrentTransportStatus>OK</CurrentTransportStatus>")),
+            "GetPositionInfo" => (200, ok(action, "<TrackURI></TrackURI><RelTime>0:00:00</RelTime><TrackDuration>0:00:00</TrackDuration>")),
+            "GetVolume" => (200, ok(action, "<CurrentVolume>25</CurrentVolume>")),
+            "GetMute" => (200, ok(action, "<CurrentMute>0</CurrentMute>")),
+            _ => (200, ok(action, "")),
+        }
+        };
+        let (url_a, log_a) = spawn_mock(responder).await;
+        let (url_b, log_b) = spawn_mock(responder).await;
+
+        let db = pool("remote-sessions");
+        let dir = std::env::temp_dir().join(format!("bb-sessions-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.flac");
+        std::fs::write(&file, b"flac").unwrap();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute_batch(
+                "INSERT INTO libraries(id, path, name) VALUES('lib1', 'D:\\Music', 'Music');",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tracks(id, library_id, file_path, title, duration) VALUES('t1', 'lib1', ?1, 'Angel', 300)",
+                rusqlite::params![file.to_string_lossy()],
+            )
+            .unwrap();
+        }
+        let m = RemoteManager::new();
+        let mut events = m.subscribe();
+        for (udn, url) in [("a", &url_a), ("b", &url_b)] {
+            let mut d = description(udn, "127.0.0.1");
+            d.av_transport.control_url = url.clone();
+            d.rendering_control = Some(d.av_transport.clone());
+            m.registry().insert_described(
+                d,
+                RendererCaps {
+                    sink: crate::upnp::device::SinkCaps::parse("http-get:*:audio/flac:*"),
+                    set_next: true,
+                    seek: true,
+                },
+                "http://127.0.0.1:1/d.xml",
+                60,
+                Instant::now(),
+            );
+        }
+        let alice = Controller {
+            user_id: "alice".into(),
+            username: "Alice".into(),
+        };
+        let bob = Controller {
+            user_id: "bob".into(),
+            username: "Bob".into(),
+        };
+        let load = || Command::Load {
+            items: vec![queue::QueueItem::Track {
+                id: "t1".into(),
+                title: "Angel".into(),
+                artist: None,
+                album: None,
+                album_id: None,
+                duration: Some(300.0),
+                radio_reason: None,
+            }],
+            start_index: 0,
+            start_at: 42.0,
+            queue_source: None,
+            shuffle: None,
+            repeat: None,
+        };
+
+        assert!(matches!(
+            m.command(&db, "zzz", Command::Play, alice.clone(), false)
+                .await,
+            Err(SessionError::BadRequest(_))
+        ));
+        assert_eq!(
+            m.command(
+                &db,
+                "a",
+                Command::Release { stop: true },
+                alice.clone(),
+                false
+            )
+            .await,
+            Err(SessionError::Ended),
+            "release without a session"
+        );
+
+        let s = m
+            .command(&db, "a", load(), alice.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(s.status, SessionStatus::Loading);
+        assert_eq!(s.volume, Some(25), "initial volume read");
+        let set_uri = log_a
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(a, _)| a == "SetAVTransportURI")
+            .map(|(_, b)| b.clone())
+            .unwrap();
+        assert!(set_uri.contains("/media/r/"), "real media token URL sent");
+        assert!(
+            set_uri.contains("&lt;dc:title&gt;Angel&lt;/dc:title&gt;"),
+            "double-escaped DIDL"
+        );
+        assert_eq!(m.session_snapshots().len(), 1);
+        assert!(!m.media().is_empty());
+
+        // Bob needs to confirm; transfer by Bob without takeover is refused the same way.
+        assert!(matches!(
+            m.command(&db, "a", Command::Pause, bob.clone(), false)
+                .await,
+            Err(SessionError::InUse(_))
+        ));
+        assert!(matches!(
+            m.transfer(&db, "a", "b", bob.clone(), false).await,
+            Err(SessionError::InUse(_))
+        ));
+        assert!(matches!(
+            m.transfer(&db, "a", "a", alice.clone(), false).await,
+            Err(SessionError::BadRequest(_))
+        ));
+        assert!(matches!(
+            m.transfer(&db, "b", "a", alice.clone(), false).await,
+            Err(SessionError::Ended)
+        ));
+
+        // Alice moves playback to b at the same position; a is stopped and its session ends.
+        let moved = m
+            .transfer(&db, "a", "b", alice.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(moved.udn, "b");
+        assert!(moved.position_sec >= 42.0);
+        assert!(log_b
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(a, _)| a == "SetAVTransportURI"));
+        assert!(log_a.lock().unwrap().iter().any(|(a, _)| a == "Stop"));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(m.session("a").is_none(), "source session ended");
+        assert_eq!(m.session_snapshots().len(), 1);
+
+        let mut saw_ended = false;
+        while let Ok(e) = events.try_recv() {
+            saw_ended |= matches!(e, RemoteEvent::SessionEnded { ref udn } if udn == "a");
+        }
+        assert!(saw_ended);
+
+        // Offline renderers can't start a session.
+        m.registry().mark_gone("a");
+        assert!(matches!(
+            m.command(&db, "a", load(), alice.clone(), false).await,
+            Err(SessionError::Renderer(_))
+        ));
+
+        // Stopping Play On ends every session and revokes tokens.
+        m.stop();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(m.session("b").is_none());
+        assert_eq!(m.media().len(), 0);
     }
 
     #[test]

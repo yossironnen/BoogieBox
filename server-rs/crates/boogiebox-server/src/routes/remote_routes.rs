@@ -75,6 +75,39 @@ pub struct RendererView {
     pub capabilities: CapabilitiesView,
     /// Last discovery timestamp (UTC, SQLite format).
     pub last_seen_at: String,
+    /// Live session on this renderer, if any.
+    pub session: Option<SessionSummary>,
+}
+
+/// Picker summary of a renderer's live session ("in use by").
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    /// Session status.
+    pub status: crate::remote::session::SessionStatus,
+    /// Holder's user id.
+    pub owner_user_id: Option<String>,
+    /// Holder's name.
+    pub owner_name: Option<String>,
+    /// Current title.
+    pub now_playing: Option<String>,
+    /// True when the requesting user would have to confirm a takeover.
+    pub held_by_other: bool,
+}
+
+fn summary(remote: &RemoteManager, udn: &str, user_id: &str) -> Option<SessionSummary> {
+    let s = remote.session(udn)?.snapshot();
+    Some(SessionSummary {
+        status: s.status,
+        held_by_other: crate::remote::session::held_by_other(
+            &s,
+            user_id,
+            tokio::time::Instant::now(),
+        ),
+        owner_user_id: s.owner_user_id.clone(),
+        owner_name: s.owner_name.clone(),
+        now_playing: s.now_playing_title(),
+    })
 }
 
 /// `GET /api/remote/renderers` response.
@@ -87,7 +120,7 @@ pub struct RenderersResponse {
     pub renderers: Vec<RendererView>,
 }
 
-fn view(row: RendererRow, remote: &RemoteManager) -> RendererView {
+fn view(row: RendererRow, remote: &RemoteManager, user_id: &str) -> RendererView {
     let entry = remote.registry().get(&row.udn);
     let (online, has_icon, capabilities) = match &entry {
         Some(e) => (
@@ -112,7 +145,9 @@ fn view(row: RendererRow, remote: &RemoteManager) -> RendererView {
             },
         ),
     };
+    let session = summary(remote, &row.udn, user_id);
     RendererView {
+        session,
         name: row
             .alias
             .clone()
@@ -199,7 +234,7 @@ async fn list_renderers_handler(
     let renderers = rows
         .into_iter()
         .filter(|r| user.is_admin() || !r.hidden)
-        .map(|r| view(r, &remote))
+        .map(|r| view(r, &remote, &user.id))
         .collect();
     Json(RenderersResponse {
         running: remote.is_running(),
@@ -268,7 +303,7 @@ pub fn prefs_from_body(body: PatchRendererBody) -> Result<RendererPrefs, &'stati
 
 async fn patch_renderer_handler(
     State(state): State<SharedState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Path(udn): Path<String>,
     Json(body): Json<PatchRendererBody>,
 ) -> Response {
@@ -293,7 +328,7 @@ async fn patch_renderer_handler(
     match result {
         Ok(Ok(Some(row))) => {
             remote.notify(RemoteEvent::Renderers);
-            Json(view(row, &remote)).into_response()
+            Json(view(row, &remote, &admin.0.id)).into_response()
         }
         Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Renderer not found"),
         _ => error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),

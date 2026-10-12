@@ -532,6 +532,9 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
             shared_state.clone(),
         ))
         .merge(routes::remote_routes::remote_router(shared_state.clone()))
+        .merge(routes::remote_session_routes::remote_session_router(
+            shared_state.clone(),
+        ))
         .merge(routes::dlna_routes::dlna_router(shared_state))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer);

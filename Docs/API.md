@@ -125,6 +125,25 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `POST` | `/api/boogiemix/deep-analysis/resume` | Resume paused background deep-analysis jobs. |
 | `POST` | `/api/boogiemix/deep-analysis/cache/clear` | Clear the deep-analysis cache. |
 
+## Play On (UPnP/DLNA Renderers)
+
+All routes require a session and return `404` while the `remotePlaybackEnabled` setting is off. State-changing routes are rate-limited per user (`429`). A command on a renderer whose session another user is actively holding returns `409` with `code: "session_in_use"`, `ownerName`, `deviceName`, `status` and `nowPlaying`. Resend it with `takeover: true` (query `takeover=true` for `DELETE`) after the user confirms.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/remote/renderers` | List known renderers, with online state, capabilities and a live-session summary (`heldByOther`). Hidden renderers are returned to admins only. |
+| `POST` | `/api/remote/renderers/refresh` | Trigger an immediate network search. |
+| `PATCH` | `/api/remote/renderers/{udn}` | Admin: set `alias` (`null` clears), `formatPolicy` (`auto`/`direct`/`lossless`/`mp3`) and `hidden`. |
+| `GET` | `/api/remote/renderers/{udn}/icon` | Renderer icon proxied from the device. |
+| `GET` | `/api/remote/sessions/{udn}` | Current session snapshot (`404` when idle). |
+| `POST` | `/api/remote/sessions/{udn}/load` | Replace the queue and play: `items: [{kind: "track"|"mix", id, radioReason?}]`, `startIndex`, `startAtSec`, `queueSource`, `shuffle`, `repeat`. |
+| `POST` | `/api/remote/sessions/{udn}/command` | `cmd`: `play`, `pause`, `toggle`, `stop`, `next`, `prev`, `seek` (value s), `jump` (value qid), `shuffle`/`mute` (bool), `repeat` (`off`/`one`/`all`), `volume` (0–100). |
+| `POST` | `/api/remote/sessions/{udn}/queue` | `op`: `enqueue` (`items`, `mode` `end`/`next`), `remove` (`qid`), `move` (`qid`, `toIndex`), `clear`. |
+| `POST` | `/api/remote/sessions/{udn}/transfer` | Move queue and position to `toUdn` (target loads first; the source is then stopped). |
+| `DELETE` | `/api/remote/sessions/{udn}` | End the session; `stop` defaults to the `remoteReleaseStopsRenderer` setting. |
+| `GET` | `/api/remote/events` | Server-Sent Events: `renderers`, `session` (full snapshot), `position`, `takeover`, `notice`, `sessionEnded`. |
+| `GET`/`HEAD` | `/media/r/{token}` | Unauthenticated media for renderers. The token is random, short-lived and scoped to one track, mix or cover. |
+
 ## Admin, Settings, And Providers
 
 | Method | Path | Purpose |

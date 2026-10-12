@@ -20,6 +20,7 @@ rusqlite.workspace = true
 serde.workspace = true
 socket2.workspace = true
 quick-xml.workspace = true
+futures-util.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
 sha2.workspace = true
@@ -49,3 +50,5 @@ tower.workspace = true
 # for Phase 3 of wip/server-rust-coverage-gap-plan.md, so provider-fetch tests never hit
 # real external services.
 wiremock = "0.6"
+# Paused tokio clock for deterministic Play On session tests (`#[tokio::test(start_paused = true)]`).
+tokio = { workspace = true, features = ["test-util"] }
