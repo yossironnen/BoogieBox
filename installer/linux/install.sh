@@ -180,6 +180,21 @@ if systemctl is-active --quiet "$SERVICE_NAME"; then
   echo ""
   echo "  BoogieMix deep analysis: ${BOOGIEMIX_STATUS}"
   echo ""
+  # Other devices need TCP ${PORT}; Play On speaker discovery needs SSDP (UDP 1900) from the LAN.
+  LAN_SUBNET="$( (ip -4 route show scope link 2>/dev/null || true) | awk '$1 !~ /^172\.(1[7-9]|2[0-9]|3[01])\./ {print $1; exit}')"
+  LAN_SUBNET="${LAN_SUBNET:-<your LAN, e.g. 192.168.1.0/24>}"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    echo "  Firewall (ufw) is active. To reach BoogieBox from other devices and find speakers:"
+    echo "    sudo ufw allow from ${LAN_SUBNET} to any port ${PORT} proto tcp"
+    echo "    sudo ufw allow proto udp from ${LAN_SUBNET} to any port 1900"
+    echo "    sudo ufw allow proto udp from ${LAN_SUBNET} port 1900"
+    echo ""
+  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    echo "  Firewall (firewalld) is active. To reach BoogieBox from other devices and find speakers:"
+    echo "    sudo firewall-cmd --permanent --add-port=${PORT}/tcp --add-service=ssdp --add-service=upnp-client"
+    echo "    sudo firewall-cmd --reload"
+    echo ""
+  fi
   echo "  Logs:    journalctl -u ${SERVICE_NAME} -f"
   echo "  Stop:    sudo systemctl stop ${SERVICE_NAME}"
   echo "  Start:   sudo systemctl start ${SERVICE_NAME}"

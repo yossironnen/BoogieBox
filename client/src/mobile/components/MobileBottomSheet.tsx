@@ -95,6 +95,8 @@ export default function MobileBottomSheet({
   );
 }
 
+// The mobile shell does not get the Hybrid semantic tokens (App.tsx applies them to the desktop shell only), so
+// every token here falls back to a base theme token instead of leaving the sheet see-through.
 const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: 'fixed',
@@ -107,7 +109,7 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'absolute',
     inset: 0,
     border: 'none',
-    background: 'var(--overlay)',
+    background: 'var(--overlay, rgba(0,0,0,0.6))',
   },
   sheet: {
     width: '100%',
@@ -118,18 +120,18 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: 'border-box',
     overflow: 'hidden',
     padding: '10px 16px 0',
-    borderTop: '1px solid var(--border-strong)',
+    borderTop: '1px solid var(--border-strong, var(--border))',
     borderRadius: '20px 20px 0 0',
-    background: 'var(--surface-raised)',
+    background: 'var(--surface-raised, var(--surface))',
     color: 'var(--text)',
-    boxShadow: 'var(--shadow-raised)',
+    boxShadow: 'var(--shadow-raised, 0 -12px 40px rgba(0,0,0,0.45))',
   },
   handle: {
     width: 38,
     height: 4,
     margin: '0 auto 10px',
     borderRadius: 999,
-    background: 'var(--border-strong)',
+    background: 'var(--border-strong, var(--border))',
   },
   header: {
     minHeight: 52,
@@ -138,7 +140,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     gap: 12,
     paddingBottom: 10,
-    borderBottom: '1px solid var(--divider-subtle)',
+    borderBottom: '1px solid var(--divider-subtle, var(--border))',
   },
   eyebrow: {
     color: 'var(--accent)',
@@ -167,9 +169,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'grid',
     placeItems: 'center',
     padding: 0,
-    border: '1px solid var(--divider-subtle)',
+    border: '1px solid var(--divider-subtle, var(--border))',
     borderRadius: 12,
-    background: 'var(--surface-subtle)',
+    background: 'var(--surface-subtle, var(--bg))',
     color: 'var(--text-muted)',
     fontFamily: 'inherit',
     fontSize: 22,

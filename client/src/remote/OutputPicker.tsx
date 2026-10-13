@@ -17,17 +17,18 @@ export function pickerRenderers(renderers: RendererInfo[]): RendererInfo[] {
 export type OutputPickerVariant = 'desktop' | 'mobile';
 
 /** Mobile rows follow the touch-sized card rows of the mobile sheets. */
+// Fallbacks: the mobile shell has only the base theme tokens (see MobileBottomSheet).
 const MOBILE_ROW: React.CSSProperties = {
   minHeight: 60,
   marginBottom: 0,
   padding: '10px 12px',
-  border: '1px solid var(--divider-subtle)',
+  border: '1px solid var(--divider-subtle, var(--border))',
   borderRadius: 14,
-  background: 'var(--surface-subtle)',
+  background: 'var(--surface-subtle, var(--bg))',
 };
 const MOBILE_ROW_ACTIVE: React.CSSProperties = {
   borderColor: 'var(--accent)',
-  background: 'var(--accent-soft)',
+  background: 'var(--accent-soft, color-mix(in srgb, var(--accent) 16%, transparent))',
   boxShadow: 'none',
 };
 

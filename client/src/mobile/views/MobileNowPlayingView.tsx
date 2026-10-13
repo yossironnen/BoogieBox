@@ -690,9 +690,10 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     minHeight: 44,
     padding: '0 12px',
-    border: '1px solid var(--divider-subtle)',
+    // Fallbacks: the mobile shell has only the base theme tokens (see MobileBottomSheet).
+    border: '1px solid var(--divider-subtle, var(--border))',
     borderRadius: 12,
-    background: 'var(--surface-subtle)',
+    background: 'var(--surface-subtle, var(--bg))',
     color: 'var(--text)',
     fontFamily: 'inherit',
     fontSize: 13,

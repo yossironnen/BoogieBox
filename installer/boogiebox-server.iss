@@ -420,8 +420,12 @@ var
 begin
   AppExe := ExpandConstant('{app}\boogiebox-server.exe');
   RunFirewallCommand('advfirewall firewall delete rule name="BoogieBox Server"');
+  RunFirewallCommand('advfirewall firewall delete rule name="BoogieBox Server (LAN discovery)"');
   if not RunFirewallCommand('advfirewall firewall add rule name="BoogieBox Server" dir=in action=allow program="' + AppExe + '" enable=yes protocol=TCP profile=any') then
     Log('Could not create Windows Firewall allow rule for ' + AppExe + '.');
+  { Play On / DLNA: SSDP announcements (UDP 1900) and search replies to ephemeral ports, from the local subnet only. }
+  if not RunFirewallCommand('advfirewall firewall add rule name="BoogieBox Server (LAN discovery)" dir=in action=allow program="' + AppExe + '" enable=yes protocol=UDP remoteip=localsubnet profile=any') then
+    Log('Could not create Windows Firewall UDP discovery rule for ' + AppExe + '.');
 end;
 
 procedure RemoveFirewallRule();
@@ -430,6 +434,7 @@ var
 begin
   AppExe := ExpandConstant('{app}\boogiebox-server.exe');
   RunFirewallCommand('advfirewall firewall delete rule name="BoogieBox Server" program="' + AppExe + '"');
+  RunFirewallCommand('advfirewall firewall delete rule name="BoogieBox Server (LAN discovery)" program="' + AppExe + '"');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
