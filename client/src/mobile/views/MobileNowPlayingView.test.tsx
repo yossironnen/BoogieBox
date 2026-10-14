@@ -59,7 +59,7 @@ describe('MobileNowPlayingView', () => {
     const mediaStage = screen.getByRole('button', { name: /show lyrics/i });
     expect(mediaStage).toHaveStyle({ borderRadius: '18px' });
     expect(screen.getByRole('button', { name: 'Open settings' })).toHaveStyle({ minHeight: '44px' });
-    expect(screen.getByRole('progressbar', { name: 'Playback progress' })).toHaveAttribute('aria-valuemax', '120');
+    expect(screen.getByRole('slider', { name: 'Seek' })).toHaveAttribute('max', '120');
     fireEvent.click(mediaStage);
     await waitFor(() => expect(apiMock.trackLyrics).toHaveBeenCalledWith('1'));
     expect(await screen.findByText('first line')).toBeInTheDocument();

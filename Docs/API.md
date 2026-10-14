@@ -127,7 +127,7 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 
 ## Play On (UPnP/DLNA Renderers)
 
-All routes require a session and return `404` while the `remotePlaybackEnabled` setting is off. State-changing routes are rate-limited per user (`429`). A command on a renderer whose session another user is actively holding returns `409` with `code: "session_in_use"`, `ownerName`, `deviceName`, `status` and `nowPlaying`. Resend it with `takeover: true` (query `takeover=true` for `DELETE`) after the user confirms.
+All routes require a session and return `404` while the `remotePlaybackEnabled` setting is off. State-changing routes are rate-limited per user (`429`). A command on a renderer whose session another user is actively holding returns `409` with `code: "session_in_use"`, `ownerName`, `deviceName`, `status` and `nowPlaying`. Resend it with `takeover: true` (query `takeover=true` for `DELETE`) after the user confirms. Sessions are saved (`remote_sessions`) and come back after a server restart once the renderer is found again: still playing if the speaker kept our stream, otherwise paused at the saved position.
 
 | Method | Path | Purpose |
 | --- | --- | --- |

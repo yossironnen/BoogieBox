@@ -51,7 +51,8 @@ impl FormatPolicy {
 }
 
 /// How an item is delivered to a renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Delivery {
     /// The original file, byte-ranged.
     Direct,
@@ -156,6 +157,37 @@ pub struct MediaRef {
     pub expires_at: Instant,
 }
 
+/// An audio token saved with its session, so the renderer's stream URL keeps working after a server restart.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedToken {
+    /// The token string (as in the renderer's URL).
+    pub token: String,
+    /// Id for logs.
+    pub log_id: String,
+    /// Absolute file path (authorized when the token was first issued).
+    pub file_path: PathBuf,
+    /// Duration (s).
+    pub duration: Option<f64>,
+    /// Source sample rate.
+    pub sample_rate: Option<u32>,
+    /// Source channel count.
+    pub channels: Option<u16>,
+    /// Delivery.
+    pub delivery: Delivery,
+    /// MIME advertised to the renderer.
+    pub mime: String,
+    /// Expiry (ms since epoch).
+    pub expires_at_ms: u64,
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Registry of live media tokens.
 #[derive(Debug, Clone, Default)]
 pub struct MediaTokens {
@@ -208,6 +240,58 @@ impl MediaTokens {
             .get(token)
             .filter(|r| r.expires_at > now)
             .cloned()
+    }
+
+    /// Saveable copy of a live audio token (art tokens are not worth keeping).
+    pub fn export(&self, token: &str) -> Option<PersistedToken> {
+        let r = self.get(token)?;
+        let MediaTarget::Audio {
+            log_id,
+            file_path,
+            duration,
+            sample_rate,
+            channels,
+        } = r.target
+        else {
+            return None;
+        };
+        let remaining = r.expires_at.saturating_duration_since(Instant::now());
+        Some(PersistedToken {
+            token: token.to_string(),
+            log_id,
+            file_path,
+            duration,
+            sample_rate,
+            channels,
+            delivery: r.delivery,
+            mime: r.mime,
+            expires_at_ms: epoch_ms() + remaining.as_millis() as u64,
+        })
+    }
+
+    /// Re-registers a saved token for `owner`; false when it is malformed or already expired.
+    pub fn restore(&self, owner: &str, saved: &PersistedToken) -> bool {
+        let now = epoch_ms();
+        if !is_token_shaped(&saved.token) || saved.expires_at_ms <= now {
+            return false;
+        }
+        self.map().insert(
+            saved.token.clone(),
+            MediaRef {
+                target: MediaTarget::Audio {
+                    log_id: saved.log_id.clone(),
+                    file_path: saved.file_path.clone(),
+                    duration: saved.duration,
+                    sample_rate: saved.sample_rate,
+                    channels: saved.channels,
+                },
+                delivery: saved.delivery,
+                mime: saved.mime.clone(),
+                owner: owner.to_string(),
+                expires_at: Instant::now() + Duration::from_millis(saved.expires_at_ms - now),
+            },
+        );
+        true
     }
 
     /// Revokes every token issued for `owner`.
@@ -789,6 +873,67 @@ mod tests {
         assert!(dlna_flags(Delivery::Direct).contains("CI=0"));
         assert!(dlna_flags(Delivery::Wav).contains("CI=1"));
         assert_eq!(file_mime(std::path::Path::new("x.FLAC")), "audio/flac");
+    }
+
+    #[test]
+    fn audio_tokens_export_and_restore_with_the_same_string() {
+        let t = MediaTokens::default();
+        let audio = t.issue(
+            MediaTarget::Audio {
+                log_id: "t1".into(),
+                file_path: PathBuf::from("D:/Music/a.flac"),
+                duration: Some(200.0),
+                sample_rate: Some(44100),
+                channels: Some(2),
+            },
+            Delivery::Wav,
+            "audio/wav".into(),
+            "wiim",
+            Duration::from_secs(600),
+        );
+        let art = t.issue(
+            MediaTarget::AlbumArt {
+                album_id: "al1".into(),
+            },
+            Delivery::Direct,
+            "image/jpeg".into(),
+            "wiim",
+            Duration::from_secs(600),
+        );
+        assert!(t.export(&art).is_none(), "art is not saved");
+        assert!(t.export("missing").is_none());
+        let saved = t.export(&audio).unwrap();
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains("\"delivery\":\"wav\""));
+
+        let fresh = MediaTokens::default();
+        assert!(fresh.restore("wiim", &serde_json::from_str(&json).unwrap()));
+        let back = fresh.get(&audio).unwrap();
+        assert_eq!(
+            (back.delivery, back.mime.as_str(), back.owner.as_str()),
+            (Delivery::Wav, "audio/wav", "wiim")
+        );
+        assert!(matches!(back.target, MediaTarget::Audio { duration: Some(d), .. } if d == 200.0));
+        assert!(
+            !fresh.restore(
+                "wiim",
+                &PersistedToken {
+                    expires_at_ms: 1,
+                    ..saved.clone()
+                }
+            ),
+            "expired"
+        );
+        assert!(
+            !fresh.restore(
+                "wiim",
+                &PersistedToken {
+                    token: "short".into(),
+                    ..saved
+                }
+            ),
+            "malformed"
+        );
     }
 
     #[test]

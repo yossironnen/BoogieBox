@@ -289,6 +289,23 @@ describe('SettingsPage component flows', () => {
     expect(screen.queryByText('Personalize BoogieBox and manage this server.')).not.toBeInTheDocument();
   });
 
+  it('opens the requested tab and scrolls to the requested section', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
+        onLogout={() => {}}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={() => {}}
+        sectionRequest={{ tab: 'advanced', anchor: 'advanced-play-on', token: 1 }}
+      />
+    );
+    expect(screen.getByRole('tab', { name: /Advanced/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('play-on-settings')).toBeInTheDocument();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+  });
+
   it('shows the About tab with the Ko-fi support link', () => {
     const { rerender } = render(
       <SettingsPage

@@ -5,7 +5,7 @@
 import React from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import Player, { type PlaybackSnapshot, type PlayerState } from '../components/Player';
+import Player, { type PlaybackSnapshot, type PlayerState, type PlayerTransportControls } from '../components/Player';
 import { api } from '../api';
 import { PlayOnContext, type PlayOnApi, type PlayerRemoteView } from '../remote/usePlayOn';
 import type { RendererInfo } from '../remote/remoteTypes';
@@ -56,6 +56,7 @@ function playOnApi(over: Partial<PlayOnApi> = {}): PlayOnApi {
     dispatch: vi.fn(),
     notice: null,
     takeover: null,
+    openSettings: null,
     ...over,
   };
 }
@@ -113,6 +114,19 @@ describe('Player remote mode', () => {
     expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({ isPlaying: false }));
   });
 
+  it('exposes seek and volume for other surfaces, routed to the renderer', () => {
+    const playOn = playOnApi();
+    let controls: PlayerTransportControls | null = null;
+    renderPlayer(playOn, { onTransportControlsChange: (c) => { controls = c; } });
+    expect(controls).not.toBeNull();
+    controls!.seek(42);
+    expect(playOn.remoteActions.seek).toHaveBeenCalledWith(42);
+    controls!.setVolume(0.6);
+    expect(playOn.remoteActions.setVolume).toHaveBeenCalledWith(0.6);
+    controls!.toggleMute();
+    expect(playOn.remoteActions.setMuted).toHaveBeenCalledWith(true);
+  });
+
   it('disables EQ and a fixed volume with explanations', () => {
     renderPlayer(playOnApi({ remoteView: remoteView({ canSetVolume: false }) }));
     const eq = screen.getByRole('button', { name: 'Equalizer' });
@@ -166,6 +180,15 @@ describe('Player remote mode', () => {
     expect(within(dialog).getByRole('option', { name: /This browser/ })).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Search for speakers' }));
     expect(playOn.refreshRenderers).toHaveBeenCalled();
+  });
+
+  it('links admins from the empty picker to the Play On settings', () => {
+    const openSettings = vi.fn();
+    renderPlayer(playOnApi({ target: { kind: 'local' }, remoteView: null, deviceName: null, renderers: [], openSettings }));
+    fireEvent.click(screen.getByRole('button', { name: 'Play on…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Speaker settings' }));
+    expect(openSettings).toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'Play on' })).not.toBeInTheDocument();
   });
 
   it('hides the Play On button when the server has it switched off', () => {

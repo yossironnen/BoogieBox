@@ -4,13 +4,13 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::Instant;
 
 use super::link::RendererLink;
-use super::media::{PrepareError, PreparedItem};
-use super::queue::{EnqueueMode, Queue, QueueEntry, QueueItem, Repeat};
+use super::media::{PersistedToken, PrepareError, PreparedItem};
+use super::queue::{EnqueueMode, Queue, QueueEntry, QueueItem, QueueSnapshot, Repeat};
 use super::RemoteEvent;
 use crate::upnp::soap::TransportState;
 use crate::upnp::UpnpError;
@@ -27,6 +27,8 @@ pub const POLL_SLEEP_AFTER: Duration = Duration::from_secs(30 * 60);
 pub const SEEK_SETTLE: Duration = Duration::from_millis(1500);
 /// `STOPPED` right after a load is the device still settling, not a natural end.
 pub const LOAD_GRACE: Duration = Duration::from_secs(3);
+/// While playing, the saved position is refreshed this often (the full snapshot is saved on every change).
+pub const POSITION_SAVE_EVERY: Duration = Duration::from_secs(15);
 /// Volume/mute are re-read at most this often.
 pub const VOLUME_POLL: Duration = Duration::from_secs(5);
 /// Start position error that triggers a corrective seek after a load.
@@ -35,7 +37,7 @@ pub const START_TOLERANCE: f64 = 2.0;
 pub const MAX_ITEMS: usize = 5000;
 
 /// Session status shown to clients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionStatus {
     /// Nothing loaded yet.
@@ -55,6 +57,19 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
+    /// Wire name (also stored in `remote_sessions.status`).
+    pub fn name(self) -> &'static str {
+        match self {
+            SessionStatus::Idle => "idle",
+            SessionStatus::Loading => "loading",
+            SessionStatus::Playing => "playing",
+            SessionStatus::Paused => "paused",
+            SessionStatus::Stopped => "stopped",
+            SessionStatus::LostControl => "lostControl",
+            SessionStatus::Offline => "offline",
+        }
+    }
+
     /// Statuses during which another user must confirm a takeover.
     pub fn is_active(self) -> bool {
         matches!(
@@ -298,6 +313,49 @@ pub struct Request {
     pub reply: oneshot::Sender<Result<SessionState, SessionError>>,
 }
 
+/// A session saved to `remote_sessions` so it survives a server restart. The speaker's current and next stream
+/// tokens are saved with it, so a renderer that is still playing keeps working when the server comes back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedSession {
+    /// Format version.
+    pub v: u32,
+    /// Queue, in play order.
+    pub queue: QueueSnapshot,
+    /// Opaque client queue source.
+    pub queue_source: Option<serde_json::Value>,
+    /// Holder.
+    pub owner_user_id: Option<String>,
+    /// Holder's name.
+    pub owner_name: Option<String>,
+    /// Last controller (plays are attributed to them).
+    pub last_controller_user_id: Option<String>,
+    /// Status when saved.
+    pub status: SessionStatus,
+    /// Position (s) when saved.
+    pub position_sec: f64,
+    /// Current item duration.
+    pub duration_sec: Option<f64>,
+    /// Entry whose play was already recorded.
+    pub played_qid: Option<u64>,
+    /// URL the renderer is playing.
+    pub current_url: Option<String>,
+    /// URL prefetched with `SetNext`.
+    pub next_url: Option<String>,
+    /// Entry behind `next_url`.
+    pub next_qid: Option<u64>,
+    /// Volume control works on this device.
+    pub can_set_volume: bool,
+    /// Tokens behind `current_url`/`next_url` (filled in by the manager when saving).
+    #[serde(default)]
+    pub tokens: Vec<PersistedToken>,
+}
+
+/// The media token in one of our renderer URLs (`…/media/r/<token>`).
+pub fn token_in_url(url: &str) -> Option<&str> {
+    url.rsplit_once("/media/r/").map(|(_, token)| token)
+}
+
 /// Item preparation and play recording, abstracted so tests can run without a database.
 #[derive(Clone)]
 pub(crate) enum SessionEnv {
@@ -352,6 +410,83 @@ impl SessionEnv {
             SessionEnv::Test(t) => t.plays.lock().unwrap().push((user_id.into(), id.clone())),
         }
     }
+
+    /// Saves the full session (queue, owner, playback state and the renderer's stream tokens).
+    async fn persist(&self, udn: &str, mut session: PersistedSession) {
+        match self {
+            SessionEnv::Real { manager, db } => {
+                session.tokens = [&session.current_url, &session.next_url]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|url| token_in_url(url))
+                    .filter_map(|token| manager.media().export(token))
+                    .collect();
+                let Ok(snapshot) = serde_json::to_string(&session) else {
+                    return;
+                };
+                let row = boogiebox_db::remote::RemoteSessionRow {
+                    udn: udn.to_string(),
+                    snapshot,
+                    position_sec: session.position_sec,
+                    status: session.status.name().to_string(),
+                    saved_at_ms: now_ms() as i64,
+                };
+                let db = db.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Err(e) = boogiebox_db::remote::save_remote_session(&conn, &row) {
+                        tracing::warn!(target: "remote", udn = %row.udn, "Could not save Play On session: {e}");
+                    }
+                })
+                .await;
+            }
+            #[cfg(test)]
+            SessionEnv::Test(t) => t.saved.lock().unwrap().push((udn.into(), session)),
+        }
+    }
+
+    /// Refreshes only the saved position/status.
+    async fn persist_position(&self, udn: &str, position_sec: f64, status: SessionStatus) {
+        match self {
+            SessionEnv::Real { db, .. } => {
+                let (db, udn) = (db.clone(), udn.to_string());
+                let _ = tokio::task::spawn_blocking(move || {
+                    let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                    let _ = boogiebox_db::remote::update_remote_session_position(
+                        &conn,
+                        &udn,
+                        position_sec,
+                        status.name(),
+                        now_ms() as i64,
+                    );
+                })
+                .await;
+            }
+            #[cfg(test)]
+            SessionEnv::Test(t) => {
+                t.positions
+                    .lock()
+                    .unwrap()
+                    .push((udn.into(), position_sec, status))
+            }
+        }
+    }
+
+    /// Deletes the saved session (it really ended).
+    async fn forget(&self, udn: &str) {
+        match self {
+            SessionEnv::Real { db, .. } => {
+                let (db, udn) = (db.clone(), udn.to_string());
+                let _ = tokio::task::spawn_blocking(move || {
+                    let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                    let _ = boogiebox_db::remote::delete_remote_session(&conn, &udn);
+                })
+                .await;
+            }
+            #[cfg(test)]
+            SessionEnv::Test(t) => t.forgotten.lock().unwrap().push(udn.into()),
+        }
+    }
 }
 
 /// Static configuration for a session.
@@ -374,7 +509,9 @@ pub struct SessionConfig {
 /// Handle kept by the manager.
 #[derive(Clone, Debug)]
 pub struct SessionHandle {
-    /// Command channel.
+    /// Unique per spawned actor (identifies it in the end callback).
+    pub id: u64,
+    /// Command channel. The actor ends once every handle is dropped.
     pub tx: mpsc::Sender<Request>,
     /// Latest snapshot.
     pub shared: Arc<RwLock<SessionState>>,
@@ -410,21 +547,24 @@ impl SessionHandle {
     }
 }
 
-/// Callback run once when a session actor exits (manager cleanup); receives the session's own sender.
-pub type OnEnd = Box<dyn FnOnce(&mpsc::Sender<Request>) + Send>;
+/// Callback run once when a session actor exits (manager cleanup); receives the session's [`SessionHandle::id`].
+pub type OnEnd = Box<dyn FnOnce(u64) + Send>;
 
-/// Spawns a session actor. `on_end` runs once when it exits (manager cleanup).
+static NEXT_SESSION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Spawns a session actor, optionally continuing a saved session. `on_end` runs once when it exits.
 pub(crate) fn spawn_session(
     cfg: SessionConfig,
     link: RendererLink,
     env: SessionEnv,
     events: broadcast::Sender<RemoteEvent>,
     on_end: OnEnd,
+    restore: Option<PersistedSession>,
 ) -> SessionHandle {
     let (tx, rx) = mpsc::channel(32);
     let state = SessionState::new(&cfg.udn, &cfg.name, cfg.seek, link.has_volume());
     let shared = Arc::new(RwLock::new(state.clone()));
-    let actor = Actor {
+    let mut actor = Actor {
         queue: Queue::with_seed(cfg.seed),
         cfg,
         link,
@@ -446,13 +586,22 @@ pub(crate) fn spawn_session(
         last_volume_poll: None,
         stopped_since: None,
         created: Instant::now(),
+        saved: false,
+        dirty: false,
+        last_position_saved: None,
+        restoring: false,
+        resume_at: None,
     };
-    let tx_for_end = tx.clone();
+    if let Some(saved) = restore {
+        actor.restore(saved);
+    }
+    // Hold no sender here: the actor must see its channel close when the manager drops the handles.
+    let id = NEXT_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     tokio::spawn(async move {
         actor.run(rx).await;
-        on_end(&tx_for_end);
+        on_end(id);
     });
-    SessionHandle { tx, shared }
+    SessionHandle { id, tx, shared }
 }
 
 struct Actor {
@@ -477,6 +626,23 @@ struct Actor {
     last_volume_poll: Option<Instant>,
     stopped_since: Option<Instant>,
     created: Instant,
+    /// A saved row exists for this session.
+    saved: bool,
+    /// A structural change has not been saved yet.
+    dirty: bool,
+    last_position_saved: Option<Instant>,
+    /// Continuing a saved session: the first poll decides whether the device still plays our stream.
+    restoring: bool,
+    /// Where a restored session resumes once the device lost our stream.
+    resume_at: Option<f64>,
+}
+
+/// Why the actor stopped.
+enum Exit {
+    /// The manager dropped the session (shutdown, Play On restarted): keep the saved row.
+    Dropped,
+    /// Released or idle: the session is over.
+    Ended,
 }
 
 fn is_fault(e: &UpnpError, code: u32) -> bool {
@@ -487,15 +653,15 @@ impl Actor {
     async fn run(mut self, mut rx: mpsc::Receiver<Request>) {
         self.refresh_volume(true).await;
         self.publish(true);
-        loop {
+        let exit = loop {
             let delay = self.poll_delay();
             // Not polling: still wake up when the idle-teardown deadline passes.
             let sleep_for = delay.unwrap_or_else(|| self.idle_remaining());
             tokio::select! {
                 req = rx.recv() => {
-                    let Some(req) = req else { break };
+                    let Some(req) = req else { break Exit::Dropped };
                     if self.handle(req).await {
-                        break;
+                        break Exit::Ended;
                     }
                 }
                 _ = tokio::time::sleep(sleep_for) => {
@@ -504,14 +670,105 @@ impl Actor {
                     }
                 }
             }
+            self.save().await;
             if self.idle_expired() {
                 tracing::info!(target: "remote", udn = %self.cfg.udn, "Play On session idle; ending");
-                break;
+                break Exit::Ended;
             }
+        };
+        match exit {
+            // Keep the latest position for the restore.
+            Exit::Dropped if self.saved => {
+                self.env
+                    .persist_position(&self.cfg.udn, self.state.position_sec, self.state.status)
+                    .await;
+            }
+            Exit::Dropped => {}
+            Exit::Ended => self.env.forget(&self.cfg.udn).await,
         }
         let _ = self.events.send(RemoteEvent::SessionEnded {
             udn: self.cfg.udn.clone(),
         });
+    }
+
+    /// The saveable form of this session.
+    fn persisted(&self) -> PersistedSession {
+        PersistedSession {
+            v: 1,
+            queue: self.queue.snapshot(),
+            queue_source: self.state.queue_source.clone(),
+            owner_user_id: self.state.owner_user_id.clone(),
+            owner_name: self.state.owner_name.clone(),
+            last_controller_user_id: self.state.last_controller_user_id.clone(),
+            status: self.state.status,
+            position_sec: self.state.position_sec,
+            duration_sec: self.state.duration_sec,
+            played_qid: self.played_qid,
+            current_url: self.current_url.clone(),
+            next_url: self.next_url.clone(),
+            next_qid: self.next_qid,
+            can_set_volume: self.state.can_set_volume,
+            tokens: Vec::new(),
+        }
+    }
+
+    /// Saves after a structural change; refreshes the position every [`POSITION_SAVE_EVERY`] while playing.
+    async fn save(&mut self) {
+        if self.queue.is_empty() {
+            if self.saved {
+                self.env.forget(&self.cfg.udn).await;
+                self.saved = false;
+            }
+            self.dirty = false;
+            return;
+        }
+        let now = Instant::now();
+        if self.dirty {
+            self.dirty = false;
+            self.last_position_saved = Some(now);
+            self.env.persist(&self.cfg.udn, self.persisted()).await;
+            self.saved = true;
+        } else if self.saved
+            && matches!(
+                self.state.status,
+                SessionStatus::Playing | SessionStatus::Loading
+            )
+            && self
+                .last_position_saved
+                .is_none_or(|t| now.duration_since(t) >= POSITION_SAVE_EVERY)
+        {
+            self.last_position_saved = Some(now);
+            self.env
+                .persist_position(&self.cfg.udn, self.state.position_sec, self.state.status)
+                .await;
+        }
+    }
+
+    /// Continues a saved session. The device is checked on the first poll.
+    fn restore(&mut self, saved: PersistedSession) {
+        self.queue = Queue::from_snapshot(saved.queue, self.cfg.seed);
+        self.state.queue_source = saved.queue_source;
+        self.state.owner_user_id = saved.owner_user_id;
+        self.state.owner_name = saved.owner_name;
+        self.state.last_controller_user_id = saved.last_controller_user_id;
+        self.state.can_set_volume = saved.can_set_volume && self.link.has_volume();
+        self.state.duration_sec = saved.duration_sec;
+        self.set_position(saved.position_sec);
+        self.state.last_activity = Some(Instant::now());
+        self.current_url = saved.current_url;
+        self.next_url = saved.next_url;
+        self.next_qid = saved.next_qid;
+        self.played_qid = saved.played_qid;
+        self.resync_next = true;
+        self.restoring = true;
+        self.saved = true;
+        let status = match saved.status {
+            _ if self.queue.is_empty() => SessionStatus::Idle,
+            SessionStatus::Loading | SessionStatus::Offline => SessionStatus::Playing,
+            s => s,
+        };
+        self.set_status(status);
+        self.sync_snapshot();
     }
 
     fn poll_delay(&self) -> Option<Duration> {
@@ -557,16 +814,22 @@ impl Actor {
         self.state.status = status;
     }
 
-    /// Copies queue state into the snapshot and notifies clients. `full` = structural change.
-    fn publish(&mut self, full: bool) {
+    /// Copies queue state into the snapshot and the shared handle copy.
+    fn sync_snapshot(&mut self) {
         self.state.queue = self.queue.entries().to_vec();
         self.state.current_qid = self.queue.current().map(|e| e.qid);
         self.state.shuffle = self.queue.shuffle();
         self.state.repeat = self.queue.repeat();
+        *self.shared.write().unwrap_or_else(|p| p.into_inner()) = self.state.clone();
+    }
+
+    /// Copies queue state into the snapshot and notifies clients. `full` = structural change.
+    fn publish(&mut self, full: bool) {
         if full {
             self.state.revision += 1;
+            self.dirty = true;
         }
-        *self.shared.write().unwrap_or_else(|p| p.into_inner()) = self.state.clone();
+        self.sync_snapshot();
         let event = if full {
             RemoteEvent::Session {
                 state: Box::new(self.state.clone()),
@@ -735,6 +998,12 @@ impl Actor {
                 if !sec.is_finite() || sec < 0.0 {
                     return Err(SessionError::BadRequest("invalid position".into()));
                 }
+                if self.resume_at.is_some() {
+                    // Waiting to reload after a restart: just move the resume point.
+                    self.resume_at = Some(sec);
+                    self.set_position(sec);
+                    return Ok(());
+                }
                 self.seek(sec).await
             }
             Command::Jump(qid) => {
@@ -845,10 +1114,13 @@ impl Actor {
         if self.queue.is_empty() {
             return Err(SessionError::BadRequest("queue is empty".into()));
         }
+        if let Some(at) = self.resume_at.take() {
+            return self.continue_current_at(at).await;
+        }
         match self.state.status {
             SessionStatus::LostControl => {
                 let at = self.state.position_sec;
-                self.play_current(at).await
+                self.continue_current_at(at).await
             }
             SessionStatus::Paused | SessionStatus::Stopped if self.current_url.is_some() => {
                 self.link
@@ -862,6 +1134,18 @@ impl Actor {
             SessionStatus::Playing | SessionStatus::Loading => Ok(()),
             _ => self.play_current(0.0).await,
         }
+    }
+
+    /// Reloads the current entry mid-track (after another app took the speaker, or the device lost our stream
+    /// while the server was away). It was already counted, so its play is not recorded again.
+    async fn continue_current_at(&mut self, at: f64) -> Result<(), SessionError> {
+        let current = self.queue.current().map(|e| e.qid);
+        let counted = self.played_qid.filter(|q| Some(*q) == current);
+        self.play_current(at).await?;
+        if counted.is_some() && self.queue.current().map(|e| e.qid) == current {
+            self.played_qid = counted;
+        }
+        Ok(())
     }
 
     async fn pause(&mut self) -> Result<(), SessionError> {
@@ -909,6 +1193,7 @@ impl Actor {
 
     /// Loads and plays the current entry, skipping entries that can't be prepared or that the device refuses.
     async fn play_current(&mut self, start_at: f64) -> Result<(), SessionError> {
+        self.resume_at = None;
         let mut attempts = self.queue.entries().len().max(1);
         let owner = self.state.owner_user_id.clone().unwrap_or_default();
         while attempts > 0 {
@@ -1055,6 +1340,24 @@ impl Actor {
         self.failures = 0;
         let now = Instant::now();
 
+        if std::mem::take(&mut self.restoring)
+            && matches!(ti.state, TransportState::Stopped | TransportState::NoMedia)
+            && matches!(
+                self.state.status,
+                SessionStatus::Playing | SessionStatus::Paused | SessionStatus::LostControl
+            )
+        {
+            // The device dropped our stream while the server was away: come back paused where it was. Its
+            // (stale) URI stays "ours", so this isn't mistaken for another app; WiiM even reports
+            // RelTime == duration once stopped, which must not read as a natural end.
+            self.next_url = None;
+            self.next_qid = None;
+            self.resume_at = Some(self.state.position_sec);
+            self.set_status(SessionStatus::Paused);
+            self.finish_poll(before);
+            return;
+        }
+
         // Gapless transition: the device moved onto the URI we prefetched.
         if let (Some(next), Some(uri)) = (&self.next_url, &pi.track_uri) {
             if uri == next {
@@ -1155,7 +1458,7 @@ impl Actor {
                         return;
                     }
                     self.set_status(SessionStatus::Stopped);
-                } else if self.state.status != SessionStatus::Idle {
+                } else if self.state.status != SessionStatus::Idle && self.resume_at.is_none() {
                     self.set_status(SessionStatus::Stopped);
                 }
             }
@@ -1163,7 +1466,8 @@ impl Actor {
         }
 
         // Re-check: a corrective seek above starts a new settle window, and this poll's position is stale.
-        let settling = self.ignore_ticks_until.is_some_and(|t| now < t);
+        // While waiting to resume after a restart the device's position isn't ours.
+        let settling = self.ignore_ticks_until.is_some_and(|t| now < t) || self.resume_at.is_some();
         if !settling {
             if let Some(rel) = pi.rel_time {
                 self.set_position(rel);
@@ -1213,6 +1517,9 @@ pub(crate) mod tests {
         pub(crate) plays: Mutex<Vec<(String, String)>>,
         pub(crate) missing: Mutex<Vec<String>>,
         counter: Mutex<u64>,
+        pub(crate) saved: Mutex<Vec<(String, PersistedSession)>>,
+        pub(crate) positions: Mutex<Vec<(String, f64, SessionStatus)>>,
+        pub(crate) forgotten: Mutex<Vec<String>>,
     }
 
     impl TestEnv {
@@ -1286,8 +1593,21 @@ pub(crate) mod tests {
     }
 
     fn harness(set_next: bool) -> Harness {
-        let mock = Arc::new(MockRenderer::wiim());
-        let env = Arc::new(TestEnv::default());
+        spawn_with(
+            Arc::new(MockRenderer::wiim()),
+            Arc::new(TestEnv::default()),
+            set_next,
+            None,
+        )
+    }
+
+    /// A session on an existing mock/env (restart tests reuse both), optionally continuing a saved session.
+    fn spawn_with(
+        mock: Arc<MockRenderer>,
+        env: Arc<TestEnv>,
+        set_next: bool,
+        restore: Option<PersistedSession>,
+    ) -> Harness {
         let (events_tx, events) = broadcast::channel(1024);
         let ended = Arc::new(Mutex::new(false));
         let ended2 = ended.clone();
@@ -1304,6 +1624,7 @@ pub(crate) mod tests {
             SessionEnv::Test(env.clone()),
             events_tx,
             Box::new(move |_| *ended2.lock().unwrap() = true),
+            restore,
         );
         Harness {
             handle,
@@ -1332,6 +1653,238 @@ pub(crate) mod tests {
 
     fn current_title(h: &Harness) -> Option<String> {
         h.handle.snapshot().now_playing_title()
+    }
+
+    fn last_saved(env: &TestEnv) -> PersistedSession {
+        env.saved.lock().unwrap().last().unwrap().1.clone()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn saves_changes_and_position_and_forgets_on_release() {
+        let h = harness(true);
+        h.handle
+            .send(
+                load(vec![timed("a", 60.0), timed("b", 60.0)], 0),
+                alice(),
+                false,
+            )
+            .await
+            .unwrap();
+        sleep_s(3.0).await;
+        let saved = last_saved(&h.env);
+        assert_eq!(saved.queue.entries.len(), 2);
+        assert_eq!(saved.owner_name.as_deref(), Some("Alice"));
+        assert_eq!(saved.status, SessionStatus::Playing);
+        assert!(saved
+            .current_url
+            .as_deref()
+            .is_some_and(|u| u.starts_with("http://mock/a/")));
+        assert_eq!(saved.played_qid, Some(saved.queue.entries[0].qid));
+        sleep_s(20.0).await;
+        assert!(
+            h.env
+                .positions
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, pos, s)| *pos > 10.0 && *s == SessionStatus::Playing),
+            "position refreshed while playing"
+        );
+        h.handle
+            .send(Command::Release { stop: true }, alice(), false)
+            .await
+            .unwrap();
+        sleep_s(0.5).await;
+        assert_eq!(*h.env.forgotten.lock().unwrap(), vec!["wiim".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn clearing_the_queue_forgets_and_dropping_keeps_the_row() {
+        let h = harness(true);
+        h.handle
+            .send(load(vec![timed("a", 60.0)], 0), alice(), false)
+            .await
+            .unwrap();
+        sleep_s(2.0).await;
+        h.handle.send(Command::Clear, alice(), false).await.unwrap();
+        sleep_s(0.5).await;
+        assert_eq!(
+            h.env.forgotten.lock().unwrap().len(),
+            1,
+            "empty queue: nothing to restore"
+        );
+
+        let Harness {
+            handle, env, ended, ..
+        } = harness(true);
+        handle
+            .send(load(vec![timed("a", 60.0)], 0), alice(), false)
+            .await
+            .unwrap();
+        sleep_s(2.0).await;
+        drop(handle);
+        sleep_s(0.5).await;
+        assert!(
+            *ended.lock().unwrap(),
+            "the actor ends once the manager drops its handles"
+        );
+        assert!(
+            env.forgotten.lock().unwrap().is_empty(),
+            "a dropped session keeps its saved row"
+        );
+        assert!(
+            !env.positions.lock().unwrap().is_empty(),
+            "and saves its last position"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn restored_session_continues_on_the_renderers_current_stream() {
+        let first = harness(true);
+        first
+            .handle
+            .send(
+                load(vec![timed("a", 8.0), timed("b", 8.0)], 0),
+                alice(),
+                false,
+            )
+            .await
+            .unwrap();
+        sleep_s(3.0).await;
+        let saved = last_saved(&first.env);
+        let Harness {
+            handle, mock, env, ..
+        } = first;
+        drop(handle);
+        sleep_s(0.2).await;
+
+        // Server back: same device, still playing our URL.
+        let h = spawn_with(mock, env, true, Some(saved));
+        sleep_s(1.0).await;
+        let s = h.handle.snapshot();
+        assert_eq!(s.status, SessionStatus::Playing);
+        assert_eq!(s.owner_name.as_deref(), Some("Alice"));
+        assert_eq!(current_title(&h).as_deref(), Some("Title a"));
+        assert_eq!(s.queue.len(), 2);
+        h.handle.send(Command::Pause, alice(), false).await.unwrap();
+        sleep_s(0.6).await;
+        h.handle.send(Command::Play, alice(), false).await.unwrap();
+        sleep_s(1.5).await;
+        assert_eq!(
+            h.env.plays.lock().unwrap().len(),
+            1,
+            "pause/resume after a restore is not a new play"
+        );
+        sleep_s(8.0).await;
+        assert_eq!(
+            current_title(&h).as_deref(),
+            Some("Title b"),
+            "gapless handover still works"
+        );
+        let plays: Vec<String> = h
+            .env
+            .plays
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
+        assert_eq!(plays, vec!["a", "b"], "a was not counted twice");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn restored_handoff_session_does_not_count_its_track_again() {
+        let first = harness(true);
+        let mut cmd = load(vec![timed("a", 60.0), timed("b", 60.0)], 0);
+        if let Command::Load {
+            start_at, resumed, ..
+        } = &mut cmd
+        {
+            *start_at = 4.0;
+            *resumed = true;
+        }
+        first.handle.send(cmd, alice(), false).await.unwrap();
+        sleep_s(6.0).await;
+        let saved = last_saved(&first.env);
+        assert!(saved.played_qid.is_some(), "saved: {saved:?}");
+        let Harness {
+            handle, mock, env, ..
+        } = first;
+        drop(handle);
+        sleep_s(0.2).await;
+        let h = spawn_with(mock, env, true, Some(saved));
+        sleep_s(2.0).await;
+        h.handle.send(Command::Pause, alice(), false).await.unwrap();
+        sleep_s(0.6).await;
+        h.handle.send(Command::Play, alice(), false).await.unwrap();
+        sleep_s(2.0).await;
+        assert!(
+            h.env.plays.lock().unwrap().is_empty(),
+            "plays: {:?}",
+            h.env.plays.lock().unwrap()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn restored_session_comes_back_paused_when_the_device_stopped() {
+        let first = harness(true);
+        first
+            .handle
+            .send(
+                load(vec![timed("a", 60.0), timed("b", 60.0)], 0),
+                alice(),
+                false,
+            )
+            .await
+            .unwrap();
+        sleep_s(8.0).await;
+        let saved = last_saved(&first.env);
+        let Harness {
+            handle, mock, env, ..
+        } = first;
+        drop(handle);
+        sleep_s(0.2).await;
+        let mut saved = saved;
+        saved.position_sec = 7.0; // the row's position column is newer than the snapshot
+        mock.stop_reporting_end(); // the stream died while the server was away (WiiM-style report)
+
+        let h = spawn_with(mock, env, true, Some(saved));
+        sleep_s(16.0).await;
+        let s = h.handle.snapshot();
+        assert_eq!(
+            s.status,
+            SessionStatus::Paused,
+            "not lost control, not advanced"
+        );
+        assert_eq!(s.position_sec, 7.0);
+        assert_eq!(current_title(&h).as_deref(), Some("Title a"));
+        h.handle
+            .send(Command::Seek(9.0), alice(), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            h.handle.snapshot().position_sec,
+            9.0,
+            "seeking moves the resume point"
+        );
+        h.handle
+            .send(Command::Seek(7.0), alice(), false)
+            .await
+            .unwrap();
+
+        h.handle.send(Command::Play, alice(), false).await.unwrap();
+        sleep_s(3.0).await;
+        assert_eq!(h.handle.snapshot().status, SessionStatus::Playing);
+        assert!(
+            h.mock.calls().iter().any(|c| c == "Seek 7"),
+            "resumes at the saved position: {:?}",
+            h.mock.calls()
+        );
+        assert_eq!(
+            h.env.plays.lock().unwrap().len(),
+            1,
+            "continuing the same track is not a new play"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1869,6 +2422,11 @@ pub(crate) mod tests {
         );
         assert!(h.mock.current().unwrap().starts_with("http://mock/a/"));
         sleep_s(3.0).await;
+        assert_eq!(
+            h.env.plays.lock().unwrap().len(),
+            1,
+            "resume here continues the same play"
+        );
 
         h.mock.external_pause();
         sleep_s(1.0).await;

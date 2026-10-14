@@ -2,7 +2,7 @@
  * Provides progressively disclosed, touch-safe mobile administration controls.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../api';
 import { PLAY_ON_FORMAT_OPTIONS, rendererDetail } from '../../components/PlayOnSettings';
 import type { RemoteFormatPolicy, RendererInfo } from '../../remote/remoteTypes';
@@ -47,8 +47,9 @@ function queueCount(snapshot: AdminQueueSnapshot | null) {
 }
 
 /** Mobile Admin Settings Panel is part of this module's public API. */
-export default function MobileAdminSettingsPanel() {
-  const [expanded, setExpanded] = useState(false);
+export default function MobileAdminSettingsPanel({ focus = null }: { focus?: 'play-on' | null } = {}) {
+  const [expanded, setExpanded] = useState(focus !== null);
+  const playOnRef = useRef<HTMLDivElement | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -78,6 +79,14 @@ export default function MobileAdminSettingsPanel() {
     setLoaded(true);
     setLoading(false);
   }, []);
+
+  // Deep link from the Play On picker: load right away and bring the Play On block into view.
+  useEffect(() => {
+    if (focus === 'play-on') void loadSnapshot();
+  }, [focus, loadSnapshot]);
+  useEffect(() => {
+    if (focus === 'play-on' && loaded) playOnRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [focus, loaded]);
 
   const runAction = async (key: string, action: () => Promise<string>) => {
     setBusyKey(key);
@@ -208,7 +217,7 @@ export default function MobileAdminSettingsPanel() {
               </div>
 
               {playOn ? (
-                <div style={styles.subsection}>
+                <div ref={playOnRef} id="mobile-admin-play-on" style={styles.subsection}>
                   <div style={styles.subsectionHeader}>
                     <div>
                       <div style={styles.subsectionTitle}>Play On</div>

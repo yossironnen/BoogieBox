@@ -339,6 +339,14 @@ pub(crate) mod mock {
             Ok(())
         }
 
+        /// Device-side stop the way WiiM reports it: `STOPPED`, URI kept, `RelTime == TrackDuration`.
+        pub fn stop_reporting_end(&self) {
+            let mut s = self.lock();
+            s.transport = TransportState::Stopped;
+            s.started = None;
+            s.base = s.current_dur;
+        }
+
         pub(crate) fn seek(&self, seconds: f64) -> Result<(), UpnpError> {
             let mut s = self.guard(format!("Seek {seconds:.0}"))?;
             Self::settle(&mut s);

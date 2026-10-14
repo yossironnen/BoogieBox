@@ -3,7 +3,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import Player, { type PlaybackSnapshot, type PlayerEqControls } from '../components/Player';
+import Player, { type PlaybackSnapshot, type PlayerEqControls, type PlayerTransportControls } from '../components/Player';
 import { api } from '../api';
 import type { MobileBrowseSelection, MobilePlaylistSelection, MobileSharedProps, MobileTabId } from './mobileShell';
 import MobileMiniPlayer from './components/MobileMiniPlayer';
@@ -26,6 +26,7 @@ export default function MobileApp(props: MobileSharedProps) {
   const [playlistSelection, setPlaylistSelection] = useState<MobilePlaylistSelection>({ playlist: null, tracks: [] });
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(props.playbackSnapshot);
   const [eqControls, setEqControls] = useState<PlayerEqControls | null>(null);
+  const [transportControls, setTransportControls] = useState<PlayerTransportControls | null>(null);
   const [requestedPlaylistId, setRequestedPlaylistId] = useState<string | null>(null);
   const takeover = usePlayOnContext()?.takeover ?? null;
   const { onPlaybackPosition } = props;
@@ -125,6 +126,7 @@ export default function MobileApp(props: MobileSharedProps) {
           adaptiveAccentEnabled={props.adaptiveAccentEnabled}
           onAdaptiveAccentEnabledChange={props.onAdaptiveAccentEnabledChange}
           eqControls={eqControls}
+          transportControls={transportControls}
           playbackMode={props.playbackMode}
           vinylHardcore={props.vinylHardcore}
           vinylNeedleDrop={props.vinylNeedleDrop}
@@ -150,6 +152,7 @@ export default function MobileApp(props: MobileSharedProps) {
         headless
         onPlaybackSnapshotChange={handlePlaybackSnapshot}
         onEqControlsChange={setEqControls}
+        onTransportControlsChange={setTransportControls}
       />
       {tab !== 'now-playing' ? (
         <MobileMiniPlayer

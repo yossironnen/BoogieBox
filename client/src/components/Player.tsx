@@ -76,6 +76,13 @@ export interface PlayerEqControls {
   onSaveProfile: (name: string, bands: ParametricEqBand[]) => Promise<string | null>;
   onDeleteProfile: (name: string) => Promise<void>;
 }
+/** Seek and volume for alternate control surfaces; routes to the browser audio or the Play On renderer. */
+export interface PlayerTransportControls {
+  seek: (seconds: number) => void;
+  /** 0–1. */
+  setVolume: (volume: number) => void;
+  toggleMute: () => void;
+}
 interface PlayerProps {
   state: PlayerState;
   onStateChange: (s: PlayerState) => void;
@@ -90,6 +97,7 @@ interface PlayerProps {
   headless?: boolean;
   onPlaybackSnapshotChange?: (snapshot: PlaybackSnapshot) => void;
   onEqControlsChange?: (controls: PlayerEqControls | null) => void;
+  onTransportControlsChange?: (controls: PlayerTransportControls | null) => void;
   hybridPreview?: boolean;
   adaptiveAccentEnabled?: boolean;
 }
@@ -1903,7 +1911,11 @@ function OutputPanel({ playOn, onClose, anchorRef, popupVars, bottom = DESKTOP_P
           </button>
         </div>
       </div>
-      <OutputPickerList playOn={playOn} onPicked={onClose} />
+      <OutputPickerList
+        playOn={playOn}
+        onPicked={onClose}
+        onOpenSettings={playOn.openSettings ? () => { onClose(); playOn.openSettings?.(); } : undefined}
+      />
     </div>
   );
 }
@@ -1961,6 +1973,7 @@ export default function Player({
   headless = false,
   onPlaybackSnapshotChange,
   onEqControlsChange,
+  onTransportControlsChange,
   hybridPreview = false,
   adaptiveAccentEnabled = true,
 }: PlayerProps) {
@@ -2998,6 +3011,19 @@ export default function Player({
     }
     setMuted((m) => !m);
   };
+
+  // One stable object; the handlers it calls are refreshed every render.
+  const transportHandlersRef = useRef({ seekToTime, changeVolume, toggleMuted });
+  transportHandlersRef.current = { seekToTime, changeVolume, toggleMuted };
+  const transportControls = useMemo<PlayerTransportControls>(() => ({
+    seek: (seconds) => transportHandlersRef.current.seekToTime(seconds, true),
+    setVolume: (value) => transportHandlersRef.current.changeVolume(value),
+    toggleMute: () => transportHandlersRef.current.toggleMuted(),
+  }), []);
+  useEffect(() => {
+    onTransportControlsChange?.(transportControls);
+    return () => onTransportControlsChange?.(null);
+  }, [onTransportControlsChange, transportControls]);
 
   useEffect(() => {
     if (!lyricsOpen || !currentTrack?.id) return;

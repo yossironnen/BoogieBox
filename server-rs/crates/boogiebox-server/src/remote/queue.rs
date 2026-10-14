@@ -100,6 +100,24 @@ pub struct Queue {
     seed: u64,
 }
 
+/// Serializable queue state, saved so a session survives a server restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueSnapshot {
+    /// Entries in play order.
+    pub entries: Vec<QueueEntry>,
+    /// Original order (qids), for turning shuffle off.
+    pub unshuffled: Vec<u64>,
+    /// Current index in play order.
+    pub pos: usize,
+    /// Shuffle flag.
+    pub shuffle: bool,
+    /// Repeat mode.
+    pub repeat: Repeat,
+    /// Next qid to hand out.
+    pub next_qid: u64,
+}
+
 fn xorshift(seed: &mut u64) -> u64 {
     let mut x = (*seed).max(1);
     x ^= x << 13;
@@ -116,6 +134,46 @@ impl Queue {
             seed,
             next_qid: 1,
             ..Self::default()
+        }
+    }
+
+    /// Saveable copy of the queue.
+    pub fn snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            entries: self.entries.clone(),
+            unshuffled: self.unshuffled.clone(),
+            pos: self.pos,
+            shuffle: self.shuffle,
+            repeat: self.repeat,
+            next_qid: self.next_qid,
+        }
+    }
+
+    /// Rebuilds a queue from a snapshot, repairing anything inconsistent (unknown or missing qids, an
+    /// out-of-range position, a qid counter that would reuse an id).
+    pub fn from_snapshot(snapshot: QueueSnapshot, seed: u64) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let entries: Vec<QueueEntry> = snapshot
+            .entries
+            .into_iter()
+            .filter(|e| e.qid > 0 && seen.insert(e.qid))
+            .collect();
+        let mut unshuffled: Vec<u64> = snapshot
+            .unshuffled
+            .into_iter()
+            .filter(|q| seen.remove(q))
+            .collect();
+        // Entries missing from the original order go to its end, in play order.
+        unshuffled.extend(entries.iter().map(|e| e.qid).filter(|q| seen.contains(q)));
+        let max_qid = entries.iter().map(|e| e.qid).max().unwrap_or(0);
+        Self {
+            pos: snapshot.pos.min(entries.len().saturating_sub(1)),
+            entries,
+            unshuffled,
+            shuffle: snapshot.shuffle,
+            repeat: snapshot.repeat,
+            next_qid: snapshot.next_qid.max(max_qid + 1),
+            seed,
         }
     }
 
@@ -372,6 +430,41 @@ pub(crate) mod tests {
 
     fn items(n: usize) -> Vec<QueueItem> {
         (0..n).map(|i| track(&i.to_string())).collect()
+    }
+
+    #[test]
+    fn snapshot_round_trips_through_json_and_keeps_behaving() {
+        let mut q = Queue::with_seed(3);
+        q.load(items(6), 2, true);
+        q.set_repeat(Repeat::All);
+        q.enqueue(vec![track("x")], EnqueueMode::Next);
+        let json = serde_json::to_string(&q.snapshot()).unwrap();
+        let mut back = Queue::from_snapshot(serde_json::from_str(&json).unwrap(), 9);
+        assert_eq!(back.snapshot(), q.snapshot());
+        assert_eq!(cur(&back), cur(&q));
+        // New entries never reuse a restored qid, and shuffle off restores the original order.
+        let new = back.enqueue(vec![track("y")], EnqueueMode::End);
+        assert!(new[0] > q.entries().iter().map(|e| e.qid).max().unwrap());
+        back.set_shuffle(false);
+        assert_eq!(ids(&back)[..3], ["0", "1", "2"]);
+    }
+
+    #[test]
+    fn snapshot_repairs_inconsistent_state() {
+        let mut q = Queue::with_seed(1);
+        q.load(items(3), 0, false);
+        let mut snap = q.snapshot();
+        snap.entries.push(snap.entries[0].clone()); // duplicate qid
+        snap.unshuffled = vec![snap.entries[2].qid, 999]; // unknown + missing qids
+        snap.pos = 42;
+        snap.next_qid = 0;
+        let back = Queue::from_snapshot(snap, 1);
+        assert_eq!(ids(&back), ["0", "1", "2"]);
+        assert_eq!(back.position(), 2);
+        assert_eq!(back.snapshot().unshuffled.len(), 3);
+        assert!(back.snapshot().next_qid > 3);
+        let empty = Queue::from_snapshot(Queue::with_seed(1).snapshot(), 1);
+        assert!(empty.is_empty() && empty.current().is_none());
     }
 
     #[test]

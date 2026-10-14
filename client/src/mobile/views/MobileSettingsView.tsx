@@ -68,6 +68,7 @@ function MobileSwitch({
 /** Mobile Settings View is part of this module's public API. */
 export default function MobileSettingsView({
   currentUser,
+  focus = null,
   onClose,
   appSettings,
   onAppSettingsChange,
@@ -77,6 +78,8 @@ export default function MobileSettingsView({
   onAdaptiveAccentEnabledChange,
 }: {
   currentUser: AuthUser;
+  /** Open with the admin tools expanded at this section. */
+  focus?: 'play-on' | null;
   onClose: () => void;
   appSettings?: AppSettings;
   onAppSettingsChange?: (settings: AppSettings) => void;
@@ -287,7 +290,7 @@ export default function MobileSettingsView({
           </div>
         </section>
 
-        {currentUser.role === 'admin' ? <MobileAdminSettingsPanel /> : null}
+        {currentUser.role === 'admin' ? <MobileAdminSettingsPanel focus={focus} /> : null}
 
         <section aria-labelledby="mobile-settings-account" style={styles.section}>
           <div style={styles.sectionHeader}>

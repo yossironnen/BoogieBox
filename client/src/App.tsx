@@ -13,7 +13,7 @@ import { DEFAULT_SETTINGS } from './types';
 import Player, { type PlaybackSnapshot, type PlayerState } from './components/Player';
 import { PlayOnContext, usePlayOn } from './remote/usePlayOn';
 import { PlayOnTakeoverModal } from './remote/PlayOnTakeover';
-import SettingsPage from './components/SettingsPage';
+import SettingsPage, { type SettingsSectionRequest } from './components/SettingsPage';
 import BrowseView from './components/BrowseView';
 import CommandBar from './components/CommandBar';
 import PlaylistsView from './components/PlaylistsView';
@@ -1107,6 +1107,12 @@ export default function App() {
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(null);
   const lastRecordedPlayKeyRef = useRef<string>('');
   const localPositionRef = useRef(0);
+  const [settingsSectionRequest, setSettingsSectionRequest] = useState<SettingsSectionRequest | null>(null);
+  const isAdminUser = Boolean(currentUser && currentUser !== 'loading' && currentUser.role === 'admin');
+  const openPlayOnSettings = useCallback(() => {
+    setSettingsSectionRequest({ tab: 'advanced', anchor: 'advanced-play-on', token: Date.now() });
+    setView('settings');
+  }, []);
   const setLocalPlayerState = useCallback((action: React.SetStateAction<PlayerState>, options?: { alreadyRecorded?: boolean }) => {
     // A Play On handoff continues a track the renderer already counted.
     if (options?.alreadyRecorded && typeof action !== 'function') {
@@ -1121,6 +1127,8 @@ export default function App() {
     localState: playerState,
     setLocalState: setLocalPlayerState,
     getLocalPosition: () => localPositionRef.current,
+    // The desktop shell navigates; the mobile Now Playing sheet opens its own settings panel instead.
+    onOpenSettings: isAdminUser && !isMobileShell ? openPlayOnSettings : null,
   });
   const dispatchPlayerState = playOn.dispatch;
   const handlePlaybackSnapshot = useCallback((snapshot: PlaybackSnapshot) => {
@@ -1921,6 +1929,7 @@ export default function App() {
               onVinylAnalogFxDisabledChange={setVinylAnalogFxDisabled}
               vinylNeedleDropIntensity={vinylNeedleDropIntensity}
               onVinylNeedleDropIntensityChange={setVinylNeedleDropIntensity}
+              sectionRequest={settingsSectionRequest}
             />
           )}
         </main>

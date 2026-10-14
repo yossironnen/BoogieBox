@@ -14,7 +14,12 @@ import type { PlayOnApi } from '../../remote/usePlayOn';
 import MobileBottomSheet, { mobileSheetHeaderButtonStyle } from './MobileBottomSheet';
 
 /** Play On picker sheet for Now Playing (plan 8.6 mobile picker). */
-export function MobilePlayOnSheet({ playOn, onClose }: { playOn: PlayOnApi; onClose: () => void }) {
+export function MobilePlayOnSheet({ playOn, onClose, onOpenSettings }: {
+  playOn: PlayOnApi;
+  onClose: () => void;
+  /** Admin deep link for the empty state. */
+  onOpenSettings?: () => void;
+}) {
   const { watchRenderers } = playOn;
   useEffect(() => watchRenderers(), [watchRenderers]);
   return (
@@ -34,7 +39,7 @@ export function MobilePlayOnSheet({ playOn, onClose }: { playOn: PlayOnApi; onCl
         </button>
       )}
     >
-      <OutputPickerList playOn={playOn} variant="mobile" onPicked={onClose} />
+      <OutputPickerList playOn={playOn} variant="mobile" onPicked={onClose} onOpenSettings={onOpenSettings} />
     </MobileBottomSheet>
   );
 }

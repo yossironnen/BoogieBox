@@ -18,6 +18,9 @@ const SSDP_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 const SSDP_PORT: u16 = 1900;
 /// Interval between unsolicited searches.
 pub const SEARCH_INTERVAL: Duration = Duration::from_secs(300);
+/// Extra searches shortly after start: SSDP is lossy and a busy device can miss the first burst, which would
+/// otherwise leave it (and any saved session on it) waiting for the next periodic search.
+pub const EARLY_SEARCHES: [Duration; 2] = [Duration::from_secs(5), Duration::from_secs(20)];
 /// Default lifetime when a device omits `CACHE-CONTROL: max-age`.
 pub const DEFAULT_MAX_AGE_SECS: u64 = 1800;
 const SEARCH_REPEATS: u32 = 3;
@@ -368,11 +371,18 @@ pub fn spawn_discovery(
         }
         tracing::info!(target: "remote", interfaces = ?ifaces, "Play On discovery started");
         let mut ticker = tokio::time::interval(SEARCH_INTERVAL);
+        let started = tokio::time::Instant::now();
+        let mut early = EARLY_SEARCHES.iter();
+        let mut next_early = early.next();
         loop {
+            let early_at = next_early.map(|d| started + *d);
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = ticker.tick() => {}
                 _ = refresh.notified() => {}
+                _ = async { tokio::time::sleep_until(early_at.unwrap_or(started)).await }, if early_at.is_some() => {
+                    next_early = early.next();
+                }
             }
             for s in &searchers {
                 send_search_burst(s).await;

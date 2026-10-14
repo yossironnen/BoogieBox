@@ -5,8 +5,8 @@
 import React from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { PlayerState } from '../../components/Player';
-import { PlayOnContext, type PlayOnApi } from '../../remote/usePlayOn';
+import type { PlaybackSnapshot, PlayerState, PlayerTransportControls } from '../../components/Player';
+import { PlayOnContext, type PlayOnApi, type PlayerRemoteView } from '../../remote/usePlayOn';
 import type { RendererInfo } from '../../remote/remoteTypes';
 import type { Track } from '../../types';
 import MobileNowPlayingView from '../views/MobileNowPlayingView';
@@ -51,6 +51,7 @@ function playOnApi(over: Partial<PlayOnApi> = {}): PlayOnApi {
     dispatch: vi.fn(),
     notice: null,
     takeover: null,
+    openSettings: null,
     ...over,
   };
 }
@@ -96,6 +97,81 @@ describe('mobile Play On', () => {
     expect(screen.getByRole('status')).toHaveTextContent('WiiM Ultra is unreachable');
     fireEvent.click(screen.getByRole('button', { name: 'Use this browser' }));
     expect(run).toHaveBeenCalled();
+  });
+
+  it('offers the speaker settings link to admins only when nothing is found', () => {
+    const empty = playOnApi({ renderers: [] });
+    const { unmount } = nowPlaying(empty);
+    fireEvent.click(screen.getByRole('button', { name: 'Play on…' }));
+    expect(screen.getByText('No speakers found')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Speaker settings' })).not.toBeInTheDocument();
+    unmount();
+    render(
+      <PlayOnContext.Provider value={empty}>
+        <MobileNowPlayingView
+          currentUser={{ id: 'u1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
+          snapshot={null}
+          playerState={state}
+          onStateChange={() => {}}
+        />
+      </PlayOnContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Play on…' }));
+    expect(screen.getByRole('button', { name: 'Speaker settings' })).toBeInTheDocument();
+  });
+
+  it('seeks from the progress bar when the drag ends', () => {
+    const controls: PlayerTransportControls = { seek: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() };
+    const snapshot: PlaybackSnapshot = { currentTrack: song, currentTime: 10, duration: 120, isPlaying: true, volume: 1, muted: false, loading: false, audioError: null };
+    render(
+      <PlayOnContext.Provider value={playOnApi()}>
+        <MobileNowPlayingView snapshot={snapshot} playerState={state} onStateChange={() => {}} transportControls={controls} />
+      </PlayOnContext.Provider>,
+    );
+    const seek = screen.getByRole('slider', { name: 'Seek' });
+    fireEvent.change(seek, { target: { value: '60' } });
+    expect(controls.seek).not.toHaveBeenCalled();
+    expect(screen.getByText('1:00')).toBeInTheDocument();
+    fireEvent.pointerUp(seek);
+    expect(controls.seek).toHaveBeenCalledWith(60);
+    // Local playback: the phone's own buttons set the volume, so no volume row.
+    expect(screen.queryByRole('slider', { name: /Volume/ })).not.toBeInTheDocument();
+  });
+
+  it('shows the speaker volume on a renderer and explains a fixed one', () => {
+    const controls: PlayerTransportControls = { seek: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() };
+    const snapshot: PlaybackSnapshot = { currentTrack: song, currentTime: 10, duration: 120, isPlaying: true, volume: 0.4, muted: false, loading: false, audioError: null };
+    const view: PlayerRemoteView = {
+      udn: 'uuid:wiim', deviceName: 'WiiM Ultra', status: 'playing', positionSec: 10, positionAt: 0, durationSec: 120,
+      volume: 0.4, muted: false, canSeek: true, canSetVolume: true, shuffle: false, repeat: 'off',
+    };
+    const remote = playOnApi({ target: { kind: 'renderer', udn: 'uuid:wiim' }, deviceName: 'WiiM Ultra', remoteView: view });
+    const { rerender } = render(
+      <PlayOnContext.Provider value={remote}>
+        <MobileNowPlayingView snapshot={snapshot} playerState={state} onStateChange={() => {}} transportControls={controls} />
+      </PlayOnContext.Provider>,
+    );
+    const volume = screen.getByRole('slider', { name: 'Volume on WiiM Ultra' });
+    expect(volume).toHaveValue('40');
+    fireEvent.change(volume, { target: { value: '75' } });
+    expect(controls.setVolume).toHaveBeenCalledWith(0.75);
+    fireEvent.click(screen.getByRole('button', { name: 'Mute' }));
+    expect(controls.toggleMute).toHaveBeenCalled();
+
+    rerender(
+      <PlayOnContext.Provider value={{ ...remote, remoteView: { ...view, canSetVolume: false } }}>
+        <MobileNowPlayingView snapshot={snapshot} playerState={state} onStateChange={() => {}} transportControls={controls} />
+      </PlayOnContext.Provider>,
+    );
+    expect(screen.getByText("WiiM Ultra's volume is fixed")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mute' })).toBeDisabled();
+    expect(screen.getByRole('slider', { name: 'Seek' })).not.toBeDisabled();
+    rerender(
+      <PlayOnContext.Provider value={{ ...remote, remoteView: { ...view, canSeek: false } }}>
+        <MobileNowPlayingView snapshot={snapshot} playerState={state} onStateChange={() => {}} transportControls={controls} />
+      </PlayOnContext.Provider>,
+    );
+    expect(screen.getByRole('slider', { name: 'Seek' })).toBeDisabled();
   });
 
   it('hides the tool when Play On is off', () => {

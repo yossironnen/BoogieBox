@@ -147,6 +147,8 @@ struct Inner {
     media: media::MediaTokens,
     http_port: AtomicU16,
     sessions: Mutex<std::collections::HashMap<String, session::SessionHandle>>,
+    /// Saved sessions waiting for their renderer to be found again after a (re)start.
+    pending_restore: Mutex<std::collections::HashMap<String, session::PersistedSession>>,
     rate: RateLimiter,
 }
 
@@ -184,6 +186,7 @@ impl RemoteManager {
                 media: media::MediaTokens::default(),
                 http_port: AtomicU16::new(crate::DEFAULT_PORT),
                 sessions: Mutex::new(Default::default()),
+                pending_restore: Mutex::new(Default::default()),
                 rate: RateLimiter::default(),
             }),
         }
@@ -297,6 +300,11 @@ impl RemoteManager {
         for udn in &ended {
             self.inner.media.revoke_owner(udn);
         }
+        self.inner
+            .pending_restore
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         self.inner.registry.clear();
         self.inner
             .icons
@@ -316,11 +324,18 @@ impl RemoteManager {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
                 let settings = read_remote_settings(&conn);
                 let rows = boogiebox_db::remote::list_renderers(&conn).unwrap_or_default();
-                (settings, rows)
+                let saved = if settings.enabled {
+                    boogiebox_db::remote::list_remote_sessions(&conn).unwrap_or_default()
+                } else {
+                    // Play On switched off ends every session for good.
+                    let _ = boogiebox_db::remote::delete_all_remote_sessions(&conn);
+                    Vec::new()
+                };
+                (settings, rows, saved)
             }
         })
         .await;
-        let Ok((settings, rows)) = loaded else {
+        let Ok((settings, rows, saved)) = loaded else {
             return;
         };
         if !settings.enabled {
@@ -328,6 +343,7 @@ impl RemoteManager {
             return;
         }
         self.inner.registry.load_persisted(&rows, Instant::now());
+        self.queue_restores(&db, saved);
 
         let cancel = parent.child_token();
         let (tx, rx) = mpsc::channel(64);
@@ -389,6 +405,9 @@ impl RemoteManager {
                         .mark_seen(&udn, &location, max_age, Instant::now());
                 if outcome.came_online {
                     self.emit(RemoteEvent::Renderers);
+                    if !outcome.needs_description {
+                        self.try_restore(db, &udn);
+                    }
                 }
                 if outcome.persist_touch && !outcome.needs_description {
                     let db = db.clone();
@@ -415,6 +434,77 @@ impl RemoteManager {
                             .remove(&udn);
                     });
                 }
+            }
+        }
+    }
+
+    /// Keeps saved sessions until their renderer is found again; drops (and deletes) ones that would have
+    /// timed out by now or can't be read.
+    fn queue_restores(&self, db: &DbPool, saved: Vec<boogiebox_db::remote::RemoteSessionRow>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let mut stale = Vec::new();
+        let mut pending = self
+            .inner
+            .pending_restore
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for row in saved {
+            let parsed = serde_json::from_str::<session::PersistedSession>(&row.snapshot);
+            let fresh =
+                now.saturating_sub(row.saved_at_ms) < session::IDLE_TEARDOWN.as_millis() as i64;
+            match parsed {
+                Ok(mut s) if fresh && s.v == 1 => {
+                    // The row's position/status columns are newer than the snapshot.
+                    s.position_sec = row.position_sec;
+                    if let Ok(status) =
+                        serde_json::from_value(serde_json::Value::String(row.status.clone()))
+                    {
+                        s.status = status;
+                    }
+                    pending.insert(row.udn, s);
+                }
+                _ => stale.push(row.udn),
+            }
+        }
+        drop(pending);
+        if !stale.is_empty() {
+            let db = db.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                for udn in stale {
+                    let _ = boogiebox_db::remote::delete_remote_session(&conn, &udn);
+                }
+            });
+        }
+    }
+
+    /// Continues `udn`'s saved session once the renderer is online, unless a new one started meanwhile.
+    fn try_restore(&self, db: &DbPool, udn: &str) {
+        let Some(saved) = self
+            .inner
+            .pending_restore
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(udn)
+        else {
+            return;
+        };
+        if self.session(udn).is_some() {
+            return;
+        }
+        // Same token strings as before, so the renderer's current stream URL works again.
+        for token in &saved.tokens {
+            self.inner.media.restore(udn, token);
+        }
+        let items = saved.queue.entries.len();
+        match self.open_session(db, udn, Some(saved)) {
+            Ok(_) => tracing::info!(target: "remote", %udn, items, "Play On session restored"),
+            Err(e) => {
+                self.inner.media.revoke_owner(udn);
+                tracing::info!(target: "remote", %udn, "Play On session not restored: {e:?}");
             }
         }
     }
@@ -468,6 +558,7 @@ impl RemoteManager {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&description.udn);
+        let udn = description.udn.clone();
         if self.inner.registry.insert_described(
             description,
             caps,
@@ -477,6 +568,7 @@ impl RemoteManager {
         ) {
             self.emit(RemoteEvent::Renderers);
         }
+        self.try_restore(db, &udn);
     }
 
     /// Returns the renderer's best icon `(mime, bytes)`, fetched once from the device and cached.
@@ -547,6 +639,7 @@ impl RemoteManager {
         &self,
         db: &DbPool,
         udn: &str,
+        restore: Option<session::PersistedSession>,
     ) -> Result<session::SessionHandle, session::SessionError> {
         let mut sessions = self.sessions();
         if let Some(h) = sessions.get(udn).filter(|h| !h.tx.is_closed()) {
@@ -589,16 +682,14 @@ impl RemoteManager {
                 db: db.clone(),
             },
             self.inner.events.clone(),
-            Box::new(move |tx| {
+            Box::new(move |id| {
                 let mut sessions = manager.sessions();
-                if sessions
-                    .get(&end_udn)
-                    .is_some_and(|h| h.tx.same_channel(tx))
-                {
+                if sessions.get(&end_udn).is_some_and(|h| h.id == id) {
                     sessions.remove(&end_udn);
                     manager.inner.media.revoke_owner(&end_udn);
                 }
             }),
+            restore,
         );
         sessions.insert(udn.to_string(), handle.clone());
         Ok(handle)
@@ -618,7 +709,7 @@ impl RemoteManager {
             None if matches!(cmd, session::Command::Release { .. }) => {
                 return Err(session::SessionError::Ended)
             }
-            None => self.open_session(db, udn)?,
+            None => self.open_session(db, udn, None)?,
         };
         handle.send(cmd, by, takeover).await
     }
@@ -1111,11 +1202,126 @@ mod tests {
             Err(SessionError::Renderer(_))
         ));
 
-        // Stopping Play On ends every session and revokes tokens.
+        // Live sessions are saved with their stream token; the released one is forgotten.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let rows = boogiebox_db::remote::list_remote_sessions(&db.lock().unwrap()).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.udn.as_str()).collect::<Vec<_>>(),
+            vec!["b"]
+        );
+        let saved: session::PersistedSession = serde_json::from_str(&rows[0].snapshot).unwrap();
+        assert_eq!(saved.owner_user_id.as_deref(), Some("alice"));
+        let token = saved
+            .current_url
+            .as_deref()
+            .and_then(session::token_in_url)
+            .unwrap()
+            .to_string();
+        assert!(saved.tokens.iter().any(|t| t.token == token));
+
+        // Stopping Play On ends every session and revokes tokens, but keeps the saved row.
         m.stop();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(m.session("b").is_none());
         assert_eq!(m.media().len(), 0);
+        let rows = boogiebox_db::remote::list_remote_sessions(&db.lock().unwrap()).unwrap();
+        assert_eq!(rows.len(), 1);
+
+        // After the restart, b is found again and its session continues with the same stream URL.
+        m.queue_restores(&db, rows);
+        let mut d = description("b", "127.0.0.1");
+        d.av_transport.control_url = url_b.clone();
+        d.rendering_control = Some(d.av_transport.clone());
+        m.registry().insert_described(
+            d,
+            RendererCaps {
+                sink: crate::upnp::device::SinkCaps::parse("http-get:*:audio/flac:*"),
+                set_next: true,
+                seek: true,
+            },
+            "http://127.0.0.1:1/d.xml",
+            60,
+            Instant::now(),
+        );
+        m.try_restore(&db, "b");
+        let restored = m.session("b").expect("session restored").snapshot();
+        assert_eq!(restored.queue.len(), 1);
+        assert_eq!(restored.owner_name.as_deref(), Some("Alice"));
+        assert!(
+            m.media().get(&token).is_some(),
+            "the renderer's stream URL works again"
+        );
+        let id = m.session("b").unwrap().id;
+        m.try_restore(&db, "b");
+        assert_eq!(m.session("b").unwrap().id, id, "restores once");
+        m.stop();
+    }
+
+    #[tokio::test]
+    async fn unreadable_or_stale_saved_sessions_are_dropped() {
+        let db = pool("remote-restore-stale");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let snapshot = serde_json::to_string(&session::PersistedSession {
+            v: 1,
+            queue: queue::Queue::with_seed(1).snapshot(),
+            queue_source: None,
+            owner_user_id: Some("alice".into()),
+            owner_name: Some("Alice".into()),
+            last_controller_user_id: None,
+            status: session::SessionStatus::Playing,
+            position_sec: 1.0,
+            duration_sec: None,
+            played_qid: None,
+            current_url: None,
+            next_url: None,
+            next_qid: None,
+            can_set_volume: true,
+            tokens: Vec::new(),
+        })
+        .unwrap();
+        let row =
+            |udn: &str, snapshot: &str, saved_at_ms: i64| boogiebox_db::remote::RemoteSessionRow {
+                udn: udn.into(),
+                snapshot: snapshot.into(),
+                position_sec: 33.0,
+                status: "paused".into(),
+                saved_at_ms,
+            };
+        let rows = vec![
+            row("fresh", &snapshot, now),
+            row("old", &snapshot, now - 7 * 3600 * 1000),
+            row("junk", "{not json", now),
+        ];
+        {
+            let conn = db.lock().unwrap();
+            for r in &rows {
+                boogiebox_db::remote::save_remote_session(&conn, r).unwrap();
+            }
+        }
+        let m = RemoteManager::new();
+        m.queue_restores(&db, rows);
+        {
+            let pending = m.inner.pending_restore.lock().unwrap();
+            assert_eq!(pending.keys().collect::<Vec<_>>(), vec!["fresh"]);
+            let fresh = &pending["fresh"];
+            assert_eq!(
+                fresh.position_sec, 33.0,
+                "row position wins over the snapshot"
+            );
+            assert_eq!(fresh.status, session::SessionStatus::Paused);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let left = boogiebox_db::remote::list_remote_sessions(&db.lock().unwrap()).unwrap();
+        assert_eq!(
+            left.iter().map(|r| r.udn.as_str()).collect::<Vec<_>>(),
+            vec!["fresh"]
+        );
+        // A renderer that never shows up again: nothing happens.
+        m.try_restore(&db, "fresh");
+        assert!(m.session("fresh").is_none());
     }
 
     #[test]

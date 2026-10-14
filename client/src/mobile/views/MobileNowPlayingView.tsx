@@ -4,7 +4,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
-import type { PlaybackSnapshot, PlayerEqControls, PlayerState } from '../../components/Player';
+import type { PlaybackSnapshot, PlayerEqControls, PlayerState, PlayerTransportControls } from '../../components/Player';
 import type { AppSettings, AuthUser, ClientEntityId, SonicFingerprint, StemWindow } from '../../types';
 import ArtImage from '../../components/ArtImage';
 import { RadioReasonChip } from '../../components/ArtistRadioControls';
@@ -32,6 +32,19 @@ function fmt(seconds: number): string {
 }
 
 type LyricsPanelMode = 'cover' | 'karaoke' | 'text' | 'fingerprint';
+
+const VOLUME_ICON = {
+  width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+  strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+} as const;
+
+function VolumeIcon({ muted }: { muted: boolean }) {
+  return muted ? (
+    <svg {...VOLUME_ICON}><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" /><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></svg>
+  ) : (
+    <svg {...VOLUME_ICON}><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></svg>
+  );
+}
 type QueueGesture = {
   pointerId: number;
   source: 'row' | 'handle';
@@ -64,6 +77,7 @@ export default function MobileNowPlayingView({
   adaptiveAccentEnabled,
   onAdaptiveAccentEnabledChange,
   eqControls,
+  transportControls = null,
   playbackMode = 'standard',
   vinylHardcore = false,
   vinylNeedleDrop = false,
@@ -86,6 +100,7 @@ export default function MobileNowPlayingView({
   adaptiveAccentEnabled?: boolean;
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
   eqControls?: PlayerEqControls | null;
+  transportControls?: PlayerTransportControls | null;
   playbackMode?: 'standard' | 'vinyl';
   vinylHardcore?: boolean;
   vinylNeedleDrop?: boolean;
@@ -107,9 +122,13 @@ export default function MobileNowPlayingView({
   const [sonicFingerprintLoading, setSonicFingerprintLoading] = useState(false);
   const settledFingerprintTrackId = useRef<ClientEntityId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsFocus, setSettingsFocus] = useState<'play-on' | null>(null);
   const [playbackTool, setPlaybackTool] = useState<'output' | 'equalizer' | 'vinyl' | null>(null);
   const playOn = usePlayOnContext();
   const playingOnRenderer = playOn?.target.kind === 'renderer';
+  const remoteView = playingOnRenderer ? playOn?.remoteView ?? null : null;
+  const [scrub, setScrub] = useState<number | null>(null);
+  const scrubRef = useRef<number | null>(null);
   const [clearQueueOpen, setClearQueueOpen] = useState(false);
   const [queueGesture, setQueueGesture] = useState<QueueGesture | null>(null);
   const [queueSwipeOffsets, setQueueSwipeOffsets] = useState<Record<string, number>>({});
@@ -182,6 +201,18 @@ export default function MobileNowPlayingView({
   const canNext = playerState.currentIndex < playerState.queue.length - 1;
   const max = snapshot?.duration && snapshot.duration > 0 ? snapshot.duration : track?.duration ?? 0;
   const pct = max > 0 ? Math.max(0, Math.min(100, ((snapshot?.currentTime ?? 0) / max) * 100)) : 0;
+  const canSeek = Boolean(transportControls) && max > 0
+    && !(playbackMode === 'vinyl' && vinylHardcore)
+    && (remoteView ? remoteView.canSeek : true);
+  const volumeLocked = !remoteView || !remoteView.canSetVolume || remoteView.volume == null;
+  // Seek once the finger/mouse/key is released, not on every step of the drag.
+  const commitScrub = useCallback(() => {
+    const value = scrubRef.current;
+    if (value == null) return;
+    scrubRef.current = null;
+    setScrub(null);
+    transportControls?.seek(value);
+  }, [transportControls]);
   const advancePanelMode = () => {
     setPanelMode((current) => {
       if (current === 'cover') return 'karaoke';
@@ -419,18 +450,33 @@ export default function MobileNowPlayingView({
         <div style={styles.sub}>{[track.artist || 'Unknown artist', track.album || 'Unknown album'].join(' • ')}</div>
       </section>
       <div style={styles.progressShell}>
-        <div
-          role="progressbar"
-          aria-label="Playback progress"
-          aria-valuemin={0}
-          aria-valuemax={Math.max(0, Math.round(max))}
-          aria-valuenow={Math.max(0, Math.round(snapshot?.currentTime ?? 0))}
-          style={styles.progressTrack}
-        >
-          <div style={{ ...styles.progressFill, width: `${pct}%` }} />
+        <div style={styles.seekArea}>
+          <div aria-hidden="true" style={styles.progressTrack}>
+            <div style={{ ...styles.progressFill, width: `${scrub != null && max > 0 ? Math.min(100, (scrub / max) * 100) : pct}%` }} />
+          </div>
+          {/* Invisible native slider over the bar: touch, mouse and keyboard seeking with slider semantics. */}
+          <input
+            type="range"
+            aria-label="Seek"
+            min={0}
+            max={Math.max(1, Math.round(max))}
+            step={1}
+            value={Math.round(scrub ?? snapshot?.currentTime ?? 0)}
+            disabled={!canSeek}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              scrubRef.current = value;
+              setScrub(value);
+            }}
+            onPointerUp={commitScrub}
+            onTouchEnd={commitScrub}
+            onKeyUp={commitScrub}
+            onBlur={commitScrub}
+            style={{ ...styles.seekInput, cursor: canSeek ? 'pointer' : 'default' }}
+          />
         </div>
         <div style={styles.progressMeta}>
-          <span>{fmt(snapshot?.currentTime ?? 0)}</span>
+          <span>{fmt(scrub ?? snapshot?.currentTime ?? 0)}</span>
           <span>{fmt(max)}</span>
         </div>
       </div>
@@ -462,6 +508,33 @@ export default function MobileNowPlayingView({
           ››
         </button>
       </div>
+      {remoteView && transportControls ? (
+        <div style={styles.volumeRow}>
+          <button
+            type="button"
+            aria-label={snapshot?.muted ? 'Unmute' : 'Mute'}
+            disabled={volumeLocked}
+            style={{ ...styles.volumeButton, ...(volumeLocked ? hybridMobileContentStyles.disabled : null) }}
+            onClick={transportControls.toggleMute}
+          >
+            <VolumeIcon muted={Boolean(snapshot?.muted)} />
+          </button>
+          {volumeLocked ? (
+            <span style={styles.volumeFixed}>{remoteView.deviceName}'s volume is fixed</span>
+          ) : (
+            <input
+              type="range"
+              aria-label={`Volume on ${remoteView.deviceName}`}
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round((snapshot?.muted ? 0 : snapshot?.volume ?? 0) * 100)}
+              onChange={(event) => transportControls.setVolume(Number(event.target.value) / 100)}
+              style={styles.volumeInput}
+            />
+          )}
+        </div>
+      ) : null}
       {playOn?.notice ? (
         <div
           role="status"
@@ -575,7 +648,8 @@ export default function MobileNowPlayingView({
       {settingsOpen && currentUser ? (
         <MobileSettingsView
           currentUser={currentUser}
-          onClose={() => setSettingsOpen(false)}
+          focus={settingsFocus}
+          onClose={() => { setSettingsOpen(false); setSettingsFocus(null); }}
           appSettings={appSettings}
           onAppSettingsChange={onAppSettingsChange}
           hybridThemeMode={hybridThemeMode}
@@ -585,7 +659,15 @@ export default function MobileNowPlayingView({
         />
       ) : null}
       {playbackTool === 'output' && playOn ? (
-        <MobilePlayOnSheet playOn={playOn} onClose={() => setPlaybackTool(null)} />
+        <MobilePlayOnSheet
+          playOn={playOn}
+          onClose={() => setPlaybackTool(null)}
+          onOpenSettings={currentUser?.role === 'admin' ? () => {
+            setPlaybackTool(null);
+            setSettingsFocus('play-on');
+            setSettingsOpen(true);
+          } : undefined}
+        />
       ) : null}
       {playbackTool === 'equalizer' ? (
         <MobileEqualizerSheet
@@ -835,11 +917,55 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap',
   },
   progressShell: { marginTop: 18 },
+  seekArea: {
+    position: 'relative',
+    height: 24,
+    display: 'flex',
+    alignItems: 'center',
+  },
   progressTrack: {
+    width: '100%',
     height: 5,
     overflow: 'hidden',
     borderRadius: 999,
-    background: 'var(--surface-subtle)',
+    background: 'var(--surface-subtle, color-mix(in srgb, var(--text) 14%, transparent))',
+  },
+  seekInput: {
+    position: 'absolute',
+    inset: 0,
+    width: '100%',
+    height: '100%',
+    margin: 0,
+    opacity: 0,
+  },
+  volumeRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+  },
+  volumeButton: {
+    width: 44,
+    minWidth: 44,
+    height: 44,
+    display: 'grid',
+    placeItems: 'center',
+    padding: 0,
+    border: '1px solid var(--divider-subtle, var(--border))',
+    borderRadius: 12,
+    background: 'var(--surface-subtle, var(--bg))',
+    color: 'var(--text-muted)',
+  },
+  volumeInput: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 44,
+    accentColor: 'var(--accent)',
+  },
+  volumeFixed: {
+    flex: 1,
+    color: 'var(--text-muted)',
+    fontSize: 13,
   },
   progressFill: { height: '100%', borderRadius: 999, background: 'var(--accent)' },
   progressMeta: {

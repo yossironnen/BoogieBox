@@ -793,6 +793,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-10-12-upnp-renderers-schema",
             apply: remote::ensure_upnp_renderers_schema,
         },
+        Migration {
+            id: "2026-10-13-remote-sessions-schema",
+            apply: remote::ensure_remote_sessions_schema,
+        },
     ];
 
     for migration in migrations {

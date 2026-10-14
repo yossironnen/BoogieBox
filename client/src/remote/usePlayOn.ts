@@ -107,6 +107,8 @@ export interface PlayOnApi {
   dispatch: (action: SetStateAction<PlayerState>) => void;
   notice: PlayOnNotice | null;
   takeover: PlayOnTakeoverPrompt | null;
+  /** Opens Settings → Advanced → Play On; null when the user can't change those settings. */
+  openSettings: (() => void) | null;
 }
 
 export const PlayOnContext = createContext<PlayOnApi | null>(null);
@@ -124,13 +126,15 @@ export interface UsePlayOnOptions {
   setLocalState: (action: SetStateAction<PlayerState>, options?: { alreadyRecorded?: boolean }) => void;
   /** Latest local playback position (seconds). */
   getLocalPosition: () => number;
+  /** Admin-only navigation to the Play On settings. */
+  onOpenSettings?: (() => void) | null;
 }
 
 function errorText(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'Play On request failed';
 }
 
-export function usePlayOn({ enabled, currentUserId, localState, setLocalState, getLocalPosition }: UsePlayOnOptions): PlayOnApi {
+export function usePlayOn({ enabled, currentUserId, localState, setLocalState, getLocalPosition, onOpenSettings = null }: UsePlayOnOptions): PlayOnApi {
   const [target, setTargetState] = usePlaybackTarget();
   const targetUdn = target.kind === 'renderer' ? target.udn : null;
   const targetUdnRef = useRef(targetUdn);
@@ -630,5 +634,6 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
     dispatch,
     notice: transient ?? statusNotice,
     takeover,
+    openSettings: onOpenSettings,
   };
 }

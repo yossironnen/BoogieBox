@@ -676,6 +676,7 @@ interface Props {
   onVinylAnalogFxDisabledChange?: (enabled: boolean) => void;
   vinylNeedleDropIntensity?: number;
   onVinylNeedleDropIntensityChange?: (value: number) => void;
+  sectionRequest?: SettingsSectionRequest | null;
 }
 
 /** Has Spotify Credentials is part of this module's public API. */
@@ -693,7 +694,14 @@ export function isValidDlnaPort(rawPort: string): boolean {
 // ─── Settings tab icons ───────────────────────────────────────────────────────
 // Neutral chrome: inherit the tab's text colour so active/inactive is automatic.
 
-type SettingsTabKey = 'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users';
+export type SettingsTabKey = 'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users';
+
+/** Ask SettingsPage to show a tab and scroll to an element id; `token` makes repeated requests distinct. */
+export interface SettingsSectionRequest {
+  tab: SettingsTabKey;
+  anchor?: string;
+  token: number;
+}
 
 function SettingsTabIcon({ tab }: { tab: SettingsTabKey }) {
   const paths: Record<SettingsTabKey, React.ReactElement> = {
@@ -734,13 +742,30 @@ export default function SettingsPage({
   onVinylAnalogFxDisabledChange,
   vinylNeedleDropIntensity = 0.65,
   onVinylNeedleDropIntensityChange,
+  sectionRequest = null,
 }: Props) {
   const isAdmin = currentUser.role === 'admin';
   const canManageLibraries = isAdmin || currentUser.canManageLibraries;
   const isVintageMode = hybridThemeMode === 'vintage';
   const isCustomMode = hybridThemeMode === 'custom';
   const [local, setLocal] = useState<AppSettings>(settings);
-  const [activeTab, setActiveTab] = useState<SettingsTabKey>('theme');
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>(sectionRequest?.tab ?? 'theme');
+  useEffect(() => {
+    if (!sectionRequest) return undefined;
+    setActiveTab(sectionRequest.tab);
+    if (!sectionRequest.anchor) return undefined;
+    // The section mounts with the tab (and may load its data first), so look for it for a moment.
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      const target = document.getElementById(sectionRequest.anchor ?? '');
+      tries += 1;
+      if (target || tries > 20) {
+        window.clearInterval(timer);
+        target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [sectionRequest]);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [schedules, setSchedules] = useState<ScanSchedule[]>([]);
   const [queueSnapshot, setQueueSnapshot] = useState<AdminQueueSnapshot | null>(null);

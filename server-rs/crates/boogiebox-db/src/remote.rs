@@ -1,5 +1,6 @@
 //! Play On storage: UPnP renderers remembered across restarts, with per-device admin preferences
-//! (`wip/play-on-renderers-plan.md` §7). Queue/session state is in memory only (decision D4).
+//! (`wip/play-on-renderers-plan.md` §7), and each renderer's session (queue, owner, position, media tokens) so it
+//! survives a server restart.
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -72,6 +73,89 @@ pub fn ensure_upnp_renderers_schema(conn: &Connection) -> rusqlite::Result<()> {
            last_seen_at   TEXT NOT NULL DEFAULT (datetime('now'))
          );",
     )
+}
+
+/// One persisted Play On session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteSessionRow {
+    /// Renderer UDN (primary key).
+    pub udn: String,
+    /// JSON snapshot written by the server's session actor (queue, owner, playback state, media tokens).
+    pub snapshot: String,
+    /// Last known position (s); updated more often than the snapshot.
+    pub position_sec: f64,
+    /// Last known status (`playing`, `paused`, …).
+    pub status: String,
+    /// When `position_sec` was sampled (ms since epoch).
+    pub saved_at_ms: i64,
+}
+
+/// Creates the `remote_sessions` table (migration `2026-10-13-remote-sessions-schema`).
+pub fn ensure_remote_sessions_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS remote_sessions (
+           udn           TEXT PRIMARY KEY,
+           snapshot      TEXT NOT NULL,
+           position_sec  REAL NOT NULL DEFAULT 0,
+           status        TEXT NOT NULL DEFAULT 'paused',
+           saved_at_ms   INTEGER NOT NULL DEFAULT 0,
+           updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+}
+
+/// Writes (inserts or replaces) a session snapshot.
+pub fn save_remote_session(conn: &Connection, row: &RemoteSessionRow) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO remote_sessions(udn, snapshot, position_sec, status, saved_at_ms, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, datetime('now'))
+         ON CONFLICT(udn) DO UPDATE SET snapshot = excluded.snapshot, position_sec = excluded.position_sec,
+           status = excluded.status, saved_at_ms = excluded.saved_at_ms, updated_at = excluded.updated_at",
+        params![row.udn, row.snapshot, row.position_sec, row.status, row.saved_at_ms],
+    )?;
+    Ok(())
+}
+
+/// Updates only the position/status of a saved session; false when there is none.
+pub fn update_remote_session_position(
+    conn: &Connection,
+    udn: &str,
+    position_sec: f64,
+    status: &str,
+    saved_at_ms: i64,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE remote_sessions SET position_sec = ?2, status = ?3, saved_at_ms = ?4, updated_at = datetime('now')
+         WHERE udn = ?1",
+        params![udn, position_sec, status, saved_at_ms],
+    )? > 0)
+}
+
+/// Every saved session.
+pub fn list_remote_sessions(conn: &Connection) -> rusqlite::Result<Vec<RemoteSessionRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT udn, snapshot, position_sec, status, saved_at_ms FROM remote_sessions ORDER BY udn",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(RemoteSessionRow {
+            udn: r.get(0)?,
+            snapshot: r.get(1)?,
+            position_sec: r.get(2)?,
+            status: r.get(3)?,
+            saved_at_ms: r.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Forgets one session; false when there was none.
+pub fn delete_remote_session(conn: &Connection, udn: &str) -> rusqlite::Result<bool> {
+    Ok(conn.execute("DELETE FROM remote_sessions WHERE udn = ?1", params![udn])? > 0)
+}
+
+/// Forgets every session (Play On switched off).
+pub fn delete_all_remote_sessions(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM remote_sessions", [])
 }
 
 const COLS: &str = "udn, friendly_name, alias, manufacturer, model_name, vendor, location_url, capabilities, format_policy, hidden, first_seen_at, last_seen_at";
@@ -447,5 +531,70 @@ mod tests {
             )
             .unwrap();
         assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn remote_sessions_save_update_list_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_remote_sessions_schema(&conn).unwrap();
+        ensure_remote_sessions_schema(&conn).unwrap(); // idempotent
+        let row = RemoteSessionRow {
+            udn: "wiim".into(),
+            snapshot: "{\"v\":1}".into(),
+            position_sec: 12.5,
+            status: "playing".into(),
+            saved_at_ms: 1000,
+        };
+        save_remote_session(&conn, &row).unwrap();
+        save_remote_session(
+            &conn,
+            &RemoteSessionRow {
+                udn: "tv".into(),
+                ..row.clone()
+            },
+        )
+        .unwrap();
+        assert!(update_remote_session_position(&conn, "wiim", 40.0, "paused", 2000).unwrap());
+        assert!(!update_remote_session_position(&conn, "missing", 1.0, "paused", 1).unwrap());
+        let rows = list_remote_sessions(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        let wiim = rows.iter().find(|r| r.udn == "wiim").unwrap();
+        assert_eq!(
+            (wiim.position_sec, wiim.status.as_str(), wiim.saved_at_ms),
+            (40.0, "paused", 2000)
+        );
+        assert_eq!(wiim.snapshot, "{\"v\":1}");
+        // A new snapshot replaces the old one.
+        save_remote_session(
+            &conn,
+            &RemoteSessionRow {
+                snapshot: "{\"v\":2}".into(),
+                ..row.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            list_remote_sessions(&conn).unwrap()[1].snapshot,
+            "{\"v\":2}"
+        );
+        assert!(delete_remote_session(&conn, "wiim").unwrap());
+        assert!(!delete_remote_session(&conn, "wiim").unwrap());
+        assert_eq!(delete_all_remote_sessions(&conn).unwrap(), 1);
+        assert!(list_remote_sessions(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn remote_sessions_table_via_tracked_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::initialize_schema(&conn).unwrap();
+        let applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE id='2026-10-13-remote-sessions-schema'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+        assert!(list_remote_sessions(&conn).unwrap().is_empty());
     }
 }
