@@ -675,14 +675,27 @@ describe('PlaylistsView integration flows', () => {
     }
   });
 
-  it('shows a "View in Mixes" link on the status line (no separate "Previous mix" line) once the mix is ready', async () => {
+  it('shows a "BoogieMix ready" badge beside Play (not a status line) that opens Mixes once the mix is ready', async () => {
     apiMock.boogiemix.listOutputs.mockResolvedValue([{ id: 'out1', file_name: 'mix.flac', name: 'My Mix', playlist_name: 'Road Trip', cover_album_ids: null, duration_sec: 200, file_size_bytes: 1000, format: 'mp3' }]);
-    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" />);
+    const onOpenMixes = vi.fn();
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" onOpenMixes={onOpenMixes} />);
 
     await waitFor(() => expect(apiMock.boogiemix.listOutputs).toHaveBeenCalledWith('1'));
-    expect(await screen.findByText('BoogieMix ready — My Mix')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /View in Mixes/ })).toBeInTheDocument();
+    const badge = await screen.findByRole('button', { name: 'BoogieMix ready — My Mix · Open in Mixes' });
+    expect(screen.queryByTestId('boogiemix-status')).not.toBeInTheDocument();
     expect(screen.queryByText(/Previous mix —/)).not.toBeInTheDocument();
+    fireEvent.click(badge);
+    expect(onOpenMixes).toHaveBeenCalledWith('Road Trip');
+  });
+
+  it('shows playlist details (tracks, duration, deep-analyzed count) in the row under the header', async () => {
+    apiMock.playlists.tracks.mockResolvedValue([{ ...trackA, has_deep_analysis: true }, trackB]);
+    render(<PlaylistsView playTrack={() => {}} addToQueue={() => {}} initialPlaylistId="1" />);
+
+    await screen.findByText('Alpha One');
+    const details = screen.getByTestId('playlist-details');
+    expect(details).toHaveTextContent('2 tracks');
+    expect(details).toHaveTextContent('1/2 deep-analyzed');
   });
 
   it('reattaches to a still-running BoogieMix job on mount', async () => {

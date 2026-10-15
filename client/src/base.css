@@ -318,6 +318,37 @@ select option { background-color: var(--surface); color: var(--text); }
   color: #fff;
   border-color: transparent;
 }
+/* "BoogieMix ready" badge button (playlist detail toolbar). */
+.icon-action-btn.icon-action-btn--ready {
+  background: color-mix(in srgb, var(--success, #4ade80) 12%, transparent);
+  border-color: color-mix(in srgb, var(--success, #4ade80) 38%, transparent);
+  color: var(--success, #4ade80);
+}
+.icon-action-btn.icon-action-btn--ready:hover,
+.icon-action-btn.icon-action-btn--ready:focus-visible {
+  background: color-mix(in srgb, var(--success, #4ade80) 22%, transparent);
+  border-color: color-mix(in srgb, var(--success, #4ade80) 55%, transparent);
+  color: var(--success, #4ade80);
+}
+.icon-action-btn__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--success, #4ade80);
+  color: var(--bg);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.icon-action-btn__badge svg {
+  width: 9px;
+  height: 9px;
+  stroke-width: 4;
+}
 .icon-action-btn[data-tip]::after {
   content: attr(data-tip);
   position: absolute;

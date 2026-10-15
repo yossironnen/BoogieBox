@@ -85,12 +85,15 @@ const QueueIcon   = ({ size = 12 }: { size?: number }) => <svg width={size} heig
 // player's own shuffle button, for consistency.
 const ShuffleIcon = () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>;
 // Mixer sliders — was a crossing-arrows glyph indistinguishable from Shuffle.
-const MixIcon        = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="12" height="4" rx="1"/><rect x="3" y="16" width="15" height="4" rx="1"/></svg>;
+const MixIcon        = ({ size = 12 }: { size?: number }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="12" height="4" rx="1"/><rect x="3" y="16" width="15" height="4" rx="1"/></svg>;
 const NoteIcon        = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M9 18V5l10-1v12"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="16" r="2.5"/></svg>;
 const SpinnerIcon    = () => <svg className="sidebar-scan-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M18.2 17.2A8 8 0 1 1 20 12"/></svg>;
 const CheckIcon      = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>;
 const AlertIcon      = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>;
-const ArrowRightIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>;
+// Playlist detail stat icons (track count reuses QueueIcon's note glyph).
+const ClockIcon      = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>;
+const SparkleIcon    = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg>;
+const CalendarIcon   = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>;
 
 /** Job statuses where a BoogieMix render is still actively working. */
 const MIX_ACTIVE_STATUSES: BoogieMixJob['status'][] = ['pending', 'analyzing', 'planning', 'rendering'];
@@ -173,7 +176,7 @@ function PlaylistPopup({ title, onClose, children }: {
 /** Icon-only Play/Shuffle/Queue/Add Tracks row — matches the album/artist
  * header treatment (transparent .icon-action-btn + hover/focus tooltip). */
 function PlaylistToolbar({
-  disabled, onPlay, onShuffle, onQueue, addTracksOpen, onToggleAddTracks,
+  disabled, onPlay, onShuffle, onQueue, addTracksOpen, onToggleAddTracks, mixReady,
 }: {
   disabled: boolean;
   onPlay: () => void;
@@ -181,13 +184,25 @@ function PlaylistToolbar({
   onQueue: () => void;
   addTracksOpen: boolean;
   onToggleAddTracks: () => void;
+  /** Set when a finished BoogieMix exists — shows the "mix ready" badge beside Play. */
+  mixReady?: { name?: string; onOpen: () => void } | null;
 }) {
+  const mixReadyLabel = mixReady
+    ? `BoogieMix ready${mixReady.name ? ` — ${mixReady.name}` : ''} · Open in Mixes`
+    : '';
   return (
     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
       <button type="button" className="icon-action-btn icon-action-btn--primary" data-tip="Play All" aria-label="Play All"
         disabled={disabled} onClick={onPlay}>
         <PlayIcon size={15} />
       </button>
+      {mixReady && (
+        <button type="button" className="icon-action-btn icon-action-btn--ready" data-tip={mixReadyLabel} aria-label={mixReadyLabel}
+          onClick={mixReady.onOpen}>
+          <MixIcon size={16} />
+          <span className="icon-action-btn__badge" aria-hidden="true"><CheckIcon /></span>
+        </button>
+      )}
       <button type="button" className="icon-action-btn" data-tip="Shuffle Play" aria-label="Shuffle play all tracks"
         disabled={disabled} onClick={onShuffle}>
         <ShuffleIcon />
@@ -910,11 +925,7 @@ function PlaylistDetail({
   const totalDur  = tracks.reduce((a, t) => a + (t.duration ?? 0), 0);
   const collageAlbumIds = buildPlaylistCollageAlbumIds(tracks);
   const headerCollageAlbumIds = playlist.art_album_ids ?? collageAlbumIds;
-  const headerMeta = [
-    tracks.length ? `${tracks.length} tracks` : 'Empty',
-    totalDur ? fmtDur(totalDur) : '',
-    (() => { const d = parseServerDate(playlist.updated_at); return d ? `Updated ${d.toLocaleDateString()}` : null; })(),
-  ].filter(Boolean).join(' · ');
+  const updatedDate = parseServerDate(playlist.updated_at);
   const deepFallbackMessage = formatBoogieMixFallbackMessage(
     mixJob,
     mixQuality === 'high_quality' && hasOpenedMix ? deepStatus : null,
@@ -925,6 +936,7 @@ function PlaylistDetail({
   const planSummary = mixJob?.plan_summary;
   const energyCurvePhases = planSummary?.energyCurvePhases ?? [];
   const mixActive = !!(mixJob && MIX_ACTIVE_STATUSES.includes(mixJob.status));
+  const mixReady = !mixActive && (mixJob?.status === 'done' || !!mixOutputs[0]);
   // Rendering can't be canceled mid-render (only the pre-render analyze/plan steps can).
   const mixCancelable = !!(mixJob && ['pending', 'analyzing', 'planning'].includes(mixJob.status));
   const deepDoneCount = (deepProgress?.done ?? 0) + (deepProgress?.skipped ?? 0);
@@ -952,8 +964,8 @@ function PlaylistDetail({
     statusLine = { tone: 'error', text: mixError || 'BoogieMix failed' };
   } else if (mixJob?.status === 'canceled') {
     statusLine = { tone: 'warn', text: 'BoogieMix canceled' };
-  } else if (mixJob?.status === 'done' || mixOutputs[0]) {
-    statusLine = { tone: 'done', text: mixOutputs[0] ? `BoogieMix ready — ${mixOutputs[0].name}` : 'BoogieMix ready' };
+  } else if (mixReady) {
+    // A finished mix is surfaced by the toolbar badge, not a status line.
   } else if (deepProgress) {
     statusLine = { tone: 'done', text: `Deep analysis complete — ${deepDoneCount}/${deepTotalCount} tracks` };
   } else if (deepFallbackMessage) {
@@ -1067,10 +1079,10 @@ function PlaylistDetail({
         <div aria-label={`${playlist.name} artwork`} style={{ flexShrink: 0 }}><PlaylistArtwork albumIds={headerCollageAlbumIds} thumb /></div>
         <div style={PD.titleBlock} title={playlist.description || undefined}>
           <div style={PD.name}>{playlist.name}</div>
-          <div style={PD.meta}>{headerMeta}</div>
         </div>
         <PlaylistToolbar
           disabled={!tracks.length}
+          mixReady={mixReady ? { name: mixOutputs[0]?.name, onOpen: () => onOpenMixes(playlist.name) } : null}
           onPlay={playAll}
           onShuffle={shufflePlay}
           onQueue={queueAll}
@@ -1243,7 +1255,21 @@ function PlaylistDetail({
       <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
         {/* Track list */}
         <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 0 }}>
-          {statusLine && (
+          <div data-testid="playlist-details" style={PD.details}>
+            {!loading && (
+              <>
+                <span style={PD.detailChip}><span style={PD.detailIcon}><QueueIcon size={14} /></span>{tracks.length === 1 ? '1 track' : `${tracks.length} tracks`}</span>
+                {totalDur > 0 && <span style={PD.detailChip}><span style={PD.detailIcon}><ClockIcon /></span>{fmtDur(totalDur)}</span>}
+                {api.boogiemix && tracks.length > 0 && (
+                  <span style={PD.detailChip} title="Tracks with a Sonic Fingerprint (deep analysis)">
+                    <span style={PD.detailIcon}><SparkleIcon /></span>{analyzedTrackCount}/{tracks.length} deep-analyzed
+                  </span>
+                )}
+                {updatedDate && <span style={PD.detailChip}><span style={PD.detailIcon}><CalendarIcon /></span>Updated {updatedDate.toLocaleDateString()}</span>}
+              </>
+            )}
+            {statusLine && !loading && <span style={PD.detailDivider} aria-hidden="true" />}
+            {statusLine && (
             <div
               data-testid="boogiemix-status"
               style={PD.statusPopoverWrap}
@@ -1254,18 +1280,9 @@ function PlaylistDetail({
                 {statusLine.tone === 'active' && <SpinnerIcon />}
                 {statusLine.tone === 'done' && <CheckIcon />}
                 {(statusLine.tone === 'error' || statusLine.tone === 'warn') && <AlertIcon />}
-                <span style={{ fontSize: 14, fontWeight: 600, color: statusToneColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: statusToneColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {statusLine.text}
                 </span>
-                {mixOutputs[0] && statusLine.tone === 'done' && (
-                  <button
-                    type="button"
-                    style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 5 }}
-                    onClick={() => onOpenMixes(playlist.name)}
-                  >
-                    View in Mixes <ArrowRightIcon />
-                  </button>
-                )}
                 {mixCancelable && (
                   <button style={{ ...PD.btnSecondary, padding: '2px 8px', fontSize: 13 }} onClick={cancelBoogieMix}>
                     Cancel
@@ -1323,7 +1340,8 @@ function PlaylistDetail({
                 </div>
               )}
             </div>
-          )}
+            )}
+          </div>
           {loading && <div style={PD.empty}>Loading…</div>}
           {!loading && loadError && (
             <div style={PD.empty}>
@@ -1395,8 +1413,11 @@ const PD: Record<string, React.CSSProperties> = {
   collageTile: { minWidth: 0, minHeight: 0, borderRadius: 10, overflow: 'hidden', background: 'var(--surface-subtle)' },
   collageArt: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
   collageFallback: { background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)), color-mix(in srgb, var(--surface) 88%, var(--bg)))' },
-  name: { color: 'var(--text)', fontSize: 16, fontWeight: 800, letterSpacing: -0.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  meta: { marginTop: 1, fontSize: 12, color: 'var(--text-muted)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  name: { color: 'var(--text)', fontSize: 20, fontWeight: 800, letterSpacing: -0.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  details: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 18px', margin: '10px 16px', minHeight: 22 },
+  detailChip: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' },
+  detailIcon: { display: 'inline-flex', color: 'var(--accent)', opacity: 0.85 },
+  detailDivider: { width: 1, height: 16, background: 'var(--divider-subtle)' },
   empty: { ...phase2.desktopMediaRow, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 24, padding: '72px 20px', color: 'var(--text-muted)', fontSize: 15, ...hybridMediaStyles.emptyState },
   menuItem: { ...hybridControlStyles.secondaryButton, width: '100%', justifyContent: 'flex-start', minHeight: 44, border: 'none', borderRadius: 6, background: 'transparent', textAlign: 'left' },
   btnPrimary: { ...hybridControlStyles.primaryButton },
@@ -1410,7 +1431,7 @@ const PD: Record<string, React.CSSProperties> = {
   segmentActive: { ...hybridControlStyles.segmentActive },
   crossfadePanel: { ...hybridPlaylistStyles.crossfadePanel },
   statusPanel: { ...hybridPlaylistStyles.statusPanel },
-  statusPopoverWrap: { position: 'relative', margin: '10px 16px' },
+  statusPopoverWrap: { position: 'relative', minWidth: 0 },
   statusLine: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   statusPopover: {
     position: 'absolute',
