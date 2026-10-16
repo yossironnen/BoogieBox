@@ -27,9 +27,9 @@ const RECENTER_THRESHOLD_RATIO = 0.35;
 const ChevronLeftIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>;
 const PlayIcon = ({ size = 14 }: { size?: number }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
 const DownloadIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>;
-const ClockIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>;
-const TracksIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
-const CalendarIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>;
+const ClockIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>;
+const TracksIcon = ({ size = 12 }: { size?: number }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>;
+const CalendarIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>;
 const StoryIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>;
 const SwapIcon = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>;
 const RemovedIcon = () => <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>;
@@ -329,7 +329,7 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
       {/* Header: the shared single-row command bar (same as Browse/Search/Playlists). */}
       <CommandBar
-        watermark="Mixes"
+        watermark="BoogieMix Story"
         style={S.bar}
         actions={(
           <>
@@ -364,16 +364,15 @@ export default function MixStoryView({ output, playTrack, playbackSnapshot, onBa
         </div>
         <div style={S.titleBlock}>
           <div style={S.title}>{output.name}</div>
-          <div style={S.metaLine}>
-            <span style={S.metaItem}><StoryIcon /> BoogieMix story</span>
-            <span style={S.metaItem}><ClockIcon /> {formatDuration(totalDuration)}</span>
-            <span style={S.metaItem}><TracksIcon /> {tracks.length} track{tracks.length === 1 ? '' : 's'}</span>
-            <span style={S.metaItem}><CalendarIcon /> {new Date(output.created_at.includes('T') ? output.created_at : `${output.created_at.replace(' ', 'T')}Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-          </div>
         </div>
       </CommandBar>
 
       <div style={S.body}>
+        <div style={S.metaLine}>
+          <span style={S.metaItem}><span style={S.metaIcon}><ClockIcon /></span> {formatDuration(totalDuration)}</span>
+          <span style={S.metaItem}><span style={S.metaIcon}><TracksIcon size={14} /></span> {tracks.length} track{tracks.length === 1 ? '' : 's'}</span>
+          <span style={S.metaItem}><span style={S.metaIcon}><CalendarIcon /></span> {new Date(output.created_at.includes('T') ? output.created_at : `${output.created_at.replace(' ', 'T')}Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+        </div>
         {loading && <div style={S.empty}>Loading breakdown…</div>}
         {!loading && (error || !timeline) && (
           <div style={S.infoBanner}>
@@ -558,8 +557,9 @@ const S: Record<string, React.CSSProperties> = {
   body: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 32px 28px' },
   titleBlock: { minWidth: 0, flex: '0 1 auto', lineHeight: 1.2 },
   title: { fontSize: 16, fontWeight: 800, letterSpacing: -0.2, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  metaLine: { marginTop: 1, fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 12, whiteSpace: 'nowrap', overflow: 'hidden' },
-  metaItem: { display: 'inline-flex', alignItems: 'center', gap: 4 },
+  metaLine: { fontSize: 14, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginBottom: 4 },
+  metaItem: { display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' },
+  metaIcon: { display: 'flex', color: 'var(--accent)', opacity: 0.85 },
   btn: { width: 34, height: 34, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text)', cursor: 'pointer', textDecoration: 'none' },
   btnPrimary: { background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' },
   empty: { padding: '48px 0', textAlign: 'center', color: 'var(--text-muted)' },

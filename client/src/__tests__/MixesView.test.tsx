@@ -98,7 +98,8 @@ describe('MixesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /View breakdown of Electronic House/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Back to Mixes/i })).toBeInTheDocument());
-    bar = container.querySelector('[data-command-bar="mixes"]') as HTMLElement;
+    bar = container.querySelector('[data-command-bar="boogiemix story"]') as HTMLElement;
+    expect(within(bar).getByTestId('command-bar-watermark')).toHaveTextContent('BoogieMix Story');
     expect(within(bar).getByRole('button', { name: /Back to Mixes/i })).toBeInTheDocument();
     expect(within(bar).getByLabelText('Electronic House artwork')).toBeInTheDocument();
     expect(within(bar).getByRole('button', { name: 'Play Electronic House' })).toBeInTheDocument();
