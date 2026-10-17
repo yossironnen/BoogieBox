@@ -38,6 +38,10 @@ Also includes waveform and BPM analysis, mobile-friendly access, optional DLNA/U
 
 ![Karaoke playback](Docs/Screenshots/karaoke_playback.png)
 
+### Play On
+
+![Play On picker listing This browser, a WiiM Ultra, and an offline smart TV as playback targets](Docs/Screenshots/remote_playback.png)
+
 ### Vinyl Mode
 
 ![Vinyl Mode](Docs/Screenshots/vinyl_mode.png)
@@ -69,6 +73,7 @@ Also includes waveform and BPM analysis, mobile-friendly access, optional DLNA/U
 - Karaoke lyrics and waveform navigation
 - Genre Galaxy music discovery
 - Mobile-friendly interface
+- Play On: send playback to WiiM streamers, smart TVs, and other UPnP/DLNA speakers, and move it between devices mid-song
 - DLNA/UPnP streaming support
 - Fully self-hosted with no subscriptions
 

@@ -46,6 +46,7 @@ Self-hosted music library app. Supports Windows and Linux (server-only on Linux)
 - Rust Axum API + React client
 - SQLite via `rusqlite` in `server-rs`
 - Music-only libraries; legacy movie/TV/video schema and UI have been removed
+- Play On: playback on LAN UPnP/DLNA renderers (server-side queue + session actor per renderer)
 - Async music scanner plus post-scan follow-up jobs for artwork, waveforms, BPM, and BoogieMix deep analysis
 - Optional Python BoogieMix deep-analysis worker under `Services/boogiemix/python/`
 - Standalone Rust server build/package flow via `build-server-rust.bat` for Windows  or 'build-server-rust.sh' for Linux
@@ -64,11 +65,14 @@ scanner.rs — async music scan worker (ID3v2, FLAC, Ogg, MP4/M4A tag parsing, t
 post_scan.rs — async post-scan lanes (art caching, Last.fm, lyrics, artist styles)  
 mix_worker.rs — BoogieMix render + AI planner + deep-analysis Python orchestration  
 dlna.rs — SSDP + Axum DLNA server, ContentDirectory Browse, audio streaming  
+media_serve.rs — shared ranged serving + MP3/WAV transcodes (browser, DLNA, Play On)  
+upnp/ — UPnP AV control point (XML, device descriptions, SOAP, SSDP discovery, DIDL helpers)  
+remote/ — Play On: RemoteManager, renderer registry, media tokens (`/media/r/{token}`), queue, per-renderer session actors  
 providers.rs — Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh  
 artwork_cache.rs — SHA-1 cache-key shards, UUID v7 markers, folder.jpg discovery  
 image_thumb.rs — JPEG thumbnail generation (pure Rust `image` crate)  
 deep_analysis.rs — Python/Demucs/Torch capability detection and job orchestration  
-routes/ — Axum route modules per domain (auth, settings, library, music, playlist, playback, crossfade, artwork, provider, scan, schedule, boogiemix, dlna)
+routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session)
 
 
 ### Client (`client/src`)
@@ -83,6 +87,7 @@ routes/ — Axum route modules per domain (auth, settings, library, music, playl
 `components/ContextMenu.tsx` — shared context menu  
 `mobile/` — mobile shell and mobile-specific views  
 `platform/` — browser/desktop platform abstraction  
+`remote/` — Play On client (usePlayOn, SSE events, PlayerState bridge, output picker)  
 `version.ts` — app version
 
 ## UI Design Conventions (MANDATORY)
@@ -112,7 +117,8 @@ artist_ratings, album_ratings, track_ratings
 scan_jobs, scan_schedules, post_scan_jobs  
 playlists, playlist_tracks  
 track_waveforms, track_deep_analysis  
-mix_jobs  
+mix_jobs, mix_outputs  
+upnp_renderers, remote_sessions  
 settings, user_settings, provider_usage_stats  
 
 Fresh databases are music-only. Upgrade migrations remove legacy movie/TV/video tables and settings.  

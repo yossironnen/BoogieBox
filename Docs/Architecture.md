@@ -11,8 +11,10 @@ BoogieBox is a self-hosted music library application for Windows and Linux. The 
 - `build-server-rust.bat` builds the standalone Windows server release and installer flow.
 - `build-server-rust.sh` builds the standalone Linux server release and tarball flow.
 - `build-desktop.bat` builds the desktop shell release flow.
+- `installer/` holds the Inno Setup script (Windows) and the systemd unit plus `install.sh` (Linux).
+- `website/` is the static public landing page (not served by the app).
 
-The server owns authentication, setup, the SQLite database connection, scanning, post-scan jobs, transcoding, metadata/artwork providers, BoogieMix planning/rendering, and static delivery of the built client.
+The server owns authentication, setup, the SQLite database connection, scanning, post-scan jobs, transcoding, metadata/artwork providers, BoogieMix planning/rendering, the optional DLNA MediaServer, Play On (playback on LAN UPnP/DLNA renderers), and static delivery of the built client.
 
 ## Backend
 
@@ -23,8 +25,18 @@ The Rust backend is split into two crates:
 
 Important server modules:
 
-- `src/lib.rs`: app assembly, setup flow, logging, and server startup.
-- `src/routes/`: grouped API routes for auth, libraries, music, playlists, settings, artwork, playback, DLNA, providers, admin, and BoogieMix.
+- `src/main.rs`: process entry, Tokio runtime, and graceful shutdown.
+- `src/lib.rs`: `AppState`, route mounting, setup and database-switch flow, middleware, and static client delivery.
+- `src/routes/`: grouped API routes for auth, libraries/scans/schedules, music, playlists, settings, artwork, playback, crossfade, DLNA, Play On, providers, admin, and BoogieMix.
+- `src/auth.rs`: PIN hashing, sessions, brute-force tracking, and Axum auth extractors.
+- `src/cors.rs`: local/LAN origin allowlist.
+- `src/media_serve.rs`: shared ranged file serving and MP3/WAV transcodes for browser playback, DLNA, and Play On.
+- `src/dlna.rs`: optional DLNA MediaServer (SSDP + ContentDirectory).
+- `src/upnp/`: UPnP AV control point (XML parsing, device descriptions, SOAP, SSDP discovery, shared DIDL helpers).
+- `src/remote/`: Play On: `RemoteManager` (in `AppState`), renderer registry, short-lived media tokens (`/media/r/{token}`), pure queue logic, and one session actor per renderer.
+- `src/providers.rs`: Discogs, Deezer, Spotify, LRCLIB, and lyrics.ovh clients.
+- `src/image_thumb.rs`: JPEG thumbnail generation.
+- `src/home_cache.rs`: bounded, change-counter-invalidated Home query cache.
 - `src/scanner.rs`: music library scanning.
 - `src/post_scan.rs`: follow-up jobs after scans.
 - `src/artwork_cache.rs`: artwork caching.
@@ -40,9 +52,15 @@ Important server modules:
 - `src/radio_metadata.rs`: background Last.fm/MusicBrainz/ListenBrainz tag and mood-tag collection.
 - `src/tag_taxonomy.rs`: style/mood tag normalization for Artist Radio.
 - `src/db_warmup.rs`: background cache warm-up on startup and library switch.
+- `src/db_maintenance.rs`: weekly late-night `PRAGMA incremental_vacuum` sweep.
+- `src/logging.rs`: `server.log` plus live-toggled scan and deep-analysis debug logs.
+- `src/event_log.rs`: Windows Event Log startup banner.
 - `src/ffmpeg.rs`: FFmpeg and FFprobe resolution.
 - `src/settings.rs`: global and per-user settings normalization.
 - `src/server_config.rs`: database locator and packaged runtime config.
+- `src/bin/`: maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`).
+
+`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, and `maintenance`.
 
 ## Frontend
 
@@ -55,6 +73,9 @@ Important client modules:
 - `client/src/components/`: desktop views and shared UI components.
 - `client/src/mobile/`: mobile shell and mobile-specific views.
 - `client/src/platform/`: browser and Tauri desktop platform abstractions.
+- `client/src/remote/`: Play On: `usePlayOn` orchestration, per-browser playback target, shared SSE stream (`/api/remote/events`), `remoteBridge` mapping `PlayerState` changes to server actions, output picker, and takeover prompt.
+- `client/src/audio/`: Web Audio EQ model and Vinyl Mode effects engine.
+- `client/src/hooks/`: shared data hooks (Home data, deep-analysis status, scan activity, adaptive accent).
 - `client/src/types/`: shared TypeScript payload types.
 - `client/src/version.ts`: app version displayed by the client.
 
@@ -73,26 +94,36 @@ Important desktop modules:
 - `desktop/src-tauri/src/config.rs`: desktop configuration handling.
 - `desktop/src-tauri/src/server.rs`: server probing and discovery helpers.
 - `desktop/src-tauri/src/server_process.rs`: optional packaged server process control.
+- `desktop/src-tauri/src/windows/`: Windows-specific helpers.
 
 ## Data Model
 
-BoogieBox stores data in SQLite inside the folder selected during first-run setup. The packaged server stores the database-folder locator in `%PROGRAMDATA%\BoogieBox\boogiebox-config.json`; dev runs use the repo-root locator.
+BoogieBox stores data in SQLite inside the folder selected during first-run setup. The packaged server stores the database-folder locator in `%PROGRAMDATA%\BoogieBox\boogiebox-config.json` on Windows or `/etc/boogiebox/boogiebox-config.json` on Linux; dev runs use the repo-root locator. Schema and migrations live in `boogiebox-db`; tracked migrations run once per id, so schema changes always add a new migration.
 
 Core tables include:
 
-- `libraries`, `library_folders`
+- `users`, `sessions`
+- `libraries`, `library_folders`, `artist_libraries`, `album_libraries`
 - `tracks`, `artists`, `albums`, `tracks_fts`
-- `artist_ratings`, `album_ratings`, `track_ratings`
+- `artist_merges`, `artist_merge_members`, `artist_merge_moves`, `artist_name_aliases`
+- `artist_ratings`, `album_ratings`, `track_ratings`, `play_history`
+- `artist_styles`, `album_styles`, `track_tags`, `track_tag_sync`, `lastfm_cache`, `lyrics_cache`
 - `scan_jobs`, `post_scan_jobs`, `scan_schedules`
-- `playlists`, `playlist_tracks`
-- `track_waveforms`, `track_deep_analysis`
-- `mix_jobs`
-- `settings`, `user_settings`, `provider_usage_stats`
+- `playlists`, `playlist_tracks`, `crossfade_overrides`
+- `track_waveforms`, `track_deep_analysis`, `track_mix_analysis`, `deep_analysis_jobs`
+- `mix_jobs`, `mix_job_logs`, `mix_outputs`, `mix_output_tracks`, `mix_transitions`, `boogiemix_plans`
+- `upnp_renderers`, `remote_sessions`
+- `settings`, `user_settings`, `provider_usage_stats`, `stats_cache`
 
 ## Background Work
 
-Scanning discovers local music, writes normalized library rows, and queues post-scan work. Post-scan jobs handle artwork caching, waveform generation, BPM analysis, and optional deep-analysis work. BoogieMix rendering runs as a separate planning/rendering flow and writes downloadable mix outputs.
+Scanning discovers local music, writes normalized library rows, and queues post-scan work. Post-scan jobs handle artwork caching, waveform generation, BPM analysis, and optional deep-analysis work. Background loops also collect radio tags/moods, warm caches, and run weekly database maintenance. BoogieMix rendering runs as a separate planning/rendering flow and writes downloadable mix outputs. Deep analysis shells out to the optional Python worker; Demucs (`demucs_runner.py`) and madmom beat tracking (`beatgrid_runner.py`) each run in their own process.
+
+## Network Playback
+
+- **DLNA MediaServer** (`dlna.rs`): optional; exposes the library to DLNA clients over SSDP + ContentDirectory.
+- **Play On** (`upnp/` + `remote/`): BoogieBox acts as a UPnP AV control point. `RemoteManager` starts after setup (and after a database switch), discovers MediaRenderers, and runs one session actor per renderer that owns the server-side queue, drives the device over SOAP, polls state, keeps gapless `SetNext` prefetch in sync, and records plays. Renderers fetch audio and artwork from unauthenticated, short-lived token URLs (`/media/r/{token}`). Sessions persist in `remote_sessions` and are restored when the renderer is rediscovered. Another user's active session requires an explicit takeover. Play On does not depend on the DLNA server being enabled.
 
 ## Security Boundary
 
-BoogieBox is intended for trusted local networks. It uses authenticated API sessions and protects local file access through server-side path validation, but it is not designed for direct public internet exposure.
+BoogieBox is intended for trusted local networks. It uses authenticated API sessions and protects local file access through server-side path validation, but it is not designed for direct public internet exposure. Play On renderer media is served without a session, behind random, short-lived tokens scoped to one track, mix, or cover.
