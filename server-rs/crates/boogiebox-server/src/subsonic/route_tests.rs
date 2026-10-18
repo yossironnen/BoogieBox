@@ -599,7 +599,7 @@ async fn streaming_download_scrobble_and_cover_art() {
 async fn unknown_and_unsupported_methods_return_subsonic_errors() {
     let fx = Fixture::new("subsonic-unknown").await;
     assert_eq!(
-        fx.rest("star", "id=t1").await["error"]["message"],
+        fx.rest("getPodcasts", "").await["error"]["message"],
         "Not supported by BoogieBox"
     );
     let unknown = fx.rest("doesNotExist", "").await;
@@ -619,4 +619,353 @@ async fn unknown_and_unsupported_methods_return_subsonic_errors() {
     .await
     .1;
     assert!(String::from_utf8(jsonp).unwrap().starts_with("cb({"));
+}
+
+// ── Phase 2 ──────────────────────────────────────────────────────────────────
+
+fn data_folder(pool: &DbPool) -> std::path::PathBuf {
+    let file: String = pool
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    std::path::PathBuf::from(file)
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+#[tokio::test]
+async fn stars_and_ratings_round_trip() {
+    let fx = Fixture::new("subsonic-stars").await;
+    assert_eq!(
+        fx.rest("star", "id=t1&albumId=al1&artistId=ar1").await["status"],
+        "ok"
+    );
+    // A bare id resolves to an album when it is not a song.
+    assert_eq!(fx.rest("star", "id=al1").await["status"], "ok");
+    let starred = fx.rest("getStarred2", "").await["starred2"].clone();
+    assert_eq!(starred["song"][0]["id"], "t1");
+    assert_eq!(starred["album"][0]["id"], "al1");
+    assert_eq!(starred["artist"][0]["id"], "ar1");
+    assert!(fx.rest("getSong", "id=t1").await["song"]["starred"].is_string());
+    assert_eq!(fx.rest("unstar", "id=t1").await["status"], "ok");
+    assert!(fx.rest("getStarred2", "").await["starred2"]["song"].is_null());
+    assert_eq!(fx.rest("star", "id=nope").await["error"]["code"], 70);
+    assert_eq!(fx.rest("star", "albumId=ar1").await["error"]["code"], 70);
+    assert_eq!(fx.rest("star", "").await["error"]["code"], 10);
+
+    assert_eq!(fx.rest("setRating", "id=t1&rating=4").await["status"], "ok");
+    assert_eq!(fx.rest("getSong", "id=t1").await["song"]["userRating"], 4);
+    assert_eq!(
+        fx.rest("setRating", "id=al1&rating=2").await["status"],
+        "ok"
+    );
+    assert_eq!(
+        fx.rest("getAlbum", "id=al1").await["album"]["userRating"],
+        2
+    );
+    assert_eq!(fx.rest("setRating", "id=t1&rating=0").await["status"], "ok");
+    assert!(fx.rest("getSong", "id=t1").await["song"]["userRating"].is_null());
+    assert_eq!(
+        fx.rest("setRating", "id=t1&rating=7").await["error"]["code"],
+        0
+    );
+    assert_eq!(fx.rest("setRating", "id=t1").await["error"]["code"], 10);
+    assert_eq!(
+        fx.rest("setRating", "id=zz&rating=3").await["error"]["code"],
+        70
+    );
+}
+
+#[tokio::test]
+async fn playlists_can_be_created_edited_and_deleted() {
+    let fx = Fixture::new("subsonic-playlist-writes").await;
+    let created = fx
+        .rest("createPlaylist", "name=Road&songId=t1&songId=t2&songId=t1")
+        .await;
+    let pl = &created["playlist"];
+    assert_eq!(pl["name"], "Road");
+    assert_eq!(pl["songCount"], 2);
+    let id = pl["id"].as_str().unwrap().to_owned();
+    // BoogieBox names are unique per user; apps don't expect that.
+    assert_eq!(
+        fx.rest("createPlaylist", "name=Road").await["playlist"]["name"],
+        "Road (2)"
+    );
+
+    let update = format!(
+        "playlistId={id}&name=Renamed&comment=Long+drive&songIndexToRemove=0&songIdToAdd=t3"
+    );
+    assert_eq!(fx.rest("updatePlaylist", &update).await["status"], "ok");
+    let pl = fx.rest("getPlaylist", &format!("id={id}")).await["playlist"].clone();
+    assert_eq!(pl["name"], "Renamed");
+    assert_eq!(pl["comment"], "Long drive");
+    let entries: Vec<&str> = pl["entry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(entries, ["t2", "t3"]);
+
+    // createPlaylist with playlistId replaces the entries.
+    let replaced = fx
+        .rest("createPlaylist", &format!("playlistId={id}&songId=t3"))
+        .await;
+    assert_eq!(replaced["playlist"]["songCount"], 1);
+    assert_eq!(
+        fx.rest("updatePlaylist", &format!("playlistId={id}&name=Road+(2)"))
+            .await["error"]["code"],
+        0
+    );
+    assert_eq!(
+        fx.rest(
+            "updatePlaylist",
+            &format!("playlistId={id}&songIndexToRemove=x")
+        )
+        .await["error"]["code"],
+        0
+    );
+
+    {
+        let conn = fx.pool.lock().unwrap();
+        conn.execute_batch(
+            "INSERT INTO users(id, username, role) VALUES ('u2', 'other', 'user');
+             INSERT INTO playlists(id, user_id, name) VALUES ('p2', 'u2', 'Theirs');",
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        fx.rest("updatePlaylist", "playlistId=p2&name=Mine").await["error"]["code"],
+        70
+    );
+    assert_eq!(
+        fx.rest("deletePlaylist", "id=p2").await["error"]["code"],
+        70
+    );
+    assert_eq!(
+        fx.rest("deletePlaylist", &format!("id={id}")).await["status"],
+        "ok"
+    );
+    assert_eq!(
+        fx.rest("getPlaylist", &format!("id={id}")).await["error"]["code"],
+        70
+    );
+    assert_eq!(fx.rest("createPlaylist", "").await["error"]["code"], 10);
+}
+
+#[tokio::test]
+async fn boogiemix_playlist_lists_and_streams_own_mixes_only() {
+    let fx = Fixture::new("subsonic-boogiemix").await;
+    let mix_dir = data_folder(&fx.pool).join("mix-outputs");
+    std::fs::create_dir_all(&mix_dir).unwrap();
+    let inside = mix_dir.join("friday.mp3");
+    std::fs::write(&inside, b"mix bytes").unwrap();
+    let outside = std::env::temp_dir().join(format!("bb-mix-outside-{}.mp3", uuid::Uuid::now_v7()));
+    std::fs::write(&outside, b"nope").unwrap();
+    {
+        let conn = fx.pool.lock().unwrap();
+        conn.execute_batch("INSERT INTO users(id, username, role) VALUES ('u2', 'other', 'user');")
+            .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        for (id, user, path, name, created) in [
+            (
+                "m1",
+                "u1",
+                inside.to_string_lossy().into_owned(),
+                "Friday",
+                "2026-01-01 00:00:00",
+            ),
+            (
+                "m2",
+                "u1",
+                outside.to_string_lossy().into_owned(),
+                "Escaped",
+                "2026-01-02 00:00:00",
+            ),
+            (
+                "m3",
+                "u2",
+                inside.to_string_lossy().into_owned(),
+                "Theirs",
+                "2026-01-03 00:00:00",
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, cover_album_ids,
+                                         source_playlist_name, duration_sec, file_size_bytes, format, created_at)
+                 VALUES (?1, ?1, NULL, ?2, ?3, 'f.mp3', ?4, 'al1', 'Party', 1800, 9, 'mp3', ?5)",
+                params![id, user, path, name, created],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    }
+
+    let lists = fx.rest("getPlaylists", "").await;
+    let mix_pl = lists["playlists"]["playlist"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "bm-mixes")
+        .unwrap()
+        .clone();
+    assert_eq!(mix_pl["name"], "BoogieMix");
+    assert_eq!(mix_pl["readonly"], true);
+    assert_eq!(mix_pl["songCount"], 2);
+    assert_eq!(mix_pl["coverArt"], "al-al1");
+
+    let entries = fx.rest("getPlaylist", "id=bm-mixes").await["playlist"]["entry"].clone();
+    assert_eq!(entries[0]["id"], "mx-m2");
+    assert_eq!(entries[1]["id"], "mx-m1");
+    assert_eq!(entries[1]["album"], "BoogieMix");
+    assert_eq!(entries[1]["comment"], "Mixed from Party");
+    assert_eq!(entries[1]["path"], "BoogieMix/Friday.mp3");
+    assert_eq!(
+        fx.rest("getSong", "id=mx-m1").await["song"]["title"],
+        "Friday"
+    );
+    assert_eq!(fx.rest("getSong", "id=mx-m3").await["error"]["code"], 70);
+
+    let (status, _, body) = fx
+        .raw(&format!("/rest/stream?{}&id=mx-m1", fx.auth()))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"mix bytes");
+    let (_, headers, _) = fx
+        .raw(&format!("/rest/download?{}&id=mx-m1", fx.auth()))
+        .await;
+    assert!(headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .contains("Friday.mp3"));
+    let (_, _, body) = fx
+        .raw(&format!("/rest/stream?{}&id=mx-m2", fx.auth()))
+        .await;
+    assert!(
+        String::from_utf8_lossy(&body).contains("code=\"70\""),
+        "outside the mix folder"
+    );
+    let (_, _, body) = fx
+        .raw(&format!("/rest/stream?{}&id=mx-m3", fx.auth()))
+        .await;
+    assert!(
+        String::from_utf8_lossy(&body).contains("code=\"70\""),
+        "another user's mix"
+    );
+
+    assert_eq!(fx.rest("scrobble", "id=mx-m1").await["status"], "ok");
+    let history: i64 = fx
+        .pool
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM play_history", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(history, 0, "mixes are not counted as plays");
+    assert_eq!(
+        fx.rest("updatePlaylist", "playlistId=bm-mixes&name=x")
+            .await["error"]["code"],
+        50
+    );
+    assert_eq!(
+        fx.rest("deletePlaylist", "id=bm-mixes").await["error"]["code"],
+        50
+    );
+    assert_eq!(
+        fx.rest("createPlaylist", "playlistId=bm-mixes&songId=t1")
+            .await["error"]["code"],
+        50
+    );
+    assert_eq!(fx.rest("star", "id=mx-m1").await["error"]["code"], 0);
+    assert_eq!(
+        fx.rest("setRating", "id=mx-m1&rating=3").await["error"]["code"],
+        0
+    );
+    let _ = std::fs::remove_file(&outside);
+}
+
+#[tokio::test]
+async fn lyrics_info_similar_top_and_now_playing() {
+    let fx = Fixture::new("subsonic-info").await;
+    {
+        let conn = fx.pool.lock().unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO lyrics_cache(track_id, artist, title, lyrics, synced_lyrics, source) VALUES
+                 ('t1', 'The Band', 'Opening', 'Hello
+World', '[{"time":1.5,"text":"Hello"},{"time":3,"text":"World"}]', 'lrclib');
+               UPDATE artists SET description = 'A band.' WHERE id = 'ar1';
+               UPDATE albums SET description = 'Notes.' WHERE id = 'al1';
+               UPDATE tracks SET play_count = 9 WHERE id = 't3';"#,
+        )
+        .unwrap();
+    }
+    let lyrics = fx.rest("getLyrics", "artist=the+band&title=opening").await;
+    assert_eq!(lyrics["lyrics"]["value"], "Hello\nWorld");
+    assert!(fx.rest("getLyrics", "artist=x&title=y").await["lyrics"]["value"].is_null());
+
+    let structured =
+        fx.rest("getLyricsBySongId", "id=t1").await["lyricsList"]["structuredLyrics"][0].clone();
+    assert_eq!(structured["synced"], true);
+    assert_eq!(structured["displayTitle"], "Opening");
+    assert_eq!(structured["line"][0]["start"], 1500);
+    assert_eq!(structured["line"][1]["value"], "World");
+    assert_eq!(
+        fx.rest("getLyricsBySongId", "id=nope").await["error"]["code"],
+        70
+    );
+    let ext = fx.rest("getOpenSubsonicExtensions", "").await;
+    assert!(ext["openSubsonicExtensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["name"] == "songLyrics"));
+
+    let info = fx.rest("getArtistInfo2", "id=ar1").await["artistInfo2"].clone();
+    assert_eq!(info["biography"], "A band.");
+    assert_eq!(
+        fx.rest("getArtistInfo", "id=ar1&count=0").await["artistInfo"]["biography"],
+        "A band."
+    );
+    assert_eq!(
+        fx.rest("getArtistInfo2", "id=zz").await["error"]["code"],
+        70
+    );
+    assert_eq!(
+        fx.rest("getAlbumInfo2", "id=al1").await["albumInfo"]["notes"],
+        "Notes."
+    );
+
+    // Instant Mix: an Artist Radio queue seeded from the song's artist (offline: no provider ids in the fixture).
+    let similar = fx.rest("getSimilarSongs2", "id=t1&count=5").await;
+    assert!(similar["similarSongs2"].is_object());
+    let similar_ids: Vec<&str> = similar["similarSongs2"]["song"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|s| s["id"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(similar_ids.iter().all(|id| ["t1", "t2", "t3"].contains(id)));
+    assert!(fx.rest("getSimilarSongs", "id=al1").await["similarSongs"].is_object());
+    assert_eq!(
+        fx.rest("getSimilarSongs2", "id=zz").await["error"]["code"],
+        70
+    );
+
+    let top = fx.rest("getTopSongs", "artist=The+Band&count=2").await["topSongs"]["song"].clone();
+    assert_eq!(top[0]["id"], "t3");
+    assert!(fx.rest("getTopSongs", "artist=Nobody").await["topSongs"].is_object());
+
+    assert!(fx.rest("getNowPlaying", "").await["nowPlaying"]["entry"].is_null());
+    assert_eq!(
+        fx.rest("scrobble", "id=t2&submission=false").await["status"],
+        "ok"
+    );
+    let now = fx.rest("getNowPlaying", "").await["nowPlaying"]["entry"][0].clone();
+    assert_eq!(now["id"], "t2");
+    assert_eq!(now["username"], "u1");
+    assert_eq!(now["playerName"], "test");
+    assert_eq!(now["minutesAgo"], 0);
 }

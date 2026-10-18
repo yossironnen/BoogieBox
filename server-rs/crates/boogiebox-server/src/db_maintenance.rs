@@ -48,6 +48,14 @@ async fn run_incremental_vacuum_if_due(db: &DbPool) {
     let db_run = db.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = db_run.lock().unwrap_or_else(|p| p.into_inner());
+        // Subsonic stars on deleted tracks/albums/artists have nothing to show.
+        match boogiebox_db::subsonic::sweep_stale_stars(&conn) {
+            Ok(n) if n > 0 => {
+                tracing::info!("Weekly database maintenance: removed {n} stale star(s)")
+            }
+            Ok(_) => {}
+            Err(err) => tracing::warn!("db-maintenance stale-star sweep failed: {err}"),
+        }
         boogiebox_db::maintenance::run_incremental_vacuum(&conn)
     })
     .await;

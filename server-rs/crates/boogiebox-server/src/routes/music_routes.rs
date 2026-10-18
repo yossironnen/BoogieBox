@@ -18,14 +18,12 @@ use boogiebox_db::music::{
     unmerge_artists, update_track_metadata, ArtistList, ArtistMergeError, EntityId,
     ListAlbumsParams, ListArtistsParams, SearchMusicParams, TrackMetadataUpdate,
 };
-use boogiebox_db::radio::seed_tag_vector;
-use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::{
     artist_radio::{
-        load_inputs, plan_radio, radio_options, Coverage, Focus, MixShares, RadioOptions,
+        build_radio, radio_options, BuiltRadio, Coverage, Focus, MixShares, RadioOptions,
         RadioReason, DEFAULT_VARIETY,
     },
     auth::AuthenticatedUser,
@@ -1007,57 +1005,19 @@ async fn artist_radio_handler(
         .clone();
     let artist_id = coerce_entity_id(&id);
 
-    let name_db = db.clone();
-    let name_id = artist_id.clone();
-    let artist_name = match tokio::task::spawn_blocking(move || {
-        let conn = name_db.lock().unwrap_or_else(|p| p.into_inner());
-        get_artist_name(&conn, &name_id)
-    })
-    .await
-    {
-        Ok(Ok(Some(name))) => name,
-        Ok(Ok(None)) => return not_found("Artist not found"),
-        _ => return internal_error(),
-    };
-
-    // Cache-first; a cold cache costs at most a few seconds, never a failure.
-    let related = gather_related_candidates(
+    let built = build_radio(
         &db,
         &http_client,
+        &user.id,
         &artist_id,
-        Some(RADIO_SIMILAR_NETWORK_BUDGET),
+        &options,
+        RADIO_SIMILAR_NETWORK_BUDGET,
     )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_default();
-
-    let user_id = user.id;
-    let build_db = db.clone();
-    let built = tokio::task::spawn_blocking(move || {
-        let conn = build_db.lock().unwrap_or_else(|p| p.into_inner());
-        let seed_tag_names: Vec<String> = seed_tag_vector(&conn, &artist_id)?
-            .into_iter()
-            .take(12)
-            .map(|t| t.tag)
-            .collect();
-        let inputs = load_inputs(
-            &conn,
-            &user_id,
-            &artist_id,
-            artist_name.clone(),
-            &related,
-            &options,
-        )?;
-        let mut rng = rand::rng();
-        let mut next = move || rng.random::<f64>();
-        let plan = plan_radio(inputs, &options, &mut next);
-        Ok::<_, rusqlite::Error>((artist_name, seed_tag_names, plan))
-    })
     .await;
-    let (artist, tags, plan) = match built {
-        Ok(Ok(built)) => built,
-        _ => return internal_error(),
+    let BuiltRadio { artist, tags, plan } = match built {
+        Ok(Some(built)) => built,
+        Ok(None) => return not_found("Artist not found"),
+        Err(_) => return internal_error(),
     };
 
     // Enrich the tracks about to play in the background so the next launch is richer.

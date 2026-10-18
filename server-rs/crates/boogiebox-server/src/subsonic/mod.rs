@@ -2,12 +2,15 @@
 //! can browse, search, stream and scrobble. Off by default (`subsonicApiEnabled`); apps sign in with the
 //! user's Subsonic password, never the PIN. See wip/opensubsonic-api-implementation-plan.md.
 
+pub mod annotate;
 pub mod auth;
 pub mod crypto;
 pub mod handlers;
+pub mod info;
 pub mod media;
 pub mod model;
 pub mod params;
+pub mod playlists;
 pub mod response;
 pub mod state;
 

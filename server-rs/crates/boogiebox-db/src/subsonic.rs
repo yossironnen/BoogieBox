@@ -1060,6 +1060,374 @@ pub fn annotations(
     })
 }
 
+// ── Stars and item kinds ───────────────────────────────────────────────────────
+
+/// What a bare id names: a track, else an album, else an artist (folder-mode clients pass any of them as `id`).
+pub fn resolve_item_kind(conn: &Connection, id: &str) -> rusqlite::Result<Option<ItemKind>> {
+    let value = id_to_value(&coerce_entity_id(id));
+    for (kind, table) in [
+        (ItemKind::Track, "tracks"),
+        (ItemKind::Album, "albums"),
+        (ItemKind::Artist, "artists"),
+    ] {
+        let found = conn
+            .query_row(
+                &format!("SELECT 1 FROM {table} WHERE id = ?1"),
+                [&value],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if found {
+            return Ok(Some(kind));
+        }
+    }
+    Ok(None)
+}
+
+/// Stars (`star = true`) or unstars items for a user in one transaction.
+pub fn set_stars(
+    conn: &Connection,
+    user_id: &str,
+    items: &[(ItemKind, String)],
+    star: bool,
+) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (kind, id) in items {
+        if star {
+            tx.execute(
+                "INSERT OR IGNORE INTO subsonic_stars(user_id, item_type, item_id) VALUES(?1, ?2, ?3)",
+                params![user_id, kind.star_type(), id],
+            )?;
+        } else {
+            tx.execute(
+                "DELETE FROM subsonic_stars WHERE user_id = ?1 AND item_type = ?2 AND item_id = ?3",
+                params![user_id, kind.star_type(), id],
+            )?;
+        }
+    }
+    tx.commit()
+}
+
+/// Removes stars whose track/album/artist no longer exists. Returns how many were removed.
+pub fn sweep_stale_stars(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM subsonic_stars
+         WHERE (item_type = 'track' AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = subsonic_stars.item_id))
+            OR (item_type = 'album' AND NOT EXISTS (SELECT 1 FROM albums a WHERE a.id = subsonic_stars.item_id))
+            OR (item_type = 'artist' AND NOT EXISTS (SELECT 1 FROM artists r WHERE r.id = subsonic_stars.item_id))",
+        [],
+    )
+}
+
+/// Moves artist stars from a merged-away artist onto the merge master (called inside the merge transaction).
+pub(crate) fn repoint_artist_stars(
+    conn: &Connection,
+    master_id: &crate::music::EntityId,
+    source_id: &crate::music::EntityId,
+) -> rusqlite::Result<()> {
+    if !crate::table_exists(conn, "subsonic_stars") {
+        return Ok(());
+    }
+    let (master, source) = (master_id.to_string(), source_id.to_string());
+    conn.execute(
+        "INSERT OR IGNORE INTO subsonic_stars(user_id, item_type, item_id, starred_at)
+         SELECT user_id, 'artist', ?1, starred_at FROM subsonic_stars
+         WHERE item_type = 'artist' AND item_id = ?2",
+        params![master, source],
+    )?;
+    conn.execute(
+        "DELETE FROM subsonic_stars WHERE item_type = 'artist' AND item_id = ?1",
+        params![source],
+    )?;
+    Ok(())
+}
+
+// ── Playlist edits ─────────────────────────────────────────────────────────────
+
+fn owns_playlist(conn: &Connection, playlist_id: &Value, user_id: &str) -> rusqlite::Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM playlists WHERE id = ?1 AND user_id = ?2",
+            params![playlist_id, user_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// A free playlist name for `user_id`: `name`, else `name (2)`, `name (3)`… (BoogieBox names are unique per
+/// user; Subsonic apps don't expect that).
+pub fn unique_playlist_name(
+    conn: &Connection,
+    user_id: &str,
+    name: &str,
+) -> rusqlite::Result<String> {
+    let taken = |candidate: &str| -> rusqlite::Result<bool> {
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM playlists WHERE user_id = ?1 AND LOWER(TRIM(name)) = LOWER(TRIM(?2))",
+                params![user_id, candidate],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    };
+    if !taken(name)? {
+        return Ok(name.to_owned());
+    }
+    for n in 2..1000 {
+        let candidate = format!("{name} ({n})");
+        if !taken(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+    Ok(format!("{name} ({})", uuid::Uuid::now_v7()))
+}
+
+/// Track ids of a playlist in order (owner only; `None` otherwise).
+pub fn playlist_track_ids(
+    conn: &Connection,
+    playlist_id: &str,
+    user_id: &str,
+) -> rusqlite::Result<Option<Vec<String>>> {
+    let pid = id_to_value(&coerce_entity_id(playlist_id));
+    if !owns_playlist(conn, &pid, user_id)? {
+        return Ok(None);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position, id",
+    )?;
+    let rows = stmt.query_map([pid], |row| text_id(row, 0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map(Some)
+}
+
+/// Replaces a playlist's entries with `track_ids` (unknown and repeated ids are dropped — a track appears once
+/// per BoogieBox playlist). Owner only; false otherwise.
+pub fn set_playlist_tracks(
+    conn: &Connection,
+    playlist_id: &str,
+    user_id: &str,
+    track_ids: &[String],
+) -> rusqlite::Result<bool> {
+    let pid = id_to_value(&coerce_entity_id(playlist_id));
+    if !owns_playlist(conn, &pid, user_id)? {
+        return Ok(false);
+    }
+    let existing: HashSet<String> = songs_by_ids(conn, track_ids)?
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [&pid])?;
+    let mut seen = HashSet::new();
+    let mut position = 0i64;
+    for id in track_ids {
+        if existing.contains(id) && seen.insert(id.clone()) {
+            // Same shape as `playlists::batch_add_tracks` (no explicit id).
+            tx.execute(
+                "INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES(?1, ?2, ?3)",
+                params![pid, id_to_value(&coerce_entity_id(id)), position],
+            )?;
+            position += 1;
+        }
+    }
+    tx.execute(
+        "UPDATE playlists SET updated_at = datetime('now') WHERE id = ?1",
+        [&pid],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Subsonic `updatePlaylist` entry edits: remove by 0-based index, then append. Owner only; false otherwise.
+pub fn edit_playlist_entries(
+    conn: &Connection,
+    playlist_id: &str,
+    user_id: &str,
+    remove_indexes: &[usize],
+    add_ids: &[String],
+) -> rusqlite::Result<bool> {
+    let Some(current) = playlist_track_ids(conn, playlist_id, user_id)? else {
+        return Ok(false);
+    };
+    let remove: HashSet<usize> = remove_indexes.iter().copied().collect();
+    let mut next: Vec<String> = current
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !remove.contains(i))
+        .map(|(_, id)| id)
+        .collect();
+    next.extend(add_ids.iter().cloned());
+    set_playlist_tracks(conn, playlist_id, user_id, &next)
+}
+
+// ── BoogieMix outputs ──────────────────────────────────────────────────────────
+
+/// A finished BoogieMix render owned by a user.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubsonicMix {
+    pub id: String,
+    pub name: String,
+    pub file_path: String,
+    pub format: String,
+    pub duration: f64,
+    pub file_size: i64,
+    pub cover_album_id: Option<String>,
+    pub source_playlist_name: Option<String>,
+    pub created: Option<String>,
+}
+
+const MIX_SELECT: &str =
+    "SELECT id, COALESCE(NULLIF(TRIM(name), ''), file_name), file_path, format,
+       duration_sec, file_size_bytes, cover_album_ids, source_playlist_name, created_at
+     FROM mix_outputs";
+
+fn map_mix(row: &Row<'_>) -> rusqlite::Result<SubsonicMix> {
+    let covers = opt_text(row, 6)?;
+    Ok(SubsonicMix {
+        id: text_id(row, 0)?,
+        name: opt_text(row, 1)?.unwrap_or_else(|| "BoogieMix".to_owned()),
+        file_path: opt_text_id(row, 2)?.unwrap_or_default(),
+        format: opt_text(row, 3)?
+            .unwrap_or_else(|| "mp3".to_owned())
+            .to_ascii_lowercase(),
+        duration: opt_f64(row, 4)?.unwrap_or(0.0),
+        file_size: opt_i64(row, 5)?.unwrap_or(0),
+        cover_album_id: covers.and_then(|c| {
+            c.split(',')
+                .map(str::trim)
+                .find(|s| !s.is_empty())
+                .map(str::to_owned)
+        }),
+        source_playlist_name: opt_text(row, 7)?,
+        created: opt_text(row, 8)?,
+    })
+}
+
+/// A user's mixes, newest first.
+pub fn list_user_mixes(conn: &Connection, user_id: &str) -> rusqlite::Result<Vec<SubsonicMix>> {
+    let mut stmt = conn.prepare(&format!(
+        "{MIX_SELECT} WHERE user_id = ?1 ORDER BY created_at DESC, id DESC"
+    ))?;
+    let rows = stmt.query_map([user_id], map_mix)?;
+    rows.collect()
+}
+
+/// One of the user's mixes.
+pub fn get_user_mix(
+    conn: &Connection,
+    user_id: &str,
+    mix_id: &str,
+) -> rusqlite::Result<Option<SubsonicMix>> {
+    conn.query_row(
+        &format!("{MIX_SELECT} WHERE id = ?1 AND user_id = ?2"),
+        params![id_to_value(&coerce_entity_id(mix_id)), user_id],
+        map_mix,
+    )
+    .optional()
+}
+
+// ── Info lookups ───────────────────────────────────────────────────────────────
+
+/// An artist's name, local description and MusicBrainz id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub musicbrainz_id: Option<String>,
+}
+
+/// Name, local description and MusicBrainz id of an artist.
+pub fn artist_info(conn: &Connection, id: &str) -> rusqlite::Result<Option<ArtistInfo>> {
+    conn.query_row(
+        "SELECT name, description, COALESCE(musicbrainz_artist_id, lastfm_mbid) FROM artists WHERE id = ?1",
+        [id_to_value(&coerce_entity_id(id))],
+        |row| {
+            Ok(ArtistInfo {
+                name: opt_text(row, 0)?.unwrap_or_default(),
+                description: opt_text(row, 1)?,
+                musicbrainz_id: opt_text(row, 2)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// An album's title, owning artist name and local description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumInfo {
+    pub title: String,
+    pub artist: String,
+    pub description: Option<String>,
+}
+
+/// Title, owning artist name and local description of an album.
+pub fn album_info(conn: &Connection, id: &str) -> rusqlite::Result<Option<AlbumInfo>> {
+    conn.query_row(
+        "SELECT al.title, COALESCE(NULLIF(TRIM(ar.name), ''), al.album_artist, ''), al.description
+         FROM albums al LEFT JOIN artists ar ON ar.id = al.artist_id WHERE al.id = ?1",
+        [id_to_value(&coerce_entity_id(id))],
+        |row| {
+            Ok(AlbumInfo {
+                title: opt_text(row, 0)?.unwrap_or_default(),
+                artist: opt_text(row, 1)?.unwrap_or_default(),
+                description: opt_text(row, 2)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Cached lyrics text for an artist + title (no network).
+pub fn cached_lyrics(
+    conn: &Connection,
+    artist: &str,
+    title: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT lyrics FROM lyrics_cache
+         WHERE LOWER(TRIM(artist)) = LOWER(TRIM(?1)) AND LOWER(TRIM(title)) = LOWER(TRIM(?2))
+           AND TRIM(COALESCE(lyrics, '')) != ''
+         ORDER BY updated_at DESC LIMIT 1",
+        params![artist, title],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// An artist id for a name: the unique release-owning match, else the first exact name match.
+pub fn artist_id_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<String>> {
+    if let Some(id) = crate::music::find_owned_artist_by_name(conn, name)? {
+        return Ok(Some(id.to_string()));
+    }
+    conn.query_row(
+        "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(TRIM(?1)) ORDER BY id LIMIT 1",
+        [name],
+        |row| text_id(row, 0),
+    )
+    .optional()
+}
+
+/// An artist's songs, most played first.
+pub fn artist_songs_by_plays(
+    conn: &Connection,
+    artist_id: &str,
+    limit: i64,
+) -> rusqlite::Result<Vec<SubsonicSong>> {
+    let sql = format!(
+        "{SONG_SELECT} WHERE t.artist_id = ? ORDER BY t.play_count DESC, t.title COLLATE NOCASE, t.id LIMIT ?"
+    );
+    query_songs(
+        conn,
+        &sql,
+        vec![
+            id_to_value(&coerce_entity_id(artist_id)),
+            Value::Integer(limit),
+        ],
+    )
+}
+
 // ── Scrobbles ──────────────────────────────────────────────────────────────────
 
 /// Result of recording one Subsonic scrobble.
@@ -1453,6 +1821,159 @@ mod tests {
             annotations(&conn, "u1", ItemKind::Album, &[]).unwrap(),
             Annotations::default()
         );
+    }
+
+    #[test]
+    fn stars_resolve_kinds_sweep_and_follow_artist_merges() {
+        let conn = db();
+        assert_eq!(
+            resolve_item_kind(&conn, "t1").unwrap(),
+            Some(ItemKind::Track)
+        );
+        assert_eq!(
+            resolve_item_kind(&conn, "al2").unwrap(),
+            Some(ItemKind::Album)
+        );
+        assert_eq!(
+            resolve_item_kind(&conn, "ar3").unwrap(),
+            Some(ItemKind::Artist)
+        );
+        assert_eq!(resolve_item_kind(&conn, "zz").unwrap(), None);
+
+        let items = vec![
+            (ItemKind::Track, "t1".to_owned()),
+            (ItemKind::Album, "al1".to_owned()),
+            (ItemKind::Artist, "ar2".to_owned()),
+        ];
+        set_stars(&conn, "u1", &items, true).unwrap();
+        set_stars(&conn, "u1", &items, true).unwrap(); // idempotent
+        assert_eq!(starred_ids(&conn, "u1", ItemKind::Track).unwrap(), ["t1"]);
+        set_stars(&conn, "u1", &items[..1], false).unwrap();
+        assert!(starred_ids(&conn, "u1", ItemKind::Track)
+            .unwrap()
+            .is_empty());
+
+        // Merging ar2 into ar1 moves the star.
+        crate::music::merge_artists(
+            &conn,
+            &[coerce_entity_id("ar1"), coerce_entity_id("ar2")],
+            "The Band",
+            Some(&coerce_entity_id("ar1")),
+            "u1",
+        )
+        .unwrap();
+        assert_eq!(starred_ids(&conn, "u1", ItemKind::Artist).unwrap(), ["ar1"]);
+
+        conn.execute_batch(
+            "INSERT INTO subsonic_stars(user_id, item_type, item_id) VALUES ('u1', 'track', 'gone'), ('u1', 'album', 'gone');",
+        )
+        .unwrap();
+        assert_eq!(sweep_stale_stars(&conn).unwrap(), 2);
+        assert_eq!(starred_ids(&conn, "u1", ItemKind::Album).unwrap(), ["al1"]);
+    }
+
+    #[test]
+    fn playlist_edits_replace_remove_append_and_dedupe() {
+        let conn = db();
+        conn.execute_batch("INSERT INTO playlists(id, user_id, name) VALUES ('p1', 'u1', 'Mix');")
+            .unwrap();
+        assert_eq!(unique_playlist_name(&conn, "u1", "Mix").unwrap(), "Mix (2)");
+        assert_eq!(unique_playlist_name(&conn, "u1", "Other").unwrap(), "Other");
+        assert_eq!(unique_playlist_name(&conn, "u2", "Mix").unwrap(), "Mix");
+
+        let ids = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(
+            set_playlist_tracks(&conn, "p1", "u1", &ids(&["t3", "t1", "nope", "t3", "t2"]))
+                .unwrap()
+        );
+        assert_eq!(
+            playlist_track_ids(&conn, "p1", "u1").unwrap().unwrap(),
+            ["t3", "t1", "t2"]
+        );
+        assert!(
+            edit_playlist_entries(&conn, "p1", "u1", &[0, 2, 99], &ids(&["t4", "t1"])).unwrap()
+        );
+        assert_eq!(
+            playlist_track_ids(&conn, "p1", "u1").unwrap().unwrap(),
+            ["t1", "t4"]
+        );
+        assert!(!set_playlist_tracks(&conn, "p1", "u2", &ids(&["t1"])).unwrap());
+        assert!(playlist_track_ids(&conn, "p1", "u2").unwrap().is_none());
+        assert!(!edit_playlist_entries(&conn, "p1", "u2", &[0], &[]).unwrap());
+    }
+
+    #[test]
+    fn mixes_info_lyrics_and_top_songs() {
+        let conn = db();
+        // Mix rows only need their own columns here; skip seeding parent jobs.
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, cover_album_ids,
+                                     source_playlist_name, duration_sec, file_size_bytes, format, created_at) VALUES
+               ('m1', 'j1', NULL, 'u1', '/mixes/a.mp3', 'a.mp3', 'Friday', 'al2,al1', 'Party', 3600, 900, 'MP3', '2026-01-01 00:00:00'),
+               ('m2', 'j2', NULL, 'u1', '/mixes/b.flac', 'b.flac', '', NULL, '', 60, 10, 'flac', '2026-02-01 00:00:00'),
+               ('m3', 'j3', NULL, 'u2', '/mixes/c.mp3', 'c.mp3', 'Theirs', NULL, '', 60, 10, 'mp3', '2026-03-01 00:00:00');
+             UPDATE artists SET description = 'Local bio', lastfm_mbid = 'mbid-1' WHERE id = 'ar1';
+             UPDATE albums SET description = 'Liner notes' WHERE id = 'al1';
+             INSERT INTO lyrics_cache(track_id, artist, title, lyrics) VALUES ('t1', 'The Band', 'Opening', 'la la');
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+        let mixes = list_user_mixes(&conn, "u1").unwrap();
+        assert_eq!(
+            mixes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["m2", "m1"]
+        );
+        assert_eq!(mixes[0].name, "b.flac");
+        assert_eq!(mixes[1].format, "mp3");
+        assert_eq!(mixes[1].cover_album_id.as_deref(), Some("al2"));
+        assert_eq!(mixes[1].source_playlist_name.as_deref(), Some("Party"));
+        assert!(get_user_mix(&conn, "u1", "m3").unwrap().is_none());
+        assert_eq!(
+            get_user_mix(&conn, "u2", "m3").unwrap().unwrap().name,
+            "Theirs"
+        );
+
+        assert_eq!(
+            artist_info(&conn, "ar1").unwrap().unwrap(),
+            ArtistInfo {
+                name: "The Band".into(),
+                description: Some("Local bio".into()),
+                musicbrainz_id: Some("mbid-1".into()),
+            }
+        );
+        assert_eq!(
+            album_info(&conn, "al1").unwrap().unwrap(),
+            AlbumInfo {
+                title: "First Album".into(),
+                artist: "The Band".into(),
+                description: Some("Liner notes".into()),
+            }
+        );
+        assert_eq!(
+            cached_lyrics(&conn, " the band", "OPENING")
+                .unwrap()
+                .as_deref(),
+            Some("la la")
+        );
+        assert!(cached_lyrics(&conn, "The Band", "Closing")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            artist_id_by_name(&conn, "the band").unwrap().as_deref(),
+            Some("ar1")
+        );
+        assert_eq!(
+            artist_id_by_name(&conn, "Guest").unwrap().as_deref(),
+            Some("ar3")
+        );
+        assert!(artist_id_by_name(&conn, "Nobody").unwrap().is_none());
+        let top: Vec<String> = artist_songs_by_plays(&conn, "ar1", 10)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(top, ["t3", "t1"]);
     }
 
     #[test]

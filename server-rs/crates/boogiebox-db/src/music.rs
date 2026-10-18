@@ -1419,6 +1419,7 @@ fn merge_artists_tx(
                updated_at = datetime('now')",
             rusqlite::params![master_id, source_id],
         )?;
+        crate::subsonic::repoint_artist_stars(conn, &master_id, source_id)?;
 
         let alias_key = source_name.trim().to_lowercase();
         if alias_key != master_name.to_lowercase() {

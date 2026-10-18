@@ -113,6 +113,9 @@ fn content_disposition(name: &str) -> String {
 /// `stream` (and `download` with `download = true`).
 pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError> {
     let id = valid_id(ctx.params.required("id")?)?;
+    if let Some(mix_id) = model::mix_id(&id) {
+        return stream_mix(ctx, mix_id.to_owned(), download).await;
+    }
     let (song, roots, quality, replay_gain) = ctx
         .db(move |conn| {
             let song = boogiebox_db::subsonic::get_song(conn, &id)
@@ -207,6 +210,60 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
     }
 }
 
+/// BoogieMix output folders: the configured one and the default under the data folder (mixes rendered before
+/// the setting changed stay playable). Blocking (reads the setting).
+fn mix_roots(db: &crate::DbPool, db_folder: Option<&PathBuf>) -> Vec<String> {
+    let configured = crate::mix_worker::get_mix_output_dir_fn(db, db_folder);
+    let mut roots = vec![configured.to_string_lossy().into_owned()];
+    if let Some(folder) = db_folder {
+        let default = folder.join("mix-outputs").to_string_lossy().into_owned();
+        if !roots.contains(&default) {
+            roots.push(default);
+        }
+    }
+    roots
+}
+
+/// A BoogieMix render: always the original file (no transcode), owner only, from a mix output folder.
+async fn stream_mix(ctx: &Ctx, mix_id: String, download: bool) -> Result<Response, SubsonicError> {
+    let user = ctx.user_id();
+    let mix = ctx
+        .db(move |conn| boogiebox_db::subsonic::get_user_mix(conn, &user, &mix_id).map_err(db_err))
+        .await?
+        .ok_or_else(|| SubsonicError::not_found("Song"))?;
+    let db_folder = ctx
+        .state
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .db_folder
+        .clone();
+    let file_path = PathBuf::from(&mix.file_path);
+    let (check_path, db) = (file_path.clone(), ctx.db.clone());
+    let allowed = tokio::task::spawn_blocking(move || {
+        within_roots(&check_path, &mix_roots(&db, db_folder.as_ref()))
+    })
+    .await
+    .unwrap_or(false);
+    if !allowed {
+        tracing::warn!(mix_id = %mix.id, "Subsonic mix stream refused: file missing or outside the mix folder");
+        return Err(SubsonicError::not_found("Song file"));
+    }
+    let format = if mix.format.is_empty() {
+        "mp3".to_owned()
+    } else {
+        mix.format.clone()
+    };
+    let mime = ffmpeg::audio_mime_type(std::path::Path::new(&format!("mix.{format}")));
+    let mut resp = media_serve::serve_file(&file_path, mime, &ctx.headers, ctx.head, &[]).await;
+    if download {
+        let name = format!("{}.{format}", mix.name.replace(['/', '\\'], "_"));
+        if let Ok(v) = HeaderValue::from_str(&content_disposition(&name)) {
+            resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+        }
+    }
+    Ok(resp)
+}
+
 /// What a cover-art id refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoverTarget {
@@ -266,8 +323,15 @@ fn resolve_cover(
     user_id: &str,
 ) -> Result<Option<CoverTarget>, SubsonicError> {
     use boogiebox_db::subsonic as sdb;
+    if raw == super::model::BOOGIEMIX_PLAYLIST_ID || raw == "pl-bm-mixes" {
+        return Ok(sdb::list_user_mixes(conn, user_id)
+            .map_err(db_err)?
+            .into_iter()
+            .find_map(|m| m.cover_album_id)
+            .map(CoverTarget::Album));
+    }
     let (prefix, id) = match raw.split_once('-') {
-        Some((p @ ("al" | "ar" | "tr" | "pl"), rest)) => (Some(p), rest),
+        Some((p @ ("al" | "ar" | "tr" | "pl" | "mx"), rest)) => (Some(p), rest),
         _ => (None, raw),
     };
     let id = valid_id(id)?;
@@ -281,6 +345,10 @@ fn resolve_cover(
         Some("al") => Ok(Some(CoverTarget::Album(id))),
         Some("ar") => Ok(Some(CoverTarget::Artist(id))),
         Some("tr") => album_of_song(&id),
+        Some("mx") => Ok(sdb::get_user_mix(conn, user_id, &id)
+            .map_err(db_err)?
+            .and_then(|m| m.cover_album_id)
+            .map(CoverTarget::Album)),
         Some("pl") => {
             let entity = boogiebox_db::music::coerce_entity_id(&id);
             Ok(

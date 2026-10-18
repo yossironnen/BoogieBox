@@ -246,149 +246,121 @@ async fn track_lyrics_handler(
         Some(d) => d,
         None => return setup_required_response(),
     };
-
-    let result = tokio::task::spawn_blocking({
-        let id = id.clone();
-        move || {
-            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            boogiebox_db::playback::get_track_lyrics_cached(&conn, &id)
-        }
-    })
-    .await;
-
-    match result {
-        Ok(Ok(Some(row))) => {
+    let http_client = state
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .http_client
+        .clone();
+    match resolve_track_lyrics(&db, &http_client, &id).await {
+        Ok(Some(found)) => {
             let mut obj = serde_json::json!({
-                "lyrics": row.lyrics,
-                "source": row.source,
+                "lyrics": found.lyrics,
+                "source": found.source,
             });
-            if let Some(synced_raw) = row.synced_lyrics {
-                if let Ok(parsed) = serde_json::from_str::<Value>(&synced_raw) {
-                    obj["syncedLyrics"] = parsed;
-                }
+            if let Some(synced) = found.synced {
+                obj["syncedLyrics"] = synced;
             }
-            return (StatusCode::OK, Json(obj)).into_response();
+            (StatusCode::OK, Json(obj)).into_response()
         }
-        Ok(Ok(None)) => {}
-        _ => return internal_error(),
-    }
-
-    // Cache miss - try LRCLIB then lyrics.ovh
-    let db2 = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required_response(),
-    };
-    let track_info = tokio::task::spawn_blocking({
-        let id = id.clone();
-        move || {
-            let conn = db2.lock().unwrap_or_else(|p| p.into_inner());
-            boogiebox_db::artwork::get_track_for_lyrics(&conn, &id)
-        }
-    })
-    .await
-    .ok()
-    .flatten();
-
-    let Some(info) = track_info else {
-        return (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "Lyrics not found".into(),
                 setup_required: None,
             }),
         )
-            .into_response();
-    };
+            .into_response(),
+        Err(()) => internal_error(),
+    }
+}
 
-    let http_client = state
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .http_client
-        .clone();
-    let artist = info.artist.clone();
-    let title = info.title.clone();
+/// Lyrics for one track. `synced` is the `[{time, text}]` array when the source had timestamps.
+pub(crate) struct ResolvedLyrics {
+    pub lyrics: String,
+    pub source: Option<String>,
+    pub synced: Option<Value>,
+}
 
-    // Try LRCLIB
-    if let Some(result) = fetch_lrclib_lyrics(&http_client, &artist, &title).await {
-        let synced_json = result
-            .synced
-            .as_ref()
-            .and_then(|s| serde_json::to_string(s).ok());
-        let db3 = match get_db(&state) {
-            Some(d) => d,
-            None => return internal_error(),
-        };
-        tokio::task::spawn_blocking({
-            let id = id.clone();
-            let lyrics = result.lyrics.clone();
-            let source = result.source.clone();
-            let artist = artist.clone();
-            let title = title.clone();
-            move || {
-                let conn = db3.lock().unwrap_or_else(|p| p.into_inner());
-                boogiebox_db::artwork::upsert_cached_lyrics(
-                    &conn,
-                    &id,
-                    &artist,
-                    &title,
-                    &lyrics,
-                    &source,
-                    synced_json.as_deref(),
-                );
-            }
-        })
-        .await
-        .ok();
-
-        let mut obj = serde_json::json!({
-            "lyrics": result.lyrics,
-            "source": result.source,
-        });
-        if let Some(synced) = result.synced {
-            if let Ok(parsed) = serde_json::to_value(synced) {
-                obj["syncedLyrics"] = parsed;
-            }
+/// Cache first, then LRCLIB, then lyrics.ovh (provider results are cached). `Ok(None)` when nothing is
+/// found or the track is unknown; `Err` only for a cache read failure. Shared with Subsonic lyrics.
+pub(crate) async fn resolve_track_lyrics(
+    db: &DbPool,
+    http_client: &reqwest::Client,
+    id: &str,
+) -> Result<Option<ResolvedLyrics>, ()> {
+    let cache_db = db.clone();
+    let cache_id = id.to_owned();
+    let cached = tokio::task::spawn_blocking(move || {
+        let conn = cache_db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::playback::get_track_lyrics_cached(&conn, &cache_id)
+    })
+    .await;
+    match cached {
+        Ok(Ok(Some(row))) => {
+            return Ok(Some(ResolvedLyrics {
+                lyrics: row.lyrics,
+                source: row.source,
+                synced: row
+                    .synced_lyrics
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok()),
+            }))
         }
-        return (StatusCode::OK, Json(obj)).into_response();
+        Ok(Ok(None)) => {}
+        _ => return Err(()),
     }
 
-    // Try lyrics.ovh
-    if let Some(result) = fetch_lyricsovh(&http_client, &artist, &title).await {
-        let db4 = match get_db(&state) {
-            Some(d) => d,
-            None => return internal_error(),
+    // Cache miss - try LRCLIB then lyrics.ovh
+    let info_db = db.clone();
+    let info_id = id.to_owned();
+    let track_info = tokio::task::spawn_blocking(move || {
+        let conn = info_db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::artwork::get_track_for_lyrics(&conn, &info_id)
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(info) = track_info else {
+        return Ok(None);
+    };
+    let (artist, title) = (info.artist, info.title);
+
+    let (result, synced_json) =
+        if let Some(result) = fetch_lrclib_lyrics(http_client, &artist, &title).await {
+            let synced_json = result
+                .synced
+                .as_ref()
+                .and_then(|s| serde_json::to_string(s).ok());
+            (result, synced_json)
+        } else if let Some(result) = fetch_lyricsovh(http_client, &artist, &title).await {
+            (result, None)
+        } else {
+            return Ok(None);
         };
-        tokio::task::spawn_blocking({
-            let lyrics = result.lyrics.clone();
-            let source = result.source.clone();
-            move || {
-                let conn = db4.lock().unwrap_or_else(|p| p.into_inner());
-                boogiebox_db::artwork::upsert_cached_lyrics(
-                    &conn, &id, &artist, &title, &lyrics, &source, None,
-                );
-            }
-        })
-        .await
-        .ok();
 
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "lyrics": result.lyrics,
-                "source": result.source,
-            })),
-        )
-            .into_response();
-    }
+    let save_db = db.clone();
+    let save_id = id.to_owned();
+    let (lyrics, source) = (result.lyrics.clone(), result.source.clone());
+    let save_synced = synced_json.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = save_db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::artwork::upsert_cached_lyrics(
+            &conn,
+            &save_id,
+            &artist,
+            &title,
+            &lyrics,
+            &source,
+            save_synced.as_deref(),
+        );
+    })
+    .await
+    .ok();
 
-    (
-        StatusCode::NOT_FOUND,
-        Json(ErrorResponse {
-            error: "Lyrics not found".into(),
-            setup_required: None,
-        }),
-    )
-        .into_response()
+    Ok(Some(ResolvedLyrics {
+        lyrics: result.lyrics,
+        source: Some(result.source),
+        synced: result.synced.and_then(|s| serde_json::to_value(s).ok()),
+    }))
 }
 
 #[derive(Serialize)]

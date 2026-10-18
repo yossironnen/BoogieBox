@@ -1,15 +1,18 @@
-//! Subsonic method handlers (phase 1: read, play, scrobble). Each handler runs its queries in one blocking
-//! task (one short hold of the shared connection) and builds the response tree after releasing it.
+//! Subsonic method handlers: browsing, lists and search here; playlists, annotation and info in sibling
+//! modules. Each handler runs its queries in one blocking task (one short hold of the shared connection)
+//! and builds the response tree after releasing it.
 
 use axum::{http::HeaderMap, response::Response};
 use boogiebox_db::subsonic::{self as sdb, Annotations, ItemKind, SubsonicSong};
 use rusqlite::Connection;
 
 use super::{
+    annotate, info,
     model::{
         self, album_child_node, album_id3_node, artist_id3_node, artist_legacy_node, song_node,
     },
     params::Params,
+    playlists,
     response::{Node, SubsonicError},
     state::{SubsonicSettings, SubsonicState, SubsonicUser},
 };
@@ -18,25 +21,10 @@ use crate::{DbPool, SharedState};
 /// Largest page any list endpoint returns.
 pub const MAX_PAGE: i64 = 500;
 /// Most ids accepted in one request (scrobble, star, …).
-const MAX_IDS: usize = 500;
+pub const MAX_IDS: usize = 500;
 
 /// Methods in the Subsonic/OpenSubsonic spec that BoogieBox does not offer (yet). See plan §15.
 const UNSUPPORTED: &[&str] = &[
-    "star",
-    "unstar",
-    "setRating",
-    "createPlaylist",
-    "updatePlaylist",
-    "deletePlaylist",
-    "getLyrics",
-    "getLyricsBySongId",
-    "getArtistInfo",
-    "getArtistInfo2",
-    "getAlbumInfo",
-    "getAlbumInfo2",
-    "getSimilarSongs",
-    "getSimilarSongs2",
-    "getTopSongs",
     "getPlayQueue",
     "savePlayQueue",
     "getPlayQueueByIndex",
@@ -80,7 +68,7 @@ const UNSUPPORTED: &[&str] = &[
 ];
 
 /// OpenSubsonic extensions implemented by this build.
-const EXTENSIONS: &[(&str, &[i64])] = &[("formPost", &[1])];
+const EXTENSIONS: &[(&str, &[i64])] = &[("formPost", &[1]), ("songLyrics", &[1])];
 
 /// Per-request context.
 pub struct Ctx {
@@ -116,11 +104,20 @@ impl Ctx {
         .map_err(|_| SubsonicError::generic("Internal error"))?
     }
 
-    fn user_id(&self) -> String {
+    pub fn user_id(&self) -> String {
         self.user.id.clone()
     }
 
-    fn articles(&self) -> Vec<String> {
+    /// Shared HTTP client (lyrics and similar-artist lookups).
+    pub fn http_client(&self) -> reqwest::Client {
+        self.state
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .http_client
+            .clone()
+    }
+
+    pub fn articles(&self) -> Vec<String> {
         model::article_list(&self.settings.ignored_articles)
     }
 }
@@ -145,7 +142,7 @@ pub fn valid_id(raw: &str) -> Result<String, SubsonicError> {
     }
 }
 
-fn required_id(params: &Params, key: &str) -> Result<String, SubsonicError> {
+pub fn required_id(params: &Params, key: &str) -> Result<String, SubsonicError> {
     valid_id(params.required(key)?)
 }
 
@@ -168,7 +165,7 @@ pub fn resolve_folder(
         .ok_or_else(|| SubsonicError::not_found("Music folder"))
 }
 
-fn song_annotations(
+pub fn song_annotations(
     conn: &Connection,
     user: &str,
     songs: &[SubsonicSong],
@@ -177,7 +174,7 @@ fn song_annotations(
     sdb::annotations(conn, user, ItemKind::Track, &ids).map_err(db_err)
 }
 
-fn songs_nodes(songs: &[SubsonicSong], ann: &Annotations) -> Vec<Node> {
+pub fn songs_nodes(songs: &[SubsonicSong], ann: &Annotations) -> Vec<Node> {
     songs.iter().map(|s| song_node(s, ann)).collect()
 }
 
@@ -202,12 +199,26 @@ pub async fn handle(name: &str, ctx: &Ctx) -> Result<Reply, SubsonicError> {
         "getSongsByGenre" => songs_by_genre(ctx).await?,
         "getStarred" => starred(ctx, true).await?,
         "getStarred2" => starred(ctx, false).await?,
-        "getNowPlaying" => Node::new("payload").object(Node::new("nowPlaying")),
+        "getNowPlaying" => info::now_playing(ctx).await?,
         "search2" => search(ctx, true).await?,
         "search3" => search(ctx, false).await?,
-        "getPlaylists" => playlists(ctx).await?,
-        "getPlaylist" => playlist(ctx).await?,
-        "scrobble" => scrobble(ctx).await?,
+        "getPlaylists" => playlists::playlists(ctx).await?,
+        "getPlaylist" => playlists::playlist(ctx).await?,
+        "createPlaylist" => playlists::create_playlist(ctx).await?,
+        "updatePlaylist" => playlists::update_playlist(ctx).await?,
+        "deletePlaylist" => playlists::delete_playlist(ctx).await?,
+        "scrobble" => annotate::scrobble(ctx).await?,
+        "star" => annotate::star(ctx, true).await?,
+        "unstar" => annotate::star(ctx, false).await?,
+        "setRating" => annotate::set_rating(ctx).await?,
+        "getLyrics" => info::lyrics(ctx).await?,
+        "getLyricsBySongId" => info::lyrics_by_song_id(ctx).await?,
+        "getArtistInfo" => info::artist_info(ctx, true).await?,
+        "getArtistInfo2" => info::artist_info(ctx, false).await?,
+        "getAlbumInfo" | "getAlbumInfo2" => info::album_info(ctx).await?,
+        "getSimilarSongs" => info::similar_songs(ctx, true).await?,
+        "getSimilarSongs2" => info::similar_songs(ctx, false).await?,
+        "getTopSongs" => info::top_songs(ctx).await?,
         "stream" => return super::media::stream(ctx, false).await.map(Reply::Raw),
         "download" => return super::media::stream(ctx, true).await.map(Reply::Raw),
         "getCoverArt" => return super::media::cover_art(ctx).await.map(Reply::Raw),
@@ -404,6 +415,14 @@ async fn album(ctx: &Ctx) -> Result<Node, SubsonicError> {
 
 async fn song(ctx: &Ctx) -> Result<Node, SubsonicError> {
     let id = required_id(&ctx.params, "id")?;
+    if let Some(mix_id) = model::mix_id(&id).map(str::to_owned) {
+        let user = ctx.user_id();
+        let mix = ctx
+            .db(move |conn| sdb::get_user_mix(conn, &user, &mix_id).map_err(db_err))
+            .await?
+            .ok_or_else(|| SubsonicError::not_found("Song"))?;
+        return Ok(Node::new("payload").object(model::mix_song_node(&mix)));
+    }
     let user = ctx.user_id();
     let (song, ann) = ctx
         .db(move |conn| {
@@ -762,135 +781,6 @@ async fn search(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError> {
     Ok(Node::new("payload").object(result.list("song", songs_nodes(&songs, &song_ann))))
 }
 
-// ── Playlists ──────────────────────────────────────────────────────────────────
-
-fn playlist_node(row: &boogiebox_db::playlists::PlaylistRow, owner: &str) -> Node {
-    Node::new("playlist")
-        .attr("id", row.id.to_string())
-        .attr("name", row.name.as_str())
-        .opt(
-            "comment",
-            row.description.clone().filter(|d| !d.trim().is_empty()),
-        )
-        .attr("owner", owner)
-        .attr("public", false)
-        .attr("songCount", row.track_count)
-        .attr(
-            "duration",
-            row.total_duration.unwrap_or(0.0).max(0.0).round() as i64,
-        )
-        .attr(
-            "created",
-            model::iso(row.created_at.as_deref().unwrap_or("1970-01-01 00:00:00")),
-        )
-        .attr(
-            "changed",
-            model::iso(
-                row.updated_at
-                    .as_deref()
-                    .or(row.created_at.as_deref())
-                    .unwrap_or("1970-01-01 00:00:00"),
-            ),
-        )
-        .opt(
-            "coverArt",
-            row.art_album_ids
-                .first()
-                .map(|id| model::album_cover_id(id)),
-        )
-}
-
-async fn playlists(ctx: &Ctx) -> Result<Node, SubsonicError> {
-    let requested = ctx.params.text("username").map(str::to_owned);
-    if let Some(name) = &requested {
-        if !name.eq_ignore_ascii_case(&ctx.user.username) && !ctx.user.is_admin() {
-            return Err(SubsonicError::not_authorized());
-        }
-    }
-    let me = ctx.user.clone();
-    let (rows, owner) = ctx
-        .db(move |conn| {
-            let (owner_id, owner_name) = match requested {
-                Some(name) if !name.eq_ignore_ascii_case(&me.username) => {
-                    let account = sdb::get_account_by_username(conn, &name)
-                        .map_err(db_err)?
-                        .ok_or_else(|| SubsonicError::not_found("User"))?;
-                    (account.user_id, account.username)
-                }
-                _ => (me.id.clone(), me.username.clone()),
-            };
-            let rows = boogiebox_db::playlists::list_playlists(conn, &owner_id).map_err(db_err)?;
-            Ok((rows, owner_name))
-        })
-        .await?;
-    Ok(Node::new("payload").object(Node::new("playlists").list(
-        "playlist",
-        rows.iter().map(|r| playlist_node(r, &owner)).collect(),
-    )))
-}
-
-async fn playlist(ctx: &Ctx) -> Result<Node, SubsonicError> {
-    let id = required_id(&ctx.params, "id")?;
-    let user = ctx.user_id();
-    let (row, songs, ann) = ctx
-        .db(move |conn| {
-            let entity = boogiebox_db::music::coerce_entity_id(&id);
-            let row = boogiebox_db::playlists::get_playlist(conn, &entity, &user)
-                .map_err(db_err)?
-                .ok_or_else(|| SubsonicError::not_found("Playlist"))?;
-            let songs = sdb::playlist_songs(conn, &id, &user)
-                .map_err(db_err)?
-                .ok_or_else(|| SubsonicError::not_found("Playlist"))?;
-            let ann = song_annotations(conn, &user, &songs)?;
-            Ok((row, songs, ann))
-        })
-        .await?;
-    Ok(Node::new("payload")
-        .object(playlist_node(&row, &ctx.user.username).list("entry", songs_nodes(&songs, &ann))))
-}
-
-// ── Annotation ─────────────────────────────────────────────────────────────────
-
-async fn scrobble(ctx: &Ctx) -> Result<Node, SubsonicError> {
-    let ids = ctx.params.all("id");
-    if ids.is_empty() {
-        return Err(SubsonicError::missing("id"));
-    }
-    if ids.len() > MAX_IDS {
-        return Err(SubsonicError::generic("Too many ids"));
-    }
-    let ids: Vec<String> = ids.into_iter().map(valid_id).collect::<Result<_, _>>()?;
-    let times: Vec<Option<i64>> = ctx
-        .params
-        .all("time")
-        .into_iter()
-        .map(|t| t.parse::<i64>().ok().map(|ms| ms / 1000))
-        .collect();
-    // submission=false is a "now playing" notice; BoogieBox does not track it yet (plan §15.1).
-    if !ctx.params.flag("submission", true) {
-        return Ok(Node::new("payload"));
-    }
-    let user = ctx.user_id();
-    let missing = ctx
-        .db(move |conn| {
-            let mut missing = 0usize;
-            for (i, id) in ids.iter().enumerate() {
-                let at = times.get(i).copied().flatten();
-                if sdb::record_scrobble(conn, &user, id, at).map_err(db_err)?
-                    == sdb::ScrobbleOutcome::NotFound
-                {
-                    missing += 1;
-                }
-            }
-            Ok(missing)
-        })
-        .await?;
-    if missing > 0 {
-        return Err(SubsonicError::not_found("Song"));
-    }
-    Ok(Node::new("payload"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,6 +830,21 @@ mod tests {
             "getStarred",
             "getStarred2",
             "getNowPlaying",
+            "star",
+            "unstar",
+            "setRating",
+            "createPlaylist",
+            "updatePlaylist",
+            "deletePlaylist",
+            "getLyrics",
+            "getLyricsBySongId",
+            "getArtistInfo",
+            "getArtistInfo2",
+            "getAlbumInfo",
+            "getAlbumInfo2",
+            "getSimilarSongs",
+            "getSimilarSongs2",
+            "getTopSongs",
             "search2",
             "search3",
             "getPlaylists",

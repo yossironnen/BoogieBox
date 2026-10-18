@@ -4186,7 +4186,7 @@ async fn wait_for_waveform_ready(
     count_tracks_with_waveform(&conn, &track_ids).map_err(|e| e.to_string())
 }
 
-fn get_mix_output_dir_fn(db: &DbPool, db_folder: Option<&PathBuf>) -> PathBuf {
+pub(crate) fn get_mix_output_dir_fn(db: &DbPool, db_folder: Option<&PathBuf>) -> PathBuf {
     let configured = db
         .lock()
         .ok()

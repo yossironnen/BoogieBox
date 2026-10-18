@@ -181,6 +181,60 @@ pub fn song_node(song: &SubsonicSong, ann: &Annotations) -> Node {
         )
 }
 
+/// Id of the per-user read-only "BoogieMix" playlist.
+pub const BOOGIEMIX_PLAYLIST_ID: &str = "bm-mixes";
+/// Song-id prefix for BoogieMix mixes.
+pub const MIX_ID_PREFIX: &str = "mx-";
+
+/// The mix id inside an `mx-…` song id.
+pub fn mix_id(song_id: &str) -> Option<&str> {
+    song_id
+        .strip_prefix(MIX_ID_PREFIX)
+        .filter(|id| !id.is_empty())
+}
+
+/// A BoogieMix render as one long song in the "BoogieMix" playlist.
+pub fn mix_song_node(mix: &boogiebox_db::subsonic::SubsonicMix) -> Node {
+    let format = if mix.format.is_empty() {
+        "mp3"
+    } else {
+        mix.format.as_str()
+    };
+    let name = path_segment(Some(&mix.name), "BoogieMix");
+    Node::new("song")
+        .attr("id", format!("{MIX_ID_PREFIX}{}", mix.id))
+        .attr("parent", BOOGIEMIX_PLAYLIST_ID)
+        .attr("isDir", false)
+        .attr("title", &mix.name)
+        .attr("album", "BoogieMix")
+        .attr("artist", "BoogieMix")
+        .opt(
+            "coverArt",
+            mix.cover_album_id.as_deref().map(album_cover_id),
+        )
+        .attr("size", mix.file_size)
+        .attr(
+            "contentType",
+            ffmpeg::audio_mime_type(Path::new(&format!("mix.{format}"))),
+        )
+        .attr("suffix", format)
+        .attr("duration", mix.duration.max(0.0).round() as i64)
+        .attr("path", format!("BoogieMix/{name}.{format}"))
+        .attr("playCount", 0)
+        .opt("created", mix.created.as_deref().map(iso))
+        .attr("type", "music")
+        .attr("isVideo", false)
+        .attr("mediaType", "song")
+        .opt(
+            "comment",
+            mix.source_playlist_name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| format!("Mixed from {n}")),
+        )
+        .attr("displayArtist", "BoogieMix")
+}
+
 /// An album as `AlbumID3` (`getAlbum`, `getAlbumList2`, `search3`).
 pub fn album_id3_node(album: &SubsonicAlbum, ann: &Annotations) -> Node {
     let genres = split_genres(album.genre.as_deref());

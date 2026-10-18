@@ -156,14 +156,30 @@ credentials or locked out after 5 failures for a minute, 43 conflicting mechanis
 found). `/rest` CORS allows any origin without credentials. Responses never include filesystem paths: `path`
 is a virtual `Artist/Album/NN - Title.ext`.
 
-Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost`), `getUser`,
-`getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`, `getArtists`, `getArtist`,
-`getAlbum`, `getSong`, `getGenres`, `getMusicDirectory`, `getAlbumList`/`getAlbumList2` (`random`, `newest`,
-`highest`, `frequent`, `recent`, `alphabeticalByName`, `alphabeticalByArtist`, `starred`, `byYear`, `byGenre`),
-`getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `getNowPlaying` (always empty for now),
+Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost` and
+`songLyrics`), `getUser`, `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
+`getArtists`, `getArtist`, `getAlbum`, `getSong`, `getGenres`, `getMusicDirectory`, `getAlbumList`/`getAlbumList2`
+(`random`, `newest`, `highest`, `frequent`, `recent`, `alphabeticalByName`, `alphabeticalByArtist`, `starred`,
+`byYear`, `byGenre`), `getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `star`/`unstar`
+(`id` resolves song → album → artist; `albumId`, `artistId`), `setRating` (whole stars 1–5, 0 clears),
 `search2`/`search3` (an empty query pages through everything, which is how apps sync), `getPlaylists`,
-`getPlaylist`, `scrobble` (`submission=true` counts a play at `time`, ignoring repeats within 30 s),
-`stream`, `download` (original file) and `getCoverArt` (`al-`/`ar-`/`tr-`/`pl-` ids; 300 or 800 px).
+`getPlaylist`, `createPlaylist` (a taken name gets " (2)"; with `playlistId` it replaces the entries; returns the
+playlist), `updatePlaylist` (`name`, `comment`, `songIndexToRemove…` then `songIdToAdd…`; `public` ignored),
+`deletePlaylist`, `getLyrics` (cache only), `getLyricsBySongId` (cache, then LRCLIB/lyrics.ovh within 5 s;
+synced lines in ms), `getArtistInfo`/`getArtistInfo2` (local bio, else the cached Last.fm summary; similar
+artists in the library), `getAlbumInfo`/`getAlbumInfo2`, `getSimilarSongs`/`getSimilarSongs2` (an Artist Radio
+queue seeded by the song's, album's or artist's artist; provider lookups capped at 2 s), `getTopSongs` (cached
+Last.fm top tracks first, then local plays), `getNowPlaying` (what apps reported with `scrobble
+submission=false` in the last 10 minutes, all users), `scrobble` (`submission=true` counts a play at `time`,
+ignoring repeats within 30 s), `stream`, `download` (original file) and `getCoverArt` (`al-`/`ar-`/`tr-`/`pl-`/`mx-`
+ids; 300 or 800 px).
+
+Playlists: a track appears at most once per BoogieBox playlist, so repeated song ids are dropped. Each user also
+sees a read-only **BoogieMix** playlist (`bm-mixes`, `readonly=true`) listing their rendered mixes newest first,
+each as one long song `mx-{outputId}` (album and artist "BoogieMix"). Mixes stream and download as the original
+file from the BoogieMix output folder only, are never counted as plays, can't be starred or rated, and the
+playlist can't be edited or deleted (error 50). Transitions and Mix Story chapters are not shown.
+
 `stream` serves the original file unless the app asks for `format=mp3`, the file needs conversion to play, or
 `maxBitRate` is below the file's bitrate; MP3 bitrates are 128/192/256/320 and at most `subsonicMaxTranscodes`
 conversions run at once (HTTP 503 after a 10 s wait). Files outside their library folders are never served.

@@ -802,6 +802,82 @@ pub fn load_inputs(
     })
 }
 
+/// A planned radio queue with the seed artist's name and top tag names.
+pub struct BuiltRadio {
+    pub artist: String,
+    pub tags: Vec<String>,
+    pub plan: RadioPlan,
+}
+
+/// Builds an Artist Radio queue: similar artists cache-first (each provider call bounded by
+/// `network_budget`, falling back to stale/empty data), then the planner. `Ok(None)` = unknown artist.
+/// Shared by `/api/artists/{id}/radio` and Subsonic `getSimilarSongs`.
+pub async fn build_radio(
+    db: &crate::DbPool,
+    http_client: &reqwest::Client,
+    user_id: &str,
+    artist_id: &EntityId,
+    options: &RadioOptions,
+    network_budget: std::time::Duration,
+) -> Result<Option<BuiltRadio>, String> {
+    let name_db = db.clone();
+    let name_id = artist_id.clone();
+    let artist_name = tokio::task::spawn_blocking(move || {
+        let conn = name_db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::music::get_artist_name(&conn, &name_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    let Some(artist_name) = artist_name else {
+        return Ok(None);
+    };
+
+    // Cache-first; a cold cache costs at most a few seconds, never a failure.
+    let related = crate::similar_artists::gather_related_candidates(
+        db,
+        http_client,
+        artist_id,
+        Some(network_budget),
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+
+    let build_db = db.clone();
+    let user_id = user_id.to_owned();
+    let artist_id = artist_id.clone();
+    let options = options.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = build_db.lock().unwrap_or_else(|p| p.into_inner());
+        let tags: Vec<String> = seed_tag_vector(&conn, &artist_id)?
+            .into_iter()
+            .take(12)
+            .map(|t| t.tag)
+            .collect();
+        let inputs = load_inputs(
+            &conn,
+            &user_id,
+            &artist_id,
+            artist_name.clone(),
+            &related,
+            &options,
+        )?;
+        let mut rng = rand::rng();
+        let mut next = move || rand::RngExt::random::<f64>(&mut rng);
+        let plan = plan_radio(inputs, &options, &mut next);
+        Ok::<_, rusqlite::Error>(Some(BuiltRadio {
+            artist: artist_name,
+            tags,
+            plan,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 /// One mood the popover can offer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoodOption {
