@@ -56,6 +56,7 @@ pub mod server_config;
 pub mod settings;
 pub mod similar_artists;
 pub mod story_image;
+pub mod subsonic;
 pub mod tag_taxonomy;
 #[cfg(test)]
 pub mod test_support;
@@ -141,6 +142,8 @@ pub struct AppState {
     /// Cancelled and replaced whenever the active database is switched, so background
     /// workers bound to the previous pool stop instead of continuing to run against it.
     pub worker_cancel: tokio_util::sync::CancellationToken,
+    /// Subsonic API caches (credentials, settings, key, transcode limiter); reset on a database switch.
+    pub subsonic: subsonic::SubsonicState,
 }
 
 impl Default for AppState {
@@ -189,6 +192,7 @@ impl Default for AppState {
             dlna_manager: dlna::new_dlna_manager(),
             remote: remote::RemoteManager::new(),
             worker_cancel: tokio_util::sync::CancellationToken::new(),
+            subsonic: subsonic::SubsonicState::default(),
         }
     }
 }
@@ -535,9 +539,14 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         .merge(routes::remote_session_routes::remote_session_router(
             shared_state.clone(),
         ))
-        .merge(routes::dlna_routes::dlna_router(shared_state))
+        .merge(routes::subsonic_routes::subsonic_routes_router(
+            shared_state.clone(),
+        ))
+        .merge(routes::dlna_routes::dlna_router(shared_state.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
-        .layer(cors_layer);
+        .layer(cors_layer)
+        // `/rest` brings its own body limit and non-credentialed CORS, so it is merged after the API layers.
+        .merge(subsonic::router(shared_state));
 
     // Compression is layered after the static fallback so the client bundle
     // is compressed too; it matters most for clients on another machine.
@@ -772,6 +781,7 @@ async fn setup_handler(
                 s.setup_required = false;
                 s.db = Some(db_pool);
                 s.db_folder = Some(PathBuf::from(db_folder));
+                s.subsonic.reset();
                 s.worker_cancel.cancel();
                 let cancel = tokio_util::sync::CancellationToken::new();
                 s.worker_cancel = cancel.clone();
@@ -873,6 +883,7 @@ async fn switch_db_handler(
                 let mut s = state.write().unwrap_or_else(|p| p.into_inner());
                 s.db = Some(db_pool);
                 s.db_folder = Some(PathBuf::from(db_folder));
+                s.subsonic.reset();
                 s.worker_cancel.cancel();
                 let cancel = tokio_util::sync::CancellationToken::new();
                 s.worker_cancel = cancel.clone();

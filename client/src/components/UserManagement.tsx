@@ -8,6 +8,8 @@ import { hybridControlStyles } from '../hybridPreview';
 import type { AdminUser, AuthUser } from '../types';
 import type { EntityId } from '../entityId';
 import ConfirmModal from './ConfirmModal';
+import { PasswordFields, SubsonicIcon } from './ConnectedAppsPanel';
+import { subsonicPasswordProblem } from '../subsonic';
 
 interface Props {
   currentUser: AuthUser;
@@ -121,6 +123,60 @@ function PinModal({ userId, username, onClose }: { userId: EntityId; username: s
   );
 }
 
+function SubsonicPasswordModal({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const problem = subsonicPasswordProblem(password, confirmation);
+
+  const run = async (action: () => Promise<unknown>, fallback: string) => {
+    setSaving(true);
+    try {
+      await action();
+      onClose();
+    } catch (e: any) {
+      setError(e.message || fallback);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div role="dialog" aria-label={`Subsonic password for ${user.username}`} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, width: 'min(560px, calc(100vw - 32px))', display: 'flex', flexDirection: 'column', gap: 18 }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>Subsonic password for {user.username}</div>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          Used by Subsonic-compatible apps instead of the PIN. {user.hasSubsonicPassword ? 'A password is set.' : 'No password is set.'}
+        </div>
+        <PasswordFields
+          password={password}
+          confirmation={confirmation}
+          onPassword={(v) => { setPassword(v); setError(''); }}
+          onConfirmation={(v) => { setConfirmation(v); setError(''); }}
+        />
+        {error && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{error}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          {user.hasSubsonicPassword && (
+            <button type="button" style={hybridControlStyles.dangerButton} disabled={saving} onClick={() => void run(() => api.admin.users.clearSubsonicPassword(user.id), 'Failed to remove the password')}>
+              Remove password
+            </button>
+          )}
+          <button type="button" style={hybridControlStyles.secondaryButton} onClick={onClose} disabled={saving}>Cancel</button>
+          <button
+            type="button"
+            style={{ ...hybridControlStyles.primaryButton, ...(saving || problem ? hybridControlStyles.disabled : {}) }}
+            disabled={saving || problem !== null}
+            onClick={() => void run(() => api.admin.users.setSubsonicPassword(user.id, password), 'Failed to set the password')}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const checkboxStyle: React.CSSProperties = { accentColor: 'var(--accent)', width: 14, height: 14, cursor: 'pointer' };
 
 /** User Management is part of this module's public API. */
@@ -134,6 +190,7 @@ export default function UserManagement({ currentUser }: Props) {
   const [newCanEditMetadata, setNewCanEditMetadata] = useState(false);
   const [addError, setAddError] = useState('');
   const [pinModalUser, setPinModalUser] = useState<AdminUser | null>(null);
+  const [subsonicModalUser, setSubsonicModalUser] = useState<AdminUser | null>(null);
   // Doubles as the confirm-before-delete prompt and, with cancelLabel: null,
   // an acknowledged error dialog in place of window.alert.
   const [dialog, setDialog] = useState<{
@@ -287,6 +344,15 @@ export default function UserManagement({ currentUser }: Props) {
                 </button>
                 <button
                   type="button"
+                  style={{ ...hybridControlStyles.iconButton, color: user.hasSubsonicPassword ? 'var(--accent)' : 'var(--text-muted)' }}
+                  title={user.hasSubsonicPassword ? 'Subsonic password set (for apps)' : 'Set a Subsonic password (for apps)'}
+                  aria-label={`Subsonic password for ${user.username}`}
+                  onClick={() => setSubsonicModalUser(user)}
+                >
+                  <SubsonicIcon.Plug size={15} />
+                </button>
+                <button
+                  type="button"
                   style={{
                     ...hybridControlStyles.iconButton,
                     color: 'var(--danger)',
@@ -358,6 +424,13 @@ export default function UserManagement({ currentUser }: Props) {
           userId={pinModalUser.id}
           username={pinModalUser.username}
           onClose={() => { setPinModalUser(null); load(); }}
+        />
+      )}
+
+      {subsonicModalUser && (
+        <SubsonicPasswordModal
+          user={subsonicModalUser}
+          onClose={() => { setSubsonicModalUser(null); load(); }}
         />
       )}
 

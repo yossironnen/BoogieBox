@@ -155,6 +155,7 @@ describe('Player comprehensive behavior', () => {
     vi.spyOn(api.playlists, 'saveTrackProgress').mockResolvedValue({ ok: true });
     vi.spyOn(api, 'trackLyrics').mockResolvedValue({ lyrics: '', source: 'cache', synced: [] });
     vi.spyOn(api, 'trackEqProfile').mockResolvedValue({ eq_profile: 'Rock', source: 'genre' });
+    vi.spyOn(api.auth, 'sessionValid').mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -399,6 +400,38 @@ describe('Player comprehensive behavior', () => {
     fireEvent.error(audioA);
     expect(await screen.findByText(/Network error/)).toBeInTheDocument();
     expect(onSnapshot).toHaveBeenCalledWith(expect.objectContaining({ currentTrack: expect.objectContaining({ id: '2' }) }));
+  });
+
+  it('reports an expired session instead of a codec error when the stream is refused', async () => {
+    vi.mocked(api.auth.sessionValid).mockResolvedValue(false);
+    const { container } = render(
+      <Player
+        state={{ queue: [track('1')], currentIndex: 0, isPlaying: false, playToken: 1 }}
+        onStateChange={vi.fn()}
+        ffmpegAvailable
+      />,
+    );
+    const [audioA] = Array.from(container.querySelectorAll('audio'));
+    setMediaState(audioA, { error: { code: 4 } });
+    fireEvent.error(audioA);
+    expect(await screen.findByText(/Session expired\. Sign in again\./)).toBeInTheDocument();
+    expect(api.auth.sessionValid).toHaveBeenCalled();
+  });
+
+  it('keeps the media error when the session is still valid', async () => {
+    const { container } = render(
+      <Player
+        state={{ queue: [track('1')], currentIndex: 0, isPlaying: false, playToken: 1 }}
+        onStateChange={vi.fn()}
+        ffmpegAvailable
+      />,
+    );
+    const [audioA] = Array.from(container.querySelectorAll('audio'));
+    setMediaState(audioA, { error: { code: 4 } });
+    fireEvent.error(audioA);
+    expect(await screen.findByText(/MP3 is not supported by your browser/)).toBeInTheDocument();
+    await waitFor(() => expect(api.auth.sessionValid).toHaveBeenCalled());
+    expect(screen.queryByText(/Session expired/)).toBeNull();
   });
 
   it('seeks to Track.startAtSec once loaded — Mix Story timeline click-to-seek (wip/boogiemix-story-timeline-plan.md §2.5)', async () => {

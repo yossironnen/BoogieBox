@@ -23,6 +23,10 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "remoteInterfaceIp",
     "remotePollMs",
     "remoteReleaseStopsRenderer",
+    // Subsonic API (`/rest`)
+    "subsonicApiEnabled",
+    "subsonicMaxTranscodes",
+    "subsonicIgnoredArticles",
     // BoogieMix
     "boogiemixCrossfadeDuration",
     "boogiemixDefaultStyle",
@@ -170,6 +174,7 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         "dlnaEnabled"
         | "remotePlaybackEnabled"
         | "remoteReleaseStopsRenderer"
+        | "subsonicApiEnabled"
         | "waveformGenerateOnMissing"
         | "waveformBackgroundEnabled"
         | "bpmAnalysisEnabled"
@@ -243,6 +248,33 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
                 return Err(format!("Setting '{key}' must be between 500 and 5000"));
             }
             Ok(n.to_string())
+        }
+
+        // Concurrent Subsonic transcodes: 1–8
+        "subsonicMaxTranscodes" => {
+            let n: u32 = value
+                .trim()
+                .parse()
+                .map_err(|_| format!("Setting '{key}' must be an integer"))?;
+            if !(1..=8).contains(&n) {
+                return Err(format!("Setting '{key}' must be between 1 and 8"));
+            }
+            Ok(n.to_string())
+        }
+
+        // Articles ignored when indexing artists: up to 20 words of letters/apostrophes
+        "subsonicIgnoredArticles" => {
+            let words: Vec<&str> = value.split_whitespace().collect();
+            if words.len() > 20
+                || words.iter().any(|w| {
+                    w.chars().count() > 20 || !w.chars().all(|c| c.is_alphabetic() || c == '\'')
+                })
+            {
+                return Err(format!(
+                    "Setting '{key}' must be up to 20 words made of letters"
+                ));
+            }
+            Ok(words.join(" "))
         }
 
         // Play On interface override: empty (auto) or a private/link-local IPv4 address
@@ -392,6 +424,27 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("dlnaPort".into(), "80".into());
         assert!(normalize_settings_payload(&map).is_err());
+    }
+
+    #[test]
+    fn validates_subsonic_settings() {
+        let check = |key: &str, value: &str| {
+            let mut map = HashMap::new();
+            map.insert(key.to_string(), value.to_string());
+            normalize_settings_payload(&map).map(|m| m[key].clone())
+        };
+        assert_eq!(check("subsonicApiEnabled", "true").unwrap(), "true");
+        assert!(check("subsonicApiEnabled", "on").is_err());
+        assert_eq!(check("subsonicMaxTranscodes", " 4 ").unwrap(), "4");
+        assert!(check("subsonicMaxTranscodes", "0").is_err());
+        assert!(check("subsonicMaxTranscodes", "9").is_err());
+        assert_eq!(
+            check("subsonicIgnoredArticles", "  The   El  L'  ").unwrap(),
+            "The El L'"
+        );
+        assert_eq!(check("subsonicIgnoredArticles", "").unwrap(), "");
+        assert!(check("subsonicIgnoredArticles", "The <script>").is_err());
+        assert!(check("subsonicIgnoredArticles", &"a ".repeat(21)).is_err());
     }
 
     #[test]

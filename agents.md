@@ -76,11 +76,12 @@ dlna.rs — SSDP + Axum DLNA server, ContentDirectory Browse, audio streaming
 media_serve.rs — shared ranged serving + MP3/WAV transcodes (browser, DLNA, Play On)  
 upnp/ — UPnP AV control point (XML, device descriptions, SOAP, SSDP discovery, DIDL helpers)  
 remote/ — Play On: RemoteManager, renderer registry, media tokens (`/media/r/{token}`), queue, per-renderer session actors  
+subsonic/ — OpenSubsonic-compatible `/rest` API for third-party apps (auth via per-user Subsonic password, XML/JSON rendering, browse/search/stream/scrobble)  
 providers.rs — Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh  
 artwork_cache.rs — SHA-1 cache-key shards, UUID v7 markers, folder.jpg discovery  
 image_thumb.rs — JPEG thumbnail generation (pure Rust `image` crate)  
 deep_analysis.rs — Python/Demucs/Torch capability detection and job orchestration  
-routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session)
+routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session, subsonic [Subsonic password management])
 
 
 ### Client (`client/src`)
@@ -114,6 +115,7 @@ playlists, playlist_tracks
 track_waveforms, track_deep_analysis  
 mix_jobs, mix_outputs  
 upnp_renderers, remote_sessions  
+subsonic_credentials, subsonic_stars  
 settings, user_settings, provider_usage_stats  
 
 Fresh databases are music-only. Upgrade migrations remove legacy movie/TV/video tables and settings.  

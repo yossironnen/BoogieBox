@@ -14,3 +14,4 @@ pub mod provider_routes;
 pub mod remote_routes;
 pub mod remote_session_routes;
 pub mod settings_routes;
+pub mod subsonic_routes;

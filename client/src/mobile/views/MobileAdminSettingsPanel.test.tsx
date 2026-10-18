@@ -184,4 +184,16 @@ describe('MobileAdminSettingsPanel', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Play On' }));
     await waitFor(() => expect(api.settings.update).toHaveBeenCalledWith({ remotePlaybackEnabled: 'false' }));
   });
+
+  it('turns the Subsonic API on and off', async () => {
+    vi.spyOn(api.settings, 'get').mockResolvedValue({ remotePlaybackEnabled: 'false', subsonicApiEnabled: 'false' });
+    render(<MobileAdminSettingsPanel />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open admin tools' }));
+
+    const toggle = await screen.findByRole('checkbox', { name: 'Enable Subsonic API' });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(api.settings.update).toHaveBeenCalledWith({ subsonicApiEnabled: 'true' }));
+    expect(await screen.findByText('Subsonic API enabled.')).toBeInTheDocument();
+  });
 });

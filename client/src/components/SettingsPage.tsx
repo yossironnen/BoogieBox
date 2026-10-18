@@ -23,6 +23,8 @@ import ConfirmModal from './ConfirmModal';
 import CommandBar from './CommandBar';
 import RadioMetadataSettings from './RadioMetadataSettings';
 import PlayOnSettings from './PlayOnSettings';
+import SubsonicSettings from './SubsonicSettings';
+import ConnectedAppsPanel from './ConnectedAppsPanel';
 import { InlineStatus, ToggleRow } from './settingsControls';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1599,6 +1601,8 @@ export default function SettingsPage({
             </div>
           </SettingsPanel>
 
+          <ConnectedAppsPanel username={currentUser.username} />
+
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
               Theme, Custom palette, and accent settings auto-save for your user profile.
@@ -1895,7 +1899,7 @@ export default function SettingsPage({
                 ['advanced-bpm', 'BPM'],
                 ['advanced-radio', 'Radio'],
                 ['advanced-dlna', 'DLNA'],
-                ...(isAdmin ? [['advanced-play-on', 'Play On']] : []),
+                ...(isAdmin ? [['advanced-play-on', 'Play On'], ['advanced-subsonic', 'Subsonic apps']] : []),
                 ['advanced-debug', 'Diagnostics'],
                 ...(isAdmin ? [['advanced-database', 'Database']] : []),
               ].map(([target, label]) => (
@@ -2720,6 +2724,8 @@ export default function SettingsPage({
             <>
               <div id="advanced-play-on" style={P.advancedSectionTitle}>Play On</div>
               <PlayOnSettings />
+              <div id="advanced-subsonic" style={P.advancedSectionTitle}>Subsonic apps</div>
+              <SubsonicSettings />
             </>
           )}
 

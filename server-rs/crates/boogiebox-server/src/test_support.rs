@@ -60,6 +60,7 @@ pub fn build_test_state(db_path: &std::path::Path) -> AppState {
         dlna_manager: dlna::new_dlna_manager(),
         remote: crate::remote::RemoteManager::new(),
         worker_cancel: tokio_util::sync::CancellationToken::new(),
+        subsonic: crate::subsonic::SubsonicState::default(),
     }
 }
 

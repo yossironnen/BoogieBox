@@ -104,7 +104,7 @@ pub fn needs_audio_transcode(path: &Path) -> bool {
     }
 }
 
-/// Documents the Bitrate For Quality public API surface.
+/// MP3 bitrate (kbps) for the `transcodeQuality` setting: `high` = 320, anything else 192.
 pub fn bitrate_for_quality(quality: &str) -> u32 {
     if quality.eq_ignore_ascii_case("high") {
         320
@@ -113,24 +113,24 @@ pub fn bitrate_for_quality(quality: &str) -> u32 {
     }
 }
 
-/// Documents the Transcoded Bytes Per Sec public API surface.
-pub fn transcoded_bytes_per_sec(quality: &str) -> u64 {
-    (bitrate_for_quality(quality) as u64 * 1000) / 8
+/// Bytes per second of a constant-bitrate MP3 at `kbps`.
+pub fn transcoded_bytes_per_sec(kbps: u32) -> u64 {
+    (kbps.max(1) as u64 * 1000) / 8
 }
 
 /// Documents the Transcoded Total Bytes public API surface.
-pub fn transcoded_total_bytes(duration_secs: f64, quality: &str) -> u64 {
-    (duration_secs * transcoded_bytes_per_sec(quality) as f64).round() as u64
+pub fn transcoded_total_bytes(duration_secs: f64, kbps: u32) -> u64 {
+    (duration_secs * transcoded_bytes_per_sec(kbps) as f64).round() as u64
 }
 
 /// Documents the Byte Offset To Seconds public API surface.
-pub fn byte_offset_to_seconds(byte_offset: u64, quality: &str) -> f64 {
-    byte_offset as f64 / transcoded_bytes_per_sec(quality) as f64
+pub fn byte_offset_to_seconds(byte_offset: u64, kbps: u32) -> f64 {
+    byte_offset as f64 / transcoded_bytes_per_sec(kbps) as f64
 }
 
 /// Documents the Transcoded Byte Offset public API surface.
-pub fn transcoded_byte_offset(seconds: f64, quality: &str) -> u64 {
-    (seconds * transcoded_bytes_per_sec(quality) as f64).round() as u64
+pub fn transcoded_byte_offset(seconds: f64, kbps: u32) -> u64 {
+    (seconds * transcoded_bytes_per_sec(kbps) as f64).round() as u64
 }
 
 /// Parse an HTTP `Range: bytes=...` header. Returns `(start, end)` inclusive.
@@ -390,10 +390,9 @@ pub fn spawn_transcode(
     ffmpeg: &Path,
     file_path: &Path,
     seek_seconds: f64,
-    quality: &str,
+    bitrate: u32,
     replay_gain: bool,
 ) -> std::io::Result<std::process::Child> {
-    let bitrate = bitrate_for_quality(quality);
     let mut cmd = std::process::Command::new(ffmpeg); // nosemgrep: boogiebox-rust-dynamic-command
 
     cmd.args(["-loglevel", "error", "-hide_banner"]);
@@ -516,8 +515,8 @@ mod tests {
     #[test]
     fn transcode_byte_math_round_trips() {
         let dur = 300.0f64;
-        let total = transcoded_total_bytes(dur, "low");
-        let seconds_back = byte_offset_to_seconds(total, "low");
+        let total = transcoded_total_bytes(dur, 192);
+        let seconds_back = byte_offset_to_seconds(total, 192);
         assert!(
             (seconds_back - dur).abs() < 1.0,
             "round-trip {seconds_back} ≈ {dur}"

@@ -3223,6 +3223,11 @@ export default function Player({
             forceTranscodeForTrack: forceTranscodeForTrackRef.current,
           });
           setAudioError(msgs[audio.error?.code ?? 0] ?? 'Playback error'); setLoading(false);
+          // Streams require a session; an expired one surfaces as a media error, not a 401.
+          const failedUrl = loadedUrlRef.current;
+          api.auth.sessionValid().then((valid) => {
+            if (!valid && loadedUrlRef.current === failedUrl) setAudioError('Session expired. Sign in again.');
+          }).catch(() => {});
           // Stop playback on error so isPlaying transitions false→true on the
           // next Play All / play action, ensuring the isPlaying effect fires and
           // can pick up any stream URL changes (e.g. noTranscode toggle).

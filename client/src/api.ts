@@ -55,6 +55,7 @@ import type {
   IntroOutroRefined,
 } from './types';
 import type { EntityId } from './entityId';
+import type { SubsonicCredentials } from './subsonic';
 import { invalidateHomeData } from './homeCache';
 import type {
   RemoteCommand,
@@ -729,6 +730,8 @@ export const api = {
     logout: () => post<{ ok: boolean }>('/auth/logout'),
     // Requires auth
     me: () => get<AuthUser>('/auth/me'),
+    // False only on an explicit 401; network failures reject so callers can tell them apart.
+    sessionValid: async () => (await fetch(`${BASE}/api/auth/me`, FETCH_OPTS)).status !== 401,
   },
   userSettings: {
     get: () => get<Record<string, string>>('/user/settings'),
@@ -760,6 +763,14 @@ export const api = {
       remove:             (id: EntityId)                                                                      => del<{ ok: boolean }>(`/admin/users/${id}`),
       setPin:             (id: EntityId, pin: string | null)                                                  => put<{ ok: boolean }>(`/admin/users/${id}/pin`, { pin }),
       setPermissions:     (id: EntityId, perms: { canManageLibraries: boolean; canEditMetadata: boolean })   => put<{ ok: boolean }>(`/admin/users/${id}/permissions`, perms),
+      setSubsonicPassword:   (id: EntityId, password: string)                                                => put<{ ok: boolean }>(`/admin/users/${id}/subsonic-password`, { password }),
+      clearSubsonicPassword: (id: EntityId)                                                                  => del<{ ok: boolean }>(`/admin/users/${id}/subsonic-password`),
     },
+  },
+  /** The signed-in user's Subsonic password for third-party apps (`/rest`). */
+  subsonic: {
+    credentials:   () => get<SubsonicCredentials>('/subsonic/credentials'),
+    setPassword:   (password: string) => put<{ ok: boolean }>('/subsonic/credentials/password', { password }),
+    clearPassword: () => del<{ ok: boolean }>('/subsonic/credentials/password'),
   },
 };

@@ -358,6 +358,7 @@ mod test_helpers {
             dlna_manager: crate::dlna::new_dlna_manager(),
             remote: crate::remote::RemoteManager::new(),
             worker_cancel: tokio_util::sync::CancellationToken::new(),
+            subsonic: crate::subsonic::SubsonicState::default(),
         };
         let shared = Arc::new(RwLock::new(state));
         auth_router(shared)

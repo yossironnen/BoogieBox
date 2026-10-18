@@ -23,6 +23,7 @@ struct AdminUserEntry {
     username: String,
     role: String,
     has_pin: bool,
+    has_subsonic_password: bool,
     can_manage_libraries: bool,
     can_edit_metadata: bool,
     created_at: String,
@@ -76,6 +77,15 @@ pub fn admin_router(state: SharedState) -> Router {
 
 // -- Handlers ------------------------------------------------------------------
 
+/// Role, permission and account changes must not linger in the Subsonic credential cache.
+fn invalidate_subsonic_accounts(state: &SharedState) {
+    state
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .subsonic
+        .invalidate_accounts();
+}
+
 async fn list_users_handler(
     State(state): State<SharedState>,
     _admin: AdminUser,
@@ -87,15 +97,18 @@ async fn list_users_handler(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        boogiebox_db::list_admin_users(&conn)
+        let users = boogiebox_db::list_admin_users(&conn)?;
+        let with_password = boogiebox_db::subsonic::list_user_ids_with_subsonic_password(&conn)?;
+        Ok::<_, rusqlite::Error>((users, with_password))
     })
     .await;
 
     match result {
-        Ok(Ok(users)) => {
+        Ok(Ok((users, with_password))) => {
             let body: Vec<AdminUserEntry> = users
                 .into_iter()
                 .map(|u| AdminUserEntry {
+                    has_subsonic_password: with_password.contains(&u.id),
                     id: u.id,
                     username: u.username,
                     role: u.role,
@@ -183,6 +196,7 @@ async fn create_user_handler(
                 (
                     StatusCode::CREATED,
                     Json(AdminUserEntry {
+                        has_subsonic_password: false,
                         id: created.id,
                         username: created.username,
                         role: created.role,
@@ -239,6 +253,7 @@ async fn update_permissions_handler(
     })
     .await;
 
+    invalidate_subsonic_accounts(&state);
     match result {
         Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
         Ok(Ok(false)) => not_found_response(),
@@ -270,6 +285,7 @@ async fn update_pin_handler(
     })
     .await;
 
+    invalidate_subsonic_accounts(&state);
     match result {
         Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
         Ok(Ok(false)) => not_found_response(),
@@ -317,6 +333,7 @@ async fn delete_user_handler(
     })
     .await;
 
+    invalidate_subsonic_accounts(&state);
     match result {
         Ok(Ok(Ok(()))) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
         Ok(Ok(Err("last_admin"))) => (

@@ -549,7 +549,7 @@ async fn fill_album_art_once(
 
 // -- Artist photo --------------------------------------------------------------
 
-async fn artist_photo_handler(
+pub(crate) async fn artist_photo_handler(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     Query(params): Query<ArtParams>,

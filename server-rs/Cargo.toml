@@ -8,7 +8,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "UNLICENSED"
-version = "0.9.16"
+version = "0.9.18"
 
 [workspace.dependencies]
 axum = "0.8"
@@ -18,7 +18,9 @@ hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 imageproc = { version = "0.25", default-features = false }
 ab_glyph = "0.2"
+aes-gcm = "0.11"
 libc = "0.2"
+md-5 = "0.11"
 pbkdf2 = "0.13"
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "stream"] }

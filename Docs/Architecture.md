@@ -34,6 +34,7 @@ Important server modules:
 - `src/dlna.rs`: optional DLNA MediaServer (SSDP + ContentDirectory).
 - `src/upnp/`: UPnP AV control point (XML parsing, device descriptions, SOAP, SSDP discovery, shared DIDL helpers).
 - `src/remote/`: Play On: `RemoteManager` (in `AppState`), renderer registry, short-lived media tokens (`/media/r/{token}`), pure queue logic, and one session actor per renderer.
+- `src/subsonic/`: OpenSubsonic-compatible `/rest/{method}` API for third-party apps: parameter parsing (query + form), Subsonic-password auth (AES-GCM at rest, `subsonic.key` beside the database, cached; never the PIN), one node tree rendered to XML/JSON/JSONP, browse/list/search/playlist handlers, library-confined `stream`/`download` with a transcode limiter, and `getCoverArt` via the artwork cache. `routes/subsonic_routes.rs` manages the passwords for the UI.
 - `src/providers.rs`: Discogs, Deezer, Spotify, LRCLIB, and lyrics.ovh clients.
 - `src/image_thumb.rs`: JPEG thumbnail generation.
 - `src/home_cache.rs`: bounded, change-counter-invalidated Home query cache.

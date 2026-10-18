@@ -30,6 +30,7 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     systemStatus: vi.fn(),
     systemSwitchDb: vi.fn(),
     radioMetadataStatus: vi.fn(),
+    subsonic: { credentials: vi.fn(), setPassword: vi.fn(), clearPassword: vi.fn() },
   },
   getStreamDirectMock: vi.fn(),
   setStreamDirectMock: vi.fn(),
@@ -58,6 +59,8 @@ describe('SettingsPage component flows', () => {
     vi.stubGlobal('fetch', vi.fn());
 
     getStreamDirectMock.mockReturnValue(false);
+    // Subsonic panels are covered by ConnectedAppsPanel.test.tsx / SubsonicSettings.test.tsx.
+    apiMock.subsonic.credentials.mockResolvedValue({ enabled: false, hasPassword: false, updatedAt: null, lastUsedAt: null, lastClient: null, serverUrls: [] });
     apiMock.radioMetadataStatus.mockResolvedValue({ mode: 'full', lastfmConfigured: true, keylessEnabled: true, tracksChecked: 0, tracksTotal: 0, artistsTagged: 0, artistsTotal: 0 });
     apiMock.systemStatus.mockResolvedValue({ setupRequired: false, ffmpegAvailable: true, dbFolder: 'D:\\BoogieData' });
     apiMock.systemSwitchDb.mockResolvedValue({ ok: true });

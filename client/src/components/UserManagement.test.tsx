@@ -9,6 +9,8 @@ const { usersApi } = vi.hoisted(() => ({
     remove: vi.fn(),
     setPermissions: vi.fn(),
     setPin: vi.fn(),
+    setSubsonicPassword: vi.fn(),
+    clearSubsonicPassword: vi.fn(),
   },
 }));
 
@@ -48,6 +50,8 @@ describe('UserManagement', () => {
     usersApi.remove.mockResolvedValue({});
     usersApi.setPermissions.mockResolvedValue({});
     usersApi.setPin.mockResolvedValue({});
+    usersApi.setSubsonicPassword.mockResolvedValue({ ok: true });
+    usersApi.clearSubsonicPassword.mockResolvedValue({ ok: true });
   });
 
   it('loads users, validates input, and creates a permission-scoped user', async () => {
@@ -173,5 +177,40 @@ describe('UserManagement', () => {
 
     expect(await screen.findByText('PIN service unavailable')).toBeInTheDocument();
     expect(screen.getByText('Set PIN for listener')).toBeInTheDocument();
+  });
+
+  it('sets and removes a Subsonic password for another user', async () => {
+    usersApi.list.mockResolvedValue([admin, { ...listener, hasSubsonicPassword: true }]);
+    render(<UserManagement currentUser={currentUser} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Subsonic password for listener' }));
+    const dialog = screen.getByRole('dialog', { name: 'Subsonic password for listener' });
+    const save = within(dialog).getByRole('button', { name: 'Save' });
+    expect(save).toBeDisabled();
+
+    const [password, confirm] = Array.from(dialog.querySelectorAll('input[type="password"]')) as HTMLInputElement[];
+    fireEvent.change(password, { target: { value: 'NoSymbol1' } });
+    fireEvent.change(confirm, { target: { value: 'NoSymbol1' } });
+    expect(save).toBeDisabled();
+    fireEvent.change(password, { target: { value: 'Groove!26' } });
+    fireEvent.change(confirm, { target: { value: 'Groove!26' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(usersApi.setSubsonicPassword).toHaveBeenCalledWith('user-2', 'Groove!26'));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Subsonic password for listener' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Subsonic password for listener' })).getByRole('button', { name: 'Remove password' }));
+    await waitFor(() => expect(usersApi.clearSubsonicPassword).toHaveBeenCalledWith('user-2'));
+  });
+
+  it('shows the server error when saving a Subsonic password fails', async () => {
+    usersApi.setSubsonicPassword.mockRejectedValue(new Error('Password must be different from your PIN'));
+    render(<UserManagement currentUser={currentUser} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Subsonic password for listener' }));
+    const dialog = screen.getByRole('dialog', { name: 'Subsonic password for listener' });
+    const [password, confirm] = Array.from(dialog.querySelectorAll('input[type="password"]')) as HTMLInputElement[];
+    fireEvent.change(password, { target: { value: 'Groove!26' } });
+    fireEvent.change(confirm, { target: { value: 'Groove!26' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await within(dialog).findByText('Password must be different from your PIN')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Remove password' })).toBeNull();
   });
 });

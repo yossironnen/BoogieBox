@@ -60,6 +60,7 @@ struct UserHistoryParams {
 
 async fn stream_track_handler(
     State(state): State<SharedState>,
+    _user: AuthenticatedUser,
     req_headers: HeaderMap,
     Path(id): Path<String>,
     Query(params): Query<StreamParams>,
@@ -156,7 +157,7 @@ async fn stream_track_handler(
             file_path: &file_path,
             duration: track.duration,
             range: range_header.as_deref(),
-            quality: &quality,
+            bitrate_kbps: ffmpeg::bitrate_for_quality(&quality),
             replay_gain,
             head_only: false,
             log_id: &id,
@@ -714,7 +715,7 @@ fn internal_error() -> axum::response::Response {
 #[cfg(test)]
 mod tests {
     use crate::test_support::{
-        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send,
+        json_body, new_test_app_with_pool, seed_admin_session, seed_user_session, send, send_full,
     };
     use crate::DbPool;
     use axum::body::Body;
@@ -771,12 +772,14 @@ mod tests {
     #[tokio::test]
     async fn stream_track_serves_full_file_and_404s_for_missing_track() {
         let (app, pool) = new_test_app_with_pool("playback-stream");
+        let cookie = seed_user_session(&pool, "u1");
         let (track_id, _path) = seed_streamable_track(&pool);
 
         let (status, body) = send(
             app.clone(),
             Request::builder()
                 .uri(format!("/api/tracks/{track_id}/stream"))
+                .header("cookie", cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -788,6 +791,7 @@ mod tests {
             app,
             Request::builder()
                 .uri("/api/tracks/does-not-exist/stream")
+                .header("cookie", cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -796,14 +800,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_track_requires_a_session() {
+        let (app, pool) = new_test_app_with_pool("playback-stream-auth");
+        let (track_id, _path) = seed_streamable_track(&pool);
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_ne!(body, b"fake mp3 bytes for streaming tests");
+    }
+
+    #[tokio::test]
+    async fn stream_track_works_for_user_without_pin_after_login() {
+        let (app, pool) = new_test_app_with_pool("playback-stream-no-pin");
+        let (track_id, _path) = seed_streamable_track(&pool);
+        pool.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO users(id, username, role, pin_hash) VALUES ('np', 'nopin', 'user', NULL)",
+                [],
+            )
+            .unwrap();
+
+        let (login_status, login_headers, _) = send_full(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"userId":"np","pin":""}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(login_status, StatusCode::OK);
+        let cookie = login_headers
+            .get(axum::http::header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .expect("login sets bb_session cookie")
+            .to_owned();
+
+        let (status, body) = send(
+            app,
+            Request::builder()
+                .uri(format!("/api/tracks/{track_id}/stream"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"fake mp3 bytes for streaming tests");
+    }
+
+    #[tokio::test]
     async fn stream_track_supports_byte_ranges_and_conditional_requests() {
         let (app, pool) = new_test_app_with_pool("playback-stream-range");
+        let cookie = seed_user_session(&pool, "u1");
         let (track_id, _path) = seed_streamable_track(&pool);
 
         let (range_status, range_body) = send(
             app.clone(),
             Request::builder()
                 .uri(format!("/api/tracks/{track_id}/stream"))
+                .header("cookie", cookie.clone())
                 .header("range", "bytes=0-3")
                 .body(Body::empty())
                 .unwrap(),
@@ -817,6 +883,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .uri(format!("/api/tracks/{track_id}/stream"))
+                        .header("cookie", cookie.clone())
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -836,6 +903,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/tracks/{track_id}/stream"))
+                    .header("cookie", cookie)
                     .header("if-none-match", etag)
                     .body(Body::empty())
                     .unwrap(),

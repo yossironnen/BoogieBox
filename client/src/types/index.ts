@@ -823,6 +823,8 @@ export interface AdminUser {
   username: string;
   role: 'admin' | 'user';
   hasPin: boolean;
+  /** A Subsonic password for third-party apps is set. */
+  hasSubsonicPassword?: boolean;
   canManageLibraries: boolean;
   canEditMetadata: boolean;
   created_at: string;

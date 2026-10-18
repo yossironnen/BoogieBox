@@ -1,0 +1,393 @@
+//! `stream`, `download` and `getCoverArt`. Files are only served from inside their library's root folders;
+//! transcodes are bounded by a semaphore so offline-download bursts cannot fork dozens of encoders.
+
+use std::{path::PathBuf, time::Duration};
+
+use axum::{
+    body::Body,
+    extract::{Path as AxPath, Query, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+};
+use futures_util::StreamExt;
+
+use super::{
+    handlers::{db_err, valid_id, Ctx},
+    model,
+    response::SubsonicError,
+};
+use crate::{ffmpeg, media_serve, routes::artwork_routes};
+
+const TRANSCODE_WAIT: Duration = Duration::from_secs(10);
+const BITRATES: [u32; 4] = [128, 192, 256, 320];
+
+/// Largest supported bitrate not above `requested` (at least 128).
+pub fn snap_bitrate(requested: u32) -> u32 {
+    BITRATES
+        .iter()
+        .rev()
+        .copied()
+        .find(|b| *b <= requested)
+        .unwrap_or(BITRATES[0])
+}
+
+/// How a stream request is served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    Original,
+    Mp3(u32),
+}
+
+/// Decision table (plan D12): original unless the client asked for MP3, the file needs transcoding for
+/// playback, or `maxBitRate` is below the source bitrate. `default_kbps` comes from `transcodeQuality`.
+pub fn choose_delivery(
+    download: bool,
+    format: Option<&str>,
+    max_bitrate: u32,
+    source_kbps: Option<i64>,
+    needs_transcode: bool,
+    source_is_mp3: bool,
+    default_kbps: u32,
+) -> Delivery {
+    let format = format.map(str::to_ascii_lowercase);
+    if download || format.as_deref() == Some("raw") {
+        return Delivery::Original;
+    }
+    let cap = |kbps: u32| {
+        if max_bitrate > 0 {
+            snap_bitrate(kbps.min(max_bitrate))
+        } else {
+            snap_bitrate(kbps)
+        }
+    };
+    if needs_transcode {
+        return Delivery::Mp3(cap(default_kbps));
+    }
+    if format.as_deref() == Some("mp3") && !source_is_mp3 {
+        return Delivery::Mp3(cap(default_kbps));
+    }
+    match source_kbps {
+        Some(src) if max_bitrate > 0 && src > i64::from(max_bitrate) => {
+            Delivery::Mp3(snap_bitrate(max_bitrate))
+        }
+        _ => Delivery::Original,
+    }
+}
+
+/// True when `file` is inside one of `roots` (both canonicalized; unreachable roots are skipped).
+pub fn within_roots(file: &std::path::Path, roots: &[String]) -> bool {
+    let Ok(file) = std::fs::canonicalize(file) else {
+        return false;
+    };
+    roots
+        .iter()
+        .filter(|r| !r.trim().is_empty())
+        .filter_map(|r| std::fs::canonicalize(r.trim()).ok())
+        .any(|root| file.starts_with(&root))
+}
+
+fn content_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded: String = name
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+}
+
+/// `stream` (and `download` with `download = true`).
+pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError> {
+    let id = valid_id(ctx.params.required("id")?)?;
+    let (song, roots, quality, replay_gain) = ctx
+        .db(move |conn| {
+            let song = boogiebox_db::subsonic::get_song(conn, &id)
+                .map_err(db_err)?
+                .ok_or_else(|| SubsonicError::not_found("Song"))?;
+            let roots = match song.library_id.as_deref() {
+                Some(lib) => boogiebox_db::subsonic::library_roots(conn, lib).map_err(db_err)?,
+                None => Vec::new(),
+            };
+            let get = |key: &str| boogiebox_db::artwork::get_setting(conn, key);
+            let quality = get("transcodeQuality").unwrap_or_else(|| "low".into());
+            let replay_gain = get("replayGainEnabled").as_deref() == Some("true");
+            Ok((song, roots, quality, replay_gain))
+        })
+        .await?;
+
+    let file_path = PathBuf::from(&song.file_path);
+    let check_path = file_path.clone();
+    let allowed = tokio::task::spawn_blocking(move || within_roots(&check_path, &roots))
+        .await
+        .unwrap_or(false);
+    if !allowed {
+        tracing::warn!(track_id = %song.id, "Subsonic stream refused: file missing or outside its library");
+        return Err(SubsonicError::not_found("Song file"));
+    }
+
+    let ext = model::suffix(&song.file_path);
+    let delivery = choose_delivery(
+        download,
+        ctx.params.text("format"),
+        ctx.params.int("maxBitRate")?.unwrap_or(0).clamp(0, 10_000) as u32,
+        song.bitrate,
+        ffmpeg::needs_audio_transcode(&file_path),
+        ext == "mp3",
+        ffmpeg::bitrate_for_quality(&quality),
+    );
+
+    match delivery {
+        Delivery::Original => {
+            let mime = ffmpeg::audio_mime_type(&file_path);
+            let mut resp =
+                media_serve::serve_file(&file_path, mime, &ctx.headers, ctx.head, &[]).await;
+            if download {
+                let name = model::virtual_path(&song)
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("track")
+                    .to_owned();
+                if let Ok(v) = HeaderValue::from_str(&content_disposition(&name)) {
+                    resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+                }
+            }
+            Ok(resp)
+        }
+        Delivery::Mp3(kbps) => {
+            let limiter = ctx.subsonic.transcode_limiter(ctx.settings.max_transcodes);
+            let permit = match tokio::time::timeout(TRANSCODE_WAIT, limiter.acquire_owned()).await {
+                Ok(Ok(permit)) => permit,
+                _ => {
+                    return Ok((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Too many transcodes in progress",
+                    )
+                        .into_response())
+                }
+            };
+            let range = ctx
+                .headers
+                .get(header::RANGE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let resp = media_serve::serve_mp3_transcode(media_serve::Mp3Transcode {
+                file_path: &file_path,
+                duration: (song.duration > 0.0).then_some(song.duration),
+                range: range.as_deref(),
+                bitrate_kbps: kbps,
+                replay_gain,
+                head_only: ctx.head,
+                log_id: &song.id,
+                log_ext: &ext,
+                extra: &[],
+            })
+            .await;
+            // Hold the transcode slot until the body is fully sent or the client disconnects.
+            let (parts, body) = resp.into_parts();
+            let guarded = body.into_data_stream().map(move |chunk| {
+                let _slot = &permit;
+                chunk
+            });
+            Ok(Response::from_parts(parts, Body::from_stream(guarded)))
+        }
+    }
+}
+
+/// What a cover-art id refers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoverTarget {
+    Album(String),
+    Artist(String),
+}
+
+/// `getCoverArt`: `al-`/`ar-`/`tr-`/`pl-` prefixed ids, or a bare album/artist/song id.
+pub async fn cover_art(ctx: &Ctx) -> Result<Response, SubsonicError> {
+    let raw = ctx.params.required("id")?.to_owned();
+    let size = ctx.params.int("size")?.unwrap_or(0);
+    let user = ctx.user.id.clone();
+    let target = ctx
+        .db(move |conn| resolve_cover(conn, &raw, &user))
+        .await?
+        .ok_or_else(|| SubsonicError::not_found("Cover art"))?;
+    // Thumbnails come from the shared artwork cache (300 or 800 px); originals can be very large.
+    let thumb = if size > 0 && size <= 300 {
+        "300"
+    } else {
+        "800"
+    };
+    let params = artwork_routes::ArtParams {
+        size: Some(thumb.to_owned()),
+        refresh: None,
+    };
+    let resp = match target {
+        CoverTarget::Album(id) => {
+            artwork_routes::album_art_handler(
+                State(ctx.state.clone()),
+                AxPath(id),
+                Query(params),
+                ctx.headers.clone(),
+            )
+            .await
+        }
+        CoverTarget::Artist(id) => {
+            artwork_routes::artist_photo_handler(
+                State(ctx.state.clone()),
+                AxPath(id),
+                Query(params),
+                ctx.headers.clone(),
+            )
+            .await
+        }
+    };
+    if resp.status().is_success() || resp.status() == StatusCode::NOT_MODIFIED {
+        Ok(resp)
+    } else {
+        Err(SubsonicError::not_found("Cover art"))
+    }
+}
+
+fn resolve_cover(
+    conn: &rusqlite::Connection,
+    raw: &str,
+    user_id: &str,
+) -> Result<Option<CoverTarget>, SubsonicError> {
+    use boogiebox_db::subsonic as sdb;
+    let (prefix, id) = match raw.split_once('-') {
+        Some((p @ ("al" | "ar" | "tr" | "pl"), rest)) => (Some(p), rest),
+        _ => (None, raw),
+    };
+    let id = valid_id(id)?;
+    let album_of_song = |song_id: &str| -> Result<Option<CoverTarget>, SubsonicError> {
+        Ok(sdb::get_song(conn, song_id)
+            .map_err(db_err)?
+            .and_then(|s| s.album_id)
+            .map(CoverTarget::Album))
+    };
+    match prefix {
+        Some("al") => Ok(Some(CoverTarget::Album(id))),
+        Some("ar") => Ok(Some(CoverTarget::Artist(id))),
+        Some("tr") => album_of_song(&id),
+        Some("pl") => {
+            let entity = boogiebox_db::music::coerce_entity_id(&id);
+            Ok(
+                boogiebox_db::playlists::get_playlist(conn, &entity, user_id)
+                    .map_err(db_err)?
+                    .and_then(|p| p.art_album_ids.into_iter().next())
+                    .map(CoverTarget::Album),
+            )
+        }
+        _ => {
+            if sdb::get_album(conn, &id).map_err(db_err)?.is_some() {
+                return Ok(Some(CoverTarget::Album(id)));
+            }
+            if sdb::get_artist(conn, &id).map_err(db_err)?.is_some() {
+                return Ok(Some(CoverTarget::Artist(id)));
+            }
+            album_of_song(&id)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitrates_snap_down_with_a_floor() {
+        assert_eq!(snap_bitrate(320), 320);
+        assert_eq!(snap_bitrate(300), 256);
+        assert_eq!(snap_bitrate(192), 192);
+        assert_eq!(snap_bitrate(96), 128);
+        assert_eq!(snap_bitrate(10_000), 320);
+    }
+
+    #[test]
+    fn delivery_decision_table() {
+        use Delivery::*;
+        // download / raw always original
+        assert_eq!(
+            choose_delivery(true, Some("mp3"), 128, Some(900), true, false, 192),
+            Original
+        );
+        assert_eq!(
+            choose_delivery(false, Some("raw"), 128, Some(900), true, false, 192),
+            Original
+        );
+        // not playable → mp3 at default, capped by maxBitRate
+        assert_eq!(
+            choose_delivery(false, None, 0, Some(900), true, false, 320),
+            Mp3(320)
+        );
+        assert_eq!(
+            choose_delivery(false, None, 160, Some(900), true, false, 320),
+            Mp3(128)
+        );
+        // explicit mp3 for a non-mp3 source
+        assert_eq!(
+            choose_delivery(false, Some("MP3"), 0, Some(500), false, false, 192),
+            Mp3(192)
+        );
+        // explicit mp3 for an mp3 source within budget → original
+        assert_eq!(
+            choose_delivery(false, Some("mp3"), 0, Some(320), false, true, 192),
+            Original
+        );
+        // maxBitRate below the source → transcode at that rate
+        assert_eq!(
+            choose_delivery(false, None, 192, Some(320), false, true, 320),
+            Mp3(192)
+        );
+        // maxBitRate at or above the source, or unknown source rate → original
+        assert_eq!(
+            choose_delivery(false, None, 320, Some(320), false, true, 320),
+            Original
+        );
+        assert_eq!(
+            choose_delivery(false, None, 128, None, false, true, 320),
+            Original
+        );
+    }
+
+    #[test]
+    fn root_confinement() {
+        let base = std::env::temp_dir().join(format!("bb-subsonic-roots-{}", uuid::Uuid::now_v7()));
+        let inside = base.join("lib");
+        std::fs::create_dir_all(&inside).unwrap();
+        let file = inside.join("a.mp3");
+        std::fs::write(&file, b"x").unwrap();
+        let outside = base.join("other.mp3");
+        std::fs::write(&outside, b"x").unwrap();
+        let roots = vec![
+            inside.to_string_lossy().into_owned(),
+            "Z:\\does\\not\\exist".into(),
+        ];
+        assert!(within_roots(&file, &roots));
+        assert!(!within_roots(&outside, &roots));
+        assert!(!within_roots(&inside.join("..").join("other.mp3"), &roots));
+        assert!(!within_roots(&inside.join("missing.mp3"), &roots));
+        assert!(!within_roots(&file, &[]));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn content_disposition_is_header_safe() {
+        let v = content_disposition("01 - Café \"Live\".flac");
+        assert!(HeaderValue::from_str(&v).is_ok());
+        assert!(v.contains("filename*=UTF-8''01%20-%20Caf%C3%A9%20%22Live%22.flac"));
+        assert!(v.contains("filename=\"01 - Caf_ _Live_.flac\""));
+    }
+}

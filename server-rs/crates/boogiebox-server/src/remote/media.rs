@@ -482,7 +482,7 @@ pub async fn media_handler(
                         file_path,
                         duration: *duration,
                         range,
-                        quality: "high",
+                        bitrate_kbps: 320,
                         replay_gain: false,
                         head_only,
                         log_id,

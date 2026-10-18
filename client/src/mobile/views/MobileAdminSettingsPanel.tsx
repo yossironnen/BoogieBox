@@ -18,6 +18,7 @@ type AdminSnapshot = {
   queues: AdminQueueSnapshot | null;
   deepAnalysis: BoogieMixDeepAnalysisStatus | null;
   playOn: { enabled: boolean; releaseStops: boolean; renderers: RendererInfo[] } | null;
+  subsonic: { enabled: boolean } | null;
 };
 
 const EMPTY_SNAPSHOT: AdminSnapshot = {
@@ -25,6 +26,7 @@ const EMPTY_SNAPSHOT: AdminSnapshot = {
   queues: null,
   deepAnalysis: null,
   playOn: null,
+  subsonic: null,
 };
 
 async function loadPlayOn(): Promise<NonNullable<AdminSnapshot['playOn']>> {
@@ -66,12 +68,14 @@ export default function MobileAdminSettingsPanel({ focus = null }: { focus?: 'pl
       api.admin.queues(),
       api.boogiemix.deepAnalysisStatus(),
       loadPlayOn(),
+      api.settings.get().then((settings) => ({ enabled: settings.subsonicApiEnabled === 'true' })),
     ]);
     setSnapshot((current) => ({
       libraries: results[0].status === 'fulfilled' ? results[0].value : current.libraries,
       queues: results[1].status === 'fulfilled' ? results[1].value : current.queues,
       deepAnalysis: results[2].status === 'fulfilled' ? results[2].value : current.deepAnalysis,
       playOn: results[3].status === 'fulfilled' ? results[3].value : current.playOn,
+      subsonic: results[4].status === 'fulfilled' ? results[4].value : current.subsonic,
     }));
     // Play On is optional (off, or an older server): its block just stays hidden.
     const failed = results.slice(0, 3).filter((result) => result.status === 'rejected').length;
@@ -288,6 +292,23 @@ export default function MobileAdminSettingsPanel({ focus = null }: { focus?: 'pl
                       ))}
                     </div>
                   ) : <div style={styles.empty}>{playOn.enabled ? 'No speakers found yet.' : 'Play On is off.'}</div>}
+                </div>
+              ) : null}
+
+              {snapshot.subsonic ? (
+                <div style={styles.subsection}>
+                  <div style={styles.subsectionTitle}>Subsonic apps</div>
+                  <div style={styles.subsectionCopy}>Users set their own Subsonic password under Connected apps.</div>
+                  <MobileCheckRow
+                    title="Enable Subsonic API"
+                    description="Let Subsonic-compatible apps browse and play this library."
+                    checked={snapshot.subsonic.enabled}
+                    disabled={busyKey !== null}
+                    onChange={(enabled) => void runAction('subsonic-enabled', async () => {
+                      await api.settings.update({ subsonicApiEnabled: enabled ? 'true' : 'false' });
+                      return enabled ? 'Subsonic API enabled.' : 'Subsonic API disabled.';
+                    })}
+                  />
                 </div>
               ) : null}
 

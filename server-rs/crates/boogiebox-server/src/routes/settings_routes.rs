@@ -107,6 +107,7 @@ async fn put_settings_handler(
     let deep_debug_toggle = validated
         .get("deepmixDebugLoggingEnabled")
         .map(|v| v == "true");
+    let subsonic_changed = validated.keys().any(|k| k.starts_with("subsonic"));
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = db.lock().unwrap_or_else(|p| p.into_inner());
@@ -124,6 +125,13 @@ async fn put_settings_handler(
             }
             if let Some(enabled) = deep_debug_toggle {
                 crate::logging::set_deep_debug_enabled(enabled);
+            }
+            if subsonic_changed {
+                state
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .subsonic
+                    .invalidate_settings();
             }
             if remote_changed {
                 let (remote, remote_db, cancel) = {

@@ -61,7 +61,7 @@ pub fn coerce_entity_id(raw: &str) -> EntityId {
 
 /// Escapes `%`, `_`, and `\` so a value can be safely embedded in a SQL LIKE
 /// pattern bound as a parameter (paired with `ESCAPE '\'` in the query).
-fn like_escape(value: &str) -> String {
+pub(crate) fn like_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         if ch == '\\' || ch == '%' || ch == '_' {
@@ -82,7 +82,7 @@ fn like_escape(value: &str) -> String {
 /// track whose genre column isn't a single clean value. This instead
 /// checks each requested genre against the comma-delimited tag list,
 /// matched on tag boundaries (so "Rock" doesn't also match "Prog Rock").
-fn push_genre_filter(
+pub(crate) fn push_genre_filter(
     conditions: &mut Vec<String>,
     filter_params: &mut Vec<Value>,
     genres: &[String],
@@ -451,7 +451,7 @@ pub fn list_home_genre_covers(conn: &Connection, genre: &str) -> rusqlite::Resul
         .collect()
 }
 
-fn canonicalize_home_genre(label: &str) -> String {
+pub(crate) fn canonicalize_home_genre(label: &str) -> String {
     label
         .trim()
         .to_lowercase()
@@ -2839,7 +2839,7 @@ pub fn build_safe_fts_prefix_query(raw: &str) -> Option<String> {
 }
 
 /// Returns true when the FTS table has populated UUID track ids.
-fn tracks_fts_has_track_id(conn: &Connection) -> bool {
+pub(crate) fn tracks_fts_has_track_id(conn: &Connection) -> bool {
     if !column_exists_local(conn, "tracks_fts", "track_id").unwrap_or(false) {
         return false;
     }

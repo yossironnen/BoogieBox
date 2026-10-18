@@ -8,6 +8,7 @@ pub mod playback;
 pub mod playlists;
 pub mod radio;
 pub mod remote;
+pub mod subsonic;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -796,6 +797,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
         Migration {
             id: "2026-10-13-remote-sessions-schema",
             apply: remote::ensure_remote_sessions_schema,
+        },
+        Migration {
+            id: "2026-10-18-subsonic-schema",
+            apply: subsonic::ensure_subsonic_schema,
         },
     ];
 

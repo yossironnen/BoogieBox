@@ -58,7 +58,7 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/tracks/{id}/stream` | Stream or transcode a track. |
+| `GET` | `/api/tracks/{id}/stream` | Stream or transcode a track (requires a session). |
 | `GET` | `/api/tracks/{id}/waveform` | Fetch cached waveform data. |
 | `GET` | `/api/tracks/{id}/lyrics` | Fetch cached or provider lyrics. |
 | `GET` | `/api/tracks/{id}/sonic-fingerprint` | Fetch Sonic Fingerprint (stem analysis, sections, transition windows) for a track. |
@@ -145,6 +145,45 @@ All routes require a session and return `404` while the `remotePlaybackEnabled` 
 | `GET` | `/api/remote/events` | Server-Sent Events: `renderers`, `session` (full snapshot), `position`, `takeover`, `notice`, `sessionEnded`. |
 | `GET`/`HEAD` | `/media/r/{token}` | Unauthenticated media for renderers. The token is random, short-lived and scoped to one track, mix or cover. |
 
+## Subsonic Apps (OpenSubsonic `/rest`)
+
+Third-party Subsonic apps use `GET`/`POST` `/rest/{method}` (`.view` suffix optional; POST takes a form body).
+Off until an admin sets `subsonicApiEnabled=true`. Apps sign in with `u` plus `p` (plain or `enc:<hex>`) or
+`t`+`s` (`t = md5(password + salt)`), using the user's **Subsonic password**, never the PIN. API keys
+(`apiKey`) are not supported yet (error 42). Responses are XML by default, `f=json`, or `f=jsonp&callback=`;
+failures are HTTP 200 with a Subsonic `error` (0 generic/unsupported, 10 missing parameter, 40 wrong
+credentials or locked out after 5 failures for a minute, 43 conflicting mechanisms, 50 not allowed, 70 not
+found). `/rest` CORS allows any origin without credentials. Responses never include filesystem paths: `path`
+is a virtual `Artist/Album/NN - Title.ext`.
+
+Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost`), `getUser`,
+`getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`, `getArtists`, `getArtist`,
+`getAlbum`, `getSong`, `getGenres`, `getMusicDirectory`, `getAlbumList`/`getAlbumList2` (`random`, `newest`,
+`highest`, `frequent`, `recent`, `alphabeticalByName`, `alphabeticalByArtist`, `starred`, `byYear`, `byGenre`),
+`getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `getNowPlaying` (always empty for now),
+`search2`/`search3` (an empty query pages through everything, which is how apps sync), `getPlaylists`,
+`getPlaylist`, `scrobble` (`submission=true` counts a play at `time`, ignoring repeats within 30 s),
+`stream`, `download` (original file) and `getCoverArt` (`al-`/`ar-`/`tr-`/`pl-` ids; 300 or 800 px).
+`stream` serves the original file unless the app asks for `format=mp3`, the file needs conversion to play, or
+`maxBitRate` is below the file's bitrate; MP3 bitrates are 128/192/256/320 and at most `subsonicMaxTranscodes`
+conversions run at once (HTTP 503 after a 10 s wait). Files outside their library folders are never served.
+Other spec methods return error 0 "Not supported by BoogieBox". Half-star ratings are shown rounded up to whole
+stars.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/subsonic/credentials` | Current user: `enabled`, `hasPassword`, `updatedAt`, `lastUsedAt`, `lastClient`, `serverUrls` (never the password). |
+| `PUT` | `/api/subsonic/credentials/password` | Current user: set or change the Subsonic password (`{ password }`). Rules: 8–128 characters, at least one symbol, no control characters, not the PIN. A violation returns `400` with `error` and `rule` (`too_short`, `too_long`, `needs_symbol`, `invalid_characters`, `same_as_pin`). |
+| `DELETE` | `/api/subsonic/credentials/password` | Current user: remove the Subsonic password. |
+| `PUT` | `/api/admin/users/{id}/subsonic-password` | Admin: set another user's Subsonic password (same rules). |
+| `DELETE` | `/api/admin/users/{id}/subsonic-password` | Admin: remove another user's Subsonic password. |
+
+Settings (global, admin): `subsonicApiEnabled` (`true`/`false`, default `false`), `subsonicMaxTranscodes`
+(1–8, default 3), `subsonicIgnoredArticles` (up to 20 words, default `The El La Los Las Le Les`). Subsonic
+passwords are stored AES-256-GCM encrypted with the key file `subsonic.key` next to `boogiebox.db`; when moving
+the database by hand, move `subsonic.key` with it or users must set their Subsonic passwords again. Apps send
+the password (or its hash) in the URL, so use HTTPS (reverse proxy or VPN) beyond the home network.
+
 ## Admin, Settings, And Providers
 
 | Method | Path | Purpose |
@@ -153,7 +192,7 @@ All routes require a session and return `404` while the `remotePlaybackEnabled` 
 | `PUT` | `/api/settings` | Update global settings. |
 | `GET` | `/api/user/settings` | Read current user settings. |
 | `PUT` | `/api/user/settings` | Update current user settings. |
-| `GET` | `/api/admin/users` | List all users (admin only). |
+| `GET` | `/api/admin/users` | List all users (admin only), including `hasPin` and `hasSubsonicPassword`. |
 | `POST` | `/api/admin/users` | Create a user (admin only). |
 | `PUT` | `/api/admin/users/{id}/permissions` | Update user scan/edit permissions (admin only). |
 | `PUT` | `/api/admin/users/{id}/pin` | Set or clear a user PIN (admin only). |

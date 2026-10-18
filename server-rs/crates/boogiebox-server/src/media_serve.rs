@@ -239,8 +239,8 @@ pub struct Mp3Transcode<'a> {
     pub duration: Option<f64>,
     /// Raw `Range` header.
     pub range: Option<&'a str>,
-    /// `transcodeQuality` (`high` = 320 kbps, otherwise 192 kbps).
-    pub quality: &'a str,
+    /// MP3 bitrate in kbps (see `ffmpeg::bitrate_for_quality` for the `transcodeQuality` mapping).
+    pub bitrate_kbps: u32,
     /// Apply loudness normalization.
     pub replay_gain: bool,
     /// Answer a `HEAD` request (headers only, no encoder spawned).
@@ -257,10 +257,10 @@ pub struct Mp3Transcode<'a> {
 pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
     let id = req.log_id;
     let track_ext = req.log_ext;
-    let quality = req.quality;
+    let kbps = req.bitrate_kbps;
     let total_bytes = req.duration.and_then(|duration| {
         if duration > 0.0 {
-            let total = ffmpeg::transcoded_total_bytes(duration, quality);
+            let total = ffmpeg::transcoded_total_bytes(duration, kbps);
             (total > 0).then_some(total)
         } else {
             None
@@ -271,7 +271,7 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
         .and_then(|rh| total_bytes.and_then(|total| ffmpeg::parse_byte_range(rh, total)));
     let seek_seconds = parsed_transcode_range
         .filter(|(start, _)| *start > 0)
-        .map(|(start, _)| ffmpeg::byte_offset_to_seconds(start, quality))
+        .map(|(start, _)| ffmpeg::byte_offset_to_seconds(start, kbps))
         .unwrap_or(0.0);
     if req.range.is_some() && total_bytes.is_some() && parsed_transcode_range.is_none() {
         tracing::warn!(
@@ -289,7 +289,7 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
             .unwrap_or_else(|_| internal_error());
     }
 
-    let start_byte = ffmpeg::transcoded_byte_offset(seek_seconds, quality);
+    let start_byte = ffmpeg::transcoded_byte_offset(seek_seconds, kbps);
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, "audio/mpeg")
         .header(header::ACCEPT_RANGES, "bytes")
@@ -349,7 +349,7 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
     tracing::info!(
         track_id = %id,
         ext = %track_ext,
-        quality = %quality,
+        bitrate_kbps = kbps,
         replay_gain = req.replay_gain,
         seek_seconds,
         duration = req.duration.unwrap_or(0.0),
@@ -361,7 +361,7 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
         &ffmpeg_path,
         req.file_path,
         seek_seconds,
-        quality,
+        kbps,
         req.replay_gain,
     ) {
         Ok(c) => c,
@@ -711,7 +711,7 @@ mod tests {
             file_path: &p,
             duration: Some(10.0),
             range: Some("bytes=0-"),
-            quality: "high",
+            bitrate_kbps: 320,
             replay_gain: false,
             head_only: true,
             log_id: "t1",
@@ -727,7 +727,7 @@ mod tests {
             file_path: &p,
             duration: None,
             range: None,
-            quality: "low",
+            bitrate_kbps: 192,
             replay_gain: false,
             head_only: true,
             log_id: "t1",
@@ -742,7 +742,7 @@ mod tests {
             file_path: &p,
             duration: Some(1.0),
             range: Some("bytes=999999-"),
-            quality: "high",
+            bitrate_kbps: 320,
             replay_gain: false,
             head_only: false,
             log_id: "t1",
