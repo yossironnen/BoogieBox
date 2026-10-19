@@ -526,7 +526,13 @@ pub async fn finish_lastfm_connect(
         .take_lastfm_state(state)
         .ok_or(ConnectError::Expired)?;
     let token = token.trim();
-    if token.is_empty() || token.len() > 128 || !token.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    // Last.fm callback tokens are URL-safe: letters, digits, `-` and `_`.
+    if token.is_empty()
+        || token.len() > 128
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
         return Err(ConnectError::Rejected);
     }
     let db = env.db.clone();

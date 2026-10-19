@@ -25,7 +25,8 @@ import RadioMetadataSettings from './RadioMetadataSettings';
 import PlayOnSettings from './PlayOnSettings';
 import SubsonicSettings from './SubsonicSettings';
 import ConnectedAppsPanel from './ConnectedAppsPanel';
-import ScrobblingPanel from './ScrobblingPanel';
+import ScrobblingPanel, { AccountRow, ScrobbleIcon, useScrobbleAccounts } from './ScrobblingPanel';
+import { plausibleListenBrainzToken } from '../scrobbling';
 import { InlineStatus, ToggleRow } from './settingsControls';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -294,6 +295,7 @@ function IntegrationConnector({
   onSave,
   busy,
   errorMessage,
+  footer,
   children,
 }: {
   dotColor: string;
@@ -307,6 +309,8 @@ function IntegrationConnector({
   onSave: () => void;
   busy: boolean;
   errorMessage: string | null;
+  /** Shown under the inputs (account details, notes). */
+  footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -360,6 +364,7 @@ function IntegrationConnector({
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', marginTop: 12 }}>
         {children}
       </div>
+      {footer}
       {errorMessage && (
         <div style={{ marginTop: 8, fontSize: 14, color: 'var(--danger)' }}>{errorMessage}</div>
       )}
@@ -374,6 +379,132 @@ function connectorMessage(result: string | null): string | null {
   if (result.startsWith('✓')) return null;
   if (/^Testing/.test(result)) return result;
   return result.replace(/^✗\s*/, '');
+}
+
+/** Integrations → ListenBrainz: the signed-in user's own account, so every user sees it, not just admins. */
+export function ListenBrainzConnector() {
+  const lb = useScrobbleAccounts();
+  const [token, setToken] = useState('');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [testNote, setTestNote] = useState<string | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const account = lb.account('listenbrainz');
+
+  const checkToken = (): string | null => {
+    const t = token.trim();
+    setTestNote(null);
+    if (!t) { setTestError('Enter a token first'); return null; }
+    if (!plausibleListenBrainzToken(t)) { setTestError('That does not look like a ListenBrainz user token'); return null; }
+    setTestError(null);
+    return t;
+  };
+
+  const test = async () => {
+    const t = checkToken();
+    if (!t) return;
+    setTesting(true);
+    setTestNote('Testing…');
+    try {
+      const resp = await fetch('https://api.listenbrainz.org/1/validate-token', { headers: { Authorization: `Token ${t}` } });
+      const j = await resp.json().catch(() => ({})) as { valid?: boolean; user_name?: string };
+      if (resp.ok && j.valid) {
+        setTestNote(j.user_name ? `Token is valid for ${j.user_name}. Save to connect.` : 'Token is valid. Save to connect.');
+      } else {
+        setTestNote(null);
+        setTestError('ListenBrainz did not accept this token');
+      }
+    } catch (e: unknown) {
+      setTestNote(null);
+      setTestError(`Network error: ${e instanceof Error ? e.message : 'request failed'}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const save = async () => {
+    const t = checkToken();
+    if (!t) return;
+    if (await lb.connectListenBrainz(t)) setToken('');
+  };
+
+  const hookError = lb.result?.startsWith('Error: ') ? lb.result.slice('Error: '.length) : null;
+
+  return (
+    <>
+      <IntegrationConnector
+        dotColor="#eb743b"
+        name="ListenBrainz"
+        description="Sends what you play here, on Play On speakers and in Subsonic apps to your own ListenBrainz account. Each user connects their own."
+        status={connectorStatus(!!account, account ? !account.needsReconnect : null)}
+        helpOpen={helpOpen}
+        onToggleHelp={() => setHelpOpen((v) => !v)}
+        helpContent={
+          <>
+            <strong style={{ color: 'var(--text)' }}>1.</strong> Sign in at{' '}
+            <a href="https://listenbrainz.org/settings/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+              listenbrainz.org/settings
+            </a>{' '}
+            <strong style={{ color: 'var(--text)' }}>2.</strong> Copy your <em>User token</em>{' '}
+            <strong style={{ color: 'var(--text)' }}>3.</strong> Paste it below and save.
+          </>
+        }
+        onTest={() => void test()}
+        onSave={() => void save()}
+        busy={lb.busy || testing}
+        errorMessage={testError ?? hookError}
+        footer={(account || testNote) && (
+          <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+            {account?.needsReconnect && (
+              <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--warning, #f59e0b)' }}>
+                <ScrobbleIcon.Warning size={14} /> ListenBrainz stopped accepting this token. Enter a new one.
+              </div>
+            )}
+            {account && <AccountRow service="listenbrainz" account={account} />}
+            {testNote && <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{testNote}</div>}
+          </div>
+        )}
+      >
+        <input
+          type="password"
+          autoComplete="off"
+          aria-label="ListenBrainz user token"
+          maxLength={128}
+          placeholder={account ? 'Paste a new token to replace it…' : 'Paste your ListenBrainz user token…'}
+          value={token}
+          onChange={e => { setToken(e.target.value); setTestError(null); setTestNote(null); }}
+          style={{
+            flex: 1, minWidth: 240,
+            backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
+            color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
+            fontSize: 15, fontFamily: 'monospace', outline: 'none',
+          }}
+        />
+        {account && (
+          <button
+            type="button"
+            disabled={lb.busy}
+            onClick={() => setConfirmDisconnect(true)}
+            style={hybridControlStyles.dangerButton}
+            aria-label="Disconnect ListenBrainz"
+          >
+            Disconnect
+          </button>
+        )}
+      </IntegrationConnector>
+      {confirmDisconnect && (
+        <ConfirmModal
+          title="Disconnect ListenBrainz?"
+          message="Plays waiting to be sent to it are dropped."
+          confirmLabel="Disconnect"
+          tone="danger"
+          onConfirm={() => { setConfirmDisconnect(false); void lb.disconnect('listenbrainz'); }}
+          onCancel={() => setConfirmDisconnect(false)}
+        />
+      )}
+    </>
+  );
 }
 
 const THEME_MODE_ICON_PROPS = {
@@ -1017,7 +1148,7 @@ export default function SettingsPage({
     if (activeTab === 'libraries' && canManageLibraries) refreshLibraries().catch(() => {});
     if (activeTab === 'schedules' && canManageLibraries) loadSchedules();
     if (activeTab === 'schedules' && isAdmin) loadQueueSnapshot();
-    if (activeTab === 'integrations') {
+    if (activeTab === 'integrations' && isAdmin) {
       api.settings.get().then(s => {
         if (s.discogsToken) setDiscogsToken(s.discogsToken);
         if (s.spotifyClientId) setSpotifyClientId(s.spotifyClientId);
@@ -1027,7 +1158,7 @@ export default function SettingsPage({
         if (s.lastfmKey) setLastfmKey(s.lastfmKey);
         if (s.lastfmSecret) setLastfmSecret(s.lastfmSecret);
       });
-      if (isAdmin) loadProviderUsage();
+      loadProviderUsage();
     }
     if (activeTab === 'advanced') {
       api.settings.get().then(s => {
@@ -1372,8 +1503,8 @@ export default function SettingsPage({
                 ['libraries',    'Libraries'],
                 ['schedules',    'Auto-Scan'],
               ] : []),
+              ['integrations', 'Integrations'],
               ...(isAdmin ? [
-                ['integrations', 'Integrations'],
                 ['advanced',     'Advanced'],
                 ['users',        'Users'],
               ] : []),
@@ -2902,6 +3033,7 @@ export default function SettingsPage({
       {activeTab === 'integrations' && (
         <div style={P.section}>
 
+          {isAdmin && (<>
           {/* Discogs */}
           <IntegrationConnector
             dotColor="#333"
@@ -3054,7 +3186,12 @@ export default function SettingsPage({
               }}
             />
           </IntegrationConnector>
+          </>)}
 
+          <div style={{ ...P.sectionTitle, ...(isAdmin ? { marginTop: 24 } : {}) }}>ListenBrainz</div>
+          <ListenBrainzConnector />
+
+          {isAdmin && (<>
           <div style={{ ...P.sectionTitle, marginTop: 24 }}>Artist Images: Deezer + Spotify Fallback</div>
           <IntegrationConnector
             dotColor="#1db954"
@@ -3101,6 +3238,7 @@ export default function SettingsPage({
               }}
             />
           </IntegrationConnector>
+          </>)}
 
           {isAdmin && (
             <>

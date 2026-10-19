@@ -1,7 +1,8 @@
 /**
- * Settings → User Settings → Scrobbling: connect the signed-in user's own Last.fm and ListenBrainz accounts.
- * Plays from the web player, Play On speakers and Subsonic apps are then sent to them by the server.
- * `useScrobbleAccounts` holds the logic and is shared with the mobile panel.
+ * Settings → User Settings → Scrobbling: connect the signed-in user's own Last.fm account. ListenBrainz is
+ * connected from Settings → Integrations (`ListenBrainzConnector` in SettingsPage). Plays from the web player,
+ * Play On speakers and Subsonic apps are then sent by the server.
+ * `useScrobbleAccounts` holds the logic and is shared with the Integrations card and the mobile panel.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -152,7 +153,7 @@ export function useScrobbleAccounts() {
 }
 
 /** One service's status row. */
-function AccountRow({ service, account }: { service: ScrobbleService; account: ScrobbleAccount | null }) {
+export function AccountRow({ service, account }: { service: ScrobbleService; account: ScrobbleAccount | null }) {
   const last = formatWhen(account?.lastScrobbleAt);
   return (
     <div style={S.stats}>
@@ -182,10 +183,8 @@ function AccountRow({ service, account }: { service: ScrobbleService; account: S
 /** Scrobbling panel for the User Settings tab. */
 export default function ScrobblingPanel() {
   const s = useScrobbleAccounts();
-  const [token, setToken] = useState('');
   const [confirm, setConfirm] = useState<ScrobbleService | null>(null);
   const lastfm = s.account('lastfm');
-  const listenbrainz = s.account('listenbrainz');
 
   if (!s.loaded) return null;
 
@@ -195,7 +194,7 @@ export default function ScrobblingPanel() {
         <div>
           <div style={hybridSettingsStyles.sectionTitle}>Scrobbling</div>
           <div style={hybridSettingsStyles.panelDescription}>
-            Send what you play here, on Play On speakers and in Subsonic apps to your own Last.fm or ListenBrainz account.
+            Send what you play here, on Play On speakers and in Subsonic apps to your own Last.fm account. ListenBrainz is under Integrations.
           </div>
         </div>
       </div>
@@ -234,44 +233,6 @@ export default function ScrobblingPanel() {
         )}
       </div>
 
-      <div style={S.service}>
-        <AccountRow service="listenbrainz" account={listenbrainz} />
-        {listenbrainz?.needsReconnect && (
-          <div role="alert" style={S.warning}><ScrobbleIcon.Warning size={14} /> ListenBrainz stopped accepting this token. Enter a new one.</div>
-        )}
-        {(!listenbrainz || listenbrainz.needsReconnect) && (
-          <label style={S.fieldLabel}>
-            ListenBrainz user token
-            <input
-              type="password"
-              autoComplete="off"
-              value={token}
-              maxLength={128}
-              onChange={(e) => setToken(e.target.value)}
-              style={S.input}
-              placeholder="From listenbrainz.org → Settings"
-            />
-          </label>
-        )}
-        <div style={S.actions}>
-          {(!listenbrainz || listenbrainz.needsReconnect) && (
-            <button
-              type="button"
-              disabled={s.busy || !token.trim()}
-              onClick={() => { void s.connectListenBrainz(token).then((ok) => { if (ok) setToken(''); }); }}
-              style={{ ...hybridControlStyles.primaryButton, ...(s.busy || !token.trim() ? hybridControlStyles.disabled : {}) }}
-            >
-              Connect ListenBrainz
-            </button>
-          )}
-          {listenbrainz && (
-            <button type="button" disabled={s.busy} onClick={() => setConfirm('listenbrainz')} style={hybridControlStyles.dangerButton}>
-              Disconnect
-            </button>
-          )}
-        </div>
-      </div>
-
       <InlineStatus busy={s.busy} busyText="Working…" result={s.result} />
 
       {confirm && (
@@ -306,8 +267,6 @@ const S: Record<string, React.CSSProperties> = {
   statLabel: { fontSize: 12, color: 'var(--text-muted)' },
   statValue: { fontSize: 14, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   warning: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--warning, #f59e0b)' },
-  fieldLabel: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, color: 'var(--text-muted)', maxWidth: 420 },
-  input: { ...hybridControlStyles.field, minHeight: 38, padding: '7px 10px', fontSize: 14 },
   actions: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   hint: { fontSize: 13, color: 'var(--text-muted)' },
   linkButton: { border: 'none', background: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 },

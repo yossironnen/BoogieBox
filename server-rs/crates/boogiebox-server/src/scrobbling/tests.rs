@@ -305,8 +305,9 @@ async fn lastfm_sign_in_uses_a_one_time_state() {
         finish_lastfm_connect(&env, &ep, "forged", "tok").await,
         Err(ConnectError::Expired)
     );
+    // Real Last.fm tokens are URL-safe and can contain `-` and `_`.
     assert_eq!(
-        finish_lastfm_connect(&env, &ep, &state, "tok123")
+        finish_lastfm_connect(&env, &ep, &state, "4fVKx6ab9u_ToICGrT2GRbq-25WsC")
             .await
             .unwrap(),
         "fm_alice"
@@ -315,6 +316,14 @@ async fn lastfm_sign_in_uses_a_one_time_state() {
         finish_lastfm_connect(&env, &ep, &state, "tok123").await,
         Err(ConnectError::Expired),
         "a state works once"
+    );
+    let retry = begin_lastfm_connect(&env, "u1", "http://box.local:3000")
+        .await
+        .unwrap();
+    let retry_state = retry.rsplit("state%3D").next().unwrap().to_owned();
+    assert_eq!(
+        finish_lastfm_connect(&env, &ep, &retry_state, "tok 123").await,
+        Err(ConnectError::Rejected)
     );
     {
         let conn = env.db.lock().unwrap();

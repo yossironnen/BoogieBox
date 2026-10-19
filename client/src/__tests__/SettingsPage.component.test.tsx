@@ -31,6 +31,7 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     systemSwitchDb: vi.fn(),
     radioMetadataStatus: vi.fn(),
     subsonic: { credentials: vi.fn(), setPassword: vi.fn(), clearPassword: vi.fn() },
+    scrobble: { accounts: vi.fn(), connectListenBrainz: vi.fn(), connectLastFm: vi.fn(), disconnect: vi.fn() },
   },
   getStreamDirectMock: vi.fn(),
   setStreamDirectMock: vi.fn(),
@@ -287,7 +288,7 @@ describe('SettingsPage component flows', () => {
     const tablist = within(header).getByRole('tablist', { name: 'Settings sections' });
     expect(bar.compareDocumentPosition(tablist) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const tabs = within(tablist).getAllByRole('tab');
-    expect(tabs).toHaveLength(2);
+    expect(tabs).toHaveLength(3);
     for (const tab of tabs) expect(tab.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     expect(screen.queryByText('Personalize BoogieBox and manage this server.')).not.toBeInTheDocument();
   });
@@ -322,6 +323,7 @@ describe('SettingsPage component flows', () => {
     const userTabs = screen.getByRole('tab', { name: 'About' }).parentElement;
     expect(within(userTabs!).getAllByRole('tab').map((button) => button.textContent)).toEqual([
       'User Settings',
+      'Integrations',
       'About',
     ]);
 
@@ -369,6 +371,7 @@ describe('SettingsPage component flows', () => {
       'User Settings',
       'Libraries',
       'Auto-Scan',
+      'Integrations',
       'About',
     ]);
   });
@@ -1016,5 +1019,60 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
     expect(await screen.findByText(/Deep analysis status unavailable/i)).toBeInTheDocument();
     expect(screen.getByText('Waveform mapping status unavailable.')).toBeInTheDocument();
+  });
+
+  it('lets a standard user connect, test and disconnect their own ListenBrainz account under Integrations', async () => {
+    const lbToken = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
+    const lbAccount = {
+      service: 'listenbrainz' as const,
+      accountName: 'lb_alice',
+      needsReconnect: false,
+      connectedAt: '2026-10-19 08:00:00',
+      lastScrobbleAt: null,
+      pending: 2,
+    };
+    apiMock.scrobble.accounts
+      .mockResolvedValueOnce({ lastfmAvailable: false, accounts: [] })
+      .mockResolvedValueOnce({ lastfmAvailable: false, accounts: [] })
+      .mockResolvedValue({ lastfmAvailable: false, accounts: [lbAccount] });
+    apiMock.scrobble.connectListenBrainz.mockResolvedValue({ ok: true, accountName: 'lb_alice' });
+    apiMock.scrobble.disconnect.mockResolvedValue({ ok: true });
+    vi.mocked(fetch).mockImplementation(async () => okJson({ valid: true, user_name: 'lb_alice' }));
+    render(
+      <SettingsPage
+        currentUser={{ id: '2', username: 'listener', role: 'user', canManageLibraries: false, canEditMetadata: false }}
+        onLogout={() => {}}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByRole('tab', { name: /Integrations/i }));
+
+    expect(screen.queryByPlaceholderText(/Discogs personal access token/i)).not.toBeInTheDocument();
+    expect(apiMock.settings.get).not.toHaveBeenCalled();
+    const input = await screen.findByLabelText('ListenBrainz user token');
+    expect(screen.getByText('Not configured')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save ListenBrainz credentials' }));
+    expect(await screen.findByText('Enter a token first')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'bad token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test ListenBrainz connection' }));
+    expect(await screen.findByText(/does not look like a ListenBrainz user token/)).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: lbToken } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test ListenBrainz connection' }));
+    expect(await screen.findByText('Token is valid for lb_alice. Save to connect.')).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('https://api.listenbrainz.org/1/validate-token', { headers: { Authorization: `Token ${lbToken}` } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save ListenBrainz credentials' }));
+    await waitFor(() => expect(apiMock.scrobble.connectListenBrainz).toHaveBeenCalledWith(lbToken));
+    expect(await screen.findByText('lb_alice')).toBeInTheDocument();
+    expect(screen.getByText('Connected')).toBeInTheDocument();
+    expect(screen.getByLabelText('ListenBrainz user token')).toHaveValue('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect ListenBrainz' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(apiMock.scrobble.disconnect).toHaveBeenCalledWith('listenbrainz'));
   });
 });
