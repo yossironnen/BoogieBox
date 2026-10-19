@@ -1,5 +1,5 @@
 //! In-memory Subsonic state kept in `AppState`: the enabled flag, decrypted-credential cache, encryption key
-//! and transcode limiter. Caches keep SQLite off the per-request path (a client sync sends thousands of
+//! (also used for scrobbling secrets) and transcode limiter. Caches keep SQLite off the per-request path (a client sync sends thousands of
 //! requests); everything is dropped on a database switch.
 
 use std::{
@@ -17,9 +17,6 @@ const SETTINGS_TTL: Duration = Duration::from_secs(10);
 const ACCOUNT_TTL: Duration = Duration::from_secs(60);
 const MAX_CACHED_ACCOUNTS: usize = 1024;
 const USE_RECORD_INTERVAL: Duration = Duration::from_secs(300);
-/// How long a "now playing" notice stays listed without a refresh.
-const NOW_PLAYING_TTL: Duration = Duration::from_secs(600);
-const MAX_NOW_PLAYING: usize = 64;
 /// Default for `subsonicMaxTranscodes`.
 pub const DEFAULT_MAX_TRANSCODES: usize = 3;
 /// Default for `subsonicIgnoredArticles`.
@@ -47,6 +44,8 @@ pub struct SubsonicSettings {
     pub enabled: bool,
     pub max_transcodes: usize,
     pub ignored_articles: String,
+    /// Play On renderer the `jukeboxControl` method drives (`None` = jukebox off).
+    pub jukebox_renderer: Option<String>,
 }
 
 impl Default for SubsonicSettings {
@@ -55,20 +54,9 @@ impl Default for SubsonicSettings {
             enabled: false,
             max_transcodes: DEFAULT_MAX_TRANSCODES,
             ignored_articles: DEFAULT_IGNORED_ARTICLES.to_owned(),
+            jukebox_renderer: None,
         }
     }
-}
-
-/// A Subsonic client's "now playing" notice (`scrobble` with `submission=false`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowPlayingEntry {
-    pub user_id: String,
-    pub username: String,
-    /// Client name (`c` parameter).
-    pub client: String,
-    /// Song id (`mx-…` for a BoogieMix mix).
-    pub track_id: String,
-    pub at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -86,7 +74,6 @@ struct Inner {
     key: Mutex<Option<(PathBuf, [u8; 32])>>,
     last_use: Mutex<HashMap<String, Instant>>,
     transcodes: Mutex<Option<(usize, Arc<Semaphore>)>>,
-    now_playing: Mutex<Vec<NowPlayingEntry>>,
 }
 
 /// Shared, cheaply cloneable Subsonic state.
@@ -104,27 +91,6 @@ impl SubsonicState {
         lock(&self.0.accounts).clear();
         *lock(&self.0.key) = None;
         lock(&self.0.last_use).clear();
-        lock(&self.0.now_playing).clear();
-    }
-
-    /// Records what a user's client is playing (one entry per user + client).
-    pub fn set_now_playing(&self, entry: NowPlayingEntry) {
-        let mut list = lock(&self.0.now_playing);
-        list.retain(|e| {
-            e.at.elapsed() < NOW_PLAYING_TTL
-                && !(e.user_id == entry.user_id && e.client == entry.client)
-        });
-        if list.len() >= MAX_NOW_PLAYING {
-            list.remove(0);
-        }
-        list.push(entry);
-    }
-
-    /// Current "now playing" notices, newest first.
-    pub fn now_playing(&self) -> Vec<NowPlayingEntry> {
-        let mut list = lock(&self.0.now_playing);
-        list.retain(|e| e.at.elapsed() < NOW_PLAYING_TTL);
-        list.iter().rev().cloned().collect()
     }
 
     /// Forgets cached accounts (password, role or user changes).
@@ -197,6 +163,10 @@ impl SubsonicState {
                     tracing::warn!(error = %err, "Could not clear stale Subsonic passwords")
                 }
             }
+            // Scrobbling secrets use the same key file.
+            if let Err(err) = boogiebox_db::scrobble::clear_all_accounts(&conn) {
+                tracing::warn!(error = %err, "Could not clear stale scrobbling accounts");
+            }
             self.invalidate_accounts();
         }
         *lock(&self.0.key) = Some((dir, key));
@@ -241,6 +211,9 @@ fn read_settings(conn: &rusqlite::Connection) -> SubsonicSettings {
         ignored_articles: get("subsonicIgnoredArticles")
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_IGNORED_ARTICLES.to_owned()),
+        jukebox_renderer: get("subsonicJukeboxRenderer")
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty()),
     }
 }
 
@@ -257,34 +230,6 @@ mod tests {
         let c = state.transcode_limiter(5);
         assert!(!Arc::ptr_eq(&a, &c));
         assert_eq!(state.transcode_limiter(99).available_permits(), 8);
-    }
-
-    #[test]
-    fn now_playing_keeps_one_entry_per_user_and_client() {
-        let state = SubsonicState::default();
-        let entry = |user: &str, client: &str, track: &str| NowPlayingEntry {
-            user_id: user.into(),
-            username: user.into(),
-            client: client.into(),
-            track_id: track.into(),
-            at: Instant::now(),
-        };
-        state.set_now_playing(entry("u1", "phone", "t1"));
-        state.set_now_playing(entry("u1", "phone", "t2"));
-        state.set_now_playing(entry("u1", "desk", "t3"));
-        state.set_now_playing(entry("u2", "phone", "t4"));
-        let tracks: Vec<String> = state
-            .now_playing()
-            .into_iter()
-            .map(|e| e.track_id)
-            .collect();
-        assert_eq!(tracks, ["t4", "t3", "t2"]);
-        for i in 0..(MAX_NOW_PLAYING + 5) {
-            state.set_now_playing(entry(&format!("x{i}"), "c", "t"));
-        }
-        assert_eq!(state.now_playing().len(), MAX_NOW_PLAYING);
-        state.reset();
-        assert!(state.now_playing().is_empty());
     }
 
     #[test]

@@ -2,6 +2,7 @@
  * Defines mobile Mobile Now Playing View behavior for the BoogieBox React client.
  */
 
+import { isLiveTrack } from '../../radioStations';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
 import type { PlaybackSnapshot, PlayerEqControls, PlayerState, PlayerTransportControls } from '../../components/Player';
@@ -199,7 +200,8 @@ export default function MobileNowPlayingView({
 
   const canPrev = playerState.currentIndex > 0;
   const canNext = playerState.currentIndex < playerState.queue.length - 1;
-  const max = snapshot?.duration && snapshot.duration > 0 ? snapshot.duration : track?.duration ?? 0;
+  const live = isLiveTrack(track);
+  const max = live ? 0 : snapshot?.duration && Number.isFinite(snapshot.duration) && snapshot.duration > 0 ? snapshot.duration : track?.duration ?? 0;
   const pct = max > 0 ? Math.max(0, Math.min(100, ((snapshot?.currentTime ?? 0) / max) * 100)) : 0;
   const canSeek = Boolean(transportControls) && max > 0
     && !(playbackMode === 'vinyl' && vinylHardcore)
@@ -477,7 +479,7 @@ export default function MobileNowPlayingView({
         </div>
         <div style={styles.progressMeta}>
           <span>{fmt(scrub ?? snapshot?.currentTime ?? 0)}</span>
-          <span>{fmt(max)}</span>
+          <span>{live ? 'Live' : fmt(max)}</span>
         </div>
       </div>
       <div style={styles.controls}>

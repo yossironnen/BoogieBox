@@ -56,6 +56,9 @@ import type {
 } from './types';
 import type { EntityId } from './entityId';
 import type { SubsonicCredentials } from './subsonic';
+import type { FavouriteIds, FavouriteKind, Favourites } from './favourites';
+import type { RadioStation, RadioStationInput } from './radioStations';
+import type { ScrobbleAccountsResponse } from './scrobbling';
 import { invalidateHomeData } from './homeCache';
 import type {
   RemoteCommand,
@@ -467,6 +470,9 @@ export const api = {
     synced: Array.isArray(result.synced) ? result.synced : result.syncedLyrics,
   })),
   markTrackPlayed: (id: ApiEntityId) => post<{ ok: boolean }>(`/tracks/${id}/played`),
+  /** The track played long enough to count; queued for the user's Last.fm / ListenBrainz accounts. */
+  scrobbleTrack: (id: ApiEntityId, startedAt: number) =>
+    post<{ ok: boolean }>(`/tracks/${id}/scrobble`, { startedAt: Math.floor(startedAt) }),
   trackWaveform: (id: ApiEntityId) => get<TrackWaveformLookupResponse>(`/tracks/${id}/waveform`),
   trackSonicFingerprint: async (id: ApiEntityId): Promise<SonicFingerprint | null> => {
     type RawFingerprint = {
@@ -766,6 +772,29 @@ export const api = {
       setSubsonicPassword:   (id: EntityId, password: string)                                                => put<{ ok: boolean }>(`/admin/users/${id}/subsonic-password`, { password }),
       clearSubsonicPassword: (id: EntityId)                                                                  => del<{ ok: boolean }>(`/admin/users/${id}/subsonic-password`),
     },
+  },
+  /** Favourites (hearts), shared with Subsonic apps' stars. */
+  favourites: {
+    ids:    () => get<FavouriteIds>('/favourites/ids'),
+    list:   (limit?: number) => get<Favourites>('/favourites', { limit }),
+    add:    (kind: FavouriteKind, id: ApiEntityId) => put<{ ok: boolean }>(`/favourites/${kind}/${encodeURIComponent(String(id))}`),
+    remove: (kind: FavouriteKind, id: ApiEntityId) => del<{ ok: boolean }>(`/favourites/${kind}/${encodeURIComponent(String(id))}`),
+  },
+  /** Internet radio stations (admins edit). */
+  radioStations: {
+    list:      () => get<RadioStation[]>('/radio-stations'),
+    create:    (input: RadioStationInput) => post<RadioStation>('/radio-stations', input),
+    update:    (id: string, input: RadioStationInput) => put<RadioStation>(`/radio-stations/${encodeURIComponent(id)}`, input),
+    remove:    (id: string) => del<{ ok: boolean }>(`/radio-stations/${encodeURIComponent(id)}`),
+    streamUrl: (id: string) => `${BASE}/api/radio-stations/${encodeURIComponent(id)}/stream`,
+  },
+  /** The signed-in user's scrobbling accounts. */
+  scrobble: {
+    accounts:            () => get<ScrobbleAccountsResponse>('/scrobble/accounts'),
+    connectListenBrainz: (token: string) => put<{ ok: boolean; accountName: string }>('/scrobble/listenbrainz', { token }),
+    /** The Last.fm sign-in page to open; Last.fm returns to this origin's callback. */
+    connectLastFm:       (origin: string) => post<{ url: string }>('/scrobble/lastfm/connect', { origin }),
+    disconnect:          (service: 'lastfm' | 'listenbrainz') => del<{ ok: boolean }>(`/scrobble/${service}`),
   },
   /** The signed-in user's Subsonic password for third-party apps (`/rest`). */
   subsonic: {

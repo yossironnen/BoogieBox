@@ -34,6 +34,9 @@ const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi
     search: vi.fn(),
     autoDjTracks: vi.fn(),
     markTrackPlayed: vi.fn(),
+    scrobbleTrack: vi.fn(),
+    favourites: { ids: vi.fn() },
+    radioStations: { streamUrl: vi.fn((id: string) => `/api/radio-stations/${id}/stream`) },
     setArtistRating: vi.fn(),
     setAlbumRating: vi.fn(),
     setTrackRating: vi.fn(),
@@ -70,6 +73,7 @@ vi.mock('../components/HomeView', () => ({
       <button onClick={() => props.onPlayTrack({ id: '1', file_path: 'x', file_name: 'x.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Track One', artist: 'Artist One', album: 'Album One', library_name: 'Main', track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01' })}>home-play-track</button>
       <button onClick={() => props.onStartAutoDj(['Rock'])}>home-start-auto-dj</button>
       <button onClick={() => props.onBrowseMusic()}>home-browse-music</button>
+      <button onClick={() => props.onOpenFavourites?.()}>home-open-favourites</button>
       <button onClick={() => props.onOpenGenre('   ')}>home-empty-genre</button>
     </div>
   ),
@@ -83,6 +87,8 @@ vi.mock('../components/BrowseView', () => ({
       <button onClick={() => props.playTrack({ id: 'b1', title: 'Browse Track' }, [{ id: 'b1' }])}>browse-play</button>
       <button onClick={() => props.addToQueue({ id: 'b1', title: 'Browse Track' })}>browse-queue</button>
       <button onClick={() => props.playAlbumInVinylMode([{ id: 'v1', title: 'Vinyl One' }, { id: 'v2', title: 'Vinyl Two' }])}>browse-vinyl</button>
+      <button onClick={() => props.onPlayRadioStation?.({ id: 's1', name: 'Jazz FM', streamUrl: 'http://j/s', homepageUrl: null })}>browse-radio</button>
+      <span>special:{props.openSpecialRequest?.special ?? 'none'}</span>
     </div>
   ),
 }));
@@ -115,6 +121,9 @@ vi.mock('../components/Player', () => ({
       <button onClick={() => props.onOpenArtist('Artist One')}>player-artist</button>
       <button onClick={() => props.onOpenAlbum('Album One', 'Artist One')}>player-album</button>
       <button onClick={() => props.onPlaybackSnapshotChange({ currentTrack: { id: 'p1' }, currentTime: 1, duration: 2 })}>player-snapshot</button>
+      <button onClick={() => props.onPlaybackSnapshotChange({ currentTrack: { id: 'p1', duration: 100 }, currentTime: 10, duration: 100 })}>player-early</button>
+      <button onClick={() => props.onPlaybackSnapshotChange({ currentTrack: { id: 'p1', duration: 100 }, currentTime: 60, duration: 100 })}>player-half</button>
+      <span>now:{props.state.queue[props.state.currentIndex]?.id ?? 'none'}</span>
     </div>
   ),
 }));
@@ -517,6 +526,29 @@ describe('App component flows', () => {
     await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:artist'));
     fireEvent.click(screen.getByText('player-album'));
     await waitFor(() => expect(screen.getByTestId('browse-view')).toHaveTextContent('browse:album'));
+  });
+
+  it('plays radio in this browser, opens Favourites from Home and scrobbles finished web plays', async () => {
+    apiMock.favourites.ids.mockResolvedValue({ tracks: [], albums: [], artists: [] });
+    apiMock.scrobbleTrack.mockResolvedValue({ ok: true });
+    render(<App />);
+    await screen.findByTestId('home-view');
+    await waitFor(() => expect(apiMock.favourites.ids).toHaveBeenCalled());
+    fireEvent.click(screen.getByText('home-open-favourites'));
+    expect(await screen.findByTestId('browse-view')).toHaveTextContent('special:favourites');
+
+    fireEvent.click(screen.getByText('browse-radio'));
+    await waitFor(() => expect(screen.getByTestId('player-view')).toHaveTextContent('now:radio:s1'));
+    expect(apiMock.markTrackPlayed).not.toHaveBeenCalledWith('radio:s1');
+
+    fireEvent.click(screen.getByText('player-state'));
+    await waitFor(() => expect(apiMock.markTrackPlayed).toHaveBeenCalledWith('p1'));
+    fireEvent.click(screen.getByText('player-early'));
+    expect(apiMock.scrobbleTrack).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('player-half'));
+    await waitFor(() => expect(apiMock.scrobbleTrack).toHaveBeenCalledWith('p1', expect.any(Number)));
+    fireEvent.click(screen.getByText('player-half'));
+    expect(apiMock.scrobbleTrack).toHaveBeenCalledTimes(1);
   });
 
   it('exercises Search filters, sorting, ratings, rows, pagination, and quick results', async () => {

@@ -7,12 +7,12 @@ use boogiebox_db::subsonic::{self as sdb, Annotations, ItemKind, SubsonicSong};
 use rusqlite::Connection;
 
 use super::{
-    annotate, info,
+    annotate, info, jukebox,
     model::{
         self, album_child_node, album_id3_node, artist_id3_node, artist_legacy_node, song_node,
     },
     params::Params,
-    playlists,
+    playlists, radio,
     response::{Node, SubsonicError},
     state::{SubsonicSettings, SubsonicState, SubsonicUser},
 };
@@ -45,7 +45,6 @@ const UNSUPPORTED: &[&str] = &[
     "hls",
     "getVideos",
     "getVideoInfo",
-    "jukeboxControl",
     "getShares",
     "createShare",
     "updateShare",
@@ -58,10 +57,6 @@ const UNSUPPORTED: &[&str] = &[
     "deletePodcastEpisode",
     "downloadPodcastEpisode",
     "getPodcastEpisode",
-    "getInternetRadioStations",
-    "createInternetRadioStation",
-    "updateInternetRadioStation",
-    "deleteInternetRadioStation",
     "getChatMessages",
     "addChatMessage",
     "search",
@@ -219,6 +214,11 @@ pub async fn handle(name: &str, ctx: &Ctx) -> Result<Reply, SubsonicError> {
         "getSimilarSongs" => info::similar_songs(ctx, true).await?,
         "getSimilarSongs2" => info::similar_songs(ctx, false).await?,
         "getTopSongs" => info::top_songs(ctx).await?,
+        "getInternetRadioStations" => radio::stations(ctx).await?,
+        "createInternetRadioStation" => radio::create(ctx).await?,
+        "updateInternetRadioStation" => radio::update(ctx).await?,
+        "deleteInternetRadioStation" => radio::delete(ctx).await?,
+        "jukeboxControl" => jukebox::control(ctx).await?,
         "stream" => return super::media::stream(ctx, false).await.map(Reply::Raw),
         "download" => return super::media::stream(ctx, true).await.map(Reply::Raw),
         "getCoverArt" => return super::media::cover_art(ctx).await.map(Reply::Raw),
@@ -254,11 +254,13 @@ async fn get_user(ctx: &Ctx) -> Result<Node, SubsonicError> {
     if !username.eq_ignore_ascii_case(&ctx.user.username) && !ctx.user.is_admin() {
         return Err(SubsonicError::not_authorized());
     }
-    let (account, folders) = ctx
+    let renderer = ctx.settings.jukebox_renderer.clone();
+    let (account, folders, jukebox) = ctx
         .db(move |conn| {
             let account = sdb::get_account_by_username(conn, &username).map_err(db_err)?;
             let folders = sdb::music_folders(conn).map_err(db_err)?;
-            Ok((account, folders.len()))
+            let jukebox = jukebox::jukebox_enabled(conn, renderer.as_deref());
+            Ok((account, folders.len(), jukebox))
         })
         .await?;
     let account = account.ok_or_else(|| SubsonicError::not_found("User"))?;
@@ -276,7 +278,7 @@ async fn get_user(ctx: &Ctx) -> Result<Node, SubsonicError> {
             .attr("commentRole", false)
             .attr("podcastRole", false)
             .attr("streamRole", true)
-            .attr("jukeboxRole", false)
+            .attr("jukeboxRole", jukebox)
             .attr("shareRole", false)
             .attr("videoConversionRole", false)
             .list(
@@ -473,7 +475,10 @@ async fn music_directory(ctx: &Ctx) -> Result<Node, SubsonicError> {
                     .attr("id", &album.id)
                     .opt("parent", album.artist_id.clone())
                     .attr("name", &album.name)
-                    .attr("playCount", album.play_count)
+                    .attr(
+                        "playCount",
+                        album_ann.plays.get(&album.id).copied().unwrap_or(0),
+                    )
                     .opt(
                         "starred",
                         album_ann.starred.get(&album.id).map(|t| model::iso(t)),
@@ -854,6 +859,11 @@ mod tests {
             "download",
             "getCoverArt",
             "getOpenSubsonicExtensions",
+            "getInternetRadioStations",
+            "createInternetRadioStation",
+            "updateInternetRadioStation",
+            "deleteInternetRadioStation",
+            "jukeboxControl",
         ] {
             assert!(!UNSUPPORTED.contains(&implemented), "{implemented}");
         }

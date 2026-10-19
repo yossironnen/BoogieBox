@@ -62,8 +62,55 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `GET` | `/api/tracks/{id}/waveform` | Fetch cached waveform data. |
 | `GET` | `/api/tracks/{id}/lyrics` | Fetch cached or provider lyrics. |
 | `GET` | `/api/tracks/{id}/sonic-fingerprint` | Fetch Sonic Fingerprint (stem analysis, sections, transition windows) for a track. |
-| `POST` | `/api/tracks/{id}/played` | Record a track play event. |
+| `POST` | `/api/tracks/{id}/played` | Record a track play event (also lists it in Subsonic `getNowPlaying` as "BoogieBox" and tells the user's scrobbling services it started). |
+| `POST` | `/api/tracks/{id}/scrobble` | The web player says a play counts (played half its length or 4 minutes; tracks of 30 s or less never count). Body `{ startedAt }` (Unix seconds, optional). Queued for the user's Last.fm / ListenBrainz accounts; does not change play counts. |
 | `GET` | `/api/user/history` | Fetch listening history for the current user. |
+
+Per-user play counts: every row in `play_history` also updates `user_track_stats` (database triggers), so each
+user's own counts are available without scanning the history. Subsonic `playCount`/`played` use them; the web UI's
+counts stay global.
+
+## Favourites
+
+Hearts in the web UI. They are the same per-user data as stars in Subsonic apps (`subsonic_stars`).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/favourites/ids` | `{ tracks, albums, artists }` id lists, newest first. |
+| `GET` | `/api/favourites?limit=` | Full rows `{ artists, albums, tracks }` in the usual web shapes, newest first (at most 1000 each). |
+| `PUT` | `/api/favourites/{track\|album\|artist}/{id}` | Add a favourite (`404` when the item does not exist). |
+| `DELETE` | `/api/favourites/{track\|album\|artist}/{id}` | Remove a favourite. |
+
+## Internet Radio
+
+Shared by every user; only admins edit. The same stations appear in Subsonic apps (`getInternetRadioStations`).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/radio-stations` | List stations `{ id, name, streamUrl, homepageUrl }` by name. |
+| `POST` | `/api/radio-stations` | Admin: add a station `{ name, streamUrl, homepageUrl }` (`201`). Name 1–200 characters; URLs must be http(s), at most 2048 characters. |
+| `PUT` | `/api/radio-stations/{id}` | Admin: replace a station's fields. |
+| `DELETE` | `/api/radio-stations/{id}` | Admin: delete a station. |
+| `GET` | `/api/radio-stations/{id}/stream` | Relay the station for the web player (any signed-in user). Follows one `.pls`/`.m3u` level, refuses HLS (`415`) and non-audio responses (`502`), sends no `Content-Length` (`Accept-Ranges: none`), at most 8 relays at once (`503`). |
+
+## Scrobbling
+
+Each user connects their own accounts; the server sends plays from the web player, Play On speakers and Subsonic
+apps. Tokens and session keys are stored AES-256-GCM encrypted with `subsonic.key` and are never returned.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/scrobble/accounts` | `{ lastfmAvailable, accounts: [{ service, accountName, needsReconnect, connectedAt, lastScrobbleAt, pending }] }`. |
+| `PUT` | `/api/scrobble/listenbrainz` | Connect ListenBrainz with `{ token }` (validated with ListenBrainz first; `400` when refused, `502` when unreachable). |
+| `POST` | `/api/scrobble/lastfm/connect` | Start the Last.fm sign-in: body `{ origin }` (the web UI's own origin); returns `{ url }` to open. `409` until an admin sets `lastfmKey` and `lastfmSecret`. |
+| `GET` | `/api/scrobble/lastfm/callback?state&token` | Where Last.fm sends the user back. No session cookie needed: the one-time `state` (10 minutes) names the user. Returns a small HTML page. |
+| `DELETE` | `/api/scrobble/{lastfm\|listenbrainz}` | Disconnect and drop queued plays. |
+
+Delivery: plays are queued and sent in batches (Last.fm 50, ListenBrainz 100) by a background worker. Temporary
+failures retry with backoff (1 minute doubling to 6 hours); plays are dropped after 14 days or 20 attempts; at most
+1000 plays wait per account. A rejected token or session marks the account `needsReconnect` and keeps its plays.
+"Now playing" is sent when a track starts (best effort). Play On sessions scrobble once the speaker's position
+passes the same threshold as the web player.
 
 ## Playlists
 
@@ -157,10 +204,10 @@ found). `/rest` CORS allows any origin without credentials. Responses never incl
 is a virtual `Artist/Album/NN - Title.ext`.
 
 Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost` and
-`songLyrics`), `getUser`, `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
+`songLyrics`), `getUser` (`jukeboxRole` is true when a jukebox speaker is set and Play On is on), `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
 `getArtists`, `getArtist`, `getAlbum`, `getSong`, `getGenres`, `getMusicDirectory`, `getAlbumList`/`getAlbumList2`
 (`random`, `newest`, `highest`, `frequent`, `recent`, `alphabeticalByName`, `alphabeticalByArtist`, `starred`,
-`byYear`, `byGenre`), `getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `star`/`unstar`
+`byYear`, `byGenre`; `frequent` and `recent` use the user's own plays), `getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `star`/`unstar`
 (`id` resolves song → album → artist; `albumId`, `artistId`), `setRating` (whole stars 1–5, 0 clears),
 `search2`/`search3` (an empty query pages through everything, which is how apps sync), `getPlaylists`,
 `getPlaylist`, `createPlaylist` (a taken name gets " (2)"; with `playlistId` it replaces the entries; returns the
@@ -169,10 +216,20 @@ playlist), `updatePlaylist` (`name`, `comment`, `songIndexToRemove…` then `son
 synced lines in ms), `getArtistInfo`/`getArtistInfo2` (local bio, else the cached Last.fm summary; similar
 artists in the library), `getAlbumInfo`/`getAlbumInfo2`, `getSimilarSongs`/`getSimilarSongs2` (an Artist Radio
 queue seeded by the song's, album's or artist's artist; provider lookups capped at 2 s), `getTopSongs` (cached
-Last.fm top tracks first, then local plays), `getNowPlaying` (what apps reported with `scrobble
-submission=false` in the last 10 minutes, all users), `scrobble` (`submission=true` counts a play at `time`,
-ignoring repeats within 30 s), `stream`, `download` (original file) and `getCoverArt` (`al-`/`ar-`/`tr-`/`pl-`/`mx-`
-ids; 300 or 800 px).
+Last.fm top tracks first, then local plays), `getNowPlaying` (what apps, the BoogieBox web player and Play On
+speakers reported in the last 10 minutes, all users; `playerName` is the app, "BoogieBox" or the speaker),
+`scrobble` (`submission=true` counts a play at `time`, ignoring repeats within 30 s, and queues it for the user's
+Last.fm/ListenBrainz accounts; `submission=false` marks now playing), `stream`, `download` (original file),
+`getCoverArt` (`al-`/`ar-`/`tr-`/`pl-`/`mx-` ids; 300 or 800 px), `getInternetRadioStations` (all users; the
+station's own URL), `create`/`update`/`deleteInternetRadioStation` (admins, else error 50) and `jukeboxControl`.
+
+`playCount` and `played` are the signed-in user's own (album `playCount` sums the user's plays of its tracks).
+
+Jukebox: `jukeboxControl` drives the Play On speaker chosen in `subsonicJukeboxRenderer` as the requesting user.
+Actions `get` (status plus `entry` songs), `status`, `set` (replace the queue; keeps playing if it was),
+`start`, `stop` (pause), `skip` (`index`, `offset` seconds), `add`, `clear`, `remove` (`index`), `shuffle`,
+`setGain` (`gain` 0–1 → speaker volume). Status: `currentIndex`, `playing`, `gain`, `position`. A speaker held by
+another user returns error 50 ("in use by …"); no speaker, Play On off or the speaker offline returns error 0.
 
 Playlists: a track appears at most once per BoogieBox playlist, so repeated song ids are dropped. Each user also
 sees a read-only **BoogieMix** playlist (`bm-mixes`, `readonly=true`) listing their rendered mixes newest first,
@@ -182,7 +239,9 @@ playlist can't be edited or deleted (error 50). Transitions and Mix Story chapte
 
 `stream` serves the original file unless the app asks for `format=mp3`, the file needs conversion to play, or
 `maxBitRate` is below the file's bitrate; MP3 bitrates are 128/192/256/320 and at most `subsonicMaxTranscodes`
-conversions run at once (HTTP 503 after a 10 s wait). Files outside their library folders are never served.
+conversions run at once (HTTP 503 after a 10 s wait). `format=opus` streams Ogg Opus (64/96/128/160/192 kbps,
+default 128; MP3 at the same cap when FFmpeg has no `libopus`) and `format=aac` (or `m4a`) streams AAC in ADTS
+(96/128/192/256 kbps, default 192). These have no `Content-Length` and no byte ranges (`Accept-Ranges: none`). Files outside their library folders are never served.
 Other spec methods return error 0 "Not supported by BoogieBox". Half-star ratings are shown rounded up to whole
 stars.
 
@@ -195,7 +254,9 @@ stars.
 | `DELETE` | `/api/admin/users/{id}/subsonic-password` | Admin: remove another user's Subsonic password. |
 
 Settings (global, admin): `subsonicApiEnabled` (`true`/`false`, default `false`), `subsonicMaxTranscodes`
-(1–8, default 3), `subsonicIgnoredArticles` (up to 20 words, default `The El La Los Las Le Les`). Subsonic
+(1–8, default 3), `subsonicIgnoredArticles` (up to 20 words, default `The El La Los Las Le Les`),
+`subsonicJukeboxRenderer` (a Play On renderer UDN, empty = no jukebox). `lastfmSecret` (the Last.fm API shared
+secret, next to `lastfmKey`) enables Last.fm scrobbling. Subsonic
 passwords are stored AES-256-GCM encrypted with the key file `subsonic.key` next to `boogiebox.db`; when moving
 the database by hand, move `subsonic.key` with it or users must set their Subsonic passwords again. Apps send
 the password (or its hash) in the URL, so use HTTPS (reverse proxy or VPN) beyond the home network.

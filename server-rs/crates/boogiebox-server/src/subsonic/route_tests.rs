@@ -969,3 +969,202 @@ World', '[{"time":1.5,"text":"Hello"},{"time":3,"text":"World"}]', 'lrclib');
     assert_eq!(now["playerName"], "test");
     assert_eq!(now["minutesAgo"], 0);
 }
+
+// ── Phase 2.5 ────────────────────────────────────────────────────────────────
+
+async fn rest_as(fx: &Fixture, user: &str, method: &str, query: &str) -> Json {
+    let (status, body) = send(
+        fx.app.clone(),
+        Request::builder()
+            .uri(format!(
+                "/rest/{method}?u={user}&p={}&v=1.16.1&c=test&f=json&{query}",
+                urlencode(PASSWORD)
+            ))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    json_body(&body)["subsonic-response"].clone()
+}
+
+fn list_len(value: &Json) -> usize {
+    value.as_array().map_or(0, Vec::len)
+}
+
+fn queued(pool: &DbPool) -> i64 {
+    pool.lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM scrobble_queue", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn per_user_play_counts_and_web_now_playing() {
+    let fx = Fixture::new("subsonic-p25-plays").await;
+    assert_eq!(fx.rest("getSong", "id=t1").await["song"]["playCount"], 0);
+    assert_eq!(
+        fx.rest("scrobble", "id=t1&submission=true").await["status"],
+        "ok"
+    );
+    let song = fx.rest("getSong", "id=t1").await["song"].clone();
+    assert_eq!(song["playCount"], 1);
+    assert!(song["played"].is_string());
+    assert_eq!(fx.rest("getAlbum", "id=al1").await["album"]["playCount"], 1);
+    assert_eq!(
+        fx.rest("getAlbumList2", "type=frequent").await["albumList2"]["album"][0]["id"],
+        "al1"
+    );
+
+    // Another user's plays don't show up in u1's counts.
+    let admin = seed_admin_session(&fx.pool, "a1");
+    let (status, _) = fx
+        .put_password(&admin, "/api/subsonic/credentials/password", PASSWORD)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        rest_as(&fx, "a1", "getSong", "id=t1").await["song"]["playCount"],
+        0
+    );
+
+    // The web player's plays appear in getNowPlaying as "BoogieBox".
+    let (status, _) = send(
+        fx.app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/tracks/t2/played")
+            .header("cookie", &fx.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let now = fx.rest("getNowPlaying", "").await["nowPlaying"]["entry"][0].clone();
+    assert_eq!(now["id"], "t2");
+    assert_eq!(now["playerName"], "BoogieBox");
+    assert_eq!(now["playCount"], 1, "the web play counts too");
+
+    // A finished web play (threshold reached) is queued for connected services only.
+    let scrobble = |track: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/tracks/{track}/scrobble"))
+            .header("cookie", &fx.cookie)
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"startedAt": 1}"#))
+            .unwrap()
+    };
+    assert_eq!(send(fx.app.clone(), scrobble("t2")).await.0, StatusCode::OK);
+    assert_eq!(
+        send(fx.app.clone(), scrobble("nope")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(queued(&fx.pool), 0, "no account connected");
+    boogiebox_db::scrobble::upsert_account(
+        &fx.pool.lock().unwrap(),
+        "u1",
+        boogiebox_db::scrobble::ScrobbleService::ListenBrainz,
+        b"x",
+        b"y",
+        None,
+    )
+    .unwrap();
+    assert_eq!(send(fx.app.clone(), scrobble("t2")).await.0, StatusCode::OK);
+    assert_eq!(queued(&fx.pool), 1);
+    // An app's scrobble is queued once; a resent (duplicate) one is not queued again.
+    let at = (crate::plays::unix_now() - 1000) * 1000;
+    let play = format!("id=t1&time={at}");
+    assert_eq!(fx.rest("scrobble", &play).await["status"], "ok");
+    assert_eq!(queued(&fx.pool), 2);
+    assert_eq!(fx.rest("scrobble", &play).await["status"], "ok");
+    assert_eq!(queued(&fx.pool), 2);
+}
+
+#[tokio::test]
+async fn internet_radio_and_jukebox() {
+    let fx = Fixture::new("subsonic-p25-radio").await;
+    let stations = |v: Json| v["internetRadioStations"]["internetRadioStation"].clone();
+    assert_eq!(
+        list_len(&stations(fx.rest("getInternetRadioStations", "").await)),
+        0
+    );
+    let create = "name=Jazz&streamUrl=http%3A%2F%2Fjazz.example%2Flive&homepageUrl=https%3A%2F%2Fjazz.example";
+    assert_eq!(
+        fx.rest("createInternetRadioStation", create).await["error"]["code"],
+        50
+    );
+
+    let admin = seed_admin_session(&fx.pool, "a1");
+    fx.put_password(&admin, "/api/subsonic/credentials/password", PASSWORD)
+        .await;
+    assert_eq!(
+        rest_as(&fx, "a1", "createInternetRadioStation", create).await["status"],
+        "ok"
+    );
+    let bad = "name=Bad&streamUrl=file%3A%2F%2F%2Fetc";
+    assert_eq!(
+        rest_as(&fx, "a1", "createInternetRadioStation", bad).await["error"]["code"],
+        0
+    );
+    let list = stations(fx.rest("getInternetRadioStations", "").await);
+    assert_eq!(list_len(&list), 1);
+    assert_eq!(list[0]["streamUrl"], "http://jazz.example/live");
+    assert_eq!(list[0]["homePageUrl"], "https://jazz.example");
+    let id = list[0]["id"].as_str().unwrap().to_owned();
+    let update = format!("id={id}&name=Jazz+24&streamUrl=http%3A%2F%2Fjazz.example%2F24");
+    assert_eq!(
+        rest_as(&fx, "a1", "updateInternetRadioStation", &update).await["status"],
+        "ok"
+    );
+    assert_eq!(
+        stations(fx.rest("getInternetRadioStations", "").await)[0]["name"],
+        "Jazz 24"
+    );
+    let delete = format!("id={id}");
+    assert_eq!(
+        fx.rest("deleteInternetRadioStation", &delete).await["error"]["code"],
+        50
+    );
+    assert_eq!(
+        rest_as(&fx, "a1", "deleteInternetRadioStation", &delete).await["status"],
+        "ok"
+    );
+    assert_eq!(
+        rest_as(&fx, "a1", "deleteInternetRadioStation", &delete).await["error"]["code"],
+        70
+    );
+
+    // Jukebox: off until a Play On speaker is chosen and Play On is on.
+    assert_eq!(
+        fx.rest("getUser", "username=u1").await["user"]["jukeboxRole"],
+        false
+    );
+    let off = fx.rest("jukeboxControl", "action=get").await;
+    assert_eq!(
+        off["error"]["message"],
+        "The jukebox speaker is not available"
+    );
+}
+
+#[tokio::test]
+async fn opus_and_aac_streams_are_unsized() {
+    let fx = Fixture::new("subsonic-p25-codecs").await;
+    let head = |query: &str| {
+        Request::builder()
+            .method("HEAD")
+            .uri(format!("/rest/stream?{}&id=t1&{query}", fx.auth()))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, headers, _) = send_full(fx.app.clone(), head("format=aac&maxBitRate=128")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "audio/aac");
+    assert_eq!(headers[header::ACCEPT_RANGES], "none");
+    let (status, headers, _) = send_full(fx.app.clone(), head("format=opus")).await;
+    assert_eq!(status, StatusCode::OK);
+    let ct = headers[header::CONTENT_TYPE].to_str().unwrap().to_owned();
+    assert!(
+        ct == "audio/ogg" || ct == "audio/mpeg",
+        "opus, or mp3 without libopus: {ct}"
+    );
+}

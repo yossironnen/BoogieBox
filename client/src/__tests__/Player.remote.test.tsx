@@ -43,6 +43,7 @@ function playOnApi(over: Partial<PlayOnApi> = {}): PlayOnApi {
     renderers: [wiim, tv],
     renderersLoaded: true,
     discovering: false,
+    notify: vi.fn(),
     watchRenderers: vi.fn(() => () => {}),
     refreshRenderers: vi.fn(),
     selectTarget: vi.fn(),

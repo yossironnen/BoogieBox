@@ -81,6 +81,8 @@ export interface Track {
   radio_reason?: RadioReason | null;
   /** Play On queue entry id; set only on tracks mirrored from a renderer session (`remote/remoteBridge.ts`). */
   remoteQid?: number;
+  /** A live stream with no fixed length (an internet radio station, see `radioStations.ts`). */
+  live?: boolean;
 }
 
 /** Why a track is in an Artist Radio queue — rendered as a chip in the queue. */
@@ -778,7 +780,7 @@ export interface BpmBatchResult {
 }
 
 /** Queue Source Type is part of this module's public API. */
-export type QueueSourceType = 'album' | 'playlist' | 'autodj' | 'search' | 'single' | 'radio';
+export type QueueSourceType = 'album' | 'playlist' | 'autodj' | 'search' | 'single' | 'radio' | 'favourites' | 'station';
 
 /** Queue Source is part of this module's public API. */
 export interface QueueSource {

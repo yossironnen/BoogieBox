@@ -9,6 +9,7 @@ import { api } from '../api';
 import { hybridControlStyles } from '../hybridPreview';
 import { CopyValue, SubsonicIcon } from './ConnectedAppsPanel';
 import { InlineStatus, ToggleRow } from './settingsControls';
+import type { RendererInfo } from '../remote/remoteTypes';
 
 export const DEFAULT_IGNORED_ARTICLES = 'The El La Los Las Le Les';
 const TRANSCODE_LIMITS = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -20,6 +21,8 @@ export default function SubsonicSettings() {
   const [articles, setArticles] = useState(DEFAULT_IGNORED_ARTICLES);
   const [savedArticles, setSavedArticles] = useState(DEFAULT_IGNORED_ARTICLES);
   const [serverUrls, setServerUrls] = useState<string[]>([]);
+  const [jukebox, setJukebox] = useState('');
+  const [speakers, setSpeakers] = useState<RendererInfo[] | null>(null);
   const [result, setResult] = useState<string | null>(null);
 
   useEffect(() => {
@@ -29,8 +32,14 @@ export default function SubsonicSettings() {
       const words = s.subsonicIgnoredArticles || DEFAULT_IGNORED_ARTICLES;
       setArticles(words);
       setSavedArticles(words);
+      setJukebox(s.subsonicJukeboxRenderer || '');
     }).catch(() => {});
     api.subsonic.credentials().then((c) => setServerUrls(c.serverUrls)).catch(() => {});
+    // Play On speakers for the jukebox (none when Play On is off).
+    Promise.resolve()
+      .then(() => api.remote.renderers())
+      .then((r) => setSpeakers(r.running ? r.renderers.filter((x) => !x.hidden) : []))
+      .catch(() => setSpeakers([]));
   }, []);
 
   const save = async (updates: Record<string, string>) => {
@@ -93,6 +102,27 @@ export default function SubsonicSettings() {
             style={{ ...hybridControlStyles.field, minHeight: 38, padding: '7px 10px', fontSize: 14, minWidth: 280 }}
           />
           <span style={S.help}>Words skipped when apps sort artists (The Beatles is listed under B).</span>
+        </label>
+        <label style={S.fieldLabel}>
+          Jukebox speaker
+          <select
+            value={jukebox}
+            disabled={speakers === null}
+            onChange={(event) => {
+              setJukebox(event.target.value);
+              void save({ subsonicJukeboxRenderer: event.target.value });
+            }}
+            style={{ ...hybridControlStyles.select, minWidth: 200 }}
+          >
+            <option value="">None</option>
+            {jukebox && !speakers?.some((r) => r.udn === jukebox) && <option value={jukebox}>Saved speaker (not found)</option>}
+            {speakers?.map((r) => <option key={r.udn} value={r.udn}>{r.name}</option>)}
+          </select>
+          <span style={S.help}>
+            {speakers && speakers.length === 0
+              ? 'Turn on Play On to let apps use a speaker as a jukebox.'
+              : 'Apps with a jukebox mode play on this Play On speaker.'}
+          </span>
         </label>
       </div>
 

@@ -9,6 +9,7 @@ import {
   getTranscodeFallbackUrl,
   getPreferredTrackStreamUrl,
   isBoogieMixSyntheticTrackId,
+  isSyntheticTrackId,
   buildPlaybackDebugInfo,
   beginRoundedRect,
   getSyntheticVuLevel,
@@ -181,6 +182,16 @@ describe('isBoogieMixSyntheticTrackId', () => {
     expect(isBoogieMixSyntheticTrackId('42')).toBe(false);
     expect(isBoogieMixSyntheticTrackId(undefined)).toBe(false);
     expect(isBoogieMixSyntheticTrackId(null)).toBe(false);
+  });
+});
+
+describe('isSyntheticTrackId', () => {
+  it('covers BoogieMix renders and radio stations, not library tracks', () => {
+    expect(isSyntheticTrackId('boogiemix:output-1')).toBe(true);
+    expect(isSyntheticTrackId('radio:s1')).toBe(true);
+    expect(isSyntheticTrackId('42')).toBe(false);
+    expect(isSyntheticTrackId(42)).toBe(false);
+    expect(isSyntheticTrackId(null)).toBe(false);
   });
 });
 

@@ -150,6 +150,8 @@ struct Inner {
     /// Saved sessions waiting for their renderer to be found again after a (re)start.
     pending_restore: Mutex<std::collections::HashMap<String, session::PersistedSession>>,
     rate: RateLimiter,
+    /// Play hub for now-playing and scrobbling (set when the database is opened).
+    plays: Mutex<Option<crate::plays::PlayEnv>>,
 }
 
 /// Play On coordinator stored in `AppState`.
@@ -188,6 +190,7 @@ impl RemoteManager {
                 sessions: Mutex::new(Default::default()),
                 pending_restore: Mutex::new(Default::default()),
                 rate: RateLimiter::default(),
+                plays: Mutex::new(None),
             }),
         }
     }
@@ -205,6 +208,20 @@ impl RemoteManager {
     /// Media token registry.
     pub fn media(&self) -> &media::MediaTokens {
         &self.inner.media
+    }
+
+    /// Sets the play hub sessions report now-playing and scrobbles to.
+    pub fn set_play_env(&self, env: crate::plays::PlayEnv) {
+        *self.inner.plays.lock().unwrap_or_else(|p| p.into_inner()) = Some(env);
+    }
+
+    /// The play hub, once a database is open.
+    pub fn play_env(&self) -> Option<crate::plays::PlayEnv> {
+        self.inner
+            .plays
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Records the main HTTP port renderers fetch media from.

@@ -388,26 +388,52 @@ impl SessionEnv {
         }
     }
 
-    async fn record_play(&self, user_id: &str, item: &QueueItem) {
+    /// Counts a play that just started and lists it as now playing (player name = the speaker).
+    async fn record_play(&self, user_id: &str, username: &str, speaker: &str, item: &QueueItem) {
         let QueueItem::Track { id, .. } = item else {
             return; // BoogieMix outputs are not library tracks.
         };
         match self {
-            SessionEnv::Real { db, .. } => {
+            SessionEnv::Real { manager, db } => {
                 let db = db.clone();
                 let (user, track) = (user_id.to_string(), id.clone());
-                let _ = tokio::task::spawn_blocking(move || {
+                let counted = tokio::task::spawn_blocking(move || {
                     let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                    if boogiebox_db::playback::increment_track_play_count(&conn, &track)
-                        .unwrap_or(false)
-                    {
+                    let counted = boogiebox_db::playback::increment_track_play_count(&conn, &track)
+                        .unwrap_or(false);
+                    if counted {
                         let _ = boogiebox_db::playback::insert_play_history(&conn, &user, &track);
                     }
+                    counted
                 })
-                .await;
+                .await
+                .unwrap_or(false);
+                if let (true, Some(env)) = (counted, manager.play_env()) {
+                    crate::plays::play_started(&env, user_id, username, id, speaker);
+                }
             }
             #[cfg(test)]
             SessionEnv::Test(t) => t.plays.lock().unwrap().push((user_id.into(), id.clone())),
+        }
+    }
+
+    /// The current track played long enough to count: queue it for the user's scrobbling services.
+    async fn record_scrobble(&self, user_id: &str, item: &QueueItem, started_at: i64) {
+        let QueueItem::Track { id, .. } = item else {
+            return;
+        };
+        match self {
+            SessionEnv::Real { manager, .. } => {
+                if let Some(env) = manager.play_env() {
+                    crate::plays::play_finished(&env, user_id, id, started_at).await;
+                }
+            }
+            #[cfg(test)]
+            SessionEnv::Test(t) => t
+                .scrobbles
+                .lock()
+                .unwrap()
+                .push((user_id.into(), id.clone())),
         }
     }
 
@@ -580,6 +606,7 @@ pub(crate) fn spawn_session(
         ignore_ticks_until: None,
         load_grace_until: None,
         played_qid: None,
+        scrobble_armed: None,
         foreign_polls: 0,
         failures: 0,
         last_rel: None,
@@ -620,6 +647,8 @@ struct Actor {
     ignore_ticks_until: Option<Instant>,
     load_grace_until: Option<Instant>,
     played_qid: Option<u64>,
+    /// Entry seen playing below its scrobble threshold; it scrobbles when the position passes it.
+    scrobble_armed: Option<u64>,
     foreign_polls: u32,
     failures: u32,
     last_rel: Option<f64>,
@@ -1103,6 +1132,25 @@ impl Actor {
         }
     }
 
+    /// Scrobbles the current entry once its position passes the threshold, but only after it was seen below it
+    /// (so a resumed or restored session that starts past the threshold is not scrobbled twice).
+    async fn check_scrobble(&mut self, user: &str, entry: &QueueEntry, rel: f64) {
+        let Some(threshold) =
+            crate::plays::scrobble_threshold(entry.item.duration().or(self.state.duration_sec))
+        else {
+            return;
+        };
+        if rel < threshold {
+            self.scrobble_armed = Some(entry.qid);
+        } else if self.scrobble_armed == Some(entry.qid) {
+            self.scrobble_armed = None;
+            let started_at = crate::plays::unix_now() - rel.max(0.0) as i64;
+            self.env
+                .record_scrobble(user, &entry.item, started_at)
+                .await;
+        }
+    }
+
     fn playing_or_paused(&self) -> bool {
         matches!(
             self.state.status,
@@ -1416,14 +1464,23 @@ impl Actor {
                 }
                 let current = self.queue.current().cloned();
                 if let Some(entry) = current {
+                    let user = self
+                        .state
+                        .last_controller_user_id
+                        .clone()
+                        .unwrap_or_default();
                     if self.played_qid != Some(entry.qid) {
                         self.played_qid = Some(entry.qid);
-                        let user = self
-                            .state
-                            .last_controller_user_id
-                            .clone()
-                            .unwrap_or_default();
-                        self.env.record_play(&user, &entry.item).await;
+                        let username = self.state.owner_name.clone().unwrap_or_default();
+                        self.env
+                            .record_play(&user, &username, &self.cfg.name, &entry.item)
+                            .await;
+                    }
+                    // Positions are stale while a start/seek settles (including a corrective seek just sent).
+                    let settled = self.pending_start.is_none()
+                        && self.ignore_ticks_until.is_none_or(|t| now >= t);
+                    if let (Some(rel), true) = (pi.rel_time, settled) {
+                        self.check_scrobble(&user, &entry, rel).await;
                     }
                 }
                 if self.resync_next && !settling {
@@ -1515,6 +1572,7 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct TestEnv {
         pub(crate) plays: Mutex<Vec<(String, String)>>,
+        pub(crate) scrobbles: Mutex<Vec<(String, String)>>,
         pub(crate) missing: Mutex<Vec<String>>,
         counter: Mutex<u64>,
         pub(crate) saved: Mutex<Vec<(String, PersistedSession)>>,
@@ -1696,6 +1754,47 @@ pub(crate) mod tests {
             .unwrap();
         sleep_s(0.5).await;
         assert_eq!(*h.env.forgotten.lock().unwrap(), vec!["wiim".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scrobbles_once_the_threshold_passes_and_never_short_or_resumed_tracks() {
+        let h = harness(true);
+        h.handle
+            .send(
+                load(vec![timed("a", 60.0), timed("b", 20.0)], 0),
+                alice(),
+                false,
+            )
+            .await
+            .unwrap();
+        sleep_s(20.0).await;
+        assert!(
+            h.env.scrobbles.lock().unwrap().is_empty(),
+            "a is below half its length"
+        );
+        sleep_s(15.0).await;
+        assert_eq!(
+            *h.env.scrobbles.lock().unwrap(),
+            vec![("alice".to_string(), "a".to_string())]
+        );
+        // b (20 s) is too short to scrobble.
+        sleep_s(50.0).await;
+        assert_eq!(h.env.scrobbles.lock().unwrap().len(), 1);
+        assert_eq!(h.env.plays.lock().unwrap().len(), 2);
+
+        // A handoff that starts past the threshold was already scrobbled by the other player.
+        let h = harness(true);
+        let mut cmd = load(vec![timed("c", 60.0)], 0);
+        if let Command::Load {
+            start_at, resumed, ..
+        } = &mut cmd
+        {
+            *start_at = 40.0;
+            *resumed = true;
+        }
+        h.handle.send(cmd, alice(), false).await.unwrap();
+        sleep_s(15.0).await;
+        assert!(h.env.scrobbles.lock().unwrap().is_empty());
     }
 
     #[tokio::test(start_paused = true)]

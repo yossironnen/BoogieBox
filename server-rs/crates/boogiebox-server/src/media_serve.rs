@@ -392,6 +392,80 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
         .unwrap_or_else(|_| internal_error())
 }
 
+/// Parameters for an Opus/AAC encode streamed without a known length.
+pub struct StreamEncode<'a> {
+    /// Source file.
+    pub file_path: &'a Path,
+    /// Target codec.
+    pub codec: ffmpeg::StreamCodec,
+    /// Bitrate in kbps.
+    pub bitrate_kbps: u32,
+    /// Apply loudness normalization.
+    pub replay_gain: bool,
+    /// Answer a `HEAD` request (headers only, no encoder spawned).
+    pub head_only: bool,
+    /// Track id for logs.
+    pub log_id: &'a str,
+    /// Source extension for logs.
+    pub log_ext: &'a str,
+}
+
+/// Streams an Opus/AAC encode. The length is unknown, so there is no `Content-Length` and no byte ranges
+/// (`Accept-Ranges: none`; a `Range` request gets the whole stream).
+pub async fn serve_stream_encode(req: StreamEncode<'_>) -> Response {
+    let builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, req.codec.mime())
+        .header(header::ACCEPT_RANGES, "none")
+        .header("Cache-Control", "no-cache");
+    if req.head_only {
+        return builder
+            .body(Body::empty())
+            .unwrap_or_else(|_| internal_error());
+    }
+    let ffmpeg_path = ffmpeg::resolve_ffmpeg();
+    let child = match ffmpeg::spawn_encode(
+        &ffmpeg_path,
+        req.file_path,
+        req.codec,
+        req.bitrate_kbps,
+        req.replay_gain,
+    ) {
+        Ok(c) => c,
+        Err(error) => {
+            tracing::error!(
+                track_id = %req.log_id,
+                ext = %req.log_ext,
+                ffmpeg = %ffmpeg_path.display(),
+                error = %error,
+                "failed to spawn ffmpeg stream encode"
+            );
+            return internal_error();
+        }
+    };
+    tracing::info!(
+        track_id = %req.log_id,
+        ext = %req.log_ext,
+        codec = ?req.codec,
+        bitrate_kbps = req.bitrate_kbps,
+        pid = child.id(),
+        "audio stream using ffmpeg encode"
+    );
+    let read_side = bridge_child(
+        child,
+        BridgeShape {
+            prefix: Vec::new(),
+            skip: 0,
+            exact_len: None,
+        },
+        req.log_id.to_string(),
+        req.log_ext.to_string(),
+    );
+    builder
+        .body(Body::from_stream(ReaderStream::new(read_side)))
+        .unwrap_or_else(|_| internal_error())
+}
+
 /// Size of the canonical RIFF/WAVE header written before PCM data.
 pub const WAV_HEADER_LEN: u64 = 44;
 

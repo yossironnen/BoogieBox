@@ -14,6 +14,7 @@ import {
   type ContextCallbacks,
   type ContextTarget,
 } from '../components/ContextMenu';
+import { favouritesStore } from '../favourites';
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -24,6 +25,7 @@ const { apiMock } = vi.hoisted(() => ({
       addTracks: vi.fn(),
     },
     albumTracks: vi.fn(),
+    favourites: { ids: vi.fn(), add: vi.fn(), remove: vi.fn() },
     crossfade: {
       config: vi.fn(),
       overrides: vi.fn(),
@@ -395,3 +397,45 @@ describe('ContextMenuRoot', () => {
   });
 });
 
+describe('ContextMenuRoot favourites', () => {
+  const open = async (target: ContextTarget) => {
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('boogiebox:contextmenu', {
+        detail: { x: 10, y: 10, target, callbacks: {} },
+      }));
+    });
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    apiMock.playlists.list.mockResolvedValue([]);
+    apiMock.favourites.add.mockResolvedValue({ ok: true });
+    apiMock.favourites.remove.mockResolvedValue({ ok: true });
+    favouritesStore.reset();
+  });
+
+  it('adds and removes tracks, albums and artists, but not synthetic items', async () => {
+    render(<ContextMenuRoot />);
+    await open({ kind: 'track', trackId: 't1', title: 'Song' });
+    fireEvent.click(screen.getByRole('button', { name: /Add to Favourites/ }));
+    await waitFor(() => expect(apiMock.favourites.add).toHaveBeenCalledWith('track', 't1'));
+    expect(favouritesStore.has('track', 't1')).toBe(true);
+
+    await open({ kind: 'track', trackId: 't1', title: 'Song' });
+    fireEvent.click(screen.getByRole('button', { name: /Remove from Favourites/ }));
+    await waitFor(() => expect(apiMock.favourites.remove).toHaveBeenCalledWith('track', 't1'));
+
+    await open({ kind: 'album', albumId: 'al1', title: 'Album' });
+    fireEvent.click(screen.getByRole('button', { name: /Add to Favourites/ }));
+    await waitFor(() => expect(apiMock.favourites.add).toHaveBeenCalledWith('album', 'al1'));
+
+    await open({ kind: 'artist', artistId: 'ar1', name: 'Artist' });
+    fireEvent.click(screen.getByRole('button', { name: /Add to Favourites/ }));
+    await waitFor(() => expect(apiMock.favourites.add).toHaveBeenCalledWith('artist', 'ar1'));
+
+    await open({ kind: 'track', trackId: 'boogiemix:5', title: 'Mix' });
+    expect(screen.queryByRole('button', { name: /Favourites/ })).not.toBeInTheDocument();
+    await open({ kind: 'playlist', playlistId: 'p1', name: 'List' });
+    expect(screen.queryByRole('button', { name: /Favourites/ })).not.toBeInTheDocument();
+  });
+});

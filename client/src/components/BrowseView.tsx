@@ -3,6 +3,10 @@
  */
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+import FavouritesView from './FavouritesView';
+import RadioStationsView from './RadioStationsView';
+import { HeartIcon, RadioIcon } from './FavouriteIcons';
+import type { RadioStation } from '../radioStations';
 import { api } from '../api';
 import type { Artist, ArtistRadioOptions, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
 import type { EntityId } from '../entityId';
@@ -2552,6 +2556,8 @@ function TrackList({
 // ─── Browse View (top-level) ──────────────────────────────────────────────────
 
 type BrowseTab = 'artists' | 'albums';
+/** Root views that are not the artist/album library lists. */
+export type BrowseSpecial = 'favourites' | 'radio';
 type RootViewMode = 'table' | 'grid';
 type DrillState =
   | { level: 'root' }
@@ -2576,6 +2582,14 @@ interface Props {
    * duplicate artists (artist consolidation). Mirrors the server's
    * `can_edit_metadata` check — see `music_routes.rs`. */
   canEditMetadata?: boolean;
+  /** Admins add, edit and delete radio stations. */
+  isAdmin?: boolean;
+  /** Plays an internet radio station (App decides where). */
+  onPlayRadioStation?: (station: RadioStation) => void;
+  /** Station playing now, for the Radio tab. */
+  playingStationId?: string | null;
+  /** Opens Favourites or Radio at the root (e.g. from Home). */
+  openSpecialRequest?: { special: BrowseSpecial; token: number } | null;
 }
 
 /** Browse View is part of this module's public API. */
@@ -2594,8 +2608,13 @@ export default function BrowseView({
   hybridPreview = false,
   hideCompilationOnlyArtists = true,
   canEditMetadata = false,
+  isAdmin = false,
+  onPlayRadioStation,
+  playingStationId = null,
+  openSpecialRequest = null,
 }: Props) {
   const [tab, setTab]         = useState<BrowseTab>('artists');
+  const [special, setSpecial] = useState<BrowseSpecial | null>(null);
   const [rootViewMode, setRootViewMode] = useState<RootViewMode>(() =>
     (safeLocalStorageGet('browse_root_view_mode') as RootViewMode) || 'grid'
   );
@@ -2929,6 +2948,11 @@ export default function BrowseView({
   }, [drill.level, tab, loadRootData, loadRootAlbumChanges, loadArtistData, loadAlbumTracks]));
 
   const goRoot   = useCallback(() => { setCurrentArtist(null); setCurrentAlbum(null); setDrill({ level: 'root' }); }, []);
+  useEffect(() => {
+    if (!openSpecialRequest) return;
+    goRoot();
+    setSpecial(openSpecialRequest.special);
+  }, [openSpecialRequest, goRoot]);
   const goArtist = useCallback((artist: Artist) => { setCurrentArtist(artist); setCurrentAlbum(null); setDrill({ level: 'artist', artist }); }, []);
   const goArtistByName = useCallback((artistName: string) => {
     const normalizedName = artistName.trim().toLowerCase();
@@ -3622,7 +3646,7 @@ export default function BrowseView({
           <CommandBar
             watermark="Browse"
             style={hybridPreview ? hybridBrowseStyles.toolbar : undefined}
-            actions={(
+            actions={special ? undefined : (
               <>
                 <button
                   style={{
@@ -3687,29 +3711,44 @@ export default function BrowseView({
               {(['artists', 'albums'] as BrowseTab[]).map((t) => {
                 const label = t === 'artists' ? 'Artists' : 'Albums';
                 const count = tabCount(t);
+                const active = special === null && tab === t;
                 return (
                   <button
                     key={t}
                     type="button"
-                    style={{ ...L.cmdSegBtn, ...(tab === t ? L.cmdSegBtnActive : {}) }}
-                    onClick={() => setTab(t)}
-                    aria-pressed={tab === t}
+                    style={{ ...L.cmdSegBtn, ...(active ? L.cmdSegBtnActive : {}) }}
+                    onClick={() => { setSpecial(null); setTab(t); }}
+                    aria-pressed={active}
                     aria-label={label}
                     title={count != null ? `${count.toLocaleString()} ${label.toLowerCase()}` : label}
                   >
                     {t === 'artists' ? <ArtistIcon size={15} /> : <AlbumIcon />}
                     {label}
                     {count != null && (
-                      <span style={{ ...L.cmdSegCount, ...(tab === t ? L.cmdSegCountActive : {}) }}>{count.toLocaleString()}</span>
+                      <span style={{ ...L.cmdSegCount, ...(active ? L.cmdSegCountActive : {}) }}>{count.toLocaleString()}</span>
                     )}
                   </button>
                 );
               })}
+              {([['favourites', 'Favourites'], ['radio', 'Radio']] as Array<[BrowseSpecial, string]>).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  style={{ ...L.cmdSegBtn, ...(special === id ? L.cmdSegBtnActive : {}) }}
+                  onClick={() => setSpecial(id)}
+                  aria-pressed={special === id}
+                  aria-label={label}
+                  title={label}
+                >
+                  {id === 'favourites' ? <HeartIcon size={15} /> : <RadioIcon size={15} />}
+                  {label}
+                </button>
+              ))}
             </div>
-            {sortChip}
-            <FilterChipZone chips={filterChips} onClearAll={clearBrowseRefinements} onOpenMore={openRefine} />
+            {!special && sortChip}
+            {!special && <FilterChipZone chips={filterChips} onClearAll={clearBrowseRefinements} onOpenMore={openRefine} />}
           </CommandBar>
-          {tab === 'artists' && artistSelectMode && (
+          {!special && tab === 'artists' && artistSelectMode && (
             <div style={L.artistSelectBar}>
               <div style={L.artistSelectBarText}>
                 <span style={{ fontWeight: 700 }}>{selectedArtistIds.size} artist{selectedArtistIds.size === 1 ? '' : 's'} selected</span>
@@ -3739,12 +3778,29 @@ export default function BrowseView({
       )}
 
       {/* Content */}
-      {drill.level === 'root' && tab === 'artists' && (
+      {drill.level === 'root' && special === 'favourites' && (
+        <FavouritesView
+          playTrack={playTrack}
+          addToQueue={addToQueue}
+          onOpenAlbum={(album) => goAlbum(album, null, 'album_artist')}
+          onOpenArtist={goArtist}
+          onPlayAlbum={(album) => { void playAlbum(album); }}
+          onPlayArtist={(artist) => { void playArtistRadio(artist); }}
+        />
+      )}
+      {drill.level === 'root' && special === 'radio' && (
+        <RadioStationsView
+          isAdmin={isAdmin}
+          onPlayStation={(station) => onPlayRadioStation?.(station)}
+          playingStationId={playingStationId}
+        />
+      )}
+      {drill.level === 'root' && !special && tab === 'artists' && (
         rootViewMode === 'table'
           ? <ArtistList artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} onScrollTopChange={handleRootScrollTopChange} selectMode={artistSelectMode} selectedIds={selectedArtistIds} onToggleSelect={toggleArtistSelected} />
           : <ArtistGrid artists={sortedArtists} loading={loading} onSelect={goArtist} onPlay={playArtistRadio} alphabeticalJump={artistSortDir === 'asc' && artistRatingFilter === 'all'} sortDir={artistSortDir} initialScrollTop={rootInitialScrollTop} initialAnchorId={rootInitialAnchorId} onScrollTopChange={handleRootScrollTopChange} onAnchorChange={handleRootAnchorChange} hybridPreview={hybridPreview} selectMode={artistSelectMode} selectedIds={selectedArtistIds} onToggleSelect={toggleArtistSelected} />
       )}
-      {drill.level === 'root' && tab === 'albums' && (
+      {drill.level === 'root' && !special && tab === 'albums' && (
         rootViewMode === 'table'
           ? (
             <AlbumList

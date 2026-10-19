@@ -11,10 +11,13 @@ import type {
 import type { EntityId } from './entityId';
 import { DEFAULT_SETTINGS } from './types';
 import Player, { type PlaybackSnapshot, type PlayerState } from './components/Player';
+import { createScrobbleTracker } from './scrobbling';
+import { isLibraryTrackId, isLiveTrack, isRadioTrackId, radioStationTrack, type RadioStation } from './radioStations';
+import { favouritesStore } from './favourites';
 import { PlayOnContext, usePlayOn } from './remote/usePlayOn';
 import { PlayOnTakeoverModal } from './remote/PlayOnTakeover';
 import SettingsPage, { type SettingsSectionRequest } from './components/SettingsPage';
-import BrowseView from './components/BrowseView';
+import BrowseView, { type BrowseSpecial } from './components/BrowseView';
 import CommandBar from './components/CommandBar';
 import PlaylistsView from './components/PlaylistsView';
 import MixesView from './components/MixesView';
@@ -273,7 +276,7 @@ export function createBrowseGenreRequest(
 /** Should Record Track Play is part of this module's public API. */
 export function shouldRecordTrackPlay(track: Pick<Track, 'id'> | null | undefined): track is Pick<Track, 'id'> {
   if (!track) return false;
-  return track.id.trim().length > 0 && track.id !== '0';
+  return track.id.trim().length > 0 && track.id !== '0' && !isRadioTrackId(track.id);
 }
 
 /** Normalize Artist Lookup Name is part of this module's public API. */
@@ -1099,6 +1102,8 @@ export default function App() {
     useState<{ artist: Artist; token: number } | null>(null);
   const [browseOpenGenreRequest, setBrowseOpenGenreRequest] =
     useState<{ genre: string; token: number } | null>(null);
+  const [browseOpenSpecialRequest, setBrowseOpenSpecialRequest] =
+    useState<{ special: BrowseSpecial; token: number } | null>(null);
   const [openPlaylistRequest, setOpenPlaylistRequest] =
     useState<{ playlistId: EntityId; token: number } | null>(null);
   const [openMixesRequest, setOpenMixesRequest] =
@@ -1106,6 +1111,7 @@ export default function App() {
   const [infoTrackId, setInfoTrackId] = useState<ClientEntityId | null>(null);
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(null);
   const lastRecordedPlayKeyRef = useRef<string>('');
+  const scrobbleTrackerRef = useRef(createScrobbleTracker());
   const localPositionRef = useRef(0);
   const [settingsSectionRequest, setSettingsSectionRequest] = useState<SettingsSectionRequest | null>(null);
   const isAdminUser = Boolean(currentUser && currentUser !== 'loading' && currentUser.role === 'admin');
@@ -1132,7 +1138,21 @@ export default function App() {
   });
   const dispatchPlayerState = playOn.dispatch;
   const handlePlaybackSnapshot = useCallback((snapshot: PlaybackSnapshot) => {
-    if (playOn.target.kind === 'local') localPositionRef.current = snapshot.currentTime;
+    if (playOn.target.kind === 'local') {
+      localPositionRef.current = snapshot.currentTime;
+      // Scrobble once the track has played long enough (a speaker's session does this on the server).
+      const track = snapshot.currentTrack;
+      if (track && shouldRecordTrackPlay(track) && !isLiveTrack(track) && isLibraryTrackId(track.id)) {
+        const due = scrobbleTrackerRef.current.observe(
+          lastRecordedPlayKeyRef.current || null,
+          String(track.id),
+          track.duration ?? snapshot.duration,
+          snapshot.currentTime,
+          Date.now() / 1000,
+        );
+        if (due) api.scrobbleTrack(due.trackId, due.startedAt).catch(() => {});
+      }
+    }
     setPlaybackSnapshot(snapshot);
   }, [playOn.target.kind]);
   const handleMobilePlaybackPosition = useCallback((seconds: number) => {
@@ -1253,6 +1273,13 @@ export default function App() {
       vinylNeedleDropIntensity: String(vinylNeedleDropIntensity),
     }).catch(() => {});
   }, [currentUser, vinylHardcore, vinylNeedleDrop, vinylAnalogFxDisabled, vinylNeedleDropIntensity]);
+
+  // Favourites (hearts) belong to the signed-in user.
+  const favouritesUserId = currentUser && currentUser !== 'loading' ? String(currentUser.id) : null;
+  useEffect(() => {
+    if (favouritesUserId) void favouritesStore.load(true);
+    else favouritesStore.reset();
+  }, [favouritesUserId]);
 
   useEffect(() => {
     if (typeof document === 'undefined' || typeof window === 'undefined') return;
@@ -1422,6 +1449,23 @@ export default function App() {
     api.markTrackPlayed(current.id).catch(() => {});
   }, [playOn.target.kind, playerState.playToken, playerState.currentIndex, playerState.queue]);
 
+  // Radio plays in this browser only (speakers get library tracks, not station relays).
+  const playRadioStation = (station: RadioStation) => {
+    if (playOn.target.kind !== 'local') {
+      playOn.notify({
+        text: 'Radio plays in this browser',
+        tone: 'muted',
+        action: { label: 'Use this browser', run: () => playOn.selectTarget({ kind: 'local' }) },
+      });
+      return;
+    }
+    const track = radioStationTrack(station);
+    playTrack(track, [track], { type: 'station', id: station.id });
+  };
+  const playingStationId = playbackSnapshot?.currentTrack && isRadioTrackId(playbackSnapshot.currentTrack.id)
+    ? String(playbackSnapshot.currentTrack.id).slice('radio:'.length)
+    : null;
+
   const addToQueue = (track: Track) =>
     dispatchPlayerState(prev => {
       if (playbackMode === 'vinyl') return prev;
@@ -1562,6 +1606,7 @@ export default function App() {
         onPlaybackPosition={handleMobilePlaybackPosition}
         onPlayTrack={playTrack}
         onAddToQueue={addToQueue}
+        onPlayRadioStation={playRadioStation}
         onConsumeOpenPlaylist={() => setOpenPlaylistRequest(null)}
         onSettingsChange={setSettings}
         onHybridThemeModeChange={selectHybridThemeMode}
@@ -1807,6 +1852,11 @@ export default function App() {
               stats={stats}
               libraries={libraries}
               refreshKey={homeRefreshKey}
+              onOpenFavourites={() => {
+                setBrowseOpenSpecialRequest({ special: 'favourites', token: Date.now() });
+                clearSidebarLibrarySelection();
+                setView('browse');
+              }}
               onOpenArtist={(artist) => {
                 setBrowseOpenArtistRequest({ artist, token: Date.now() });
                 clearSidebarLibrarySelection();
@@ -1876,11 +1926,15 @@ export default function App() {
                 openAlbumRequest={browseOpenAlbumRequest}
                 openArtistRequest={browseOpenArtistRequest}
                 openGenreRequest={browseOpenGenreRequest}
+                openSpecialRequest={browseOpenSpecialRequest}
                 resetRequest={browseResetRequest}
                 adaptiveAccentEnabled={effectiveAdaptiveAccent}
                 hybridPreview={hybridDesignActive}
                 hideCompilationOnlyArtists={hideCompilationOnlyArtists}
                 canEditMetadata={currentUser.role === 'admin' || currentUser.canEditMetadata}
+                isAdmin={currentUser.role === 'admin'}
+                onPlayRadioStation={playRadioStation}
+                playingStationId={playingStationId}
               />
           )}
           {view === 'playlists' && (

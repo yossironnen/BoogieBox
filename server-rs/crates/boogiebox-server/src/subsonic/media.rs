@@ -31,11 +31,59 @@ pub fn snap_bitrate(requested: u32) -> u32 {
         .unwrap_or(BITRATES[0])
 }
 
+/// Opus bitrates (kbps) and the default when `maxBitRate` is not given.
+const OPUS_BITRATES: [u32; 5] = [64, 96, 128, 160, 192];
+const OPUS_DEFAULT: u32 = 128;
+/// AAC bitrates (kbps) and the default.
+const AAC_BITRATES: [u32; 4] = [96, 128, 192, 256];
+const AAC_DEFAULT: u32 = 192;
+
+/// Largest bitrate of `ladder` not above `requested` (at least the lowest).
+fn snap_to(ladder: &[u32], requested: u32) -> u32 {
+    ladder
+        .iter()
+        .rev()
+        .copied()
+        .find(|b| *b <= requested)
+        .unwrap_or(ladder[0])
+}
+
 /// How a stream request is served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
     Original,
     Mp3(u32),
+    /// Opus or AAC, streamed without a known length (plan §15.5, 2.5-5).
+    Encoded(ffmpeg::StreamCodec, u32),
+}
+
+/// `format=opus` / `format=aac` (or `m4a`): that codec at `maxBitRate` (or its default), snapped to its
+/// ladder. Without `libopus`, Opus falls back to MP3 at the same cap. `None` for any other format.
+pub fn choose_codec(
+    format: Option<&str>,
+    max_bitrate: u32,
+    opus_available: bool,
+) -> Option<Delivery> {
+    let format = format?.to_ascii_lowercase();
+    let cap = |default: u32| {
+        if max_bitrate > 0 {
+            max_bitrate
+        } else {
+            default
+        }
+    };
+    match format.as_str() {
+        "opus" if opus_available => Some(Delivery::Encoded(
+            ffmpeg::StreamCodec::Opus,
+            snap_to(&OPUS_BITRATES, cap(OPUS_DEFAULT)),
+        )),
+        "opus" => Some(Delivery::Mp3(snap_bitrate(cap(OPUS_DEFAULT)))),
+        "aac" | "m4a" => Some(Delivery::Encoded(
+            ffmpeg::StreamCodec::Aac,
+            snap_to(&AAC_BITRATES, cap(AAC_DEFAULT)),
+        )),
+        _ => None,
+    }
 }
 
 /// Decision table (plan D12): original unless the client asked for MP3, the file needs transcoding for
@@ -143,15 +191,32 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
     }
 
     let ext = model::suffix(&song.file_path);
-    let delivery = choose_delivery(
-        download,
-        ctx.params.text("format"),
-        ctx.params.int("maxBitRate")?.unwrap_or(0).clamp(0, 10_000) as u32,
-        song.bitrate,
-        ffmpeg::needs_audio_transcode(&file_path),
-        ext == "mp3",
-        ffmpeg::bitrate_for_quality(&quality),
-    );
+    let format = ctx.params.text("format");
+    let max_bitrate = ctx.params.int("maxBitRate")?.unwrap_or(0).clamp(0, 10_000) as u32;
+    let wants_opus = format.is_some_and(|f| f.eq_ignore_ascii_case("opus"));
+    let opus_available = if wants_opus && !download {
+        tokio::task::spawn_blocking(|| ffmpeg::has_encoder(&ffmpeg::resolve_ffmpeg(), "libopus"))
+            .await
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let codec = if download {
+        None
+    } else {
+        choose_codec(format, max_bitrate, opus_available)
+    };
+    let delivery = codec.unwrap_or_else(|| {
+        choose_delivery(
+            download,
+            format,
+            max_bitrate,
+            song.bitrate,
+            ffmpeg::needs_audio_transcode(&file_path),
+            ext == "mp3",
+            ffmpeg::bitrate_for_quality(&quality),
+        )
+    });
 
     match delivery {
         Delivery::Original => {
@@ -170,7 +235,7 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
             }
             Ok(resp)
         }
-        Delivery::Mp3(kbps) => {
+        Delivery::Mp3(kbps) | Delivery::Encoded(_, kbps) => {
             let limiter = ctx.subsonic.transcode_limiter(ctx.settings.max_transcodes);
             let permit = match tokio::time::timeout(TRANSCODE_WAIT, limiter.acquire_owned()).await {
                 Ok(Ok(permit)) => permit,
@@ -182,23 +247,36 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
                         .into_response())
                 }
             };
-            let range = ctx
-                .headers
-                .get(header::RANGE)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned);
-            let resp = media_serve::serve_mp3_transcode(media_serve::Mp3Transcode {
-                file_path: &file_path,
-                duration: (song.duration > 0.0).then_some(song.duration),
-                range: range.as_deref(),
-                bitrate_kbps: kbps,
-                replay_gain,
-                head_only: ctx.head,
-                log_id: &song.id,
-                log_ext: &ext,
-                extra: &[],
-            })
-            .await;
+            let resp = if let Delivery::Encoded(codec, kbps) = delivery {
+                media_serve::serve_stream_encode(media_serve::StreamEncode {
+                    file_path: &file_path,
+                    codec,
+                    bitrate_kbps: kbps,
+                    replay_gain,
+                    head_only: ctx.head,
+                    log_id: &song.id,
+                    log_ext: &ext,
+                })
+                .await
+            } else {
+                let range = ctx
+                    .headers
+                    .get(header::RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                media_serve::serve_mp3_transcode(media_serve::Mp3Transcode {
+                    file_path: &file_path,
+                    duration: (song.duration > 0.0).then_some(song.duration),
+                    range: range.as_deref(),
+                    bitrate_kbps: kbps,
+                    replay_gain,
+                    head_only: ctx.head,
+                    log_id: &song.id,
+                    log_ext: &ext,
+                    extra: &[],
+                })
+                .await
+            };
             // Hold the transcode slot until the body is fully sent or the client disconnects.
             let (parts, body) = resp.into_parts();
             let guarded = body.into_data_stream().map(move |chunk| {
@@ -428,6 +506,38 @@ mod tests {
             choose_delivery(false, None, 128, None, false, true, 320),
             Original
         );
+    }
+
+    #[test]
+    fn opus_and_aac_requests() {
+        use ffmpeg::StreamCodec::*;
+        use Delivery::*;
+        assert_eq!(
+            choose_codec(Some("opus"), 0, true),
+            Some(Encoded(Opus, 128))
+        );
+        assert_eq!(
+            choose_codec(Some("OPUS"), 100, true),
+            Some(Encoded(Opus, 96))
+        );
+        assert_eq!(
+            choose_codec(Some("opus"), 32, true),
+            Some(Encoded(Opus, 64))
+        );
+        assert_eq!(
+            choose_codec(Some("opus"), 999, true),
+            Some(Encoded(Opus, 192))
+        );
+        // No libopus: MP3 at the same cap.
+        assert_eq!(choose_codec(Some("opus"), 0, false), Some(Mp3(128)));
+        assert_eq!(choose_codec(Some("opus"), 256, false), Some(Mp3(256)));
+        assert_eq!(choose_codec(Some("aac"), 0, false), Some(Encoded(Aac, 192)));
+        assert_eq!(
+            choose_codec(Some("m4a"), 160, false),
+            Some(Encoded(Aac, 128))
+        );
+        assert_eq!(choose_codec(Some("mp3"), 0, true), None);
+        assert_eq!(choose_codec(None, 0, true), None);
     }
 
     #[test]

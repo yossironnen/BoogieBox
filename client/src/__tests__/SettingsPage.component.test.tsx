@@ -695,7 +695,7 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Test Last.fm connection' }));
     await waitFor(() => expect(screen.getAllByText('Connected').length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: 'Save Last.fm credentials' }));
-    await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ lastfmKey: 'lfm-2' }));
+    await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ lastfmKey: 'lfm-2', lastfmSecret: '' }));
 
     const lastfmHeading = screen.getAllByText('Last.fm', { selector: 'div' })[0];
     const spotifyHeading = screen.getByText(/Artist Images: Deezer \+ Spotify Fallback/i);

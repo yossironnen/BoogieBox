@@ -40,6 +40,8 @@ const { apiMock } = vi.hoisted(() => ({
       info: vi.fn(),
       topTracks: vi.fn(),
     },
+    favourites: { ids: vi.fn(), list: vi.fn(), add: vi.fn(), remove: vi.fn() },
+    radioStations: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), streamUrl: vi.fn() },
   },
 }));
 
@@ -181,6 +183,30 @@ describe('BrowseView component flows', () => {
         json: async () => ({}),
       } as unknown as Response;
     });
+  });
+
+  it('switches to Favourites and Radio and back to the library lists', async () => {
+    apiMock.favourites.list.mockResolvedValue({ tracks: [], albums: [], artists: [] });
+    const station = { id: 's1', name: 'Jazz FM', streamUrl: 'http://j/s', homepageUrl: null };
+    apiMock.radioStations.list.mockResolvedValue([station]);
+    const onPlayRadioStation = vi.fn();
+    const { rerender } = render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" onPlayRadioStation={onPlayRadioStation} />,
+    );
+    expect(await screen.findByText('Artist One')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Favourites' }));
+    expect(await screen.findByText('No favourite songs yet')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Favourites' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Radio' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Play Jazz FM' }));
+    expect(onPlayRadioStation).toHaveBeenCalledWith(station);
+    fireEvent.click(screen.getByRole('button', { name: 'Artists' }));
+    expect(await screen.findByText('Artist One')).toBeInTheDocument();
+
+    rerender(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" openSpecialRequest={{ special: 'favourites', token: 1 }} />,
+    );
+    expect(await screen.findByText('No favourite songs yet')).toBeInTheDocument();
   });
 
   it('merges grouped album scan deltas without replacing unchanged albums', () => {

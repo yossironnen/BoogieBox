@@ -36,6 +36,8 @@ import {
 } from '../hybridPreview';
 import { usePlayOnContext, type PlayerRemoteView, type PlayOnApi, type PlayOnNotice } from '../remote/usePlayOn';
 import { OutputIcon, RefreshIcon } from '../remote/OutputIcon';
+import { isLibraryTrackId, isLiveTrack } from '../radioStations';
+import { RadioIcon } from './FavouriteIcons';
 import { OutputPickerList, pickerRenderers } from '../remote/OutputPicker';
 
 /** Player State is part of this module's public API. */
@@ -183,6 +185,11 @@ export function buildPlaybackDebugInfo(track: Track | null, url: string): {
  * fingerprint, lyrics, EQ profile) must skip these rather than 404. */
 export function isBoogieMixSyntheticTrackId(id: string | number | null | undefined): boolean {
   return typeof id === 'string' && id.startsWith('boogiemix:');
+}
+
+/** Any playable without a `tracks` row: a BoogieMix render or an internet radio station. */
+export function isSyntheticTrackId(id: string | number | null | undefined): boolean {
+  return id != null && !isLibraryTrackId(id);
 }
 
 export function getPreferredTrackStreamUrl(track: Track): string {
@@ -2149,10 +2156,11 @@ export default function Player({
   );
   const waveformPoints = waveform?.points?.length ? waveform.points : null;
   const showWaveformProgress = waveformStatus === 'ready' || waveformStatus === 'loading' || waveformStatus === 'generating';
+  const liveTrack = isLiveTrack(currentTrack);
 
   useEffect(() => {
     if (!currentTrack?.id || isRemote) return;
-    if (isBoogieMixSyntheticTrackId(currentTrack.id)) return;
+    if (isSyntheticTrackId(currentTrack.id)) return;
     if (!autoEqEnabled) return;
     if (typeof (api as any).trackEqProfile !== 'function') return;
     let cancelled = false;
@@ -2540,7 +2548,7 @@ export default function Player({
   useEffect(() => {
     stopWaveformPoll();
     setWaveform(null);
-    if (!currentTrack || isBoogieMixSyntheticTrackId(currentTrack.id)) {
+    if (!currentTrack || isSyntheticTrackId(currentTrack.id)) {
       setWaveformStatus('missing');
       return;
     }
@@ -2605,7 +2613,7 @@ export default function Player({
     setSonicFingerprint(null);
     setSonicFingerprintChecked(false);
     setShowSonicFingerprint(false);
-    if (!currentTrack || isBoogieMixSyntheticTrackId(currentTrack.id)) return;
+    if (!currentTrack || isSyntheticTrackId(currentTrack.id)) return;
     let cancelled = false;
     api.trackSonicFingerprint(currentTrack.id).then(fp => {
       if (!cancelled) { setSonicFingerprint(fp); setSonicFingerprintChecked(true); }
@@ -3027,7 +3035,7 @@ export default function Player({
 
   useEffect(() => {
     if (!lyricsOpen || !currentTrack?.id) return;
-    if (isBoogieMixSyntheticTrackId(currentTrack.id)) return;
+    if (isSyntheticTrackId(currentTrack.id)) return;
     if (lyricsTrackId === currentTrack.id && (lyricsText || lyricsError)) return;
     let cancelled = false;
     setLyricsLoading(true);
@@ -3523,7 +3531,13 @@ export default function Player({
                 : playOn?.notice ? <PlayOnNoticeLine notice={playOn.notice} />
                 : <>
                     <span style={P.timeLabel}>{fmt(currentTime)}</span>
-                    {showWaveformProgress ? (
+                    {liveTrack ? (
+                      <div style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
+                        <span style={P.liveBadge} title="Live stream: no seeking">
+                          <RadioIcon size={12} /> Live
+                        </span>
+                      </div>
+                    ) : showWaveformProgress ? (
                       <WaveformBar
                         points={waveformPoints}
                         duration={duration || 0}
@@ -3550,7 +3564,7 @@ export default function Player({
                           if (a) a.currentTime = seekValueRef.current;
                         }} />
                     )}
-                    <span style={P.timeLabel}>{fmt(duration)}</span>
+                    {!liveTrack && <span style={P.timeLabel}>{fmt(duration)}</span>}
                   </>
               }
             </div>
@@ -3897,6 +3911,7 @@ const P: Record<string, React.CSSProperties> = {
     minWidth: 220,
   },
   timeLabel:    { fontSize: 13, color: PLAYER_THEME_TOKENS.textMuted, flexShrink: 0, fontVariantNumeric: 'tabular-nums', minWidth: 36 },
+  liveBadge:    { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 50%, transparent)' },
   rightCluster: { display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' },
   rightControls:{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, position: 'relative' },
   volumeStack: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 },

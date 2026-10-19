@@ -46,12 +46,14 @@ pub mod logging;
 pub mod media_serve;
 pub mod mix_priority_gate;
 pub mod mix_worker;
+pub mod plays;
 pub mod post_scan;
 pub mod providers;
 pub mod radio_metadata;
 pub mod remote;
 pub mod routes;
 pub mod scanner;
+pub mod scrobbling;
 pub mod server_config;
 pub mod settings;
 pub mod similar_artists;
@@ -144,6 +146,8 @@ pub struct AppState {
     pub worker_cancel: tokio_util::sync::CancellationToken,
     /// Subsonic API caches (credentials, settings, key, transcode limiter); reset on a database switch.
     pub subsonic: subsonic::SubsonicState,
+    /// Now-playing list, Last.fm sign-in states and the scrobble forwarder's wake-up; reset on a database switch.
+    pub plays: plays::PlayHub,
 }
 
 impl Default for AppState {
@@ -193,6 +197,7 @@ impl Default for AppState {
             remote: remote::RemoteManager::new(),
             worker_cancel: tokio_util::sync::CancellationToken::new(),
             subsonic: subsonic::SubsonicState::default(),
+            plays: plays::PlayHub::default(),
         }
     }
 }
@@ -358,6 +363,15 @@ pub async fn run_from_env() -> Result<(), ServerError> {
             cancel.clone(),
         );
         db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
+        let play_env = plays::PlayEnv {
+            db: ps_state.db.clone(),
+            http: state.http_client.clone(),
+            hub: state.plays.clone(),
+            subsonic: state.subsonic.clone(),
+            db_folder: state.db_folder.clone(),
+        };
+        state.remote.set_play_env(play_env.clone());
+        scrobbling::start_forwarder(play_env, cancel.clone());
         deep_analysis::start_deep_analysis_worker(ps_state.clone());
         mix_worker::start_mix_worker(ps_state);
         let dlna_mgr = state.dlna_manager.clone();
@@ -542,6 +556,13 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         .merge(routes::subsonic_routes::subsonic_routes_router(
             shared_state.clone(),
         ))
+        .merge(routes::favourites_routes::favourites_router(
+            shared_state.clone(),
+        ))
+        .merge(routes::scrobble_routes::scrobble_router(
+            shared_state.clone(),
+        ))
+        .merge(routes::radio_routes::radio_router(shared_state.clone()))
         .merge(routes::dlna_routes::dlna_router(shared_state.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer)
@@ -782,6 +803,7 @@ async fn setup_handler(
                 s.db = Some(db_pool);
                 s.db_folder = Some(PathBuf::from(db_folder));
                 s.subsonic.reset();
+                s.plays.reset();
                 s.worker_cancel.cancel();
                 let cancel = tokio_util::sync::CancellationToken::new();
                 s.worker_cancel = cancel.clone();
@@ -801,6 +823,15 @@ async fn setup_handler(
                     cancel.clone(),
                 );
                 db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
+                let play_env = plays::PlayEnv {
+                    db: ps_state.db.clone(),
+                    http: s.http_client.clone(),
+                    hub: s.plays.clone(),
+                    subsonic: s.subsonic.clone(),
+                    db_folder: s.db_folder.clone(),
+                };
+                s.remote.set_play_env(play_env.clone());
+                scrobbling::start_forwarder(play_env, cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
@@ -884,6 +915,7 @@ async fn switch_db_handler(
                 s.db = Some(db_pool);
                 s.db_folder = Some(PathBuf::from(db_folder));
                 s.subsonic.reset();
+                s.plays.reset();
                 s.worker_cancel.cancel();
                 let cancel = tokio_util::sync::CancellationToken::new();
                 s.worker_cancel = cancel.clone();
@@ -904,6 +936,15 @@ async fn switch_db_handler(
                     cancel.clone(),
                 );
                 db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
+                let play_env = plays::PlayEnv {
+                    db: ps_state.db.clone(),
+                    http: s.http_client.clone(),
+                    hub: s.plays.clone(),
+                    subsonic: s.subsonic.clone(),
+                    db_folder: s.db_folder.clone(),
+                };
+                s.remote.set_play_env(play_env.clone());
+                scrobbling::start_forwarder(play_env, cancel.clone());
                 deep_analysis::start_deep_analysis_worker(ps_state.clone());
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();

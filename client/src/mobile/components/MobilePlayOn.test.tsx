@@ -40,6 +40,7 @@ function playOnApi(over: Partial<PlayOnApi> = {}): PlayOnApi {
     renderers: [wiim, { ...wiim, udn: 'uuid:off', name: 'Kitchen', online: false }, { ...wiim, udn: 'uuid:hidden', name: 'Hidden', hidden: true }],
     renderersLoaded: true,
     discovering: false,
+    notify: vi.fn(),
     watchRenderers: vi.fn(() => () => {}),
     refreshRenderers: vi.fn(),
     selectTarget: vi.fn(),

@@ -106,6 +106,8 @@ export interface PlayOnApi {
   playerState: PlayerState;
   dispatch: (action: SetStateAction<PlayerState>) => void;
   notice: PlayOnNotice | null;
+  /** Shows a short notice in the Play On area. */
+  notify: (notice: Omit<PlayOnNotice, 'key'>, ms?: number) => void;
   takeover: PlayOnTakeoverPrompt | null;
   /** Opens Settings → Advanced → Play On; null when the user can't change those settings. */
   openSettings: (() => void) | null;
@@ -633,6 +635,8 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
     playerState,
     dispatch,
     notice: transient ?? statusNotice,
+    /** Shows a short notice in the Play On area (e.g. why an action stayed in this browser). */
+    notify: showNotice,
     takeover,
     openSettings: onOpenSettings,
   };

@@ -356,9 +356,15 @@ pub async fn top_songs(ctx: &Ctx) -> Result<Node, SubsonicError> {
 
 // ── Now playing ────────────────────────────────────────────────────────────────
 
-/// `getNowPlaying`: what Subsonic apps reported in the last 10 minutes (all users, as in Subsonic).
+/// `getNowPlaying`: what Subsonic apps, the BoogieBox web player and Play On speakers reported in the last
+/// 10 minutes (all users, as in Subsonic).
 pub async fn now_playing(ctx: &Ctx) -> Result<Node, SubsonicError> {
-    let entries = ctx.subsonic.now_playing();
+    let entries = ctx
+        .state
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .plays
+        .now_playing();
     if entries.is_empty() {
         return Ok(Node::new("payload").object(Node::new("nowPlaying")));
     }

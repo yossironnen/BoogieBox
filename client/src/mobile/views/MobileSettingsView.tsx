@@ -14,6 +14,7 @@ import { APP_VERSION } from '../../version';
 import MobileBottomSheet from '../components/MobileBottomSheet';
 import MobileAdminSettingsPanel from './MobileAdminSettingsPanel';
 import MobileConnectedApps from '../components/MobileConnectedApps';
+import MobileScrobbling from '../components/MobileScrobbling';
 
 type SettingsState = Record<string, string>;
 type ThemeColorKey =
@@ -292,6 +293,7 @@ export default function MobileSettingsView({
         </section>
 
         <MobileConnectedApps username={currentUser.username} />
+        <MobileScrobbling />
 
         {currentUser.role === 'admin' ? <MobileAdminSettingsPanel focus={focus} /> : null}
 

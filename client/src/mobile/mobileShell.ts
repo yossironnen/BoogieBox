@@ -2,6 +2,7 @@
  * Defines mobile Mobile Shell behavior for the BoogieBox React client.
  */
 
+import type { RadioStation } from '../radioStations';
 import type { AppSettings, Artist, Album, AuthUser, ClientEntityId, Library, Playlist, PlaylistTrack, QueueSource, Track } from '../types';
 import type { PlaybackSnapshot, PlayerState } from '../components/Player';
 import type { EntityId } from '../entityId';
@@ -39,6 +40,8 @@ export interface MobileSharedProps {
   onPlaybackPosition?: (seconds: number) => void;
   onPlayTrack: (track: Track, allTracks?: Track[], source?: QueueSource) => void;
   onAddToQueue: (track: Track) => void;
+  /** Plays an internet radio station (in this browser). */
+  onPlayRadioStation?: (station: RadioStation) => void;
   onConsumeOpenPlaylist: () => void;
   onSettingsChange: (settings: AppSettings) => void;
   onHybridThemeModeChange: (mode: HybridThemeMode) => void;

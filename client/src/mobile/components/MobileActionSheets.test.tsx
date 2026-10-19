@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../api';
 import type { Playlist } from '../../types';
 import { MobilePlaylistEditorSheet, useMobileTrackActions } from './MobileActionSheets';
-
+import { favouritesStore } from '../../favourites';
 vi.mock('../../api', () => ({
   api: {
     albumArtUrl: vi.fn((albumId: string, size: number) => `/api/albums/${albumId}/art?size=${size}`),
@@ -16,6 +16,7 @@ vi.mock('../../api', () => ({
       create: vi.fn(),
       addTrack: vi.fn(),
     },
+    favourites: { ids: vi.fn(), add: vi.fn().mockResolvedValue({ ok: true }), remove: vi.fn().mockResolvedValue({ ok: true }) },
   },
 }));
 
@@ -123,5 +124,16 @@ describe('MobileActionSheets', () => {
 
     await waitFor(() => expect(api.playlists.create).toHaveBeenCalledWith('Fresh Picks', ''));
     await waitFor(() => expect(api.playlists.addTrack).toHaveBeenCalledWith('7', '22'));
+  });
+
+  it('adds the track to Favourites and back out', async () => {
+    favouritesStore.reset();
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add To Favourites' }));
+    await waitFor(() => expect(api.favourites.add).toHaveBeenCalledWith('track', '22'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove From Favourites' }));
+    await waitFor(() => expect(api.favourites.remove).toHaveBeenCalledWith('track', '22'));
   });
 });

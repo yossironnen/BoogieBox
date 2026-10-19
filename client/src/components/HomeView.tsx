@@ -2,6 +2,7 @@
  * Defines the Home View React component and related UI helpers.
  */
 
+import FavouritesWidget from './FavouritesWidget';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { useHomeData } from '../hooks/useHomeData';
@@ -1800,6 +1801,7 @@ export default function HomeView({
   onOpenPlaylist,
   onPlayTrack,
   onStartAutoDj,
+  onOpenFavourites,
   hybridDesign = false,
 }: {
   stats: Stats | null;
@@ -1812,6 +1814,8 @@ export default function HomeView({
   onOpenPlaylist: (playlistId: EntityId) => void;
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
   onStartAutoDj: (genres: string[]) => Promise<number>;
+  /** Opens Browse → Favourites (the widget is hidden without it). */
+  onOpenFavourites?: () => void;
   hybridDesign?: boolean;
 }) {
   const { data: allGenres } = useHomeData<Genre[]>('genres', () => api.genres(), [], refreshKey);
@@ -1852,6 +1856,12 @@ export default function HomeView({
         <WidgetCard title="Playlists" span hybridDesign={hybridDesign}>
           <QuickPlaylistsWidget onOpenPlaylist={onOpenPlaylist} onPlayTrack={onPlayTrack} />
         </WidgetCard>
+
+        {onOpenFavourites && (
+          <WidgetCard title="Favourites" span hybridDesign={hybridDesign}>
+            <FavouritesWidget onOpenAlbum={onOpenAlbum} onPlayTrack={onPlayTrack} onOpenFavourites={onOpenFavourites} />
+          </WidgetCard>
+        )}
 
         <WidgetCard title="Top Rated" hybridDesign={hybridDesign}>
           <TopRatedWidget

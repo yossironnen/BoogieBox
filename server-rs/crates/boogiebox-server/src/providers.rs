@@ -41,7 +41,7 @@ fn lyrics_ovh_api_base() -> String {
     provider_base_url("BOOGIEBOX_LYRICS_OVH_API_BASE", "https://api.lyrics.ovh")
 }
 
-fn lastfm_api_base() -> String {
+pub(crate) fn lastfm_api_base() -> String {
     provider_base_url(
         "BOOGIEBOX_LASTFM_API_BASE",
         "https://ws.audioscrobbler.com/2.0/",
@@ -2906,7 +2906,7 @@ pub(crate) mod provider_fetch_tests {
 
 // ── URL encoding helper ───────────────────────────────────────────────────────
 
-mod urlencoding {
+pub(crate) mod urlencoding {
     /// Documents the Encode public API surface.
     pub fn encode(s: &str) -> String {
         let mut out = String::new();

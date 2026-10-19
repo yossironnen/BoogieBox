@@ -432,6 +432,110 @@ pub fn spawn_transcode(
         .spawn()
 }
 
+/// Encodings streamed without a known length (Subsonic `format=opus` / `format=aac`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamCodec {
+    /// Opus in Ogg (`libopus`).
+    Opus,
+    /// AAC-LC in ADTS (FFmpeg's native `aac`).
+    Aac,
+}
+
+impl StreamCodec {
+    /// Response `Content-Type`.
+    pub fn mime(self) -> &'static str {
+        match self {
+            StreamCodec::Opus => "audio/ogg",
+            StreamCodec::Aac => "audio/aac",
+        }
+    }
+}
+
+/// FFmpeg arguments for a streamed Opus/AAC encode; the empty string after `-i` is the input path placeholder
+/// (kept as an `OsStr` by the caller, as in [`pcm_args`]).
+pub fn encode_args(codec: StreamCodec, bitrate: u32, replay_gain: bool) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-loglevel",
+        "error",
+        "-hide_banner",
+        "-i",
+        "",
+        "-map",
+        "0:a",
+        "-vn",
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect();
+    if replay_gain {
+        args.extend(["-af".into(), "loudnorm=I=-14:TP=-1.5:LRA=11".into()]);
+    }
+    let (encoder, rate, format) = match codec {
+        StreamCodec::Opus => ("libopus", "48000", "ogg"),
+        StreamCodec::Aac => ("aac", "44100", "adts"),
+    };
+    for a in [
+        "-c:a".to_string(),
+        encoder.to_string(),
+        "-b:a".to_string(),
+        format!("{bitrate}k"),
+        "-ar".to_string(),
+        rate.to_string(),
+        "-ac".to_string(),
+        "2".to_string(),
+        "-f".to_string(),
+        format.to_string(),
+        "pipe:1".to_string(),
+    ] {
+        args.push(a);
+    }
+    args
+}
+
+/// Spawns ffmpeg encoding `file_path` with [`encode_args`] (stdout piped).
+pub fn spawn_encode(
+    ffmpeg: &Path,
+    file_path: &Path,
+    codec: StreamCodec,
+    bitrate: u32,
+    replay_gain: bool,
+) -> std::io::Result<std::process::Child> {
+    let mut cmd = std::process::Command::new(ffmpeg); // nosemgrep: boogiebox-rust-dynamic-command
+    for arg in encode_args(codec, bitrate, replay_gain) {
+        if arg.is_empty() {
+            cmd.arg(file_path);
+        } else {
+            cmd.arg(arg);
+        }
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
+/// True when `ffmpeg -encoders` lists `name` (checked once per process; blocking).
+pub fn has_encoder(ffmpeg: &Path, name: &str) -> bool {
+    static ENCODERS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let list = ENCODERS.get_or_init(|| {
+        Command::new(ffmpeg) // nosemgrep: boogiebox-rust-dynamic-command
+            .args(["-hide_banner", "-encoders"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    });
+    encoder_listed(list, name)
+}
+
+/// Whether an `ffmpeg -encoders` listing contains the encoder `name`.
+pub fn encoder_listed(listing: &str, name: &str) -> bool {
+    listing
+        .lines()
+        .any(|line| line.split_whitespace().nth(1) == Some(name))
+}
+
 /// Builds the ffmpeg arguments for raw little-endian PCM output (no container; the caller writes the WAV
 /// header so byte offsets stay exact).
 pub fn pcm_args(seek_seconds: f64, sample_rate: u32, channels: u16, bits: u16) -> Vec<String> {

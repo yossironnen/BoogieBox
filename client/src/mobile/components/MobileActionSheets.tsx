@@ -9,6 +9,8 @@ import { hybridMobileContentStyles } from '../../hybridPreview';
 import type { Playlist, PlaylistTrack, Track } from '../../types';
 import type { EntityId } from '../../entityId';
 import MobileBottomSheet from './MobileBottomSheet';
+import { useFavourites } from '../../favourites';
+import { isLibraryTrackId } from '../../radioStations';
 
 type TrackLike = Track | PlaylistTrack;
 
@@ -229,6 +231,11 @@ export function MobileTrackActionsSheet({
   onAddToQueue: () => void;
   onAddToPlaylist: () => void;
 }) {
+  const favourites = useFavourites();
+  const trackId = track ? String(track.id) : '';
+  // Synthetic items (BoogieMix renders, radio stations) can't be favourites.
+  const canFavourite = isLibraryTrackId(trackId);
+  const isFavourite = canFavourite && favourites.has('track', trackId);
   return (
     <MobileSheet open={open} onClose={onClose} title="Track Actions">
       <MobileTrackSummary track={track} />
@@ -245,6 +252,20 @@ export function MobileTrackActionsSheet({
           <span style={styles.actionTitle}>Add To Playlist</span>
           <span style={styles.actionMeta}>Save it for later</span>
         </button>
+        {canFavourite ? (
+          <button
+            type="button"
+            aria-label={isFavourite ? 'Remove From Favourites' : 'Add To Favourites'}
+            style={styles.actionButton}
+            onClick={() => {
+              void favourites.set('track', trackId, !isFavourite).catch(() => {});
+              onClose();
+            }}
+          >
+            <span style={styles.actionTitle}>{isFavourite ? 'Remove From Favourites' : 'Add To Favourites'}</span>
+            <span style={styles.actionMeta}>{isFavourite ? 'Take it out of Favourites' : 'Find it again under Favourites'}</span>
+          </button>
+        ) : null}
       </div>
     </MobileSheet>
   );

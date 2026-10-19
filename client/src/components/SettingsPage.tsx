@@ -25,6 +25,7 @@ import RadioMetadataSettings from './RadioMetadataSettings';
 import PlayOnSettings from './PlayOnSettings';
 import SubsonicSettings from './SubsonicSettings';
 import ConnectedAppsPanel from './ConnectedAppsPanel';
+import ScrobblingPanel from './ScrobblingPanel';
 import { InlineStatus, ToggleRow } from './settingsControls';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -796,6 +797,7 @@ export default function SettingsPage({
   const [geniusSaving, setGeniusSaving] = useState(false);
   const [geniusResult, setGeniusResult] = useState<string | null>(null);
   const [lastfmKey, setLastfmKey] = useState('');
+  const [lastfmSecret, setLastfmSecret] = useState('');
   const [lastfmSaving, setLastfmSaving] = useState(false);
   const [lastfmResult, setLastfmResult] = useState<string | null>(null);
   const [lastfmConnected, setLastfmConnected] = useState<boolean | null>(null);
@@ -1023,6 +1025,7 @@ export default function SettingsPage({
         if (s.geniusClientId) setGeniusClientId(s.geniusClientId);
         if (s.geniusClientSecret) setGeniusClientSecret(s.geniusClientSecret);
         if (s.lastfmKey) setLastfmKey(s.lastfmKey);
+        if (s.lastfmSecret) setLastfmSecret(s.lastfmSecret);
       });
       if (isAdmin) loadProviderUsage();
     }
@@ -1310,9 +1313,9 @@ export default function SettingsPage({
     setLastfmResult(null);
     setLastfmConnected(null);
     try {
-      await api.settings.update({ lastfmKey: lastfmKey.trim() });
+      await api.settings.update({ lastfmKey: lastfmKey.trim(), lastfmSecret: lastfmSecret.trim() });
       onSettingsChange({ ...local, lastfmKey: lastfmKey.trim() } as any);
-      setLastfmResult('✓ API key saved');
+      setLastfmResult(lastfmSecret.trim() ? '✓ API key and shared secret saved' : '✓ API key saved');
       setTimeout(() => setLastfmResult(null), 3000);
     } catch (e: any) {
       setLastfmResult('✗ ' + e.message);
@@ -1602,6 +1605,7 @@ export default function SettingsPage({
           </SettingsPanel>
 
           <ConnectedAppsPanel username={currentUser.username} />
+          <ScrobblingPanel />
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
@@ -3015,7 +3019,8 @@ export default function SettingsPage({
                   last.fm/api/account/create
                 </a>{' '}
                 <strong style={{ color: 'var(--text)' }}>2.</strong> Fill in the application form{' '}
-                <strong style={{ color: 'var(--text)' }}>3.</strong> Copy your API key and paste it below.
+                <strong style={{ color: 'var(--text)' }}>3.</strong> Copy your API key and paste it below.{' '}
+                <strong style={{ color: 'var(--text)' }}>4.</strong> To let users scrobble to their own Last.fm accounts, also paste the shared secret.
               </>
             }
             onTest={testLastfmKey}
@@ -3028,6 +3033,19 @@ export default function SettingsPage({
               placeholder="Paste your Last.fm API key…"
               value={lastfmKey}
               onChange={e => { setLastfmKey(e.target.value); setLastfmResult(null); setLastfmConnected(null); }}
+              style={{
+                flex: 1, minWidth: 240,
+                backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
+                color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
+                fontSize: 15, fontFamily: 'monospace', outline: 'none',
+              }}
+            />
+            <input
+              type="password"
+              aria-label="Last.fm shared secret"
+              placeholder="Shared secret (for scrobbling, optional)…"
+              value={lastfmSecret}
+              onChange={e => { setLastfmSecret(e.target.value); setLastfmResult(null); }}
               style={{
                 flex: 1, minWidth: 240,
                 backgroundColor: 'var(--bg)', border: '1px solid var(--border)',

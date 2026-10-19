@@ -9,6 +9,7 @@ import type { MobileBrowseSelection, MobilePlaylistSelection, MobileSharedProps,
 import MobileMiniPlayer from './components/MobileMiniPlayer';
 import MobileTabBar from './components/MobileTabBar';
 import MobileBrowseView from './views/MobileBrowseView';
+import { isRadioTrackId } from '../radioStations';
 import MobileHomeView from './views/MobileHomeView';
 import MobileNowPlayingView from './views/MobileNowPlayingView';
 import MobilePlaylistsView from './views/MobilePlaylistsView';
@@ -95,6 +96,12 @@ export default function MobileApp(props: MobileSharedProps) {
           playbackSnapshot={playbackSnapshot}
           libraries={props.libraries}
           hideCompilationOnlyArtists={props.hideCompilationOnlyArtists}
+          onPlayRadioStation={props.onPlayRadioStation}
+          playingStationId={
+            playbackSnapshot?.currentTrack && isRadioTrackId(playbackSnapshot.currentTrack.id)
+              ? String(playbackSnapshot.currentTrack.id).slice('radio:'.length)
+              : null
+          }
         />
       )}
       {tab === 'search' && (

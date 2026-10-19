@@ -23,6 +23,8 @@ const { apiMock } = vi.hoisted(() => ({
       create: vi.fn(),
     },
     setTrackRating: vi.fn(),
+    favourites: { ids: vi.fn(), list: vi.fn(), add: vi.fn(), remove: vi.fn() },
+    radioStations: { list: vi.fn(), streamUrl: vi.fn() },
   },
 }));
 
@@ -291,5 +293,40 @@ describe('MobileBrowseView', () => {
       await screen.findByRole('button', { name: /Neon Skyline/i });
       expect(screen.queryByRole('button', { name: /Play Artist Radio/ })).toBeNull();
     });
+  });
+
+  it('switches to Favourites and Radio and hearts the open album', async () => {
+    apiMock.favourites.list.mockResolvedValue({ tracks: [], albums: [], artists: [] });
+    apiMock.favourites.add.mockResolvedValue({ ok: true });
+    const station = { id: 's1', name: 'Jazz FM', streamUrl: 'http://j/s', homepageUrl: null };
+    apiMock.radioStations.list.mockResolvedValue([station]);
+    const onPlayRadioStation = vi.fn();
+    const { rerender } = render(
+      <MobileBrowseView
+        onPlayTrack={() => {}}
+        onAddToQueue={() => {}}
+        selection={{ artist: null, album: null, tracks: [] }}
+        onSelectionChange={() => {}}
+        onPlayRadioStation={onPlayRadioStation}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Favourites' }));
+    expect(await screen.findByRole('heading', { name: 'Favourites' })).toBeInTheDocument();
+    expect(await screen.findByText(/Add songs, albums and artists/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Radio' }));
+    fireEvent.click(await screen.findByText('Jazz FM'));
+    expect(onPlayRadioStation).toHaveBeenCalledWith(station);
+
+    const album = { id: '9', title: 'Night Moves', artist: 'Neon', album_artist: 'Neon', year: 2020, genre: null, track_count: 1 };
+    rerender(
+      <MobileBrowseView
+        onPlayTrack={() => {}}
+        onAddToQueue={() => {}}
+        selection={{ artist: null, album, tracks: [] }}
+        onSelectionChange={() => {}}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Night Moves to Favourites' }));
+    await waitFor(() => expect(apiMock.favourites.add).toHaveBeenCalledWith('album', '9'));
   });
 });

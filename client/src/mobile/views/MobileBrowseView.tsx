@@ -2,7 +2,7 @@
  * Defines mobile Mobile Browse View behavior for the BoogieBox React client.
  */
 
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { api } from '../../api';
 import ArtImage from '../../components/ArtImage';
 import { ArtistRadioSplitButton } from '../../components/ArtistRadioControls';
@@ -13,6 +13,18 @@ import type { Album, Artist, ArtistRadioOptions, Library, Playlist, QueueSource,
 import { phase2 } from '../../uiPhase2';
 import { useMobileTrackActions } from '../components/MobileActionSheets';
 import type { MobileBrowseSelection } from '../mobileShell';
+import { HeartIcon, HeartToggle, RadioIcon } from '../../components/FavouriteIcons';
+import { useFavourites } from '../../favourites';
+import type { RadioStation } from '../../radioStations';
+import { MobileFavouritesSection, MobileRadioSection } from './MobileLibraryExtras';
+
+type RootMode = 'artists' | 'favourites' | 'radio';
+
+const ArtistsGlyph = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+  </svg>
+);
 
 /** Clear Mobile Artist Browse Cache is part of this module's public API. */
 export function clearMobileArtistBrowseCache() {}
@@ -25,8 +37,13 @@ export default function MobileBrowseView({
   onSelectionChange,
   playbackSnapshot,
   hideCompilationOnlyArtists = true,
+  onPlayRadioStation,
+  playingStationId = null,
 }: {
   onPlayTrack: (track: Track, allTracks?: Track[], source?: QueueSource) => void;
+  /** Plays an internet radio station (App decides where). */
+  onPlayRadioStation?: (station: RadioStation) => void;
+  playingStationId?: string | null;
   onAddToQueue: (track: Track) => void;
   selection: MobileBrowseSelection;
   onSelectionChange: (selection: MobileBrowseSelection) => void;
@@ -43,13 +60,15 @@ export default function MobileBrowseView({
   const [radioNotice, setRadioNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [rootMode, setRootMode] = useState<RootMode>('artists');
+  const favourites = useFavourites();
 
   useEffect(() => {
     api.playlists.list().then(setPlaylists).catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (selection.artist || selection.album) return;
+    if (selection.artist || selection.album || rootMode !== 'artists') return;
     let cancelled = false;
     setLoading(true);
     setError('');
@@ -69,7 +88,7 @@ export default function MobileBrowseView({
     return () => {
       cancelled = true;
     };
-  }, [selection.artist, selection.album, hideCompilationOnlyArtists]);
+  }, [selection.artist, selection.album, hideCompilationOnlyArtists, rootMode]);
 
   useEffect(() => {
     if (!selection.artist) {
@@ -195,10 +214,32 @@ export default function MobileBrowseView({
         {atRoot ? (
           <>
             <div style={hybridMobileContentStyles.eyebrow}>Browse</div>
-            <h1 style={hybridMobileContentStyles.pageTitle}>Artists</h1>
-            <p style={hybridMobileContentStyles.pageBody}>
-              Move from an artist to a release, then start anywhere in the album.
-            </p>
+            <h1 style={hybridMobileContentStyles.pageTitle}>
+              {rootMode === 'artists' ? 'Artists' : rootMode === 'favourites' ? 'Favourites' : 'Radio'}
+            </h1>
+            {rootMode === 'artists' ? (
+              <p style={hybridMobileContentStyles.pageBody}>
+                Move from an artist to a release, then start anywhere in the album.
+              </p>
+            ) : null}
+            <div role="group" aria-label="Browse by" style={styles.modeSeg}>
+              {([
+                ['artists', 'Artists', <ArtistsGlyph key="a" />],
+                ['favourites', 'Favourites', <HeartIcon key="f" size={15} />],
+                ['radio', 'Radio', <RadioIcon key="r" size={15} />],
+              ] as Array<[RootMode, string, ReactNode]>).map(([id, label, icon]) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={rootMode === id}
+                  style={{ ...styles.modeBtn, ...(rootMode === id ? styles.modeBtnActive : {}) }}
+                  onClick={() => setRootMode(id)}
+                >
+                  {icon}
+                  {label}
+                </button>
+              ))}
+            </div>
           </>
         ) : (
           <div style={hybridMobileContentStyles.detailHero}>
@@ -228,6 +269,23 @@ export default function MobileBrowseView({
               </div>
               <h1 style={hybridMobileContentStyles.detailTitle}>
                 {selection.album?.title ?? selection.artist?.name}
+                {selection.album ? (
+                  <HeartToggle
+                    on={favourites.has('album', String(selection.album.id))}
+                    label={selection.album.title}
+                    onToggle={() => { if (selection.album) void favourites.toggle('album', selection.album.id).catch(() => {}); }}
+                    size={18}
+                    style={{ marginLeft: 6, verticalAlign: 'middle' }}
+                  />
+                ) : selection.artist ? (
+                  <HeartToggle
+                    on={favourites.has('artist', String(selection.artist.id))}
+                    label={selection.artist.name}
+                    onToggle={() => { if (selection.artist) void favourites.toggle('artist', selection.artist.id).catch(() => {}); }}
+                    size={18}
+                    style={{ marginLeft: 6, verticalAlign: 'middle' }}
+                  />
+                ) : null}
               </h1>
               <div style={hybridMobileContentStyles.detailMeta}>
                 {selection.album
@@ -268,7 +326,22 @@ export default function MobileBrowseView({
         </div>
       ) : null}
 
-      {atRoot && !loading && !error ? (
+      {atRoot && rootMode === 'favourites' ? (
+        <MobileFavouritesSection
+          onPlayTrack={onPlayTrack}
+          onOpenAlbum={(album) => onSelectionChange({ artist: null, album, tracks: [] })}
+          onOpenArtist={(artist) => onSelectionChange({ artist, album: null, tracks: [] })}
+          onTrackActions={(track, list) => trackActions.openForTrack(track, list)}
+        />
+      ) : null}
+      {atRoot && rootMode === 'radio' ? (
+        <MobileRadioSection
+          onPlayStation={(station) => onPlayRadioStation?.(station)}
+          playingStationId={playingStationId}
+        />
+      ) : null}
+
+      {atRoot && rootMode === 'artists' && !loading && !error ? (
         artists.length > 0 ? (
           <div aria-label="Artists" style={hybridMobileContentStyles.list}>
             {artists.map(artist => (
@@ -432,6 +505,33 @@ export default function MobileBrowseView({
 }
 
 const styles: Record<string, CSSProperties> = {
+  modeSeg: {
+    display: 'inline-flex',
+    gap: 4,
+    marginTop: 10,
+    padding: 3,
+    borderRadius: 12,
+    border: '1px solid var(--border)',
+    background: 'color-mix(in srgb, var(--surface) 84%, var(--bg))',
+  },
+  modeBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '7px 12px',
+    borderRadius: 9,
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  modeBtnActive: {
+    background: 'color-mix(in srgb, var(--accent) 20%, transparent)',
+    color: 'var(--text)',
+  },
   detailImage: {
     width: '100%',
     height: '100%',

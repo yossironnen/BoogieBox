@@ -80,6 +80,22 @@ describe('Player artist link', () => {
     expect(onOpenArtist).toHaveBeenCalledWith('Tycho');
   });
 
+  it('shows a live badge instead of a seek bar for a radio station', () => {
+    const state: PlayerState = {
+      queue: [{
+        id: 'radio:s1', file_name: 'Jazz FM', file_size: null, format: null, duration: null, bitrate: null,
+        sample_rate: null, channels: null, title: 'Jazz FM', artist: 'Internet radio', album: null, library_name: null,
+        track_number: null, disc_number: null, year: null, genre: null, composer: null, comment: null, bpm: null,
+        album_id: null, scanned_at: '', stream_url_override: '/api/radio-stations/s1/stream', live: true,
+      }],
+      currentIndex: 0,
+      isPlaying: false,
+      playToken: 1,
+    };
+    render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable={true} hybridPreview />);
+    expect(screen.getByTitle('Live stream: no seeking')).toHaveTextContent('Live');
+  });
+
   it('resolves standard and Vinyl dock heights without a thinner Hybrid branch', () => {
     expect(resolveDesktopPlayerDockHeight(false)).toBe(DESKTOP_PLAYER_DOCK_HEIGHT);
     expect(resolveDesktopPlayerDockHeight(true)).toBe(DESKTOP_VINYL_PLAYER_DOCK_HEIGHT);

@@ -53,6 +53,53 @@ pub fn ensure_subsonic_schema(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Phase 2.5 tables (migration `2026-10-19-subsonic-phase-2-5`): per-user play counts, scrobble forwarding and
+/// internet radio stations.
+pub fn ensure_subsonic_phase_2_5_schema(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_user_track_stats_schema(conn)?;
+    crate::scrobble::ensure_scrobble_schema(conn)?;
+    crate::radio_stations::ensure_radio_station_schema(conn)?;
+    Ok(())
+}
+
+/// `user_track_stats`: one row per user and track, kept in step with `play_history` by triggers (so every
+/// writer is covered) and backfilled from the existing history. No foreign keys: `play_history` rows are
+/// removed by its own cascades, and the delete trigger follows them.
+fn ensure_user_track_stats_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS user_track_stats (
+           user_id         TEXT NOT NULL,
+           track_id        TEXT NOT NULL,
+           play_count      INTEGER NOT NULL DEFAULT 0,
+           last_played_at  TEXT,
+           PRIMARY KEY (user_id, track_id)
+         ) WITHOUT ROWID;",
+    )?;
+    if !crate::table_exists(conn, "play_history") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_play_history_stats_insert AFTER INSERT ON play_history
+         BEGIN
+           INSERT INTO user_track_stats(user_id, track_id, play_count, last_played_at)
+           VALUES (NEW.user_id, NEW.track_id, 1, NEW.played_at)
+           ON CONFLICT(user_id, track_id) DO UPDATE SET
+             play_count = play_count + 1,
+             last_played_at = MAX(COALESCE(last_played_at, ''), COALESCE(excluded.last_played_at, ''));
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_play_history_stats_delete AFTER DELETE ON play_history
+         BEGIN
+           UPDATE user_track_stats SET play_count = play_count - 1
+             WHERE user_id = OLD.user_id AND track_id = OLD.track_id;
+           DELETE FROM user_track_stats
+             WHERE user_id = OLD.user_id AND track_id = OLD.track_id AND play_count <= 0;
+         END;
+         INSERT INTO user_track_stats(user_id, track_id, play_count, last_played_at)
+           SELECT user_id, track_id, COUNT(*), MAX(played_at) FROM play_history GROUP BY user_id, track_id
+           ON CONFLICT(user_id, track_id) DO NOTHING;",
+    )
+}
+
 // ── Lenient column readers ─────────────────────────────────────────────────────
 // Legacy databases may hold integer ids and loosely typed numeric tags; read them without failing the page.
 
@@ -805,13 +852,17 @@ pub fn album_list(
         "alphabeticalByName" => "al.title COLLATE NOCASE, al.id",
         "alphabeticalByArtist" => "artist_name COLLATE NOCASE, al.title COLLATE NOCASE, al.id",
         "frequent" => {
-            having = "HAVING SUM(t.play_count) > 0";
-            "SUM(t.play_count) DESC, al.id"
+            joins = "JOIN (SELECT t2.album_id AS aid, SUM(us.play_count) AS plays
+                           FROM user_track_stats us JOIN tracks t2 ON t2.id = us.track_id
+                           WHERE us.user_id = ? GROUP BY t2.album_id) up ON up.aid = al.id";
+            join_params.push(user);
+            having = "HAVING MAX(up.plays) > 0";
+            "MAX(up.plays) DESC, al.id"
         }
         "recent" => {
-            joins = "JOIN (SELECT t2.album_id AS aid, MAX(ph.played_at) AS last_played
-                           FROM play_history ph JOIN tracks t2 ON t2.id = ph.track_id
-                           WHERE ph.user_id = ? GROUP BY t2.album_id) rp ON rp.aid = al.id";
+            joins = "JOIN (SELECT t2.album_id AS aid, MAX(us.last_played_at) AS last_played
+                           FROM user_track_stats us JOIN tracks t2 ON t2.id = us.track_id
+                           WHERE us.user_id = ? GROUP BY t2.album_id) rp ON rp.aid = al.id";
             join_params.push(user);
             "rp.last_played DESC, al.id"
         }
@@ -989,12 +1040,14 @@ impl ItemKind {
     }
 }
 
-/// A user's ratings, stars and (tracks only) last-played times for a page of items, keyed by item id.
+/// A user's ratings, stars, play counts and (tracks only) last-played times for a page of items, keyed by
+/// item id. Play counts are the user's own (`user_track_stats`); albums sum their tracks.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Annotations {
     pub ratings: HashMap<String, f64>,
     pub starred: HashMap<String, String>,
     pub played: HashMap<String, String>,
+    pub plays: HashMap<String, i64>,
 }
 
 fn collect_pairs<T: rusqlite::types::FromSql>(
@@ -1041,22 +1094,47 @@ pub fn annotations(
         ),
         star_params,
     )?;
-    let played = if kind == ItemKind::Track {
-        collect_pairs::<String>(
-            conn,
-            &format!(
-                "SELECT track_id, MAX(played_at) FROM play_history
-                 WHERE user_id = ? AND track_id IN ({ph}) GROUP BY track_id"
-            ),
-            with_user(id_values(ids)),
-        )?
-    } else {
-        HashMap::new()
-    };
+    let mut played = HashMap::new();
+    let mut plays = HashMap::new();
+    match kind {
+        ItemKind::Track => {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT track_id, play_count, last_played_at FROM user_track_stats
+                 WHERE user_id = ? AND track_id IN ({ph})"
+            ))?;
+            let rows = stmt.query_map(params_from_iter(with_user(id_values(ids))), |row| {
+                Ok((
+                    text_id(row, 0)?,
+                    opt_i64(row, 1)?.unwrap_or(0),
+                    opt_text(row, 2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, count, last) = row?;
+                plays.insert(id.clone(), count);
+                if let Some(last) = last {
+                    played.insert(id, last);
+                }
+            }
+        }
+        ItemKind::Album => {
+            plays = collect_pairs::<i64>(
+                conn,
+                &format!(
+                    "SELECT t.album_id, SUM(us.play_count) FROM tracks t
+                     JOIN user_track_stats us ON us.user_id = ? AND us.track_id = t.id
+                     WHERE t.album_id IN ({ph}) GROUP BY t.album_id"
+                ),
+                with_user(id_values(ids)),
+            )?;
+        }
+        ItemKind::Artist => {}
+    }
     Ok(Annotations {
         ratings,
         starred,
         played,
+        plays,
     })
 }
 
@@ -1441,6 +1519,20 @@ pub enum ScrobbleOutcome {
     NotFound,
 }
 
+/// The time a scrobble is recorded at: the client's timestamp when plausible (from 2000 up to a day ahead,
+/// a clock-skew guard), otherwise now.
+pub fn effective_scrobble_time(
+    conn: &Connection,
+    played_at_secs: Option<i64>,
+) -> rusqlite::Result<i64> {
+    let now: i64 = conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |r| {
+        r.get(0)
+    })?;
+    Ok(played_at_secs
+        .filter(|s| *s >= 946_684_800 && *s <= now + 86_400)
+        .unwrap_or(now))
+}
+
 /// Records a finished play at `played_at_secs` (Unix seconds; `None` = now), skipping repeats of the same
 /// user+track within ±30 s.
 pub fn record_scrobble(
@@ -1457,13 +1549,7 @@ pub fn record_scrobble(
     if !exists {
         return Ok(ScrobbleOutcome::NotFound);
     }
-    let now: i64 = conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |r| {
-        r.get(0)
-    })?;
-    // Clock skew guard: trust client timestamps from 2000 up to a day ahead; otherwise use now.
-    let at = played_at_secs
-        .filter(|s| *s >= 946_684_800 && *s <= now + 86_400)
-        .unwrap_or(now);
+    let at = effective_scrobble_time(conn, played_at_secs)?;
     let duplicate = conn
         .query_row(
             "SELECT 1 FROM play_history
@@ -1696,7 +1782,8 @@ mod tests {
             ids("alphabeticalByArtist", None, None, None).unwrap(),
             ["al3", "al1", "al2"]
         );
-        assert_eq!(ids("frequent", None, None, None).unwrap(), ["al2", "al1"]);
+        // `frequent` ranks by the user's own plays (none yet).
+        assert!(ids("frequent", None, None, None).unwrap().is_empty());
         assert_eq!(
             ids("byYear", Some(2010), Some(1999), None).unwrap(),
             ["al3", "al2", "al1"]
@@ -1721,6 +1808,7 @@ mod tests {
         assert_eq!(ids("highest", None, None, None).unwrap(), ["al3", "al1"]);
         assert_eq!(ids("starred", None, None, None).unwrap(), ["al2"]);
         assert_eq!(ids("recent", None, None, None).unwrap(), ["al3"]);
+        assert_eq!(ids("frequent", None, None, None).unwrap(), ["al3"]);
     }
 
     #[test]
@@ -1817,10 +1905,62 @@ mod tests {
             a.played.get("t1").map(String::as_str),
             Some("2026-05-02 10:00:00")
         );
+        assert_eq!(a.plays.get("t1"), Some(&2));
+        assert!(!a.plays.contains_key("t2"));
+        let other = annotations(&conn, "u2", ItemKind::Track, &["t1".into()]).unwrap();
+        assert!(other.plays.is_empty(), "play counts are per user");
+        let albums =
+            annotations(&conn, "u1", ItemKind::Album, &["al1".into(), "al2".into()]).unwrap();
+        assert_eq!(albums.plays.get("al1"), Some(&2));
+        assert!(!albums.plays.contains_key("al2"));
         assert_eq!(
             annotations(&conn, "u1", ItemKind::Album, &[]).unwrap(),
             Annotations::default()
         );
+    }
+
+    #[test]
+    fn user_track_stats_follow_play_history_and_backfill() {
+        let conn = db();
+        let stats = |user: &str, track: &str| -> Option<(i64, String)> {
+            conn.query_row(
+                "SELECT play_count, last_played_at FROM user_track_stats WHERE user_id = ?1 AND track_id = ?2",
+                params![user, track],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .unwrap()
+        };
+        conn.execute_batch(
+            "INSERT INTO play_history(id, user_id, track_id, played_at) VALUES
+               ('h1', 'u1', 't1', '2026-05-02 10:00:00'), ('h2', 'u1', 't1', '2026-05-01 10:00:00');",
+        )
+        .unwrap();
+        // An older play does not move last_played_at back.
+        assert_eq!(stats("u1", "t1"), Some((2, "2026-05-02 10:00:00".into())));
+        crate::playback::insert_play_history(&conn, "u2", "t1").unwrap();
+        assert_eq!(stats("u2", "t1").map(|s| s.0), Some(1));
+        conn.execute("DELETE FROM play_history WHERE id = 'h1'", [])
+            .unwrap();
+        assert_eq!(stats("u1", "t1").map(|s| s.0), Some(1));
+        conn.execute("DELETE FROM play_history WHERE id = 'h2'", [])
+            .unwrap();
+        assert_eq!(stats("u1", "t1"), None);
+
+        // Backfill: rebuild from existing history (as the migration does on an upgraded database).
+        conn.execute_batch(
+            "DROP TRIGGER trg_play_history_stats_insert; DROP TRIGGER trg_play_history_stats_delete;
+             DROP TABLE user_track_stats;
+             INSERT INTO play_history(id, user_id, track_id, played_at) VALUES
+               ('h3', 'u1', 't2', '2026-06-01 10:00:00'), ('h4', 'u1', 't2', '2026-06-03 10:00:00');",
+        )
+        .unwrap();
+        ensure_user_track_stats_schema(&conn).unwrap();
+        assert_eq!(stats("u1", "t2"), Some((2, "2026-06-03 10:00:00".into())));
+        assert_eq!(stats("u2", "t1").map(|s| s.0), Some(1));
+        // Idempotent: running it again does not double counts.
+        ensure_user_track_stats_schema(&conn).unwrap();
+        assert_eq!(stats("u1", "t2").map(|s| s.0), Some(2));
     }
 
     #[test]

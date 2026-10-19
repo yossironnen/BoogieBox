@@ -13,7 +13,7 @@ use std::path;
 
 use crate::{
     auth::AuthenticatedUser,
-    bpm_analysis, ffmpeg, media_serve,
+    bpm_analysis, ffmpeg, media_serve, plays,
     providers::{fetch_lrclib_lyrics, fetch_lyricsovh},
     waveform_map, DbPool, ErrorResponse, OkResponse, SharedState,
 };
@@ -26,6 +26,7 @@ pub fn playback_router(state: SharedState) -> Router {
         .route("/api/user/history", get(user_history_handler))
         .route("/api/tracks/{id}/stream", get(stream_track_handler))
         .route("/api/tracks/{id}/played", post(track_played_handler))
+        .route("/api/tracks/{id}/scrobble", post(track_scrobble_handler))
         .route("/api/tracks/{id}/lyrics", get(track_lyrics_handler))
         .route("/api/tracks/{id}/waveform", get(track_waveform_handler))
         .route(
@@ -214,6 +215,7 @@ async fn track_played_handler(
     };
 
     let user_id = user.id.clone();
+    let track_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = db.lock().unwrap_or_else(|p| p.into_inner());
         let updated = boogiebox_db::playback::increment_track_play_count(&conn, &id)?;
@@ -225,7 +227,60 @@ async fn track_played_handler(
     .await;
 
     match result {
-        Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
+        Ok(Ok(true)) => {
+            if let Some(env) = plays::PlayEnv::from_state(&state) {
+                plays::play_started(&env, &user.id, &user.username, &track_id, plays::WEB_CLIENT);
+            }
+            (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+        }
+        Ok(Ok(false)) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Track not found".into(),
+                setup_required: None,
+            }),
+        )
+            .into_response(),
+        _ => internal_error(),
+    }
+}
+
+/// `POST /api/tracks/{id}/scrobble` body: when the play started (Unix seconds; default now).
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScrobbleBody {
+    started_at: Option<i64>,
+}
+
+/// The web player calls this once a track has played long enough to count (half its length or 4 minutes);
+/// the play is queued for the user's Last.fm / ListenBrainz accounts. Play counts are recorded by `/played`.
+async fn track_scrobble_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    body: Option<Json<ScrobbleBody>>,
+) -> impl IntoResponse {
+    let Some(env) = plays::PlayEnv::from_state(&state) else {
+        return setup_required_response();
+    };
+    let now = plays::unix_now();
+    // Plausible start times only: up to two weeks back (the queue's age limit), never in the future.
+    let started_at = body
+        .and_then(|Json(b)| b.started_at)
+        .filter(|t| *t >= now - boogiebox_db::scrobble::QUEUE_MAX_AGE_SECS && *t <= now + 60)
+        .unwrap_or(now)
+        .min(now);
+    let (db, track_id) = (env.db.clone(), id.clone());
+    let exists = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::playback::get_track_for_stream(&conn, &track_id).map(|t| t.is_some())
+    })
+    .await;
+    match exists {
+        Ok(Ok(true)) => {
+            plays::play_finished(&env, &user.id, &id, started_at).await;
+            (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+        }
         Ok(Ok(false)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {

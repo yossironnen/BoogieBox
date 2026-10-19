@@ -9,6 +9,7 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     // Provider credentials
     "discogsToken",
     "lastfmKey",
+    "lastfmSecret",
     "spotifyClientId",
     "spotifyClientSecret",
     "geniusClientId",
@@ -27,6 +28,7 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "subsonicApiEnabled",
     "subsonicMaxTranscodes",
     "subsonicIgnoredArticles",
+    "subsonicJukeboxRenderer",
     // BoogieMix
     "boogiemixCrossfadeDuration",
     "boogiemixDefaultStyle",
@@ -277,6 +279,16 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             Ok(words.join(" "))
         }
 
+        // Subsonic jukebox: empty (off) or a Play On renderer UDN
+        "subsonicJukeboxRenderer" => {
+            let v = value.trim();
+            if v.is_empty() || crate::routes::remote_routes::valid_udn(v) {
+                Ok(v.to_string())
+            } else {
+                Err(format!("Setting '{key}' must be empty or a renderer id"))
+            }
+        }
+
         // Play On interface override: empty (auto) or a private/link-local IPv4 address
         "remoteInterfaceIp" => {
             let v = value.trim();
@@ -445,6 +457,17 @@ mod tests {
         assert_eq!(check("subsonicIgnoredArticles", "").unwrap(), "");
         assert!(check("subsonicIgnoredArticles", "The <script>").is_err());
         assert!(check("subsonicIgnoredArticles", &"a ".repeat(21)).is_err());
+        assert_eq!(check("subsonicJukeboxRenderer", " ").unwrap(), "");
+        assert_eq!(
+            check(
+                "subsonicJukeboxRenderer",
+                "uuid:4d696e69-444c-164e-9d41-ecf4bbc0b4f2"
+            )
+            .unwrap(),
+            "uuid:4d696e69-444c-164e-9d41-ecf4bbc0b4f2"
+        );
+        assert!(check("subsonicJukeboxRenderer", "<script>").is_err());
+        assert_eq!(check("lastfmSecret", "abc").unwrap(), "abc");
     }
 
     #[test]

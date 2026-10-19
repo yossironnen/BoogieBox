@@ -147,7 +147,7 @@ pub fn song_node(song: &SubsonicSong, ann: &Annotations) -> Node {
     node.attr("duration", song.duration.max(0.0).round() as i64)
         .opt("bitRate", song.bitrate)
         .attr("path", virtual_path(song))
-        .attr("playCount", song.play_count)
+        .attr("playCount", ann.plays.get(&song.id).copied().unwrap_or(0))
         .opt("played", ann.played.get(&song.id).map(|t| iso(t)))
         .opt(
             "userRating",
@@ -246,7 +246,7 @@ pub fn album_id3_node(album: &SubsonicAlbum, ann: &Annotations) -> Node {
         .attr("coverArt", album_cover_id(&album.id))
         .attr("songCount", album.song_count)
         .attr("duration", album.duration.max(0.0).round() as i64)
-        .attr("playCount", album.play_count)
+        .attr("playCount", ann.plays.get(&album.id).copied().unwrap_or(0))
         .attr(
             "created",
             iso(album.created.as_deref().unwrap_or("1970-01-01 00:00:00")),
@@ -289,7 +289,7 @@ pub fn album_child_node(album: &SubsonicAlbum, ann: &Annotations) -> Node {
         .opt("genre", genres.first().cloned())
         .attr("coverArt", album_cover_id(&album.id))
         .attr("duration", album.duration.max(0.0).round() as i64)
-        .attr("playCount", album.play_count)
+        .attr("playCount", ann.plays.get(&album.id).copied().unwrap_or(0))
         .attr(
             "created",
             iso(album.created.as_deref().unwrap_or("1970-01-01 00:00:00")),
@@ -470,6 +470,11 @@ mod tests {
         );
         assert_eq!(attr(&node, "bpm"), Some(&Int(128)));
         assert!(attr(&node, "played").is_none());
+        // The user's own play count, not the global `tracks.play_count`.
+        assert_eq!(attr(&node, "playCount"), Some(&Int(0)));
+        let mut mine = ann.clone();
+        mine.plays.insert("t1".into(), 7);
+        assert_eq!(attr(&song_node(&song(), &mine), "playCount"), Some(&Int(7)));
         let rendered = format!("{node:?}");
         assert!(
             !rendered.contains("private"),

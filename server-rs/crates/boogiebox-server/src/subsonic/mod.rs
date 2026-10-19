@@ -7,10 +7,12 @@ pub mod auth;
 pub mod crypto;
 pub mod handlers;
 pub mod info;
+pub mod jukebox;
 pub mod media;
 pub mod model;
 pub mod params;
 pub mod playlists;
+pub mod radio;
 pub mod response;
 pub mod state;
 

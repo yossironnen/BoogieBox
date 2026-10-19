@@ -10,15 +10,16 @@ use super::{
     handlers::{db_err, required_id, valid_id, Ctx, MAX_IDS},
     model,
     response::{Node, SubsonicError},
-    state::NowPlayingEntry,
 };
+use crate::plays;
 
 fn mix_not_annotatable() -> SubsonicError {
     SubsonicError::generic("BoogieMix mixes can't be starred or rated")
 }
 
-/// `scrobble`: `submission=true` (default) records finished plays at `time` (ms); `submission=false` marks
-/// the song as now playing for `getNowPlaying`. Mixes (`mx-…`) are accepted and not counted.
+/// `scrobble`: `submission=true` (default) records finished plays at `time` (ms) and queues them for the
+/// user's scrobbling services; `submission=false` marks the song as now playing. Mixes (`mx-…`) are accepted
+/// and not counted.
 pub async fn scrobble(ctx: &Ctx) -> Result<Node, SubsonicError> {
     let ids = ctx.params.all("id");
     if ids.is_empty() {
@@ -28,21 +29,11 @@ pub async fn scrobble(ctx: &Ctx) -> Result<Node, SubsonicError> {
         return Err(SubsonicError::generic("Too many ids"));
     }
     let ids: Vec<String> = ids.into_iter().map(valid_id).collect::<Result<_, _>>()?;
+    let env = plays::PlayEnv::from_state(&ctx.state);
     if !ctx.params.flag("submission", true) {
-        if let Some(track_id) = ids.last() {
-            ctx.subsonic.set_now_playing(NowPlayingEntry {
-                user_id: ctx.user.id.clone(),
-                username: ctx.user.username.clone(),
-                client: ctx
-                    .params
-                    .text("c")
-                    .unwrap_or("Subsonic app")
-                    .chars()
-                    .take(64)
-                    .collect(),
-                track_id: track_id.clone(),
-                at: std::time::Instant::now(),
-            });
+        if let (Some(track_id), Some(env)) = (ids.last(), env.as_ref()) {
+            let client = ctx.params.text("c").unwrap_or("Subsonic app");
+            plays::play_started(env, &ctx.user.id, &ctx.user.username, track_id, client);
         }
         return Ok(Node::new("payload"));
     }
@@ -53,23 +44,32 @@ pub async fn scrobble(ctx: &Ctx) -> Result<Node, SubsonicError> {
         .map(|t| t.parse::<i64>().ok().map(|ms| ms / 1000))
         .collect();
     let user = ctx.user_id();
-    let missing = ctx
+    let (missing, recorded) = ctx
         .db(move |conn| {
             let mut missing = 0usize;
+            let mut recorded = Vec::new();
             for (i, id) in ids.iter().enumerate() {
                 if model::mix_id(id).is_some() {
                     continue;
                 }
                 let at = times.get(i).copied().flatten();
-                if sdb::record_scrobble(conn, &user, id, at).map_err(db_err)?
-                    == sdb::ScrobbleOutcome::NotFound
-                {
-                    missing += 1;
+                match sdb::record_scrobble(conn, &user, id, at).map_err(db_err)? {
+                    sdb::ScrobbleOutcome::NotFound => missing += 1,
+                    sdb::ScrobbleOutcome::Duplicate => {}
+                    sdb::ScrobbleOutcome::Recorded => recorded.push((
+                        id.clone(),
+                        sdb::effective_scrobble_time(conn, at).map_err(db_err)?,
+                    )),
                 }
             }
-            Ok(missing)
+            Ok((missing, recorded))
         })
         .await?;
+    if let Some(env) = env.as_ref() {
+        for (track_id, at) in &recorded {
+            plays::play_finished(env, &ctx.user.id, track_id, *at).await;
+        }
+    }
     if missing > 0 {
         return Err(SubsonicError::not_found("Song"));
     }

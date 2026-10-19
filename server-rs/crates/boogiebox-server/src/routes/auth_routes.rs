@@ -359,6 +359,7 @@ mod test_helpers {
             remote: crate::remote::RemoteManager::new(),
             worker_cancel: tokio_util::sync::CancellationToken::new(),
             subsonic: crate::subsonic::SubsonicState::default(),
+            plays: crate::plays::PlayHub::default(),
         };
         let shared = Arc::new(RwLock::new(state));
         auth_router(shared)

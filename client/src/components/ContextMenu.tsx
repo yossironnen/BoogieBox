@@ -7,6 +7,9 @@ import { createPortal } from 'react-dom';
 import { api } from '../api';
 import type { ClientEntityId, CrossfadeMode } from '../types';
 import type { EntityId } from '../entityId';
+import { useFavourites, type FavouriteKind } from '../favourites';
+import { HeartIcon } from './FavouriteIcons';
+import { isLibraryTrackId } from '../radioStations';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -421,6 +424,7 @@ function CrossfadeOverridePanel({ entityType, entityId, onDone }: {
 
 /** Context Menu Root is part of this module's public API. */
 export function ContextMenuRoot() {
+  const favourites = useFavourites();
   const [visible, setVisible]     = useState(false);
   const [pos, setPos]             = useState<MenuPosition>({ x: 0, y: 0 });
   const [target, setTarget]       = useState<ContextTarget | null>(null);
@@ -547,6 +551,15 @@ export function ContextMenuRoot() {
     setShowCrossfade(true);
     setShowPlaylists(false);
   };
+  const favouriteTarget: { kind: FavouriteKind; id: ClientEntityId } | null =
+    target.kind === 'track' ? { kind: 'track', id: target.trackId }
+      : target.kind === 'album' ? { kind: 'album', id: target.albumId }
+        : target.kind === 'artist' ? { kind: 'artist', id: target.artistId }
+          : null;
+  // Synthetic items (BoogieMix renders, radio stations) are not library entries.
+  const favourite = favouriteTarget && isLibraryTrackId(favouriteTarget.id)
+    ? { ...favouriteTarget, on: favourites.has(favouriteTarget.kind, favouriteTarget.id) }
+    : null;
   const runCustomAction = (action: ContextMenuAction) => {
     if (action.disabled) return;
     close();
@@ -598,6 +611,16 @@ export function ContextMenuRoot() {
       {kind === 'track' && (
         <button style={CM.item} onClick={() => { openTrackInfo(target.trackId); close(); }}>
           <InfoSVG /> Info
+        </button>
+      )}
+
+      {/* ── Favourite (heart) ── */}
+      {favourite && (
+        <button
+          style={CM.item}
+          onClick={() => { void favourites.set(favourite.kind, favourite.id, !favourite.on).catch(() => {}); close(); }}
+        >
+          <HeartIcon size={12} filled={favourite.on} /> {favourite.on ? 'Remove from Favourites' : 'Add to Favourites'}
         </button>
       )}
 
