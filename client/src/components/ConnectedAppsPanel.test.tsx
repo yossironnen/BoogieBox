@@ -69,7 +69,8 @@ describe('ConnectedAppsPanel', () => {
     await waitFor(() => expect(subsonicApi.setPassword).toHaveBeenCalledWith('Groove!2026'));
     expect(await within(panel).findByText('Subsonic password saved')).toBeInTheDocument();
     expect(await within(panel).findByText('Symfonium')).toBeInTheDocument();
-    expect(within(panel).getByText('Set')).toBeInTheDocument();
+    expect(within(panel).getByText(/^\*{8,16}$/)).toBeInTheDocument();
+    expect(within(panel).queryByText('Set')).not.toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: 'Change password' })).toBeInTheDocument();
   });
 

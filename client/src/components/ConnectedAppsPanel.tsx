@@ -5,7 +5,7 @@
  * See wip/opensubsonic-api-implementation-plan.md §9.2.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { hybridControlStyles, hybridSettingsStyles } from '../hybridPreview';
 import { subsonicPasswordChecks, subsonicPasswordProblem, type SubsonicCredentials } from '../subsonic';
@@ -35,6 +35,16 @@ export const SubsonicIcon = {
 export function formatWhen(value: string | null | undefined): string | null {
   const date = parseServerDate(value ?? null);
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : null;
+}
+
+/** Asterisks of a random length (8–16), so the mask never hints at the real password length. */
+export function randomPasswordMask(): string {
+  return '*'.repeat(8 + Math.floor(Math.random() * 9));
+}
+
+/** Stable mask for a set password; re-rolled whenever the credentials reload. */
+export function usePasswordMask(creds: SubsonicCredentials | null): string {
+  return useMemo(() => (creds?.hasPassword ? randomPasswordMask() : ''), [creds]);
 }
 
 /** A labelled value with an icon-only copy button. */
@@ -117,6 +127,7 @@ export default function ConnectedAppsPanel({ username }: { username: string }) {
     api.subsonic.credentials().then(setCreds).catch(() => setCreds(null));
   }, []);
   useEffect(load, [load]);
+  const mask = usePasswordMask(creds);
 
   if (!creds?.enabled) return null;
 
@@ -168,7 +179,7 @@ export default function ConnectedAppsPanel({ username }: { username: string }) {
         <div style={S.stat}>
           <span style={S.statIcon}><SubsonicIcon.Key /></span>
           <span style={S.statLabel}>Subsonic password</span>
-          <strong style={S.statValue}>{creds.hasPassword ? 'Set' : 'Not set'}</strong>
+          <strong style={S.statValue} aria-label={creds.hasPassword ? 'Set' : undefined}>{creds.hasPassword ? mask : 'Not set'}</strong>
         </div>
         <div style={S.stat}>
           <span style={S.statIcon}><SubsonicIcon.Clock /></span>

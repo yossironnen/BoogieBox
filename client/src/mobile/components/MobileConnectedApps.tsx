@@ -5,7 +5,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../api';
-import { formatWhen, SubsonicIcon } from '../../components/ConnectedAppsPanel';
+import { formatWhen, SubsonicIcon, usePasswordMask } from '../../components/ConnectedAppsPanel';
 import { hybridMobileContentStyles } from '../../hybridPreview';
 import { subsonicPasswordChecks, subsonicPasswordProblem, type SubsonicCredentials } from '../../subsonic';
 import MobileConfirmationSheet from './MobileConfirmationSheet';
@@ -24,6 +24,7 @@ export default function MobileConnectedApps({ username }: { username: string }) 
     api.subsonic.credentials().then(setCreds).catch(() => setCreds(null));
   }, []);
   useEffect(load, [load]);
+  const mask = usePasswordMask(creds);
 
   if (!creds?.enabled) return null;
 
@@ -61,7 +62,7 @@ export default function MobileConnectedApps({ username }: { username: string }) 
       <div style={styles.row}>
         <span style={styles.icon}><SubsonicIcon.Key /></span>
         <span style={styles.label}>Subsonic password</span>
-        <strong style={styles.value}>{creds.hasPassword ? 'Set' : 'Not set'}</strong>
+        <strong style={styles.value} aria-label={creds.hasPassword ? 'Set' : undefined}>{creds.hasPassword ? mask : 'Not set'}</strong>
       </div>
       <div style={styles.row}>
         <span style={styles.icon}><SubsonicIcon.Clock /></span>
