@@ -242,15 +242,7 @@ async fn enqueue_scan_handler(
     if !user.can_manage_libraries() {
         return forbidden();
     }
-    let ps_state = {
-        let s = state.read().unwrap_or_else(|p| p.into_inner());
-        s.db.as_ref().map(|db| crate::post_scan::PostScanState {
-            db: db.clone(),
-            http_client: s.http_client.clone(),
-            db_folder: s.db_folder.clone(),
-            cancel: s.worker_cancel.clone(),
-        })
-    };
+    let ps_state = crate::scanner::post_scan_state(&state);
     with_db(state, move |conn| {
         let library_id = coerce_entity_id(&id);
         let exists = conn
@@ -456,15 +448,7 @@ async fn enqueue_post_scan_handler(
     Path(library_id): Path<String>,
     Json(payload): Json<PostScanRequest>,
 ) -> impl IntoResponse {
-    let ps_state_worker = {
-        let s = state.read().unwrap_or_else(|p| p.into_inner());
-        s.db.as_ref().map(|db| crate::post_scan::PostScanState {
-            db: db.clone(),
-            http_client: s.http_client.clone(),
-            db_folder: s.db_folder.clone(),
-            cancel: s.worker_cancel.clone(),
-        })
-    };
+    let ps_state_worker = crate::scanner::post_scan_state(&state);
     let job_type = payload.job_type.unwrap_or_default();
     let library_id_for_db = library_id.clone();
     let job_type_for_db = job_type.clone();

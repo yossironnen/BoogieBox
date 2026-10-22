@@ -1170,6 +1170,123 @@ async fn opus_and_aac_streams_are_unsized() {
 }
 
 #[tokio::test]
+async fn play_queue_round_trips_by_id_and_by_index() {
+    let fx = Fixture::new("subsonic-p3-queue").await;
+    assert!(fx.rest("getPlayQueue", "").await["playQueue"].is_null());
+
+    // The same song twice; `current` picks its first occurrence. Unknown mixes drop out on read.
+    let saved = fx
+        .rest(
+            "savePlayQueue",
+            "id=t1&id=t2&id=t1&id=mx-999&current=t2&position=5000",
+        )
+        .await;
+    assert_eq!(saved["status"], "ok");
+    let q = fx.rest("getPlayQueue", "").await["playQueue"].clone();
+    assert_eq!(q["current"], "t2");
+    assert_eq!(q["position"], 5000);
+    assert_eq!(q["username"], "u1");
+    assert_eq!(q["changedBy"], "test");
+    assert_eq!(list_len(&q["entry"]), 3);
+    assert_eq!(q["entry"][2]["id"], "t1");
+
+    // Index-based: the second t1 is current, which the id-based read reports as "t1".
+    fx.rest(
+        "savePlayQueueByIndex",
+        "id=t1&id=t2&id=t1&currentIndex=2&position=7000",
+    )
+    .await;
+    let q = fx.rest("getPlayQueueByIndex", "").await["playQueueByIndex"].clone();
+    assert_eq!(q["currentIndex"], 2);
+    assert_eq!(q["position"], 7000);
+    assert_eq!(
+        fx.rest("getPlayQueue", "").await["playQueue"]["current"],
+        "t1"
+    );
+
+    // A deleted song drops out and the current index shifts with it.
+    fx.pool
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF; DELETE FROM tracks WHERE id = 't2'; PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+    let q = fx.rest("getPlayQueueByIndex", "").await["playQueueByIndex"].clone();
+    assert_eq!(list_len(&q["entry"]), 2);
+    assert_eq!(q["currentIndex"], 1);
+    // ... and when the current entry itself is gone, so are the index and position.
+    fx.rest(
+        "savePlayQueueByIndex",
+        "id=t1&id=t2&currentIndex=1&position=9000",
+    )
+    .await;
+    let q = fx.rest("getPlayQueueByIndex", "").await["playQueueByIndex"].clone();
+    assert!(q["currentIndex"].is_null());
+    assert_eq!(q["position"], 0);
+
+    assert_eq!(
+        fx.rest("savePlayQueueByIndex", "id=t1&currentIndex=1")
+            .await["error"]["code"],
+        0
+    );
+    let too_many: String = (0..1001).map(|_| "id=t1&").collect();
+    assert_eq!(
+        fx.rest("savePlayQueue", &too_many).await["error"]["code"],
+        0
+    );
+
+    // No ids clears it.
+    fx.rest("savePlayQueue", "").await;
+    assert!(fx.rest("getPlayQueue", "").await["playQueue"].is_null());
+
+    let ext = fx.rest("getOpenSubsonicExtensions", "").await;
+    assert!(ext["openSubsonicExtensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["name"] == "indexBasedQueue"));
+}
+
+#[tokio::test]
+async fn scan_status_and_start_scan_for_library_managers_only() {
+    let fx = Fixture::new("subsonic-p3-scan").await;
+    let idle = fx.rest("getScanStatus", "").await["scanStatus"].clone();
+    assert_eq!(idle["scanning"], false);
+    assert_eq!(idle["count"], 3);
+    assert!(idle["lastScan"].is_null());
+
+    // A plain user may look but not start one.
+    assert_eq!(fx.rest("startScan", "").await["error"]["code"], 50);
+
+    let manager = crate::test_support::seed_user_session(&fx.pool, "m1");
+    fx.pool
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE users SET can_manage_libraries = 1 WHERE id = 'm1'",
+            [],
+        )
+        .unwrap();
+    fx.put_password(&manager, "/api/subsonic/credentials/password", PASSWORD)
+        .await;
+    let started = rest_as(&fx, "m1", "startScan", "fullScan=true").await;
+    assert_eq!(started["status"], "ok");
+    assert_eq!(started["scanStatus"]["scanning"], true);
+    let queued: i64 = fx
+        .pool
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM scan_jobs WHERE library_id = 'lib1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued, 1);
+}
+
+#[tokio::test]
 async fn time_offset_starts_transcodes_and_is_ignored_for_raw() {
     let fx = Fixture::new("subsonic-p3-offset").await;
     let req = |method: &str, query: &str, range: Option<&str>| {

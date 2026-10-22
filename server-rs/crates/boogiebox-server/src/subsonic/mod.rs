@@ -12,8 +12,10 @@ pub mod media;
 pub mod model;
 pub mod params;
 pub mod playlists;
+pub mod queue;
 pub mod radio;
 pub mod response;
+pub mod scan;
 pub mod state;
 
 use axum::{

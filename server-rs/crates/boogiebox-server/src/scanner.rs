@@ -65,6 +65,27 @@ pub async fn run_scan_job(state: crate::post_scan::PostScanState, job_id: Entity
     run_pending_scan(state, Some(job_id)).await;
 }
 
+/// Scan/post-scan worker state for the open database (`None` before first-run setup).
+pub fn post_scan_state(state: &crate::SharedState) -> Option<crate::post_scan::PostScanState> {
+    let s = state.read().unwrap_or_else(|p| p.into_inner());
+    s.db.as_ref().map(|db| crate::post_scan::PostScanState {
+        db: db.clone(),
+        http_client: s.http_client.clone(),
+        db_folder: s.db_folder.clone(),
+        cancel: s.worker_cancel.clone(),
+    })
+}
+
+/// Runs `jobs` one after another in the background (Subsonic `startScan` queues every library at once;
+/// running them in turn keeps one scanner on the database at a time).
+pub fn spawn_scan_jobs(state: crate::post_scan::PostScanState, jobs: Vec<EntityId>) {
+    tokio::spawn(async move {
+        for job in jobs {
+            run_scan_job(state.clone(), job).await;
+        }
+    });
+}
+
 async fn run_pending_scan(state: crate::post_scan::PostScanState, target_job_id: Option<EntityId>) {
     let db = state.db.clone();
     let result =

@@ -12,8 +12,9 @@ use super::{
         self, album_child_node, album_id3_node, artist_id3_node, artist_legacy_node, song_node,
     },
     params::Params,
-    playlists, radio,
+    playlists, queue, radio,
     response::{Node, SubsonicError},
+    scan,
     state::{SubsonicSettings, SubsonicState, SubsonicUser},
 };
 use crate::{DbPool, SharedState};
@@ -25,12 +26,6 @@ pub const MAX_IDS: usize = 500;
 
 /// Methods in the Subsonic/OpenSubsonic spec that BoogieBox does not offer (yet). See plan §15.
 const UNSUPPORTED: &[&str] = &[
-    "getPlayQueue",
-    "savePlayQueue",
-    "getPlayQueueByIndex",
-    "savePlayQueueByIndex",
-    "getScanStatus",
-    "startScan",
     "getBookmarks",
     "createBookmark",
     "deleteBookmark",
@@ -67,6 +62,7 @@ const EXTENSIONS: &[(&str, &[i64])] = &[
     ("formPost", &[1]),
     ("songLyrics", &[1]),
     ("transcodeOffset", &[1]),
+    ("indexBasedQueue", &[1]),
 ];
 
 /// Per-request context.
@@ -223,6 +219,12 @@ pub async fn handle(name: &str, ctx: &Ctx) -> Result<Reply, SubsonicError> {
         "updateInternetRadioStation" => radio::update(ctx).await?,
         "deleteInternetRadioStation" => radio::delete(ctx).await?,
         "jukeboxControl" => jukebox::control(ctx).await?,
+        "getScanStatus" => scan::scan_status(ctx).await?,
+        "startScan" => scan::start_scan(ctx).await?,
+        "getPlayQueue" => queue::get(ctx, false).await?,
+        "getPlayQueueByIndex" => queue::get(ctx, true).await?,
+        "savePlayQueue" => queue::save(ctx, false).await?,
+        "savePlayQueueByIndex" => queue::save(ctx, true).await?,
         "stream" => return super::media::stream(ctx, false).await.map(Reply::Raw),
         "download" => return super::media::stream(ctx, true).await.map(Reply::Raw),
         "getCoverArt" => return super::media::cover_art(ctx).await.map(Reply::Raw),

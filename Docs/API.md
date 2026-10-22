@@ -204,7 +204,7 @@ found). `/rest` CORS allows any origin without credentials. Responses never incl
 is a virtual `Artist/Album/NN - Title.ext`.
 
 Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost`,
-`songLyrics` and `transcodeOffset`), `getUser` (`jukeboxRole` is true when a jukebox speaker is set and Play On is on), `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
+`songLyrics`, `transcodeOffset` and `indexBasedQueue`), `getUser` (`jukeboxRole` is true when a jukebox speaker is set and Play On is on), `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
 `getArtists`, `getArtist`, `getAlbum`, `getSong`, `getGenres`, `getMusicDirectory`, `getAlbumList`/`getAlbumList2`
 (`random`, `newest`, `highest`, `frequent`, `recent`, `alphabeticalByName`, `alphabeticalByArtist`, `starred`,
 `byYear`, `byGenre`; `frequent` and `recent` use the user's own plays), `getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `star`/`unstar`
@@ -221,7 +221,15 @@ speakers reported in the last 10 minutes, all users; `playerName` is the app, "B
 `scrobble` (`submission=true` counts a play at `time`, ignoring repeats within 30 s, and queues it for the user's
 Last.fm/ListenBrainz accounts; `submission=false` marks now playing), `stream`, `download` (original file),
 `getCoverArt` (`al-`/`ar-`/`tr-`/`pl-`/`mx-` ids; 300 or 800 px), `getInternetRadioStations` (all users; the
-station's own URL), `create`/`update`/`deleteInternetRadioStation` (admins, else error 50) and `jukeboxControl`.
+station's own URL), `create`/`update`/`deleteInternetRadioStation` (admins, else error 50), `jukeboxControl`,
+`getScanStatus` (`scanning`; `count` = files scanned so far while scanning, else the track count; `lastScan`) and
+`startScan` (admins and library managers, else error 50; scans every library in turn, reusing a scan already
+queued; `fullScan` is ignored because scans are incremental), `getPlayQueue`/`savePlayQueue` and
+`getPlayQueueByIndex`/`savePlayQueueByIndex` (one saved queue per user, shared by all their apps; up to 1000
+entries and a song may repeat; `current` picks the first occurrence of that song, `currentIndex` a position;
+`changedBy` is the saving app's `c`; saving no `id` clears the queue; songs that no longer exist, and other users'
+mixes, are left out when the queue is read, and the saved position is dropped if the current entry is gone. The web
+player does not share this queue).
 
 `playCount` and `played` are the signed-in user's own (album `playCount` sums the user's plays of its tracks).
 

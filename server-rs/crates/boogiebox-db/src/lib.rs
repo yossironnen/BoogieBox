@@ -809,6 +809,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-10-19-subsonic-phase-2-5",
             apply: subsonic::ensure_subsonic_phase_2_5_schema,
         },
+        Migration {
+            id: "2026-10-22-subsonic-phase-3",
+            apply: subsonic::ensure_subsonic_phase_3_schema,
+        },
     ];
 
     for migration in migrations {

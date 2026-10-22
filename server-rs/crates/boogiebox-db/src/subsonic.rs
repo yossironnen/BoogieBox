@@ -62,6 +62,32 @@ pub fn ensure_subsonic_phase_2_5_schema(conn: &Connection) -> rusqlite::Result<(
     Ok(())
 }
 
+/// Phase 3 schema (migration `2026-10-22-subsonic-phase-3`): saved play queues, and the API key columns
+/// (OpenSubsonic `apiKeyAuthentication`, hash only).
+pub fn ensure_subsonic_phase_3_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS subsonic_play_queues (
+           user_id      TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+           track_ids    TEXT NOT NULL,
+           current_idx  INTEGER,
+           position_ms  INTEGER NOT NULL DEFAULT 0,
+           changed_at   TEXT NOT NULL DEFAULT (datetime('now')),
+           changed_by   TEXT
+         );",
+    )?;
+    for (column, definition) in [("api_key_hash", "TEXT"), ("api_key_created_at", "TEXT")] {
+        if !crate::column_exists(conn, "subsonic_credentials", column)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE subsonic_credentials ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_subsonic_credentials_api_key
+           ON subsonic_credentials(api_key_hash) WHERE api_key_hash IS NOT NULL;",
+    )
+}
+
 /// `user_track_stats`: one row per user and track, kept in step with `play_history` by triggers (so every
 /// writer is covered) and backfilled from the existing history. No foreign keys: `play_history` rows are
 /// removed by its own cascades, and the delete trigger follows them.
@@ -1586,6 +1612,129 @@ fn text_value(v: &Value) -> String {
     }
 }
 
+// ── Play queue ─────────────────────────────────────────────────────────────────
+
+/// Most entries a saved play queue may hold.
+pub const MAX_PLAY_QUEUE: usize = 1000;
+/// Longest `changed_by` (client name) stored.
+const MAX_QUEUE_CLIENT_CHARS: usize = 64;
+
+/// A user's saved play queue, as stored (ids may no longer exist; readers filter them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayQueue {
+    /// Song ids in queue order; a song may appear more than once.
+    pub track_ids: Vec<String>,
+    /// Index of the current entry.
+    pub current_idx: Option<usize>,
+    pub position_ms: i64,
+    /// `YYYY-MM-DD HH:MM:SS`, UTC.
+    pub changed_at: String,
+    /// The app that saved it.
+    pub changed_by: Option<String>,
+}
+
+/// Replaces the user's saved queue. An empty `track_ids` deletes it.
+pub fn save_play_queue(
+    conn: &Connection,
+    user_id: &str,
+    track_ids: &[String],
+    current_idx: Option<usize>,
+    position_ms: i64,
+    client: Option<&str>,
+) -> rusqlite::Result<()> {
+    if track_ids.is_empty() {
+        conn.execute(
+            "DELETE FROM subsonic_play_queues WHERE user_id = ?1",
+            [user_id],
+        )?;
+        return Ok(());
+    }
+    let stored = &track_ids[..track_ids.len().min(MAX_PLAY_QUEUE)];
+    let ids = serde_json::to_string(stored).unwrap_or_else(|_| "[]".to_owned());
+    let current = current_idx.filter(|i| *i < stored.len()).map(|i| i as i64);
+    let client: Option<String> = client.map(|c| c.chars().take(MAX_QUEUE_CLIENT_CHARS).collect());
+    conn.execute(
+        "INSERT INTO subsonic_play_queues(user_id, track_ids, current_idx, position_ms, changed_at, changed_by)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'), ?5)
+         ON CONFLICT(user_id) DO UPDATE SET
+           track_ids = excluded.track_ids, current_idx = excluded.current_idx,
+           position_ms = excluded.position_ms, changed_at = excluded.changed_at, changed_by = excluded.changed_by",
+        params![user_id, ids, current, position_ms.max(0), client],
+    )?;
+    Ok(())
+}
+
+/// The user's saved queue, if any.
+pub fn get_play_queue(conn: &Connection, user_id: &str) -> rusqlite::Result<Option<PlayQueue>> {
+    conn.query_row(
+        "SELECT track_ids, current_idx, position_ms, changed_at, changed_by
+         FROM subsonic_play_queues WHERE user_id = ?1",
+        [user_id],
+        |row| {
+            let raw: String = row.get(0)?;
+            Ok(PlayQueue {
+                track_ids: serde_json::from_str(&raw).unwrap_or_default(),
+                current_idx: row
+                    .get::<_, Option<i64>>(1)?
+                    .and_then(|i| usize::try_from(i).ok()),
+                position_ms: row.get(2)?,
+                changed_at: row.get(3)?,
+                changed_by: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Songs for `ids` keyed by id (each id looked up once; unknown ids are absent).
+pub fn songs_by_id_map(
+    conn: &Connection,
+    ids: &[String],
+) -> rusqlite::Result<HashMap<String, SubsonicSong>> {
+    let unique: Vec<String> = ids
+        .iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .cloned()
+        .collect();
+    Ok(songs_by_ids(conn, &unique)?
+        .into_iter()
+        .map(|s| (s.id.clone(), s))
+        .collect())
+}
+
+/// Library scan state for `getScanStatus`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanStatus {
+    /// A scan is pending or running.
+    pub scanning: bool,
+    /// Files scanned so far by the active scans, or the library's track count when idle.
+    pub count: i64,
+    /// When the last scan finished (`YYYY-MM-DD HH:MM:SS`, UTC).
+    pub last_scan: Option<String>,
+}
+
+/// Current scan state, in one statement.
+pub fn scan_status(conn: &Connection) -> rusqlite::Result<ScanStatus> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM scan_jobs WHERE status IN ('pending','running')),
+                (SELECT COALESCE(SUM(files_scanned), 0) FROM scan_jobs WHERE status IN ('pending','running')),
+                (SELECT COUNT(*) FROM tracks),
+                (SELECT MAX(finished_at) FROM scan_jobs WHERE status = 'done')",
+        [],
+        |row| {
+            let scanning: bool = row.get(0)?;
+            let active: i64 = row.get(1)?;
+            let tracks: i64 = row.get(2)?;
+            Ok(ScanStatus {
+                scanning,
+                count: if scanning { active } else { tracks },
+                last_scan: row.get(3)?,
+            })
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1610,6 +1759,78 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn play_queue_saves_replaces_clears_and_follows_user_delete() {
+        let conn = db();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        ensure_subsonic_phase_3_schema(&conn).unwrap();
+        // Idempotent (fresh databases also get it from initialize_schema).
+        ensure_subsonic_phase_3_schema(&conn).unwrap();
+        assert_eq!(get_play_queue(&conn, "u1").unwrap(), None);
+
+        let ids: Vec<String> = ["t1", "t2", "t1"].map(String::from).to_vec();
+        save_play_queue(&conn, "u1", &ids, Some(2), 61_500, Some("Amperfy")).unwrap();
+        let q = get_play_queue(&conn, "u1").unwrap().unwrap();
+        assert_eq!(q.track_ids, ids);
+        assert_eq!(q.current_idx, Some(2));
+        assert_eq!(q.position_ms, 61_500);
+        assert_eq!(q.changed_by.as_deref(), Some("Amperfy"));
+
+        // Replace: an out-of-range index is dropped, a negative position clamps to 0.
+        save_play_queue(&conn, "u1", &ids[..1], Some(5), -3, None).unwrap();
+        let q = get_play_queue(&conn, "u1").unwrap().unwrap();
+        assert_eq!(
+            (q.current_idx, q.position_ms, q.changed_by),
+            (None, 0, None)
+        );
+
+        let map = songs_by_id_map(&conn, &ids).unwrap();
+        assert_eq!(map.len(), 2);
+
+        save_play_queue(&conn, "u1", &[], None, 0, None).unwrap();
+        assert_eq!(get_play_queue(&conn, "u1").unwrap(), None);
+
+        save_play_queue(&conn, "u2", &ids, Some(0), 0, None).unwrap();
+        conn.execute("DELETE FROM users WHERE id = 'u2'", [])
+            .unwrap();
+        assert_eq!(get_play_queue(&conn, "u2").unwrap(), None);
+    }
+
+    #[test]
+    fn phase_3_migration_adds_api_key_columns_once() {
+        let conn = db();
+        ensure_subsonic_phase_3_schema(&conn).unwrap();
+        assert!(crate::column_exists(&conn, "subsonic_credentials", "api_key_hash").unwrap());
+        assert!(crate::column_exists(&conn, "subsonic_credentials", "api_key_created_at").unwrap());
+    }
+
+    #[test]
+    fn scan_status_reports_active_scans_or_the_track_count() {
+        let conn = db();
+        let idle = scan_status(&conn).unwrap();
+        assert_eq!(
+            idle,
+            ScanStatus {
+                scanning: false,
+                count: 4,
+                last_scan: None
+            }
+        );
+        conn.execute_batch(
+            "INSERT INTO scan_jobs(id, library_id, status, finished_at, files_scanned) VALUES
+               ('j1', 'lib1', 'done', '2026-05-01 10:00:00', 9),
+               ('j2', 'lib2', 'done', '2026-05-02 10:00:00', 9),
+               ('j3', 'lib1', 'failed', '2026-05-03 10:00:00', 9),
+               ('j4', 'lib1', 'running', NULL, 120),
+               ('j5', 'lib2', 'pending', NULL, 0);",
+        )
+        .unwrap();
+        let busy = scan_status(&conn).unwrap();
+        assert!(busy.scanning);
+        assert_eq!(busy.count, 120);
+        assert_eq!(busy.last_scan.as_deref(), Some("2026-05-02 10:00:00"));
     }
 
     #[test]
