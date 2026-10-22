@@ -288,6 +288,7 @@ function IntegrationConnector({
   name,
   description,
   status,
+  statusLabels,
   helpOpen,
   onToggleHelp,
   helpContent,
@@ -302,6 +303,8 @@ function IntegrationConnector({
   name: string;
   description: string;
   status: ConnectorStatus;
+  /** Per-card badge wording (e.g. "Key valid" where "Connected" would suggest a linked account). */
+  statusLabels?: Partial<Record<ConnectorStatus, string>>;
   helpOpen: boolean;
   onToggleHelp: () => void;
   helpContent: React.ReactNode;
@@ -320,7 +323,7 @@ function IntegrationConnector({
           <span style={{ width: 9, height: 9, borderRadius: '50%', backgroundColor: dotColor, flexShrink: 0 }} />
           <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{name}</div>
           <span style={{ fontSize: 12, color: CONNECTOR_STATUS_COLOR[status], border: '1px solid var(--border)', borderRadius: 999, padding: '2px 8px', whiteSpace: 'nowrap' }}>
-            {CONNECTOR_STATUS_LABEL[status]}
+            {statusLabels?.[status] ?? CONNECTOR_STATUS_LABEL[status]}
           </span>
         </div>
         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
@@ -884,14 +887,20 @@ export default function SettingsPage({
   const isCustomMode = hybridThemeMode === 'custom';
   const [local, setLocal] = useState<AppSettings>(settings);
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(sectionRequest?.tab ?? 'theme');
+  // Outside requests (props) and in-page links (`goToSection`) share one scroll-to-anchor path.
+  const [request, setRequest] = useState<SettingsSectionRequest | null>(sectionRequest);
+  useEffect(() => { if (sectionRequest) setRequest(sectionRequest); }, [sectionRequest]);
+  const goToSection = useCallback((tab: SettingsTabKey, anchor: string) => {
+    setRequest({ tab, anchor, token: Date.now() });
+  }, []);
   useEffect(() => {
-    if (!sectionRequest) return undefined;
-    setActiveTab(sectionRequest.tab);
-    if (!sectionRequest.anchor) return undefined;
+    if (!request) return undefined;
+    setActiveTab(request.tab);
+    if (!request.anchor) return undefined;
     // The section mounts with the tab (and may load its data first), so look for it for a moment.
     let tries = 0;
     const timer = window.setInterval(() => {
-      const target = document.getElementById(sectionRequest.anchor ?? '');
+      const target = document.getElementById(request.anchor ?? '');
       tries += 1;
       if (target || tries > 20) {
         window.clearInterval(timer);
@@ -899,7 +908,7 @@ export default function SettingsPage({
       }
     }, 100);
     return () => window.clearInterval(timer);
-  }, [sectionRequest]);
+  }, [request]);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [schedules, setSchedules] = useState<ScanSchedule[]>([]);
   const [queueSnapshot, setQueueSnapshot] = useState<AdminQueueSnapshot | null>(null);
@@ -1736,7 +1745,7 @@ export default function SettingsPage({
           </SettingsPanel>
 
           <ConnectedAppsPanel username={currentUser.username} />
-          <ScrobblingPanel />
+          <ScrobblingPanel onOpenLastFmSetup={isAdmin ? () => goToSection('integrations', 'settings-lastfm') : undefined} />
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
@@ -3136,12 +3145,13 @@ export default function SettingsPage({
           </div>}
 
           {/* Last.fm */}
-          <div style={{ ...P.sectionTitle, marginTop: 24 }}>Last.fm</div>
+          <div id="settings-lastfm" style={{ ...P.sectionTitle, marginTop: 24 }}>Last.fm</div>
           <IntegrationConnector
             dotColor="#d51007"
             name="Last.fm"
             description="Shows artist biographies, album reviews, listener stats, and genre tags on artist and album pages in Browse."
             status={connectorStatus(!!lastfmKey.trim(), lastfmConnected)}
+            statusLabels={{ connected: 'Key valid' }}
             helpOpen={lastfmHelpOpen}
             onToggleHelp={() => setLastfmHelpOpen((v) => !v)}
             helpContent={
@@ -3159,6 +3169,18 @@ export default function SettingsPage({
             onSave={saveLastfmKey}
             busy={lastfmSaving}
             errorMessage={connectorMessage(lastfmResult)}
+            footer={
+              <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-muted)' }}>
+                Each user connects their own Last.fm account for scrobbling in User Settings → Scrobbling.{' '}
+                <button
+                  type="button"
+                  onClick={() => goToSection('theme', 'settings-scrobbling')}
+                  style={{ border: 'none', background: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}
+                >
+                  Open Scrobbling
+                </button>
+              </div>
+            }
           >
             <input
               type="password"

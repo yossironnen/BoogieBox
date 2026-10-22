@@ -696,9 +696,11 @@ describe('SettingsPage component flows', () => {
 
     fireEvent.change(screen.getByPlaceholderText(/Last\.fm API key/i), { target: { value: 'lfm-2' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test Last.fm connection' }));
-    await waitFor(() => expect(screen.getAllByText('Connected').length).toBeGreaterThan(0));
+    // The badge checks the app key only; "Connected" would read like a linked user account.
+    expect(await screen.findByText('Key valid')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save Last.fm credentials' }));
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ lastfmKey: 'lfm-2', lastfmSecret: '' }));
+    expect(screen.getByText(/Each user connects their own Last\.fm account/)).toBeInTheDocument();
 
     const lastfmHeading = screen.getAllByText('Last.fm', { selector: 'div' })[0];
     const spotifyHeading = screen.getByText(/Artist Images: Deezer \+ Spotify Fallback/i);

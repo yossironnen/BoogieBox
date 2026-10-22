@@ -180,8 +180,8 @@ export function AccountRow({ service, account }: { service: ScrobbleService; acc
   );
 }
 
-/** Scrobbling panel for the User Settings tab. */
-export default function ScrobblingPanel() {
+/** Scrobbling panel for the User Settings tab. `onOpenLastFmSetup` (admins) links to the Last.fm app keys. */
+export default function ScrobblingPanel({ onOpenLastFmSetup }: { onOpenLastFmSetup?: () => void } = {}) {
   const s = useScrobbleAccounts();
   const [confirm, setConfirm] = useState<ScrobbleService | null>(null);
   const lastfm = s.account('lastfm');
@@ -189,7 +189,7 @@ export default function ScrobblingPanel() {
   if (!s.loaded) return null;
 
   return (
-    <section aria-label="Scrobbling" style={hybridSettingsStyles.panel}>
+    <section id="settings-scrobbling" aria-label="Scrobbling" style={hybridSettingsStyles.panel}>
       <div style={hybridSettingsStyles.panelHeader}>
         <div>
           <div style={hybridSettingsStyles.sectionTitle}>Scrobbling</div>
@@ -215,8 +215,13 @@ export default function ScrobblingPanel() {
               >
                 {lastfm ? 'Reconnect Last.fm' : 'Connect Last.fm'}
               </button>
+            ) : onOpenLastFmSetup ? (
+              <span style={S.hint}>
+                Add the Last.fm API key and shared secret first.{' '}
+                <button type="button" style={S.linkButton} onClick={onOpenLastFmSetup}>Open Last.fm setup</button>
+              </span>
             ) : (
-              <span style={S.hint}>An admin needs to add the Last.fm API key and shared secret in Settings → Providers first.</span>
+              <span style={S.hint}>An admin needs to add the Last.fm API key and shared secret in Settings → Integrations first.</span>
             )
           )}
           {lastfm && (

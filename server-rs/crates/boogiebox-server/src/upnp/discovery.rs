@@ -183,6 +183,11 @@ pub fn event_from_message(msg: &SsdpMessage, from: IpAddr) -> Option<DiscoveryEv
 }
 
 fn route_ipv4(dest: Ipv4Addr) -> Option<Ipv4Addr> {
+    // A wildcard bind from a fresh test binary triggers a Windows Firewall prompt on every build.
+    if cfg!(test) {
+        let _ = dest;
+        return None;
+    }
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     // `connect` on UDP only selects a route; no packet is sent.
     socket.connect((dest, 9)).ok()?;
@@ -217,7 +222,10 @@ pub fn candidate_ipv4_interfaces(override_ip: Option<Ipv4Addr>) -> Vec<Ipv4Addr>
 
 /// Local address the OS would use to reach `peer` — the address to put in media URLs sent to that renderer.
 pub fn local_ip_for(peer: IpAddr) -> Option<IpAddr> {
+    // Loopback peers bind loopback: no wildcard socket, so no Windows Firewall prompt.
     let bind = match peer {
+        IpAddr::V4(v4) if v4.is_loopback() => "127.0.0.1:0",
+        IpAddr::V6(v6) if v6.is_loopback() => "[::1]:0",
         IpAddr::V4(_) => "0.0.0.0:0",
         IpAddr::V6(_) => "[::]:0",
     };

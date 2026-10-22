@@ -36,6 +36,16 @@ describe('ScrobblingPanel', () => {
     expect(within(panel).queryByText('lb_alice')).not.toBeInTheDocument();
   });
 
+  it('links admins to the Last.fm setup when it is missing', async () => {
+    scrobbleApi.accounts.mockResolvedValue({ lastfmAvailable: false, accounts: [] });
+    const onOpenLastFmSetup = vi.fn();
+    render(<ScrobblingPanel onOpenLastFmSetup={onOpenLastFmSetup} />);
+    const panel = await screen.findByRole('region', { name: 'Scrobbling' });
+    expect(within(panel).queryByText(/An admin needs to/)).not.toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole('button', { name: 'Open Last.fm setup' }));
+    expect(onOpenLastFmSetup).toHaveBeenCalledTimes(1);
+  });
+
   it('disconnects Last.fm after confirming', async () => {
     scrobbleApi.accounts.mockResolvedValue({
       lastfmAvailable: true,
