@@ -1168,3 +1168,60 @@ async fn opus_and_aac_streams_are_unsized() {
         "opus, or mp3 without libopus: {ct}"
     );
 }
+
+#[tokio::test]
+async fn time_offset_starts_transcodes_and_is_ignored_for_raw() {
+    let fx = Fixture::new("subsonic-p3-offset").await;
+    let req = |method: &str, query: &str, range: Option<&str>| {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(format!("/rest/stream?{}&id=t1&{query}", fx.auth()));
+        if let Some(r) = range {
+            b = b.header(header::RANGE, r);
+        }
+        b.body(Body::empty()).unwrap()
+    };
+
+    // t1 is 10 s; from 4 s at 128 kbps the rest is 6 s = 96000 bytes, with no byte ranges.
+    let (status, headers, _) = send_full(
+        fx.app.clone(),
+        req("HEAD", "maxBitRate=128&timeOffset=4", Some("bytes=0-")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_LENGTH], "96000");
+    assert_eq!(headers[header::ACCEPT_RANGES], "none");
+
+    // Past the end: an empty stream.
+    let (status, headers, body) = send_full(
+        fx.app.clone(),
+        req("GET", "maxBitRate=128&timeOffset=10", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "audio/mpeg");
+    assert!(body.is_empty());
+
+    // Raw delivery ignores it; ranges still work.
+    let (status, _, body) = send_full(
+        fx.app.clone(),
+        req("GET", "timeOffset=4", Some("bytes=0-3")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, b"0123");
+
+    let (_, _, body) = send_full(
+        fx.app.clone(),
+        req("GET", "maxBitRate=128&timeOffset=abc", None),
+    )
+    .await;
+    assert!(String::from_utf8_lossy(&body).contains("code=\"0\""));
+
+    let ext = fx.rest("getOpenSubsonicExtensions", "").await;
+    assert!(ext["openSubsonicExtensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["name"] == "transcodeOffset"));
+}

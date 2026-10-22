@@ -236,6 +236,11 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
             Ok(resp)
         }
         Delivery::Mp3(kbps) | Delivery::Encoded(_, kbps) => {
+            // `timeOffset` (OpenSubsonic `transcodeOffset`) only applies to transcodes; raw files seek by range.
+            let start_seconds = ctx.params.int("timeOffset")?.unwrap_or(0).max(0) as f64;
+            if song.duration > 0.0 && start_seconds >= song.duration {
+                return Ok(past_the_end(&delivery));
+            }
             let limiter = ctx.subsonic.transcode_limiter(ctx.settings.max_transcodes);
             let permit = match tokio::time::timeout(TRANSCODE_WAIT, limiter.acquire_owned()).await {
                 Ok(Ok(permit)) => permit,
@@ -252,6 +257,7 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
                     file_path: &file_path,
                     codec,
                     bitrate_kbps: kbps,
+                    start_seconds,
                     replay_gain,
                     head_only: ctx.head,
                     log_id: &song.id,
@@ -269,6 +275,7 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
                     duration: (song.duration > 0.0).then_some(song.duration),
                     range: range.as_deref(),
                     bitrate_kbps: kbps,
+                    start_seconds,
                     replay_gain,
                     head_only: ctx.head,
                     log_id: &song.id,
@@ -286,6 +293,19 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
             Ok(Response::from_parts(parts, Body::from_stream(guarded)))
         }
     }
+}
+
+/// A `timeOffset` at or past the end: an empty stream of the requested type (players treat it as the end).
+fn past_the_end(delivery: &Delivery) -> Response {
+    let mime = match delivery {
+        Delivery::Encoded(codec, _) => codec.mime(),
+        _ => "audio/mpeg",
+    };
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, mime), (header::CONTENT_LENGTH, "0")],
+    )
+        .into_response()
 }
 
 /// BoogieMix output folders: the configured one and the default under the data folder (mixes rendered before

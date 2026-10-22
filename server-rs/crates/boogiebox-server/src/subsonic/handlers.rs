@@ -63,7 +63,11 @@ const UNSUPPORTED: &[&str] = &[
 ];
 
 /// OpenSubsonic extensions implemented by this build.
-const EXTENSIONS: &[(&str, &[i64])] = &[("formPost", &[1]), ("songLyrics", &[1])];
+const EXTENSIONS: &[(&str, &[i64])] = &[
+    ("formPost", &[1]),
+    ("songLyrics", &[1]),
+    ("transcodeOffset", &[1]),
+];
 
 /// Per-request context.
 pub struct Ctx {

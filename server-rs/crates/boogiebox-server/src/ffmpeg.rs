@@ -452,21 +452,25 @@ impl StreamCodec {
 }
 
 /// FFmpeg arguments for a streamed Opus/AAC encode; the empty string after `-i` is the input path placeholder
-/// (kept as an `OsStr` by the caller, as in [`pcm_args`]).
-pub fn encode_args(codec: StreamCodec, bitrate: u32, replay_gain: bool) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "-loglevel",
-        "error",
-        "-hide_banner",
-        "-i",
-        "",
-        "-map",
-        "0:a",
-        "-vn",
-    ]
-    .iter()
-    .map(|a| a.to_string())
-    .collect();
+/// (kept as an `OsStr` by the caller, as in [`pcm_args`]). `seek_seconds` > 0 seeks the input (`-ss` before `-i`).
+pub fn encode_args(
+    codec: StreamCodec,
+    bitrate: u32,
+    replay_gain: bool,
+    seek_seconds: f64,
+) -> Vec<String> {
+    let mut args: Vec<String> = ["-loglevel", "error", "-hide_banner"]
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+    if seek_seconds > 0.001 {
+        args.extend(["-ss".into(), format!("{seek_seconds:.3}")]);
+    }
+    args.extend(
+        ["-i", "", "-map", "0:a", "-vn"]
+            .iter()
+            .map(|a| a.to_string()),
+    );
     if replay_gain {
         args.extend(["-af".into(), "loudnorm=I=-14:TP=-1.5:LRA=11".into()]);
     }
@@ -499,9 +503,10 @@ pub fn spawn_encode(
     codec: StreamCodec,
     bitrate: u32,
     replay_gain: bool,
+    seek_seconds: f64,
 ) -> std::io::Result<std::process::Child> {
     let mut cmd = std::process::Command::new(ffmpeg); // nosemgrep: boogiebox-rust-dynamic-command
-    for arg in encode_args(codec, bitrate, replay_gain) {
+    for arg in encode_args(codec, bitrate, replay_gain, seek_seconds) {
         if arg.is_empty() {
             cmd.arg(file_path);
         } else {
@@ -602,6 +607,22 @@ mod tests {
         let b = pcm_args(12.5, 96_000, 2, 24);
         assert!(b.windows(2).any(|w| w[0] == "-ss" && w[1] == "12.500000"));
         assert!(b.contains(&"pcm_s24le".to_string()) && b.contains(&"96000".to_string()));
+    }
+
+    #[test]
+    fn encode_args_seek_the_input() {
+        let a = encode_args(StreamCodec::Opus, 128, false, 0.0);
+        assert!(!a.contains(&"-ss".to_string()));
+        assert_eq!(a.iter().filter(|s| s.is_empty()).count(), 1);
+        let b = encode_args(StreamCodec::Aac, 192, true, 30.0);
+        let ss = b.iter().position(|s| s == "-ss").expect("seek");
+        let input = b.iter().position(|s| s == "-i").expect("input");
+        assert_eq!(b[ss + 1], "30.000");
+        assert!(ss < input, "-ss before -i seeks the input, not the output");
+        assert!(
+            b.contains(&"adts".to_string())
+                && b.contains(&"loudnorm=I=-14:TP=-1.5:LRA=11".to_string())
+        );
     }
 
     #[test]

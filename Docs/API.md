@@ -203,8 +203,8 @@ credentials or locked out after 5 failures for a minute, 43 conflicting mechanis
 found). `/rest` CORS allows any origin without credentials. Responses never include filesystem paths: `path`
 is a virtual `Artist/Album/NN - Title.ext`.
 
-Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost` and
-`songLyrics`), `getUser` (`jukeboxRole` is true when a jukebox speaker is set and Play On is on), `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
+Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost`,
+`songLyrics` and `transcodeOffset`), `getUser` (`jukeboxRole` is true when a jukebox speaker is set and Play On is on), `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
 `getArtists`, `getArtist`, `getAlbum`, `getSong`, `getGenres`, `getMusicDirectory`, `getAlbumList`/`getAlbumList2`
 (`random`, `newest`, `highest`, `frequent`, `recent`, `alphabeticalByName`, `alphabeticalByArtist`, `starred`,
 `byYear`, `byGenre`; `frequent` and `recent` use the user's own plays), `getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `star`/`unstar`
@@ -241,7 +241,10 @@ playlist can't be edited or deleted (error 50). Transitions and Mix Story chapte
 `maxBitRate` is below the file's bitrate; MP3 bitrates are 128/192/256/320 and at most `subsonicMaxTranscodes`
 conversions run at once (HTTP 503 after a 10 s wait). `format=opus` streams Ogg Opus (64/96/128/160/192 kbps,
 default 128; MP3 at the same cap when FFmpeg has no `libopus`) and `format=aac` (or `m4a`) streams AAC in ADTS
-(96/128/192/256 kbps, default 192). These have no `Content-Length` and no byte ranges (`Accept-Ranges: none`). Files outside their library folders are never served.
+(96/128/192/256 kbps, default 192). These have no `Content-Length` and no byte ranges (`Accept-Ranges: none`).
+`timeOffset` (seconds, OpenSubsonic `transcodeOffset`) starts an MP3, Opus or AAC conversion that far into the track;
+an MP3 started this way is sized for the rest of the track and offers no byte ranges, and an offset at or past the
+end returns an empty stream. The original file ignores `timeOffset` (apps seek it with byte ranges). Files outside their library folders are never served.
 Other spec methods return error 0 "Not supported by BoogieBox". Half-star ratings are shown rounded up to whole
 stars.
 

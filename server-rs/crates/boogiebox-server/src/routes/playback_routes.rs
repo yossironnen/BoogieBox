@@ -159,6 +159,7 @@ async fn stream_track_handler(
             duration: track.duration,
             range: range_header.as_deref(),
             bitrate_kbps: ffmpeg::bitrate_for_quality(&quality),
+            start_seconds: 0.0,
             replay_gain,
             head_only: false,
             log_id: &id,

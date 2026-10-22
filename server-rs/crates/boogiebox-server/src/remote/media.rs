@@ -483,6 +483,7 @@ pub async fn media_handler(
                         duration: *duration,
                         range,
                         bitrate_kbps: 320,
+                        start_seconds: 0.0,
                         replay_gain: false,
                         head_only,
                         log_id,

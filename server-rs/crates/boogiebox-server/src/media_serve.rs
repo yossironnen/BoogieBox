@@ -241,6 +241,9 @@ pub struct Mp3Transcode<'a> {
     pub range: Option<&'a str>,
     /// MP3 bitrate in kbps (see `ffmpeg::bitrate_for_quality` for the `transcodeQuality` mapping).
     pub bitrate_kbps: u32,
+    /// Start the output this far into the track (Subsonic `timeOffset`). When > 0 the output is a new
+    /// stream from that point: its length covers the rest of the track and `Range` is ignored.
+    pub start_seconds: f64,
     /// Apply loudness normalization.
     pub replay_gain: bool,
     /// Answer a `HEAD` request (headers only, no encoder spawned).
@@ -258,26 +261,33 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
     let id = req.log_id;
     let track_ext = req.log_ext;
     let kbps = req.bitrate_kbps;
+    let start_offset = if req.start_seconds > 0.001 {
+        req.start_seconds
+    } else {
+        0.0
+    };
+    // Byte offsets of an offset stream no longer map to the source timeline, so ranges are not offered.
+    let range = if start_offset > 0.0 { None } else { req.range };
     let total_bytes = req.duration.and_then(|duration| {
-        if duration > 0.0 {
-            let total = ffmpeg::transcoded_total_bytes(duration, kbps);
+        let remaining = duration - start_offset;
+        if remaining > 0.0 {
+            let total = ffmpeg::transcoded_total_bytes(remaining, kbps);
             (total > 0).then_some(total)
         } else {
             None
         }
     });
-    let parsed_transcode_range = req
-        .range
-        .and_then(|rh| total_bytes.and_then(|total| ffmpeg::parse_byte_range(rh, total)));
+    let parsed_transcode_range =
+        range.and_then(|rh| total_bytes.and_then(|total| ffmpeg::parse_byte_range(rh, total)));
     let seek_seconds = parsed_transcode_range
         .filter(|(start, _)| *start > 0)
         .map(|(start, _)| ffmpeg::byte_offset_to_seconds(start, kbps))
-        .unwrap_or(0.0);
-    if req.range.is_some() && total_bytes.is_some() && parsed_transcode_range.is_none() {
+        .unwrap_or(start_offset);
+    if range.is_some() && total_bytes.is_some() && parsed_transcode_range.is_none() {
         tracing::warn!(
             track_id = %id,
             ext = %track_ext,
-            range = req.range.unwrap_or(""),
+            range = range.unwrap_or(""),
             duration = req.duration.unwrap_or(0.0),
             estimated_total_bytes = total_bytes.unwrap_or(0),
             "invalid audio transcode range request"
@@ -292,9 +302,12 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
     let start_byte = ffmpeg::transcoded_byte_offset(seek_seconds, kbps);
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, "audio/mpeg")
-        .header(header::ACCEPT_RANGES, "bytes")
+        .header(
+            header::ACCEPT_RANGES,
+            if start_offset > 0.0 { "none" } else { "bytes" },
+        )
         .header("Cache-Control", "no-cache");
-    if req.range.is_some() {
+    if range.is_some() {
         if let (Some(total), Some((range_start, range_end))) = (total_bytes, parsed_transcode_range)
         {
             let response_start = start_byte.max(range_start);
@@ -400,6 +413,8 @@ pub struct StreamEncode<'a> {
     pub codec: ffmpeg::StreamCodec,
     /// Bitrate in kbps.
     pub bitrate_kbps: u32,
+    /// Start the output this far into the track (Subsonic `timeOffset`).
+    pub start_seconds: f64,
     /// Apply loudness normalization.
     pub replay_gain: bool,
     /// Answer a `HEAD` request (headers only, no encoder spawned).
@@ -430,6 +445,7 @@ pub async fn serve_stream_encode(req: StreamEncode<'_>) -> Response {
         req.codec,
         req.bitrate_kbps,
         req.replay_gain,
+        req.start_seconds,
     ) {
         Ok(c) => c,
         Err(error) => {
@@ -448,6 +464,7 @@ pub async fn serve_stream_encode(req: StreamEncode<'_>) -> Response {
         ext = %req.log_ext,
         codec = ?req.codec,
         bitrate_kbps = req.bitrate_kbps,
+        start_seconds = req.start_seconds,
         pid = child.id(),
         "audio stream using ffmpeg encode"
     );
@@ -786,6 +803,7 @@ mod tests {
             duration: Some(10.0),
             range: Some("bytes=0-"),
             bitrate_kbps: 320,
+            start_seconds: 0.0,
             replay_gain: false,
             head_only: true,
             log_id: "t1",
@@ -797,11 +815,31 @@ mod tests {
         assert_eq!(mp3.headers()["content-type"], "audio/mpeg");
         assert_eq!(mp3.headers()["content-range"], "bytes 0-399999/400000");
 
+        // An offset stream covers the rest of the track and ignores Range.
+        let offset = serve_mp3_transcode(Mp3Transcode {
+            file_path: &p,
+            duration: Some(10.0),
+            range: Some("bytes=0-"),
+            bitrate_kbps: 320,
+            start_seconds: 4.0,
+            replay_gain: false,
+            head_only: true,
+            log_id: "t1",
+            log_ext: "aiff",
+            extra: &[],
+        })
+        .await;
+        assert_eq!(offset.status(), StatusCode::OK);
+        assert_eq!(offset.headers()["content-length"], "240000");
+        assert_eq!(offset.headers()["accept-ranges"], "none");
+        assert!(offset.headers().get("content-range").is_none());
+
         let mp3_full = serve_mp3_transcode(Mp3Transcode {
             file_path: &p,
             duration: None,
             range: None,
             bitrate_kbps: 192,
+            start_seconds: 0.0,
             replay_gain: false,
             head_only: true,
             log_id: "t1",
@@ -817,6 +855,7 @@ mod tests {
             duration: Some(1.0),
             range: Some("bytes=999999-"),
             bitrate_kbps: 320,
+            start_seconds: 0.0,
             replay_gain: false,
             head_only: false,
             log_id: "t1",
