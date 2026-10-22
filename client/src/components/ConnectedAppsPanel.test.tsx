@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ConnectedAppsPanel, { CopyValue, formatWhen } from './ConnectedAppsPanel';
 
 const { subsonicApi } = vi.hoisted(() => ({
-  subsonicApi: { credentials: vi.fn(), setPassword: vi.fn(), clearPassword: vi.fn() },
+  subsonicApi: {
+    credentials: vi.fn(), setPassword: vi.fn(), clearPassword: vi.fn(), createApiKey: vi.fn(), revokeApiKey: vi.fn(),
+  },
 }));
 
 vi.mock('../api', () => ({ api: { subsonic: subsonicApi } }));
@@ -14,6 +16,8 @@ const enabled = {
   updatedAt: null,
   lastUsedAt: null,
   lastClient: null,
+  hasApiKey: false,
+  apiKeyCreatedAt: null,
   serverUrls: ['http://192.168.1.20:3001'],
 };
 
@@ -87,6 +91,36 @@ describe('ConnectedAppsPanel', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(subsonicApi.clearPassword).toHaveBeenCalled());
     expect(await within(panel).findByText('Subsonic password removed')).toBeInTheDocument();
+  });
+
+  it('creates an API key, shows it once, then replaces and revokes it after confirming', async () => {
+    subsonicApi.credentials.mockResolvedValueOnce(enabled).mockResolvedValue({
+      ...enabled, hasApiKey: true, apiKeyCreatedAt: '2026-10-22 09:00:00',
+    });
+    subsonicApi.createApiKey.mockResolvedValue({ apiKey: 'bbk_secret' });
+    subsonicApi.revokeApiKey.mockResolvedValue({ ok: true });
+    render(<ConnectedAppsPanel username="alice" />);
+    const panel = await screen.findByRole('region', { name: 'Connected apps' });
+    expect(within(panel).getByText('Not created')).toBeInTheDocument();
+    expect(within(panel).getByText(/For apps that support API keys/)).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Create API key' }));
+    expect(await screen.findByText('Your API key')).toBeInTheDocument();
+    expect(screen.getByText('bbk_secret')).toBeInTheDocument();
+    expect(screen.getByText('Copy it now. BoogieBox shows it only once.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByText('bbk_secret')).not.toBeInTheDocument());
+    expect(await within(panel).findByText(/^Created /)).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Replace API key' }));
+    expect(screen.getByText('Apps using the current key are signed out.')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Replace API key' }));
+    await waitFor(() => expect(subsonicApi.createApiKey).toHaveBeenCalledTimes(2));
+    fireEvent.click(await screen.findByRole('button', { name: 'Done' }));
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Revoke API key' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Revoke API key' }));
+    await waitFor(() => expect(subsonicApi.revokeApiKey).toHaveBeenCalled());
   });
 
   it('copies values and formats server timestamps', async () => {

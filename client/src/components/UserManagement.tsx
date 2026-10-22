@@ -128,6 +128,7 @@ function SubsonicPasswordModal({ user, onClose }: { user: AdminUser; onClose: ()
   const [confirmation, setConfirmation] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
   const problem = subsonicPasswordProblem(password, confirmation);
 
   const run = async (action: () => Promise<unknown>, fallback: string) => {
@@ -157,6 +158,11 @@ function SubsonicPasswordModal({ user, onClose }: { user: AdminUser; onClose: ()
         />
         {error && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          {user.hasSubsonicApiKey && (
+            <button type="button" style={hybridControlStyles.dangerButton} disabled={saving} onClick={() => setConfirmRevoke(true)}>
+              Revoke API key
+            </button>
+          )}
           {user.hasSubsonicPassword && (
             <button type="button" style={hybridControlStyles.dangerButton} disabled={saving} onClick={() => void run(() => api.admin.users.clearSubsonicPassword(user.id), 'Failed to remove the password')}>
               Remove password
@@ -173,6 +179,19 @@ function SubsonicPasswordModal({ user, onClose }: { user: AdminUser; onClose: ()
           </button>
         </div>
       </div>
+      {confirmRevoke && (
+        <ConfirmModal
+          title="Revoke API key"
+          message={`Apps using ${user.username}'s API key are signed out.`}
+          confirmLabel="Revoke API key"
+          tone="danger"
+          onConfirm={() => {
+            setConfirmRevoke(false);
+            void run(() => api.admin.users.revokeSubsonicApiKey(user.id), 'Failed to revoke the API key');
+          }}
+          onCancel={() => setConfirmRevoke(false)}
+        />
+      )}
     </div>
   );
 }

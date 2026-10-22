@@ -196,15 +196,17 @@ All routes require a session and return `404` while the `remotePlaybackEnabled` 
 
 Third-party Subsonic apps use `GET`/`POST` `/rest/{method}` (`.view` suffix optional; POST takes a form body).
 Off until an admin sets `subsonicApiEnabled=true`. Apps sign in with `u` plus `p` (plain or `enc:<hex>`) or
-`t`+`s` (`t = md5(password + salt)`), using the user's **Subsonic password**, never the PIN. API keys
-(`apiKey`) are not supported yet (error 42). Responses are XML by default, `f=json`, or `f=jsonp&callback=`;
+`t`+`s` (`t = md5(password + salt)`), using the user's **Subsonic password**, never the PIN, or with an
+OpenSubsonic **API key** alone (`apiKey`, no `u`). API keys are stored as SHA-256 only, so a replaced
+`subsonic.key` does not affect them. Responses are XML by default, `f=json`, or `f=jsonp&callback=`;
 failures are HTTP 200 with a Subsonic `error` (0 generic/unsupported, 10 missing parameter, 40 wrong
-credentials or locked out after 5 failures for a minute, 43 conflicting mechanisms, 50 not allowed, 70 not
-found). `/rest` CORS allows any origin without credentials. Responses never include filesystem paths: `path`
+credentials or locked out after 5 failures for a minute — also for a user who has only an API key, 43 conflicting
+mechanisms including `apiKey` with `u`, 44 invalid API key, 50 not allowed, 70 not found; 41 is not used). `/rest` CORS allows any origin without credentials. Responses never include filesystem paths: `path`
 is a virtual `Artist/Album/NN - Title.ext`.
 
 Supported: `ping`, `getLicense`, `getOpenSubsonicExtensions` (no sign-in needed; lists `formPost`,
-`songLyrics`, `transcodeOffset` and `indexBasedQueue`), `getUser` (`jukeboxRole` is true when a jukebox speaker is set and Play On is on), `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
+`songLyrics`, `transcodeOffset`, `indexBasedQueue` and `apiKeyAuthentication`), `tokenInfo` (the API key's
+username; error 0 when signed in another way), `getUser` (`jukeboxRole` is true when a jukebox speaker is set and Play On is on), `getMusicFolders` (folder ids are 1-based positions of the libraries), `getIndexes`,
 `getArtists`, `getArtist`, `getAlbum`, `getSong`, `getGenres`, `getMusicDirectory`, `getAlbumList`/`getAlbumList2`
 (`random`, `newest`, `highest`, `frequent`, `recent`, `alphabeticalByName`, `alphabeticalByArtist`, `starred`,
 `byYear`, `byGenre`; `frequent` and `recent` use the user's own plays), `getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `star`/`unstar`
@@ -263,6 +265,9 @@ stars.
 | `DELETE` | `/api/subsonic/credentials/password` | Current user: remove the Subsonic password. |
 | `PUT` | `/api/admin/users/{id}/subsonic-password` | Admin: set another user's Subsonic password (same rules). |
 | `DELETE` | `/api/admin/users/{id}/subsonic-password` | Admin: remove another user's Subsonic password. |
+| `POST` | `/api/subsonic/credentials/api-key` | Current user: create an API key, replacing any existing one (apps using the old key are signed out). Returns `{ apiKey }` once (`Cache-Control: no-store`); only its hash is kept. `GET /api/subsonic/credentials` reports `hasApiKey` and `apiKeyCreatedAt`. |
+| `DELETE` | `/api/subsonic/credentials/api-key` | Current user: revoke the API key (`404` when there is none). |
+| `DELETE` | `/api/admin/users/{id}/subsonic-api-key` | Admin: revoke another user's API key (admins cannot create keys for others). `GET /api/admin/users` reports `hasSubsonicApiKey`. |
 
 Settings (global, admin): `subsonicApiEnabled` (`true`/`false`, default `false`), `subsonicMaxTranscodes`
 (1–8, default 3), `subsonicIgnoredArticles` (up to 20 words, default `The El La Los Las Le Les`),

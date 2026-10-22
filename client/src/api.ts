@@ -771,6 +771,7 @@ export const api = {
       setPermissions:     (id: EntityId, perms: { canManageLibraries: boolean; canEditMetadata: boolean })   => put<{ ok: boolean }>(`/admin/users/${id}/permissions`, perms),
       setSubsonicPassword:   (id: EntityId, password: string)                                                => put<{ ok: boolean }>(`/admin/users/${id}/subsonic-password`, { password }),
       clearSubsonicPassword: (id: EntityId)                                                                  => del<{ ok: boolean }>(`/admin/users/${id}/subsonic-password`),
+      revokeSubsonicApiKey:  (id: EntityId)                                                                  => del<{ ok: boolean }>(`/admin/users/${id}/subsonic-api-key`),
     },
   },
   /** Favourites (hearts), shared with Subsonic apps' stars. */
@@ -796,10 +797,13 @@ export const api = {
     connectLastFm:       (origin: string) => post<{ url: string }>('/scrobble/lastfm/connect', { origin }),
     disconnect:          (service: 'lastfm' | 'listenbrainz') => del<{ ok: boolean }>(`/scrobble/${service}`),
   },
-  /** The signed-in user's Subsonic password for third-party apps (`/rest`). */
+  /** The signed-in user's Subsonic password and API key for third-party apps (`/rest`). */
   subsonic: {
     credentials:   () => get<SubsonicCredentials>('/subsonic/credentials'),
     setPassword:   (password: string) => put<{ ok: boolean }>('/subsonic/credentials/password', { password }),
     clearPassword: () => del<{ ok: boolean }>('/subsonic/credentials/password'),
+    /** Creates or replaces the API key; the key is returned only here. */
+    createApiKey:  () => post<{ apiKey: string }>('/subsonic/credentials/api-key', {}),
+    revokeApiKey:  () => del<{ ok: boolean }>('/subsonic/credentials/api-key'),
   },
 };

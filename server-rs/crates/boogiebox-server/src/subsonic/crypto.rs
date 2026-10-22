@@ -119,6 +119,24 @@ pub fn token(password: &str, salt: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Prefix of BoogieBox API keys (recognisable in a password manager).
+pub const API_KEY_PREFIX: &str = "bbk_";
+/// Longest `apiKey` value worth hashing; anything longer cannot be a BoogieBox key.
+pub const MAX_API_KEY_LEN: usize = 128;
+
+/// A new OpenSubsonic API key: `bbk_` + 32 random bytes, base64url without padding. Only its hash is stored.
+pub fn generate_api_key() -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    format!("{API_KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// Lowercase hex SHA-256 of an API key (what the database stores and looks up).
+pub fn hash_api_key(key: &str) -> String {
+    hex::encode(<sha2::Sha256 as sha2::Digest>::digest(key.as_bytes()))
+}
+
 /// Why a Subsonic password was rejected (the `rule` field of the API error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordRule {
@@ -265,6 +283,24 @@ mod tests {
         );
         assert_eq!(check_password("other-pass!", Some(&pin)), Ok(()));
         assert_eq!(check_password("other-pass!", None), Ok(()));
+    }
+
+    #[test]
+    fn api_keys_are_random_prefixed_and_hash_to_hex() {
+        let a = generate_api_key();
+        let b = generate_api_key();
+        assert_ne!(a, b);
+        assert!(a.starts_with(API_KEY_PREFIX));
+        assert_eq!(a.len(), API_KEY_PREFIX.len() + 43);
+        assert!(a[API_KEY_PREFIX.len()..]
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
+        // SHA-256("abc") known answer.
+        assert_eq!(
+            hash_api_key("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(hash_api_key(&a), hash_api_key(&a));
     }
 
     #[test]

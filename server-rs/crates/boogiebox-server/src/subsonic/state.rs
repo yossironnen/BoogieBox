@@ -71,6 +71,8 @@ pub(crate) struct CachedAccount {
 struct Inner {
     settings: Mutex<Option<(SubsonicSettings, Instant)>>,
     accounts: Mutex<HashMap<String, CachedAccount>>,
+    /// API key hash → account (`secret` unused).
+    api_keys: Mutex<HashMap<String, CachedAccount>>,
     key: Mutex<Option<(PathBuf, [u8; 32])>>,
     last_use: Mutex<HashMap<String, Instant>>,
     transcodes: Mutex<Option<(usize, Arc<Semaphore>)>>,
@@ -88,14 +90,15 @@ impl SubsonicState {
     /// Drops every cache (database switched).
     pub fn reset(&self) {
         *lock(&self.0.settings) = None;
-        lock(&self.0.accounts).clear();
+        self.invalidate_accounts();
         *lock(&self.0.key) = None;
         lock(&self.0.last_use).clear();
     }
 
-    /// Forgets cached accounts (password, role or user changes).
+    /// Forgets cached accounts (password, API key, role or user changes).
     pub fn invalidate_accounts(&self) {
         lock(&self.0.accounts).clear();
+        lock(&self.0.api_keys).clear();
     }
 
     /// Forgets cached settings (a Subsonic setting changed).
@@ -132,6 +135,21 @@ impl SubsonicState {
             accounts.clear();
         }
         accounts.insert(username_key, account);
+    }
+
+    pub(crate) fn cached_api_key(&self, key_hash: &str) -> Option<CachedAccount> {
+        lock(&self.0.api_keys)
+            .get(key_hash)
+            .filter(|a| a.fetched.elapsed() < ACCOUNT_TTL)
+            .cloned()
+    }
+
+    pub(crate) fn store_api_key(&self, key_hash: String, account: CachedAccount) {
+        let mut keys = lock(&self.0.api_keys);
+        if keys.len() >= MAX_CACHED_ACCOUNTS {
+            keys.clear();
+        }
+        keys.insert(key_hash, account);
     }
 
     /// The encryption key for the active data folder, creating the key file on first use. When a new key

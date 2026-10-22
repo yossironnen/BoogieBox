@@ -1169,6 +1169,132 @@ async fn opus_and_aac_streams_are_unsized() {
     );
 }
 
+/// `method` on `uri` with an optional cookie; returns status, headers and body.
+async fn call(
+    fx: &Fixture,
+    method: &str,
+    uri: &str,
+    cookie: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut b = Request::builder().method(method).uri(uri);
+    if let Some(c) = cookie {
+        b = b.header("cookie", c);
+    }
+    send_full(fx.app.clone(), b.body(Body::empty()).unwrap()).await
+}
+
+async fn rest_with_key(fx: &Fixture, method: &str, key: &str) -> Json {
+    let (_, _, body) = call(
+        fx,
+        "GET",
+        &format!("/rest/{method}?apiKey={key}&v=1.16.1&c=keyapp&f=json"),
+        None,
+    )
+    .await;
+    json_body(&body)["subsonic-response"].clone()
+}
+
+#[tokio::test]
+async fn api_key_is_shown_once_works_alone_and_can_be_replaced_or_revoked() {
+    let fx = Fixture::new("subsonic-p3-apikey").await;
+    let cookie = fx.cookie.clone();
+    let (status, headers, body) = call(
+        &fx,
+        "POST",
+        "/api/subsonic/credentials/api-key",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let key = json_body(&body)["apiKey"].as_str().unwrap().to_owned();
+    assert!(key.starts_with("bbk_"));
+
+    // Status reports the key without revealing it.
+    let (_, _, body) = call(&fx, "GET", "/api/subsonic/credentials", Some(&cookie)).await;
+    let info = json_body(&body);
+    assert_eq!(info["hasApiKey"], true);
+    assert!(info["apiKeyCreatedAt"].is_string());
+    assert!(!String::from_utf8_lossy(&body).contains(&key));
+
+    assert_eq!(rest_with_key(&fx, "ping", &key).await["status"], "ok");
+    assert_eq!(
+        rest_with_key(&fx, "tokenInfo", &key).await["tokenInfo"]["username"],
+        "u1"
+    );
+    assert_eq!(fx.rest("tokenInfo", "").await["error"]["code"], 0);
+    assert_eq!(
+        rest_with_key(&fx, "ping", "bbk_nope").await["error"]["code"],
+        44
+    );
+
+    // Replacing signs out the old key at once.
+    let (_, _, body) = call(
+        &fx,
+        "POST",
+        "/api/subsonic/credentials/api-key",
+        Some(&cookie),
+    )
+    .await;
+    let replacement = json_body(&body)["apiKey"].as_str().unwrap().to_owned();
+    assert_ne!(replacement, key);
+    assert_eq!(rest_with_key(&fx, "ping", &key).await["error"]["code"], 44);
+    assert_eq!(
+        rest_with_key(&fx, "ping", &replacement).await["status"],
+        "ok"
+    );
+
+    // Users cannot revoke others' keys; admins can.
+    let admin = seed_admin_session(&fx.pool, "boss");
+    let (status, _, _) = call(
+        &fx,
+        "DELETE",
+        "/api/admin/users/boss/subsonic-api-key",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (_, _, body) = call(&fx, "GET", "/api/admin/users", Some(&admin)).await;
+    let users = json_body(&body);
+    let u1 = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "u1")
+        .unwrap()
+        .clone();
+    assert_eq!(u1["hasSubsonicApiKey"], true);
+    let (status, _, _) = call(
+        &fx,
+        "DELETE",
+        "/api/admin/users/u1/subsonic-api-key",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        rest_with_key(&fx, "ping", &replacement).await["error"]["code"],
+        44
+    );
+    let (status, _, _) = call(
+        &fx,
+        "DELETE",
+        "/api/subsonic/credentials/api-key",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // The Subsonic password still works throughout.
+    assert_eq!(fx.rest("ping", "").await["status"], "ok");
+
+    let ext = fx.rest("getOpenSubsonicExtensions", "").await;
+    assert!(ext["openSubsonicExtensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["name"] == "apiKeyAuthentication"));
+}
+
 #[tokio::test]
 async fn play_queue_round_trips_by_id_and_by_index() {
     let fx = Fixture::new("subsonic-p3-queue").await;

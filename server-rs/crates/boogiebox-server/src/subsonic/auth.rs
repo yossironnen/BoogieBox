@@ -1,6 +1,7 @@
 //! Subsonic authentication: `u`+`p` (plain or `enc:<hex>`) or `u`+`t`+`s` (token) against the user's
-//! Subsonic password — never the PIN. Failures share one message so usernames cannot be probed, and the
-//! web login's lockout tracker is reused under a separate `subsonic:` key.
+//! Subsonic password — never the PIN — or an OpenSubsonic `apiKey` alone. Password failures share one
+//! message so usernames cannot be probed, and the web login's lockout tracker is reused under a separate
+//! `subsonic:` key.
 
 use std::path::Path;
 
@@ -34,17 +35,16 @@ pub fn authenticate(ctx: &AuthContext<'_>, params: &Params) -> Result<SubsonicUs
     let has_key = params.text("apiKey").is_some();
     let has_p = params.text("p").is_some();
     let has_token = params.text("t").is_some() || params.text("s").is_some();
-    if has_key && (has_p || has_token) || has_p && has_token {
+    // OpenSubsonic: an API key names its user, so `u` alongside it is a conflict too.
+    let has_user = params.text("u").is_some();
+    if has_key && (has_p || has_token || has_user) || has_p && has_token {
         return Err(SubsonicError::new(
             43,
             "Multiple conflicting authentication mechanisms provided",
         ));
     }
     if has_key {
-        return Err(SubsonicError::new(
-            42,
-            "Provided authentication mechanism not supported",
-        ));
+        return authenticate_api_key(ctx, params);
     }
     let username = params.required("u")?;
     if !has_p {
@@ -84,23 +84,85 @@ pub fn authenticate(ctx: &AuthContext<'_>, params: &Params) -> Result<SubsonicUs
     match (valid, account.user) {
         (true, Some(user)) => {
             ctx.tracker.clear_attempts(&lock_key);
-            if ctx.subsonic.should_record_use(&user.id) {
-                let client: Option<String> = params
-                    .text("c")
-                    .map(|c| c.chars().take(MAX_CLIENT_LEN).collect());
-                let conn = ctx.db.lock().unwrap_or_else(|p| p.into_inner());
-                if let Err(err) =
-                    boogiebox_db::subsonic::record_subsonic_use(&conn, &user.id, client.as_deref())
-                {
-                    tracing::warn!(error = %err, "Could not record Subsonic login time");
-                }
-            }
+            record_use(ctx, &user, params);
             Ok(user)
         }
         _ => {
             ctx.tracker.record_failure(&lock_key);
             Err(SubsonicError::wrong_credentials())
         }
+    }
+}
+
+fn invalid_api_key() -> SubsonicError {
+    SubsonicError::new(44, "Invalid API key")
+}
+
+/// `apiKey` (OpenSubsonic `apiKeyAuthentication`): the key's SHA-256 names the user. No lockout: a 256-bit
+/// key cannot be guessed, and a per-key counter would not slow a guesser down.
+fn authenticate_api_key(
+    ctx: &AuthContext<'_>,
+    params: &Params,
+) -> Result<SubsonicUser, SubsonicError> {
+    let key = params.text("apiKey").unwrap_or("");
+    if key.len() > crypto::MAX_API_KEY_LEN {
+        return Err(invalid_api_key());
+    }
+    let hash = crypto::hash_api_key(key);
+    let user = match ctx.subsonic.cached_api_key(&hash).and_then(|a| a.user) {
+        Some(user) => user,
+        None => {
+            let row = {
+                let conn = ctx.db.lock().unwrap_or_else(|p| p.into_inner());
+                boogiebox_db::subsonic::get_account_by_api_key(&conn, &hash)
+            }
+            .map_err(|err| {
+                tracing::error!(error = %err, "Subsonic API key lookup failed");
+                SubsonicError::generic("Database error")
+            })?;
+            let Some(row) = row else {
+                tracing::debug!("Subsonic API key not recognised");
+                return Err(invalid_api_key());
+            };
+            let user = user_from(row);
+            ctx.subsonic.store_api_key(
+                hash,
+                CachedAccount {
+                    user: Some(user.clone()),
+                    secret: None,
+                    fetched: std::time::Instant::now(),
+                },
+            );
+            user
+        }
+    };
+    record_use(ctx, &user, params);
+    Ok(user)
+}
+
+/// Records "last used" and the client name, at most once per interval per user.
+fn record_use(ctx: &AuthContext<'_>, user: &SubsonicUser, params: &Params) {
+    if !ctx.subsonic.should_record_use(&user.id) {
+        return;
+    }
+    let client: Option<String> = params
+        .text("c")
+        .map(|c| c.chars().take(MAX_CLIENT_LEN).collect());
+    let conn = ctx.db.lock().unwrap_or_else(|p| p.into_inner());
+    if let Err(err) =
+        boogiebox_db::subsonic::record_subsonic_use(&conn, &user.id, client.as_deref())
+    {
+        tracing::warn!(error = %err, "Could not record Subsonic login time");
+    }
+}
+
+fn user_from(row: boogiebox_db::subsonic::SubsonicAccount) -> SubsonicUser {
+    SubsonicUser {
+        id: row.user_id,
+        username: row.username,
+        role: row.role,
+        can_manage_libraries: row.can_manage_libraries,
+        can_edit_metadata: row.can_edit_metadata,
     }
 }
 
@@ -142,13 +204,7 @@ fn load_account(ctx: &AuthContext<'_>, username: &str) -> Result<CachedAccount, 
                 _ => None,
             };
             CachedAccount {
-                user: Some(SubsonicUser {
-                    id: row.user_id,
-                    username: row.username,
-                    role: row.role,
-                    can_manage_libraries: row.can_manage_libraries,
-                    can_edit_metadata: row.can_edit_metadata,
-                }),
+                user: Some(user_from(row)),
                 secret,
                 fetched: std::time::Instant::now(),
             }
@@ -249,11 +305,44 @@ mod tests {
         assert_eq!(fx.auth("u=alice&t=abc").unwrap_err().code, 10);
         assert_eq!(fx.auth("u=alice&p=x&t=y&s=zzzzzz").unwrap_err().code, 43);
         assert_eq!(fx.auth("apiKey=k&u=alice&p=x").unwrap_err().code, 43);
-        assert_eq!(fx.auth("apiKey=k").unwrap_err().code, 42);
+        assert_eq!(fx.auth("apiKey=k&u=alice").unwrap_err().code, 43);
+        assert_eq!(fx.auth("apiKey=k").unwrap_err().code, 44);
         // Unknown users and wrong passwords share the message.
         assert_eq!(
             fx.auth("u=ghost&p=x").unwrap_err().message,
             fx.auth("u=alice&p=x").unwrap_err().message
+        );
+    }
+
+    #[test]
+    fn api_key_signs_in_alone_and_stops_when_revoked() {
+        let fx = Fixture::new();
+        let key = crypto::generate_api_key();
+        // u2 has no Subsonic password: the key still works, password sign-in still fails with 40.
+        boogiebox_db::subsonic::set_api_key_hash(
+            &fx.db.lock().unwrap(),
+            "u2",
+            &crypto::hash_api_key(&key),
+        )
+        .unwrap();
+        let user = fx.auth(&format!("apiKey={key}&c=keyapp")).unwrap();
+        assert_eq!(user.username, "nopass");
+        assert!(user.is_admin());
+        assert_eq!(fx.auth("u=nopass&p=anything").unwrap_err().code, 40);
+        let status =
+            boogiebox_db::subsonic::get_credential_status(&fx.db.lock().unwrap(), "u2").unwrap();
+        assert_eq!(status.last_client.as_deref(), Some("keyapp"));
+
+        // Cached until invalidated, like passwords.
+        boogiebox_db::subsonic::clear_api_key(&fx.db.lock().unwrap(), "u2").unwrap();
+        assert!(fx.auth(&format!("apiKey={key}")).is_ok());
+        fx.state.invalidate_accounts();
+        assert_eq!(fx.auth(&format!("apiKey={key}")).unwrap_err().code, 44);
+        assert_eq!(
+            fx.auth(&format!("apiKey={}", "x".repeat(200)))
+                .unwrap_err()
+                .code,
+            44
         );
     }
 

@@ -245,6 +245,10 @@ fn search_socket(iface: Ipv4Addr) -> std::io::Result<UdpSocket> {
 }
 
 fn notify_socket(ifaces: &[Ipv4Addr]) -> std::io::Result<UdpSocket> {
+    // Wildcard :1900 bind: skipped in tests so fresh test binaries don't trigger a Windows Firewall prompt.
+    if cfg!(test) {
+        return Err(std::io::Error::other("NOTIFY listener disabled in tests"));
+    }
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;

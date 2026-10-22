@@ -1,11 +1,12 @@
-//! Subsonic password management for the BoogieBox UI (cookie auth): each user sets, changes or clears their
-//! own Subsonic password; admins can set or clear it for anyone. The `/rest` API itself is `crate::subsonic`.
+//! Subsonic password and API key management for the BoogieBox UI (cookie auth): each user sets, changes or
+//! clears their own Subsonic password and creates, replaces or revokes their API key; admins can set or clear
+//! the password and revoke the key for anyone. The `/rest` API itself is `crate::subsonic`.
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, put},
+    routing::{delete, get, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,14 @@ pub fn subsonic_routes_router(state: SharedState) -> Router {
             "/api/admin/users/{id}/subsonic-password",
             put(admin_set_password_handler).delete(admin_clear_password_handler),
         )
+        .route(
+            "/api/subsonic/credentials/api-key",
+            axum::routing::post(create_api_key_handler).delete(revoke_own_api_key_handler),
+        )
+        .route(
+            "/api/admin/users/{id}/subsonic-api-key",
+            delete(admin_revoke_api_key_handler),
+        )
         .with_state(state)
 }
 
@@ -39,7 +48,15 @@ struct CredentialsResponse {
     updated_at: Option<String>,
     last_used_at: Option<String>,
     last_client: Option<String>,
+    has_api_key: bool,
+    api_key_created_at: Option<String>,
     server_urls: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiKeyResponse {
+    api_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +127,8 @@ async fn get_credentials_handler(
             updated_at: status.updated_at,
             last_used_at: status.last_used_at,
             last_client: status.last_client,
+            has_api_key: status.has_api_key,
+            api_key_created_at: status.api_key_created_at,
             server_urls: urls,
         })
         .into_response(),
@@ -241,4 +260,75 @@ async fn admin_clear_password_handler(
     Path(user_id): Path<String>,
 ) -> Response {
     clear_password(&state, user_id, admin.0.id).await
+}
+
+/// Creates (or replaces) the signed-in user's API key and returns it once. Only its hash is stored, and the
+/// response is never cached or logged.
+async fn create_api_key_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+) -> Response {
+    let (db, subsonic) = {
+        let s = state.read().unwrap_or_else(|p| p.into_inner());
+        (s.db.clone(), s.subsonic.clone())
+    };
+    let Some(db) = db else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "Database not configured");
+    };
+    let key = crypto::generate_api_key();
+    let hash = crypto::hash_api_key(&key);
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::subsonic::set_api_key_hash(&conn, &user.id, &hash)
+    })
+    .await;
+    // The old key (if any) must stop working now, not when its cache entry expires.
+    subsonic.invalidate_accounts();
+    match result {
+        Ok(Ok(true)) => (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(ApiKeyResponse { api_key: key }),
+        )
+            .into_response(),
+        Ok(Ok(false)) => error(StatusCode::NOT_FOUND, "User not found"),
+        _ => error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+async fn revoke_api_key(state: &SharedState, target_id: String) -> Response {
+    let (db, subsonic) = {
+        let s = state.read().unwrap_or_else(|p| p.into_inner());
+        (s.db.clone(), s.subsonic.clone())
+    };
+    let Some(db) = db else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "Database not configured");
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        boogiebox_db::subsonic::clear_api_key(&conn, &target_id)
+    })
+    .await;
+    subsonic.invalidate_accounts();
+    match result {
+        Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
+        Ok(Ok(false)) => error(StatusCode::NOT_FOUND, "No API key"),
+        _ => error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+async fn revoke_own_api_key_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+) -> Response {
+    revoke_api_key(&state, user.id).await
+}
+
+/// Admins can revoke another user's key, not create one for them (the key would have to be handed over).
+async fn admin_revoke_api_key_handler(
+    State(state): State<SharedState>,
+    _admin: AdminUser,
+    Path(user_id): Path<String>,
+) -> Response {
+    revoke_api_key(&state, user_id).await
 }

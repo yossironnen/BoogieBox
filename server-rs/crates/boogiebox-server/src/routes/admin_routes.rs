@@ -24,6 +24,7 @@ struct AdminUserEntry {
     role: String,
     has_pin: bool,
     has_subsonic_password: bool,
+    has_subsonic_api_key: bool,
     can_manage_libraries: bool,
     can_edit_metadata: bool,
     created_at: String,
@@ -99,16 +100,18 @@ async fn list_users_handler(
         let conn = db.lock().unwrap_or_else(|p| p.into_inner());
         let users = boogiebox_db::list_admin_users(&conn)?;
         let with_password = boogiebox_db::subsonic::list_user_ids_with_subsonic_password(&conn)?;
-        Ok::<_, rusqlite::Error>((users, with_password))
+        let with_key = boogiebox_db::subsonic::list_user_ids_with_api_key(&conn)?;
+        Ok::<_, rusqlite::Error>((users, with_password, with_key))
     })
     .await;
 
     match result {
-        Ok(Ok((users, with_password))) => {
+        Ok(Ok((users, with_password, with_key))) => {
             let body: Vec<AdminUserEntry> = users
                 .into_iter()
                 .map(|u| AdminUserEntry {
                     has_subsonic_password: with_password.contains(&u.id),
+                    has_subsonic_api_key: with_key.contains(&u.id),
                     id: u.id,
                     username: u.username,
                     role: u.role,
@@ -197,6 +200,7 @@ async fn create_user_handler(
                     StatusCode::CREATED,
                     Json(AdminUserEntry {
                         has_subsonic_password: false,
+                        has_subsonic_api_key: false,
                         id: created.id,
                         username: created.username,
                         role: created.role,

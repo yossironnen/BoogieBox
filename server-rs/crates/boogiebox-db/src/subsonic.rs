@@ -243,7 +243,33 @@ pub fn get_account_by_username(
     .optional()
 }
 
-/// Non-secret status of a user's Subsonic password.
+/// Looks up the user whose API key hashes to `key_hash` (lowercase hex SHA-256).
+pub fn get_account_by_api_key(
+    conn: &Connection,
+    key_hash: &str,
+) -> rusqlite::Result<Option<SubsonicAccount>> {
+    conn.query_row(
+        "SELECT u.id, u.username, u.role, COALESCE(u.can_manage_libraries, 0),
+                COALESCE(u.can_edit_metadata, 0), c.secret_enc, c.secret_nonce
+         FROM subsonic_credentials c JOIN users u ON u.id = c.user_id
+         WHERE c.api_key_hash = ?1",
+        [key_hash],
+        |row| {
+            Ok(SubsonicAccount {
+                user_id: text_id(row, 0)?,
+                username: row.get(1)?,
+                role: row.get(2)?,
+                can_manage_libraries: row.get::<_, i64>(3)? != 0,
+                can_edit_metadata: row.get::<_, i64>(4)? != 0,
+                secret_enc: row.get(5)?,
+                secret_nonce: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Non-secret status of a user's Subsonic password and API key.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubsonicCredentialStatus {
     /// A Subsonic password is set.
@@ -254,6 +280,10 @@ pub struct SubsonicCredentialStatus {
     pub last_used_at: Option<String>,
     /// Client name (`c` parameter) of the last successful login.
     pub last_client: Option<String>,
+    /// An API key exists.
+    pub has_api_key: bool,
+    /// When the API key was created.
+    pub api_key_created_at: Option<String>,
 }
 
 /// Returns the Subsonic password status for `user_id` (all empty when never set).
@@ -263,7 +293,8 @@ pub fn get_credential_status(
 ) -> rusqlite::Result<SubsonicCredentialStatus> {
     Ok(conn
         .query_row(
-            "SELECT secret_enc IS NOT NULL, updated_at, last_used_at, last_client
+            "SELECT secret_enc IS NOT NULL, updated_at, last_used_at, last_client,
+                    api_key_hash IS NOT NULL, api_key_created_at
              FROM subsonic_credentials WHERE user_id = ?1",
             [user_id],
             |row| {
@@ -272,11 +303,54 @@ pub fn get_credential_status(
                     updated_at: row.get(1)?,
                     last_used_at: row.get(2)?,
                     last_client: row.get(3)?,
+                    has_api_key: row.get(4)?,
+                    api_key_created_at: row.get(5)?,
                 })
             },
         )
         .optional()?
         .unwrap_or_default())
+}
+
+/// Stores the hash of a new API key for `user_id`, replacing any old one. Returns false when the user does
+/// not exist.
+pub fn set_api_key_hash(
+    conn: &Connection,
+    user_id: &str,
+    key_hash: &str,
+) -> rusqlite::Result<bool> {
+    let exists = conn
+        .query_row("SELECT 1 FROM users WHERE id = ?1", [user_id], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !exists {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO subsonic_credentials(user_id, api_key_hash, api_key_created_at)
+         VALUES(?1, ?2, datetime('now'))
+         ON CONFLICT(user_id) DO UPDATE SET api_key_hash = excluded.api_key_hash,
+           api_key_created_at = excluded.api_key_created_at",
+        params![user_id, key_hash],
+    )?;
+    Ok(true)
+}
+
+/// Revokes a user's API key. Returns false when the user had none.
+pub fn clear_api_key(conn: &Connection, user_id: &str) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE subsonic_credentials SET api_key_hash = NULL, api_key_created_at = NULL
+         WHERE user_id = ?1 AND api_key_hash IS NOT NULL",
+        [user_id],
+    )? > 0)
+}
+
+/// Ids of users that have an API key.
+pub fn list_user_ids_with_api_key(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt =
+        conn.prepare("SELECT user_id FROM subsonic_credentials WHERE api_key_hash IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| text_id(row, 0))?;
+    rows.collect()
 }
 
 /// Stores a new encrypted Subsonic password. Returns false when the user does not exist.
@@ -423,7 +497,7 @@ pub fn albums_by_ids(conn: &Connection, ids: &[String]) -> rusqlite::Result<Vec<
             join_params: Vec::new(),
             conds: vec![format!("al.id IN ({})", placeholders(ids.len()))],
             params: id_values(ids),
-            having: "",
+            library: None,
             order: "al.id",
             limit: -1,
             offset: 0,
@@ -558,6 +632,10 @@ fn query_songs(
     rows.collect()
 }
 
+/// Album display artist (`artist_name` in album orderings).
+const ALBUM_ARTIST_NAME: &str =
+    "COALESCE(NULLIF(TRIM(ar.name), ''), NULLIF(TRIM(al.album_artist), ''), '')";
+
 const ALBUM_COLUMNS: &str = "al.id, al.title,
        COALESCE(NULLIF(TRIM(ar.name), ''), NULLIF(TRIM(al.album_artist), ''), '') AS artist_name,
        al.artist_id, COUNT(t.id), COALESCE(SUM(t.duration), 0), al.added_at, al.year, al.genre,
@@ -579,42 +657,87 @@ fn map_album(row: &Row<'_>) -> rusqlite::Result<SubsonicAlbum> {
     })
 }
 
-/// Shared album query: `joins` may bind parameters (`join_params`), which precede the WHERE parameters.
+/// Shared album query. `joins` may bind parameters (`join_params`), which precede the WHERE parameters.
+/// `conds`, `joins` and `order` see `al` (albums), `ar` (its artist) and `artist_name`, never `t` (tracks):
+/// albums without tracks (in `library`, when given) are left out.
 struct AlbumQuery<'a> {
     joins: &'a str,
     join_params: Vec<Value>,
     conds: Vec<String>,
     params: Vec<Value>,
-    having: &'a str,
+    library: Option<&'a str>,
     order: &'a str,
     limit: i64,
     offset: i64,
 }
 
+/// Two steps (plan P3-5): first the ordered page of album ids, sorted and offset over one row per album; then
+/// song counts and totals for just those albums. Grouping every track before sorting cost ~45 ms per page
+/// on a 100k-track library, whatever the page.
 fn query_albums(conn: &Connection, q: AlbumQuery<'_>) -> rusqlite::Result<Vec<SubsonicAlbum>> {
-    let sql = format!(
-        "SELECT {ALBUM_COLUMNS}
+    let (lib_cond, lib_params) = match q.library {
+        Some(lib) => (
+            " AND t.library_id = ?",
+            vec![id_to_value(&coerce_entity_id(lib))],
+        ),
+        None => ("", Vec::new()),
+    };
+    let mut conds = vec![format!(
+        "EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id{lib_cond})"
+    )];
+    conds.extend(q.conds);
+    let page_sql = format!(
+        "SELECT al.id, {ALBUM_ARTIST_NAME} AS artist_name
          FROM albums al
-         JOIN tracks t ON t.album_id = al.id
          LEFT JOIN artists ar ON ar.id = al.artist_id
          {joins}
          {where_sql}
-         GROUP BY al.id
-         {having}
          ORDER BY {order}
          LIMIT ? OFFSET ?",
         joins = q.joins,
-        where_sql = where_clause(&q.conds),
-        having = q.having,
+        where_sql = where_clause(&conds),
         order = q.order,
     );
-    let mut all = q.join_params;
-    all.extend(q.params);
-    all.push(Value::Integer(q.limit));
-    all.push(Value::Integer(q.offset.max(0)));
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(all), map_album)?;
-    rows.collect()
+    let mut page_params = q.join_params;
+    page_params.extend(lib_params.iter().cloned());
+    page_params.extend(q.params);
+    page_params.push(Value::Integer(q.limit));
+    page_params.push(Value::Integer(q.offset.max(0)));
+    let ids: Vec<Value> = {
+        let mut stmt = conn.prepare(&page_sql)?;
+        let rows = stmt.query_map(params_from_iter(page_params), |row| row.get::<_, Value>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let lib_join = if q.library.is_some() {
+        " AND t.library_id = ?"
+    } else {
+        ""
+    };
+    let totals_sql = format!(
+        "SELECT {ALBUM_COLUMNS}
+         FROM albums al
+         JOIN tracks t ON t.album_id = al.id{lib_join}
+         LEFT JOIN artists ar ON ar.id = al.artist_id
+         WHERE al.id IN ({})
+         GROUP BY al.id",
+        placeholders(ids.len())
+    );
+    let mut totals_params = lib_params;
+    totals_params.extend(ids.iter().cloned());
+    let mut by_id: HashMap<String, SubsonicAlbum> = {
+        let mut stmt = conn.prepare(&totals_sql)?;
+        let rows = stmt.query_map(params_from_iter(totals_params), map_album)?;
+        rows.map(|r| r.map(|a| (a.id.clone(), a)))
+            .collect::<rusqlite::Result<_>>()?
+    };
+    Ok(ids
+        .iter()
+        .filter_map(|id| by_id.remove(&text_value(id)))
+        .collect())
 }
 
 // ── Songs ──────────────────────────────────────────────────────────────────────
@@ -656,9 +779,24 @@ pub fn songs_page(
     let mut conds = Vec::new();
     let mut params = Vec::new();
     push_library(&mut conds, &mut params, library);
+    songs_page_by_id(conn, &conds, params, offset, limit)
+}
+
+/// One id-ordered page of songs matching `conds` (which use the `t` alias). The page's ids are chosen in a
+/// join-free subquery, so OFFSET skips index entries rather than fully joined rows; the album and artist
+/// joins then run for the returned page only (deep sync pages were 2× slower otherwise, plan P3-5).
+fn songs_page_by_id(
+    conn: &Connection,
+    conds: &[String],
+    mut params: Vec<Value>,
+    offset: i64,
+    limit: i64,
+) -> rusqlite::Result<Vec<SubsonicSong>> {
     let sql = format!(
-        "{SONG_SELECT} {} ORDER BY t.id LIMIT ? OFFSET ?",
-        where_clause(&conds)
+        "{SONG_SELECT}
+         JOIN (SELECT t.id AS pid FROM tracks t {} ORDER BY t.id LIMIT ? OFFSET ?) page ON page.pid = t.id
+         ORDER BY t.id",
+        where_clause(conds)
     );
     params.push(Value::Integer(limit));
     params.push(Value::Integer(offset.max(0)));
@@ -743,13 +881,7 @@ pub fn songs_by_genre(
     let labels = genre_raw_labels(conn, genre)?;
     push_genre_filter(&mut conds, &mut params, &labels);
     push_library(&mut conds, &mut params, library);
-    let sql = format!(
-        "{SONG_SELECT} {} ORDER BY t.id LIMIT ? OFFSET ?",
-        where_clause(&conds)
-    );
-    params.push(Value::Integer(count));
-    params.push(Value::Integer(offset.max(0)));
-    query_songs(conn, &sql, params)
+    songs_page_by_id(conn, &conds, params, offset, count)
 }
 
 /// A playlist's songs in playlist order; `None` when the playlist does not exist or belongs to someone else.
@@ -788,7 +920,7 @@ pub fn get_album(conn: &Connection, id: &str) -> rusqlite::Result<Option<Subsoni
             join_params: Vec::new(),
             conds: vec!["al.id = ?".into()],
             params: vec![id_to_value(&coerce_entity_id(id))],
-            having: "",
+            library: None,
             order: "al.id",
             limit: 1,
             offset: 0,
@@ -807,7 +939,7 @@ pub fn artist_albums(conn: &Connection, artist_id: &str) -> rusqlite::Result<Vec
             join_params: Vec::new(),
             conds: vec!["al.artist_id = ?".into()],
             params: vec![id_to_value(&coerce_entity_id(artist_id))],
-            having: "",
+            library: None,
             order: "COALESCE(al.year, 0), al.title COLLATE NOCASE, al.id",
             limit: -1,
             offset: 0,
@@ -830,7 +962,6 @@ pub fn search_albums(
         conds.push("al.title LIKE ? ESCAPE '\\'".into());
         params.push(Value::Text(format!("%{}%", like_escape(q))));
     }
-    push_library(&mut conds, &mut params, library);
     query_albums(
         conn,
         AlbumQuery {
@@ -838,7 +969,7 @@ pub fn search_albums(
             join_params: Vec::new(),
             conds,
             params,
-            having: "",
+            library,
             order: "al.title COLLATE NOCASE, al.id",
             limit,
             offset,
@@ -866,11 +997,9 @@ pub fn album_list(
 ) -> rusqlite::Result<Option<Vec<SubsonicAlbum>>> {
     let mut conds = Vec::new();
     let mut params = Vec::new();
-    push_library(&mut conds, &mut params, q.library);
     let user = Value::Text(q.user_id.to_owned());
     let mut joins = "";
     let mut join_params = Vec::new();
-    let mut having = "";
     let year_order;
     let order: &str = match q.list_type {
         "random" => "random()",
@@ -882,8 +1011,8 @@ pub fn album_list(
                            FROM user_track_stats us JOIN tracks t2 ON t2.id = us.track_id
                            WHERE us.user_id = ? GROUP BY t2.album_id) up ON up.aid = al.id";
             join_params.push(user);
-            having = "HAVING MAX(up.plays) > 0";
-            "MAX(up.plays) DESC, al.id"
+            conds.push("up.plays > 0".into());
+            "up.plays DESC, al.id"
         }
         "recent" => {
             joins = "JOIN (SELECT t2.album_id AS aid, MAX(us.last_played_at) AS last_played
@@ -920,13 +1049,15 @@ pub fn album_list(
             let Some(genre) = q.genre.map(str::trim).filter(|g| !g.is_empty()) else {
                 return Ok(Some(Vec::new()));
             };
-            let labels = genre_raw_labels(conn, genre)?;
-            let mut genre_conds = Vec::new();
-            push_genre_filter(&mut genre_conds, &mut params, &labels);
+            let values = genre_values(conn, genre)?;
+            if values.is_empty() {
+                return Ok(Some(Vec::new()));
+            }
             conds.push(format!(
-                "al.id IN (SELECT t.album_id FROM tracks t WHERE {})",
-                genre_conds.join(" AND ")
+                "al.id IN (SELECT t.album_id FROM tracks t WHERE t.genre IN ({}))",
+                placeholders(values.len())
             ));
+            params.extend(values.into_iter().map(Value::Text));
             "al.title COLLATE NOCASE, al.id"
         }
         _ => return Ok(None),
@@ -938,7 +1069,7 @@ pub fn album_list(
             join_params,
             conds,
             params,
-            having,
+            library: q.library,
             order,
             limit: q.size,
             offset: q.offset,
@@ -1028,14 +1159,55 @@ pub fn genres(conn: &Connection) -> rusqlite::Result<Vec<SubsonicGenre>> {
 
 /// Raw tag spellings that belong to a genre label (e.g. "Hip-Hop" and "Hip Hop"), for tag filters.
 pub fn genre_raw_labels(conn: &Connection, label: &str) -> rusqlite::Result<Vec<String>> {
+    let mut raw: Vec<String> = Vec::new();
+    for_genre_tags(conn, label, |_, part| {
+        if !raw.iter().any(|r| r == part) {
+            raw.push(part.to_owned());
+        }
+    })?;
+    if raw.is_empty() {
+        raw.push(label.trim().to_owned());
+    }
+    Ok(raw)
+}
+
+/// The stored `tracks.genre` strings carrying the tag `label` (for an indexed `t.genre IN (…)` filter).
+fn genre_values(conn: &Connection, label: &str) -> rusqlite::Result<Vec<String>> {
+    let mut values: Vec<String> = Vec::new();
+    for_genre_tags(conn, label, |genre, _| {
+        if values.last().map(String::as_str) != Some(genre) {
+            values.push(genre.to_owned());
+        }
+    })?;
+    Ok(values)
+}
+
+/// Calls `found(genre string, tag)` for every tag of every distinct genre string whose canonical key is
+/// `label`'s. Reads the distinct genre strings (an index scan) rather than the full Home summary with its
+/// distinct artist/album counts, which cost ~45 ms per call on 100k tracks (plan P3-5). Tags match as on
+/// Home: split on commas, compare canonical keys.
+fn for_genre_tags(
+    conn: &Connection,
+    label: &str,
+    mut found: impl FnMut(&str, &str),
+) -> rusqlite::Result<()> {
     let key = canonicalize_home_genre(label);
-    let found = list_home_genre_summaries(conn, usize::MAX)?
-        .into_iter()
-        .find(|g| g.label.eq_ignore_ascii_case(label.trim()) || g.canonical_key == key);
-    Ok(match found {
-        Some(g) if !g.raw_labels.is_empty() => g.raw_labels,
-        _ => vec![label.trim().to_owned()],
-    })
+    if key.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT genre FROM tracks WHERE genre IS NOT NULL AND TRIM(genre) != ''",
+    )?;
+    let rows = stmt.query_map([], |row| opt_text(row, 0))?;
+    for genre in rows {
+        let Some(genre) = genre? else { continue };
+        for part in genre.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            if canonicalize_home_genre(part) == key {
+                found(&genre, part);
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Per-user annotations ───────────────────────────────────────────────────────
@@ -1736,6 +1908,9 @@ pub fn scan_status(conn: &Connection) -> rusqlite::Result<ScanStatus> {
 }
 
 #[cfg(test)]
+mod scale_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1906,6 +2081,38 @@ mod tests {
 
         set_subsonic_secret(&conn, "u1", b"c", b"n", "u1").unwrap();
         assert_eq!(clear_all_subsonic_secrets(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn api_keys_are_hash_only_unique_and_independent_of_passwords() {
+        let conn = db();
+        assert!(get_account_by_api_key(&conn, "h1").unwrap().is_none());
+        // A user without a Subsonic password gets a row with no secret.
+        assert!(set_api_key_hash(&conn, "u1", "h1").unwrap());
+        assert!(!set_api_key_hash(&conn, "missing", "h9").unwrap());
+        let account = get_account_by_api_key(&conn, "h1").unwrap().unwrap();
+        assert_eq!(account.username, "Alice");
+        assert!(account.secret_enc.is_none());
+        let status = get_credential_status(&conn, "u1").unwrap();
+        assert!(status.has_api_key && !status.has_password);
+        assert!(status.api_key_created_at.is_some());
+        assert!(list_user_ids_with_api_key(&conn).unwrap().contains("u1"));
+
+        // Unique across users.
+        assert!(set_api_key_hash(&conn, "u2", "h1").is_err());
+        // Replacing drops the old key.
+        set_api_key_hash(&conn, "u1", "h2").unwrap();
+        assert!(get_account_by_api_key(&conn, "h1").unwrap().is_none());
+
+        // Clearing every password (key file replaced) leaves API keys alone.
+        set_subsonic_secret(&conn, "u1", b"c", b"n", "u1").unwrap();
+        clear_all_subsonic_secrets(&conn).unwrap();
+        assert!(get_account_by_api_key(&conn, "h2").unwrap().is_some());
+
+        assert!(clear_api_key(&conn, "u1").unwrap());
+        assert!(!clear_api_key(&conn, "u1").unwrap());
+        assert!(get_account_by_api_key(&conn, "h2").unwrap().is_none());
+        assert!(!get_credential_status(&conn, "u1").unwrap().has_api_key);
     }
 
     #[test]

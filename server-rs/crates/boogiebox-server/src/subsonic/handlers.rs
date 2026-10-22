@@ -29,7 +29,6 @@ const UNSUPPORTED: &[&str] = &[
     "getBookmarks",
     "createBookmark",
     "deleteBookmark",
-    "tokenInfo",
     "getUsers",
     "createUser",
     "updateUser",
@@ -63,6 +62,7 @@ const EXTENSIONS: &[(&str, &[i64])] = &[
     ("songLyrics", &[1]),
     ("transcodeOffset", &[1]),
     ("indexBasedQueue", &[1]),
+    ("apiKeyAuthentication", &[1]),
 ];
 
 /// Per-request context.
@@ -75,7 +75,13 @@ pub struct Ctx {
     pub headers: HeaderMap,
     pub head: bool,
     pub settings: SubsonicSettings,
+    /// Method name (without `.view`), for lock-hold timings.
+    pub method: String,
 }
+
+/// A Subsonic request holding the shared database lock longer than this is logged as a warning (plan P3-5;
+/// syncs issue thousands of requests, so a slow page stalls the web UI). Shorter holds are debug-level.
+const SLOW_LOCK_HOLD: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// What a handler produced.
 pub enum Reply {
@@ -91,9 +97,22 @@ impl Ctx {
         F: FnOnce(&Connection) -> Result<T, SubsonicError> + Send + 'static,
     {
         let db = self.db.clone();
+        let method = self.method.clone();
         tokio::task::spawn_blocking(move || {
+            let asked = std::time::Instant::now();
             let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            f(&conn)
+            let acquired = std::time::Instant::now();
+            let out = f(&conn);
+            drop(conn);
+            let held = acquired.elapsed();
+            let waited_ms = acquired.duration_since(asked).as_millis() as u64;
+            let held_ms = held.as_millis() as u64;
+            if held > SLOW_LOCK_HOLD {
+                tracing::warn!(method = %method, held_ms, waited_ms, "Subsonic request held the database lock for a long time");
+            } else {
+                tracing::debug!(method = %method, held_ms, waited_ms, "Subsonic database lock hold");
+            }
+            out
         })
         .await
         .map_err(|_| SubsonicError::generic("Internal error"))?
@@ -180,6 +199,7 @@ pub async fn handle(name: &str, ctx: &Ctx) -> Result<Reply, SubsonicError> {
         "getLicense" => Node::new("payload").object(Node::new("license").attr("valid", true)),
         "getOpenSubsonicExtensions" => open_subsonic_extensions(),
         "getUser" => get_user(ctx).await?,
+        "tokenInfo" => token_info(ctx)?,
         "getMusicFolders" => music_folders(ctx).await?,
         "getIndexes" => indexes(ctx).await?,
         "getArtists" => artists(ctx).await?,
@@ -254,6 +274,16 @@ pub fn open_subsonic_extensions() -> Node {
 }
 
 // ── System ─────────────────────────────────────────────────────────────────────
+
+/// `tokenInfo` (OpenSubsonic `apiKeyAuthentication`): who the API key belongs to. Authentication already
+/// succeeded, and `apiKey` cannot be combined with other credentials, so its presence means key sign-in.
+fn token_info(ctx: &Ctx) -> Result<Node, SubsonicError> {
+    if ctx.params.text("apiKey").is_none() {
+        return Err(SubsonicError::generic("tokenInfo needs an API key"));
+    }
+    Ok(Node::new("payload")
+        .object(Node::new("tokenInfo").attr("username", ctx.user.username.as_str())))
+}
 
 async fn get_user(ctx: &Ctx) -> Result<Node, SubsonicError> {
     let username = ctx.params.required("username")?.to_owned();

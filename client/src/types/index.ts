@@ -827,6 +827,7 @@ export interface AdminUser {
   hasPin: boolean;
   /** A Subsonic password for third-party apps is set. */
   hasSubsonicPassword?: boolean;
+  hasSubsonicApiKey?: boolean;
   canManageLibraries: boolean;
   canEditMetadata: boolean;
   created_at: string;

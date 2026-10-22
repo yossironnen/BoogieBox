@@ -114,6 +114,46 @@ export function PasswordFields({
   );
 }
 
+/**
+ * API key actions shared by the desktop and mobile panels. A new key is held only until the user dismisses the
+ * show-once view; the server keeps just its hash.
+ */
+export function useApiKey(reload: () => void) {
+  const [shownKey, setShownKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return {
+    shownKey,
+    busy,
+    error,
+    /** Creates the key, or replaces the current one. */
+    create: () => run(async () => { setShownKey((await api.subsonic.createApiKey()).apiKey); }),
+    revoke: () => run(async () => { await api.subsonic.revokeApiKey(); }),
+    dismiss: () => setShownKey(null),
+  };
+}
+
+/** "Created {date}" or "Not created" for the API key row. */
+export function apiKeyStatus(creds: SubsonicCredentials): string {
+  if (!creds.hasApiKey) return 'Not created';
+  const when = formatWhen(creds.apiKeyCreatedAt);
+  return when ? `Created ${when}` : 'Created';
+}
+
+export const API_KEY_HELP = 'For apps that support API keys. Use it instead of your username and Subsonic password.';
+
 /** Connected apps panel for the User Settings tab. */
 export default function ConnectedAppsPanel({ username }: { username: string }) {
   const [creds, setCreds] = useState<SubsonicCredentials | null>(null);
@@ -128,6 +168,8 @@ export default function ConnectedAppsPanel({ username }: { username: string }) {
   }, []);
   useEffect(load, [load]);
   const mask = usePasswordMask(creds);
+  const apiKey = useApiKey(load);
+  const [confirmKey, setConfirmKey] = useState<'replace' | 'revoke' | null>(null);
 
   if (!creds?.enabled) return null;
 
@@ -222,6 +264,68 @@ export default function ConnectedAppsPanel({ username }: { username: string }) {
       </div>
       <InlineStatus busy={saving} busyText="Saving…" result={result} />
 
+      <div style={S.keySection}>
+        <div style={S.stat}>
+          <span style={S.statIcon}><SubsonicIcon.Key /></span>
+          <span style={S.statLabel}>API key</span>
+          <strong style={S.statValue}>{apiKeyStatus(creds)}</strong>
+        </div>
+        <div style={S.hint}>{API_KEY_HELP}</div>
+        <div style={S.actions}>
+          {creds.hasApiKey ? (
+            <>
+              <button type="button" disabled={apiKey.busy} onClick={() => setConfirmKey('replace')} style={hybridControlStyles.secondaryButton}>
+                Replace API key
+              </button>
+              <button type="button" disabled={apiKey.busy} onClick={() => setConfirmKey('revoke')} style={hybridControlStyles.dangerButton}>
+                Revoke API key
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={apiKey.busy}
+              onClick={() => void apiKey.create()}
+              style={{ ...hybridControlStyles.primaryButton, ...(apiKey.busy ? hybridControlStyles.disabled : {}) }}
+            >
+              Create API key
+            </button>
+          )}
+        </div>
+        {apiKey.error && <InlineStatus busy={false} busyText="" result={`Error: ${apiKey.error}`} />}
+      </div>
+
+      {confirmKey && (
+        <ConfirmModal
+          title={confirmKey === 'replace' ? 'Replace your API key?' : 'Revoke your API key?'}
+          message={confirmKey === 'replace' ? 'Apps using the current key are signed out.' : 'Apps using it are signed out.'}
+          confirmLabel={confirmKey === 'replace' ? 'Replace API key' : 'Revoke API key'}
+          tone="danger"
+          onConfirm={() => {
+            const action = confirmKey;
+            setConfirmKey(null);
+            void (action === 'replace' ? apiKey.create() : apiKey.revoke());
+          }}
+          onCancel={() => setConfirmKey(null)}
+        />
+      )}
+
+      {apiKey.shownKey && (
+        <ConfirmModal
+          title="Your API key"
+          message={
+            <div style={{ display: 'grid', gap: 12 }}>
+              <span>Copy it now. BoogieBox shows it only once.</span>
+              <CopyValue icon={<SubsonicIcon.Key />} label="API key" value={apiKey.shownKey} />
+            </div>
+          }
+          confirmLabel="Done"
+          cancelLabel={null}
+          onConfirm={apiKey.dismiss}
+          onCancel={apiKey.dismiss}
+        />
+      )}
+
       {confirmRemove && (
         <ConfirmModal
           title="Remove your Subsonic password?"
@@ -263,4 +367,5 @@ const S: Record<string, React.CSSProperties> = {
   rule: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 },
   hint: { fontSize: 13, color: 'var(--text-muted)', margin: '10px 0' },
   actions: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+  keySection: { display: 'grid', gap: 10, marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--divider-subtle)' },
 };

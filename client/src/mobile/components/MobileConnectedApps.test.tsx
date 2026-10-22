@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MobileConnectedApps from './MobileConnectedApps';
 
 const { subsonicApi } = vi.hoisted(() => ({
-  subsonicApi: { credentials: vi.fn(), setPassword: vi.fn(), clearPassword: vi.fn() },
+  subsonicApi: {
+    credentials: vi.fn(), setPassword: vi.fn(), clearPassword: vi.fn(), createApiKey: vi.fn(), revokeApiKey: vi.fn(),
+  },
 }));
 
 vi.mock('../../api', () => ({ api: { subsonic: subsonicApi } }));
@@ -14,6 +16,8 @@ const creds = {
   updatedAt: '2026-10-18 10:00:00',
   lastUsedAt: '2026-10-18 11:00:00',
   lastClient: 'Amperfy',
+  hasApiKey: false,
+  apiKeyCreatedAt: null,
   serverUrls: ['http://192.168.1.20:3001'],
 };
 
@@ -49,6 +53,28 @@ describe('MobileConnectedApps', () => {
     fireEvent.click(within(section).getByRole('button', { name: 'Remove password' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(subsonicApi.clearPassword).toHaveBeenCalled());
+  });
+
+  it('creates an API key, shows it once and revokes it', async () => {
+    subsonicApi.credentials.mockResolvedValueOnce(creds).mockResolvedValue({
+      ...creds, hasApiKey: true, apiKeyCreatedAt: '2026-10-22 09:00:00',
+    });
+    subsonicApi.createApiKey.mockResolvedValue({ apiKey: 'bbk_mobile' });
+    subsonicApi.revokeApiKey.mockResolvedValue({ ok: true });
+    render(<MobileConnectedApps username="alice" />);
+    const section = await screen.findByRole('region', { name: 'Connected apps' });
+    expect(within(section).getByText('Not created')).toBeInTheDocument();
+    fireEvent.click(within(section).getByRole('button', { name: 'Create API key' }));
+    const shown = await within(section).findByRole('status', { name: 'Your API key' });
+    expect(within(shown).getByText('bbk_mobile')).toBeInTheDocument();
+    fireEvent.click(within(shown).getByRole('button', { name: 'Done' }));
+    expect(within(section).queryByText('bbk_mobile')).not.toBeInTheDocument();
+
+    fireEvent.click(await within(section).findByRole('button', { name: 'Revoke API key' }));
+    expect(await screen.findByText('Apps using it are signed out.')).toBeInTheDocument();
+    const confirms = screen.getAllByRole('button', { name: 'Revoke API key' });
+    fireEvent.click(confirms[confirms.length - 1]);
+    await waitFor(() => expect(subsonicApi.revokeApiKey).toHaveBeenCalled());
   });
 
   it('shows a save failure', async () => {

@@ -11,6 +11,9 @@ export interface SubsonicCredentials {
   updatedAt: string | null;
   lastUsedAt: string | null;
   lastClient: string | null;
+  /** An OpenSubsonic API key exists (only its hash is stored). */
+  hasApiKey: boolean;
+  apiKeyCreatedAt: string | null;
   /** LAN addresses apps can use as the server URL. */
   serverUrls: string[];
 }

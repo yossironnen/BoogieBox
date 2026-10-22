@@ -127,6 +127,7 @@ async fn dispatch(
         headers,
         head: method == Method::HEAD,
         settings,
+        method: name.clone(),
     };
     match handlers::handle(&name, &ctx).await {
         Ok(Reply::Payload(node)) => ok_response(&format, node),

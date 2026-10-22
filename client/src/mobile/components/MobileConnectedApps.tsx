@@ -5,7 +5,15 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../../api';
-import { formatWhen, SubsonicIcon, usePasswordMask } from '../../components/ConnectedAppsPanel';
+import {
+  API_KEY_HELP,
+  apiKeyStatus,
+  CopyValue,
+  formatWhen,
+  SubsonicIcon,
+  useApiKey,
+  usePasswordMask,
+} from '../../components/ConnectedAppsPanel';
 import { hybridMobileContentStyles } from '../../hybridPreview';
 import { subsonicPasswordChecks, subsonicPasswordProblem, type SubsonicCredentials } from '../../subsonic';
 import MobileConfirmationSheet from './MobileConfirmationSheet';
@@ -25,6 +33,8 @@ export default function MobileConnectedApps({ username }: { username: string }) 
   }, []);
   useEffect(load, [load]);
   const mask = usePasswordMask(creds);
+  const apiKey = useApiKey(load);
+  const [confirmKey, setConfirmKey] = useState<'replace' | 'revoke' | null>(null);
 
   if (!creds?.enabled) return null;
 
@@ -116,6 +126,50 @@ export default function MobileConnectedApps({ username }: { username: string }) 
         </button>
       ) : null}
 
+      <div style={styles.row}>
+        <span style={styles.icon}><SubsonicIcon.Key /></span>
+        <span style={styles.label}>API key</span>
+        <strong style={styles.value}>{apiKeyStatus(creds)}</strong>
+      </div>
+      <div style={styles.hint}>{API_KEY_HELP}</div>
+      {apiKey.shownKey ? (
+        <div role="status" aria-label="Your API key" style={styles.keyBox}>
+          <strong style={{ color: 'var(--text)' }}>Your API key</strong>
+          <span>Copy it now. BoogieBox shows it only once.</span>
+          <CopyValue icon={<SubsonicIcon.Key />} label="API key" value={apiKey.shownKey} />
+          <button type="button" style={styles.primary} onClick={apiKey.dismiss}>Done</button>
+        </div>
+      ) : null}
+      {apiKey.error ? <div role="alert" style={styles.error}>{apiKey.error}</div> : null}
+      {creds.hasApiKey ? (
+        <>
+          <button type="button" disabled={apiKey.busy} style={styles.secondary} onClick={() => setConfirmKey('replace')}>
+            Replace API key
+          </button>
+          <button type="button" disabled={apiKey.busy} style={styles.danger} onClick={() => setConfirmKey('revoke')}>
+            Revoke API key
+          </button>
+        </>
+      ) : (
+        <button type="button" disabled={apiKey.busy} style={{ ...styles.primary, ...(apiKey.busy ? styles.disabled : null) }} onClick={() => void apiKey.create()}>
+          Create API key
+        </button>
+      )}
+
+      <MobileConfirmationSheet
+        open={confirmKey !== null}
+        title={confirmKey === 'replace' ? 'Replace your API key?' : 'Revoke your API key?'}
+        description={confirmKey === 'replace' ? 'Apps using the current key are signed out.' : 'Apps using it are signed out.'}
+        confirmLabel={confirmKey === 'replace' ? 'Replace API key' : 'Revoke API key'}
+        cancelLabel="Cancel"
+        onClose={() => setConfirmKey(null)}
+        onConfirm={async () => {
+          const action = confirmKey;
+          setConfirmKey(null);
+          await (action === 'replace' ? apiKey.create() : apiKey.revoke());
+        }}
+      />
+
       <MobileConfirmationSheet
         open={confirmRemove}
         title="Remove your Subsonic password?"
@@ -198,6 +252,26 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     fontSize: 13,
     fontWeight: 750,
+  },
+  secondary: {
+    minHeight: 44,
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 11,
+    background: 'var(--surface-subtle)',
+    color: 'var(--text)',
+    fontFamily: 'inherit',
+    fontSize: 13,
+    fontWeight: 750,
+  },
+  keyBox: {
+    display: 'grid',
+    gap: 8,
+    padding: 10,
+    border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--divider-subtle))',
+    borderRadius: 12,
+    background: 'var(--surface-subtle)',
+    color: 'var(--text-muted)',
+    fontSize: 12,
   },
   disabled: { opacity: 0.55 },
 };

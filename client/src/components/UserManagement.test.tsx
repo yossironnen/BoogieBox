@@ -11,6 +11,7 @@ const { usersApi } = vi.hoisted(() => ({
     setPin: vi.fn(),
     setSubsonicPassword: vi.fn(),
     clearSubsonicPassword: vi.fn(),
+    revokeSubsonicApiKey: vi.fn(),
   },
 }));
 
@@ -199,6 +200,18 @@ describe('UserManagement', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Subsonic password for listener' }));
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Subsonic password for listener' })).getByRole('button', { name: 'Remove password' }));
     await waitFor(() => expect(usersApi.clearSubsonicPassword).toHaveBeenCalledWith('user-2'));
+  });
+
+  it('revokes another user\'s API key after confirming', async () => {
+    usersApi.list.mockResolvedValue([admin, { ...listener, hasSubsonicApiKey: true }]);
+    usersApi.revokeSubsonicApiKey.mockResolvedValue({ ok: true });
+    render(<UserManagement currentUser={currentUser} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Subsonic password for listener' }));
+    const dialog = screen.getByRole('dialog', { name: 'Subsonic password for listener' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke API key' }));
+    expect(screen.getByText("Apps using listener's API key are signed out.")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Revoke API key' }));
+    await waitFor(() => expect(usersApi.revokeSubsonicApiKey).toHaveBeenCalledWith('user-2'));
   });
 
   it('shows the server error when saving a Subsonic password fails', async () => {
