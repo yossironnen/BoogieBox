@@ -799,7 +799,7 @@ async fn boogiemix_playlist_lists_and_streams_own_mixes_only() {
             conn.execute(
                 "INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, cover_album_ids,
                                          source_playlist_name, duration_sec, file_size_bytes, format, created_at)
-                 VALUES (?1, ?1, NULL, ?2, ?3, 'f.mp3', ?4, 'al1', 'Party', 1800, 9, 'mp3', ?5)",
+                 VALUES (?1, ?1, NULL, ?2, ?3, 'f.mp3', ?4, '[\"al1\"]', 'Party', 1800, 9, 'mp3', ?5)",
                 params![id, user, path, name, created],
             )
             .unwrap();
@@ -824,6 +824,7 @@ async fn boogiemix_playlist_lists_and_streams_own_mixes_only() {
     assert_eq!(entries[0]["id"], "mx-m2");
     assert_eq!(entries[1]["id"], "mx-m1");
     assert_eq!(entries[1]["album"], "BoogieMix");
+    assert_eq!(entries[1]["coverArt"], "al-al1");
     assert_eq!(entries[1]["comment"], "Mixed from Party");
     assert_eq!(entries[1]["path"], "BoogieMix/Friday.mp3");
     assert_eq!(

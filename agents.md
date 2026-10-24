@@ -76,14 +76,14 @@ dlna.rs — SSDP + Axum DLNA server, ContentDirectory Browse, audio streaming
 media_serve.rs — shared ranged serving + MP3/WAV transcodes (browser, DLNA, Play On)  
 upnp/ — UPnP AV control point (XML, device descriptions, SOAP, SSDP discovery, DIDL helpers)  
 remote/ — Play On: RemoteManager, renderer registry, media tokens (`/media/r/{token}`), queue, per-renderer session actors  
-subsonic/ — OpenSubsonic-compatible `/rest` API for third-party apps (auth via per-user Subsonic password, XML/JSON rendering, browse/search/stream/scrobble, internet radio, jukebox via Play On)  
+subsonic/ — OpenSubsonic-compatible `/rest` API for third-party apps (auth via per-user Subsonic password or OpenSubsonic API key, XML/JSON rendering, browse/search/stream/scrobble, internet radio, jukebox via Play On, saved play queue, scan status/start, transcode offsets; LAN-only)  
 plays.rs — shared play hub: now-playing list (web, Play On, Subsonic), play started/finished events, scrobble threshold  
 scrobbling/ — Last.fm + ListenBrainz scrobble forwarder (encrypted per-user accounts, queued delivery with retries, Last.fm sign-in)  
 providers.rs — Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh  
 artwork_cache.rs — SHA-1 cache-key shards, UUID v7 markers, folder.jpg discovery  
 image_thumb.rs — JPEG thumbnail generation (pure Rust `image` crate)  
 deep_analysis.rs — Python/Demucs/Torch capability detection and job orchestration  
-routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session, subsonic [Subsonic password management], favourites, radio [internet radio + stream relay], scrobble [scrobbling accounts])
+routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session, subsonic [Subsonic password + API key management], favourites, radio [internet radio + stream relay], scrobble [scrobbling accounts])
 
 
 ### Client (`client/src`)
@@ -117,7 +117,7 @@ playlists, playlist_tracks
 track_waveforms, track_deep_analysis  
 mix_jobs, mix_outputs  
 upnp_renderers, remote_sessions  
-subsonic_credentials, subsonic_stars, user_track_stats  
+subsonic_credentials, subsonic_stars, subsonic_play_queues, user_track_stats  
 scrobble_accounts, scrobble_queue, internet_radio_stations  
 settings, user_settings, provider_usage_stats  
 

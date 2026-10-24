@@ -27,14 +27,14 @@ Important server modules:
 
 - `src/main.rs`: process entry, Tokio runtime, and graceful shutdown.
 - `src/lib.rs`: `AppState`, route mounting, setup and database-switch flow, middleware, and static client delivery.
-- `src/routes/`: grouped API routes for auth, libraries/scans/schedules, music, playlists, settings, artwork, playback, crossfade, DLNA, Play On, providers, admin, and BoogieMix.
+- `src/routes/`: grouped API routes for auth, libraries/scans/schedules, music, playlists, settings, artwork, playback, crossfade, DLNA, Play On, providers, admin, BoogieMix, Subsonic credentials (passwords and API keys), favourites, internet radio, and scrobbling accounts.
 - `src/auth.rs`: PIN hashing, sessions, brute-force tracking, and Axum auth extractors.
 - `src/cors.rs`: local/LAN origin allowlist.
 - `src/media_serve.rs`: shared ranged file serving and MP3/WAV transcodes for browser playback, DLNA, and Play On.
 - `src/dlna.rs`: optional DLNA MediaServer (SSDP + ContentDirectory).
 - `src/upnp/`: UPnP AV control point (XML parsing, device descriptions, SOAP, SSDP discovery, shared DIDL helpers).
 - `src/remote/`: Play On: `RemoteManager` (in `AppState`), renderer registry, short-lived media tokens (`/media/r/{token}`), pure queue logic, and one session actor per renderer.
-- `src/subsonic/`: OpenSubsonic-compatible `/rest/{method}` API for third-party apps: parameter parsing (query + form), Subsonic-password auth (AES-GCM at rest, `subsonic.key` beside the database, cached; never the PIN), one node tree rendered to XML/JSON/JSONP, browse/list/search/playlist handlers, library-confined `stream`/`download` with a transcode limiter, and `getCoverArt` via the artwork cache. `routes/subsonic_routes.rs` manages the passwords for the UI. It also serves internet radio (`getInternetRadioStations` and admin edits), a jukebox that drives one Play On speaker (`jukeboxControl`), Opus/AAC streams and per-user play counts.
+- `src/subsonic/`: OpenSubsonic-compatible `/rest/{method}` API for third-party apps: parameter parsing (query + form), Subsonic-password auth (AES-GCM at rest, `subsonic.key` beside the database, cached; never the PIN), one node tree rendered to XML/JSON/JSONP, browse/list/search/playlist handlers, library-confined `stream`/`download` with a transcode limiter, and `getCoverArt` via the artwork cache. `routes/subsonic_routes.rs` manages the passwords for the UI. It also serves internet radio (`getInternetRadioStations` and admin edits), a jukebox that drives one Play On speaker (`jukeboxControl`), Opus/AAC streams and per-user play counts. Phase 3 added OpenSubsonic API keys (`apiKey` alone, SHA-256 hash only, own cache; `tokenInfo`), `timeOffset` for transcodes (`transcodeOffset`), a per-user saved play queue shared by the user's apps (`getPlayQueue`/`savePlayQueue` and the index-based pair), and `getScanStatus`/`startScan` (scans every library in turn via `scanner::spawn_scan_jobs`). Every request's hold of the shared database lock is logged (`debug`, `warn` above 250 ms); album lists page album ids before totalling tracks, and song pages pick ids in a join-free subquery, so 500-row sync pages stay within ~15 ms on a 100k-track library (`boogiebox-db` ignored test `subsonic_scale`).
 - `src/plays.rs`: shared play hub. The web player (`/played`, `/scrobble`), Play On sessions and Subsonic `scrobble` report plays here: it keeps the now-playing list for `getNowPlaying` and hands plays to the scrobble forwarder.
 - `src/scrobbling/`: forwards plays to each user's own Last.fm and ListenBrainz accounts. Secrets are AES-GCM encrypted with `subsonic.key`; plays wait in `scrobble_queue` and a background worker sends them in batches with retries. `routes/scrobble_routes.rs` connects accounts (ListenBrainz token, Last.fm sign-in with a one-time callback state).
 - `routes/favourites_routes.rs` (hearts over `subsonic_stars`) and `routes/radio_routes.rs` (stations and the stream relay the web player uses).
@@ -64,7 +64,7 @@ Important server modules:
 - `src/server_config.rs`: database locator and packaged runtime config.
 - `src/bin/`: maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`).
 
-`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, and `maintenance`.
+`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, `subsonic` (credentials, API keys, stars, play queues, paged sync listings), `scrobble`, `radio_stations`, and `maintenance`.
 
 ## Frontend
 
@@ -117,6 +117,8 @@ Core tables include:
 - `track_waveforms`, `track_deep_analysis`, `track_mix_analysis`, `deep_analysis_jobs`
 - `mix_jobs`, `mix_job_logs`, `mix_outputs`, `mix_output_tracks`, `mix_transitions`, `boogiemix_plans`
 - `upnp_renderers`, `remote_sessions`
+- `subsonic_credentials` (encrypted Subsonic password, API key hash), `subsonic_stars`, `subsonic_play_queues`, `user_track_stats`
+- `scrobble_accounts`, `scrobble_queue`, `internet_radio_stations`
 - `settings`, `user_settings`, `provider_usage_stats`, `stats_cache`
 
 ## Background Work
@@ -130,4 +132,4 @@ Scanning discovers local music, writes normalized library rows, and queues post-
 
 ## Security Boundary
 
-BoogieBox is intended for trusted local networks. It uses authenticated API sessions and protects local file access through server-side path validation, but it is not designed for direct public internet exposure. Play On renderer media is served without a session, behind random, short-lived tokens scoped to one track, mix, or cover.
+BoogieBox is intended for trusted local networks. It uses authenticated API sessions and protects local file access through server-side path validation, but it is not designed for direct public internet exposure. Play On renderer media is served without a session, behind random, short-lived tokens scoped to one track, mix, or cover. Subsonic apps send their password, token or API key in the request URL over plain HTTP, so the `/rest` API is for the home network too; apps download music for listening away from home. Opening BoogieBox to the internet (TLS, credential handling, CORS, rate limits) is future work, and the docs deliberately give no reverse-proxy or remote-access instructions.

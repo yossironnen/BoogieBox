@@ -1570,12 +1570,7 @@ fn map_mix(row: &Row<'_>) -> rusqlite::Result<SubsonicMix> {
             .to_ascii_lowercase(),
         duration: opt_f64(row, 4)?.unwrap_or(0.0),
         file_size: opt_i64(row, 5)?.unwrap_or(0),
-        cover_album_id: covers.and_then(|c| {
-            c.split(',')
-                .map(str::trim)
-                .find(|s| !s.is_empty())
-                .map(str::to_owned)
-        }),
+        cover_album_id: crate::boogiemix::first_cover_album_id(covers.as_deref()),
         source_playlist_name: opt_text(row, 7)?,
         created: opt_text(row, 8)?,
     })
@@ -2478,7 +2473,7 @@ mod tests {
             "PRAGMA foreign_keys = OFF;
              INSERT INTO mix_outputs(id, job_id, playlist_id, user_id, file_path, file_name, name, cover_album_ids,
                                      source_playlist_name, duration_sec, file_size_bytes, format, created_at) VALUES
-               ('m1', 'j1', NULL, 'u1', '/mixes/a.mp3', 'a.mp3', 'Friday', 'al2,al1', 'Party', 3600, 900, 'MP3', '2026-01-01 00:00:00'),
+               ('m1', 'j1', NULL, 'u1', '/mixes/a.mp3', 'a.mp3', 'Friday', '[\"al2\",\"al1\"]', 'Party', 3600, 900, 'MP3', '2026-01-01 00:00:00'),
                ('m2', 'j2', NULL, 'u1', '/mixes/b.flac', 'b.flac', '', NULL, '', 60, 10, 'flac', '2026-02-01 00:00:00'),
                ('m3', 'j3', NULL, 'u2', '/mixes/c.mp3', 'c.mp3', 'Theirs', NULL, '', 60, 10, 'mp3', '2026-03-01 00:00:00');
              UPDATE artists SET description = 'Local bio', lastfm_mbid = 'mbid-1' WHERE id = 'ar1';

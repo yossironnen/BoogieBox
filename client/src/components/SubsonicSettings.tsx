@@ -132,8 +132,8 @@ export default function SubsonicSettings() {
         </div>
       )}
       <div style={S.help}>
-        Apps send the password over your network. For access from outside your home network, put BoogieBox
-        behind HTTPS (a reverse proxy or VPN).
+        Apps send the password over your network. BoogieBox is for your home network only: don't expose it to the
+        internet. To listen away from home, download music in the app while you're at home.
       </div>
       <InlineStatus busy={false} busyText="" result={result} />
     </div>

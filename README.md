@@ -6,7 +6,7 @@ Enjoy lightning-fast browsing, powerful search, playlists, lyrics, visualization
 
 Its standout feature, BoogieMix, is an experimental AI-powered DJ system that turns ordinary playlists into seamless mixes by analyzing tracks and planning smooth transitions between songs.
 
-Also includes waveform and BPM analysis, mobile-friendly access, optional DLNA/UPnP streaming, and rich metadata and artwork enrichment.
+Also includes waveform and BPM analysis, mobile-friendly access, Subsonic/OpenSubsonic app support, Last.fm and ListenBrainz scrobbling, internet radio, optional DLNA/UPnP streaming, and rich metadata and artwork enrichment.
 
 ---
 
@@ -74,6 +74,7 @@ Also includes waveform and BPM analysis, mobile-friendly access, optional DLNA/U
 - Genre Galaxy music discovery
 - Mobile-friendly interface
 - Play On: send playback to WiiM streamers, smart TVs, and other UPnP/DLNA speakers, and move it between devices mid-song
+- Subsonic apps: use native phone and desktop players such as Amperfy with your library, and download music for offline listening
 - DLNA/UPnP streaming support
 - Fully self-hosted with no subscriptions
 
@@ -102,7 +103,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 ### 🎵 Your Music, Your Way
 
 - Organize and browse music across multiple folders and drives
-- Fast search, playlists, favorites, and personalized listening history
+- Fast search, playlists, Favourites, and personalized listening history with per-user play counts
 - Individual user profiles with avatars, optional PIN protection, and personal preferences
 - Rate artists, albums, and tracks with half-star precision
 
@@ -144,7 +145,10 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 
 ### 🔗 Connect Your Music Ecosystem
 
-- Last.fm scrobbling and artist information
+- Subsonic/OpenSubsonic apps on your phone or desktop (see [Subsonic Apps](#-subsonic-apps))
+- Scrobbling to each user's own Last.fm and ListenBrainz accounts, from the web player, Play On speakers and Subsonic apps
+- Last.fm artist information
+- Internet radio stations, played in the browser and listed in Subsonic apps
 - Lyrics integration
 - DLNA/UPnP streaming for compatible devices
 - Optional integrations for artwork, metadata enrichment, and advanced music analysis
@@ -173,10 +177,28 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 | Genre Galaxy | ✅ |
 | Mobile Interface | ✅ |
 | DLNA/UPnP Streaming | ✅ |
+| Play On (UPnP/DLNA speakers) | ✅ |
+| Subsonic/OpenSubsonic Apps | ✅ |
+| Last.fm & ListenBrainz Scrobbling | ✅ |
+| Internet Radio | ✅ |
 | Last.fm Integration | ✅ |
 | Artwork Enrichment | ✅ |
 | Sonic Fingerprint (stem analysis) | ✅ |
 | Local Music Libraries | ✅ |
+
+---
+
+## 📲 Subsonic Apps
+
+BoogieBox speaks the Subsonic/OpenSubsonic API, so apps built for Subsonic servers can browse and play your library on your home network.
+
+- **Turn it on:** an admin enables it in Settings → Advanced → Subsonic apps. It is off by default.
+- **Sign in:** each user sets a Subsonic password in User Settings → Connected apps (it is separate from the PIN). Apps that support OpenSubsonic API keys can use a key created there instead. Connected apps also shows the server address and username to enter.
+- **What works:** browsing, search, streaming (original file, or MP3, Opus or AAC at a lower bitrate), offline downloads, cover art, playlists, stars (BoogieBox Favourites), ratings, lyrics, Instant Mix, scrobbling, now playing, internet radio, a play queue that follows you between apps, library rescans, your rendered BoogieMix mixes, and a jukebox mode that plays on a Play On speaker.
+- **Tested with:** Amperfy (iOS). Other Subsonic apps such as Symfonium, Feishin and DSub should work but have not been tested yet.
+- **Away from home:** download music in the app while you are on your home network. BoogieBox is not meant to be reachable from the internet (see the Security Notice).
+
+Method-level details are in [`Docs/API.md`](Docs/API.md#subsonic-apps-opensubsonic-rest).
 
 ---
 
@@ -252,6 +274,8 @@ See the documentation below for development setup and build instructions.
 BoogieBox is designed for local-network use.
 
 It has not been hardened or tested for public internet exposure. Do not expose BoogieBox directly to the internet.
+
+This includes Subsonic apps: they send your Subsonic password or API key over plain HTTP. Use them on your home network and download music for listening elsewhere.
 
 ---
 

@@ -14,6 +14,8 @@ use axum::{
 };
 use rand::Rng;
 
+use boogiebox_db::boogiemix::first_cover_album_id;
+
 use crate::media_serve::{self, WavLayout};
 use crate::upnp::device::SinkCaps;
 use crate::upnp::didl::{format_duration, wrap_didl, xml_escape};
@@ -563,16 +565,6 @@ struct RendererContext {
     sink: SinkCaps,
     policy: FormatPolicy,
     base_ip: std::net::IpAddr,
-}
-
-/// Parses the first album id out of a mix's `cover_album_ids` JSON (ids may be strings or numbers).
-pub fn first_cover_album_id(json: Option<&str>) -> Option<String> {
-    let ids: Vec<serde_json::Value> = serde_json::from_str(json?).ok()?;
-    ids.into_iter().find_map(|v| match v {
-        serde_json::Value::String(s) if !s.is_empty() => Some(s),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    })
 }
 
 impl crate::remote::RemoteManager {
@@ -1159,21 +1151,6 @@ mod tests {
             remote.prepare_track(&db, "r2", "t1").await,
             Err(PrepareError::NoRoute)
         );
-    }
-
-    #[test]
-    fn cover_album_id_parsing() {
-        assert_eq!(
-            first_cover_album_id(Some(r#"["al1","al2"]"#)).as_deref(),
-            Some("al1")
-        );
-        assert_eq!(first_cover_album_id(Some("[42]")).as_deref(), Some("42"));
-        assert_eq!(
-            first_cover_album_id(Some(r#"["",null,"x"]"#)).as_deref(),
-            Some("x")
-        );
-        assert_eq!(first_cover_album_id(Some("not json")), None);
-        assert_eq!(first_cover_album_id(None), None);
     }
 
     #[test]

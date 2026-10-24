@@ -983,6 +983,16 @@ pub fn persist_mix_plan(
 
 // ── Mix Outputs ───────────────────────────────────────────────────────────────
 
+/// Parses the first album id out of a mix's `cover_album_ids` JSON (ids may be strings or numbers).
+pub fn first_cover_album_id(json: Option<&str>) -> Option<String> {
+    let ids: Vec<serde_json::Value> = serde_json::from_str(json?).ok()?;
+    ids.into_iter().find_map(|v| match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn create_mix_output(
     conn: &Connection,
@@ -2684,6 +2694,21 @@ pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cover_album_id_parsing() {
+        assert_eq!(
+            first_cover_album_id(Some(r#"["al1","al2"]"#)).as_deref(),
+            Some("al1")
+        );
+        assert_eq!(first_cover_album_id(Some("[42]")).as_deref(), Some("42"));
+        assert_eq!(
+            first_cover_album_id(Some(r#"["",null,"x"]"#)).as_deref(),
+            Some("x")
+        );
+        assert_eq!(first_cover_album_id(Some("not json")), None);
+        assert_eq!(first_cover_album_id(None), None);
+    }
 
     fn track(id: &str, path: &str, duration: Option<f64>) -> MixTrackInput {
         MixTrackInput {

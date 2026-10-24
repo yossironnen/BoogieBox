@@ -275,7 +275,8 @@ Settings (global, admin): `subsonicApiEnabled` (`true`/`false`, default `false`)
 secret, next to `lastfmKey`) enables Last.fm scrobbling. Subsonic
 passwords are stored AES-256-GCM encrypted with the key file `subsonic.key` next to `boogiebox.db`; when moving
 the database by hand, move `subsonic.key` with it or users must set their Subsonic passwords again. Apps send
-the password (or its hash) in the URL, so use HTTPS (reverse proxy or VPN) beyond the home network.
+the password (or its hash, or the API key) in the URL over plain HTTP. BoogieBox is for your home network only:
+do not expose it to the internet. To listen away from home, download music to the app while on the home network.
 
 ## Admin, Settings, And Providers
 

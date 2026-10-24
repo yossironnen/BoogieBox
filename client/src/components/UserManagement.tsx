@@ -428,7 +428,7 @@ export default function UserManagement({ currentUser }: Props) {
               </div>
             )}
             <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-              PINs travel to the server in plain HTTP requests. Use remote access only on trusted networks.
+              PINs travel to the server in plain HTTP requests. Use BoogieBox only on your home network.
             </div>
             {addError && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{addError}</div>}
             <button type="button" style={{ ...hybridControlStyles.primaryButton, alignSelf: 'flex-start' }} onClick={handleAdd}>
