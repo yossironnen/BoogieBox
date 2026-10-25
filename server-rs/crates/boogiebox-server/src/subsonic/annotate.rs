@@ -33,7 +33,14 @@ pub async fn scrobble(ctx: &Ctx) -> Result<Node, SubsonicError> {
     if !ctx.params.flag("submission", true) {
         if let (Some(track_id), Some(env)) = (ids.last(), env.as_ref()) {
             let client = ctx.params.text("c").unwrap_or("Subsonic app");
-            plays::play_started(env, &ctx.user.id, &ctx.user.username, track_id, client);
+            plays::play_started(
+                env,
+                plays::PlaySource::Subsonic,
+                &ctx.user.id,
+                &ctx.user.username,
+                track_id,
+                client,
+            );
         }
         return Ok(Node::new("payload"));
     }

@@ -1,5 +1,6 @@
 //! Defines Rust API routes for Mod server behavior.
 
+pub mod activity_routes;
 pub mod admin_routes;
 pub mod artwork_routes;
 pub mod auth_routes;

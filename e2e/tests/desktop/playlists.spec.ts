@@ -1,0 +1,90 @@
+/**
+ * Playlists: create, add tracks, rename, play and delete.
+ */
+
+import { expect, expectAudioPlaying, goTo, main, openApp, test, uniqueName } from '../../support/test.ts'
+
+test.beforeEach(async ({ page }) => openApp(page))
+
+test('playlist lifecycle', async ({ page }) => {
+  const name = uniqueName('E2E Playlist')
+  const renamed = `${name} (renamed)`
+  await goTo(page, 'Playlists')
+
+  await test.step('create', async () => {
+    await main(page).getByRole('button', { name: 'New playlist' }).first().click()
+    const dialog = page.getByRole('dialog', { name: 'New Playlist' })
+    await expect(dialog.getByRole('button', { name: 'Create' })).toBeDisabled()
+    await dialog.getByRole('textbox', { name: 'Playlist name' }).fill(name)
+    await dialog.getByRole('button', { name: 'Create' }).click()
+    await expect(main(page).getByText(name, { exact: true })).toBeVisible()
+    await expect(main(page).getByText('0 tracks')).toBeVisible()
+  })
+
+  await test.step('add tracks from search', async () => {
+    await main(page).getByRole('button', { name: 'Add tracks' }).click()
+    const search = main(page).getByRole('textbox', { name: 'Search for tracks to add…' })
+    for (const title of ['Ink Sky', 'Window Seat']) {
+      await search.fill(title)
+      const result = main(page).getByText(title, { exact: true }).last().locator('xpath=ancestor::*[.//button][1]')
+      await result.getByRole('button', { name: 'Add to playlist' }).click()
+      await expect(main(page).getByRole('button', { name: `Remove ${title} from playlist` })).toBeVisible()
+    }
+    await expect(main(page).getByText('2 tracks')).toBeVisible()
+    await main(page).getByRole('button', { name: 'Close add tracks' }).click()
+  })
+
+  await test.step('options popup does not duplicate the detail view', async () => {
+    await main(page).getByRole('button', { name: 'More actions' }).click()
+    const options = page.getByRole('dialog', { name })
+    await expect(options).toBeVisible()
+    // App re-renders on its 5 s scan poll; a key clash used to stack a new copy of the detail view each time.
+    await page.waitForTimeout(6_000)
+    await expect(page.locator('[data-ui-region="playlist-detail"]')).toHaveCount(1)
+  })
+
+  await test.step('rename', async () => {
+    await page.getByRole('dialog', { name }).getByRole('button', { name: 'Rename' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Rename Playlist' })
+    await dialog.getByRole('textbox', { name: 'Playlist name' }).fill(renamed)
+    await dialog.getByRole('button', { name: 'Save' }).click()
+    await expect(dialog).toBeHidden()
+    await page.keyboard.press('Escape')
+    await expect(main(page).getByText(renamed, { exact: true })).toBeVisible()
+  })
+
+  await test.step('play all', async () => {
+    await main(page).getByRole('button', { name: 'Play All', exact: true }).click()
+    await expectAudioPlaying(page)
+  })
+
+  await test.step('shows on the playlists grid and Home', async () => {
+    await main(page).getByRole('button', { name: 'Back to Playlists' }).click()
+    await expect(main(page).getByText(renamed, { exact: true })).toBeVisible()
+    await goTo(page, 'Home')
+    await expect(main(page).getByRole('button', { name: `Open playlist ${renamed}` })).toBeVisible()
+  })
+
+  await test.step('delete', async () => {
+    await goTo(page, 'Playlists')
+    await main(page).getByText(renamed, { exact: true }).click()
+    await main(page).getByRole('button', { name: 'More actions' }).click()
+    await page.getByRole('dialog', { name: renamed }).getByRole('button', { name: 'Delete playlist' }).click()
+    const confirm = page.getByRole('dialog', { name: 'Delete Playlist' })
+    await confirm.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect(main(page).getByText(renamed, { exact: true })).toHaveCount(0)
+  })
+})
+
+test('duplicate playlist names are rejected', async ({ page }) => {
+  const name = uniqueName('E2E Dup')
+  await goTo(page, 'Playlists')
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt === 1) await main(page).getByRole('button', { name: 'Back to Playlists' }).click()
+    await main(page).getByRole('button', { name: 'New playlist' }).first().click()
+    const dialog = page.getByRole('dialog', { name: 'New Playlist' })
+    await dialog.getByRole('textbox', { name: 'Playlist name' }).fill(name)
+    await dialog.getByRole('button', { name: 'Create' }).click()
+  }
+  await expect(page.getByRole('dialog', { name: 'New Playlist' }).getByText('A playlist with this name already exists')).toBeVisible()
+})

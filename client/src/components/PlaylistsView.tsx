@@ -1766,7 +1766,7 @@ export default function PlaylistsView({
       )}
       {selected && (
         <PlaylistDetail
-          key={selected.id}
+          key={`detail-${selected.id}`}
           playlist={selected}
           onUpdate={loadPlaylists}
           onOptions={() => setOptionsPlaylist(selected)}
@@ -1779,8 +1779,10 @@ export default function PlaylistsView({
         />
       )}
 
+      {/* Detail and Options are siblings for the same playlist, so their keys need distinct prefixes;
+          a shared key remounted the detail on every App render and left the old copy in the DOM. */}
       {optionsPlaylist && (
-        <PlaylistOptions key={optionsPlaylist.id} playlist={optionsPlaylist} onUpdate={loadPlaylists}
+        <PlaylistOptions key={`options-${optionsPlaylist.id}`} playlist={optionsPlaylist} onUpdate={loadPlaylists}
           onDelete={handleDeleted} onClose={() => setOptionsPlaylist(null)} />
       )}
       {showCreate && (

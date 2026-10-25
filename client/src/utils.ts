@@ -12,3 +12,16 @@ export function parseServerDate(s: string | null | undefined): Date | null {
   // Bare datetime from SQLite — treat as UTC
   return new Date(s.replace(' ', 'T') + 'Z');
 }
+
+/** `1.5 MB`: binary units, one decimal under 10. */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+}

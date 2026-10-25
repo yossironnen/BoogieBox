@@ -474,7 +474,25 @@ pub async fn media_handler(
             let range = headers
                 .get(axum::http::header::RANGE)
                 .and_then(|v| v.to_str().ok());
-            match media.delivery {
+            let delivery = match media.delivery {
+                Delivery::Direct => crate::activity::DeliveryInfo::original(file_path),
+                Delivery::Mp3 => {
+                    crate::activity::DeliveryInfo::transcode(file_path, "MP3", Some(320))
+                }
+                Delivery::Wav => crate::activity::DeliveryInfo::transcode(file_path, "WAV", None),
+            };
+            let tracked = crate::activity::TransferMeta {
+                source: crate::activity::Source::PlayOn,
+                kind: crate::activity::TransferKind::Stream,
+                user_id: None,
+                username: None,
+                client: media.owner.clone(),
+                item_id: log_id
+                    .strip_prefix("mix:")
+                    .map_or_else(|| log_id.clone(), |m| format!("mx-{m}")),
+                delivery: Some(delivery),
+            };
+            let resp = match media.delivery {
                 Delivery::Direct => {
                     media_serve::serve_file(file_path, &media.mime, &headers, head_only, &extra)
                         .await
@@ -512,7 +530,8 @@ pub async fn media_handler(
                     })
                     .await
                 }
-            }
+            };
+            crate::activity::hub_of(&state).track_response(tracked, resp, head_only)
         }
     }
 }

@@ -11,6 +11,7 @@ import SidebarStatusPanel, {
   formatLibraryStatsTitle,
 } from './SidebarStatusPanel';
 import type { BoogieMixDeepAnalysisStatus, Library, ScanJob, Stats } from '../types';
+import type { ActivitySnapshot } from '../activity/activityTypes';
 
 const stats = {
   total_tracks: 4662,
@@ -117,7 +118,24 @@ describe('SidebarStatusPanel', () => {
     fireEvent.blur(screen.getByTestId('sidebar-status-scan'));
     fireEvent.mouseLeave(screen.getByTestId('sidebar-status-scan'));
     fireEvent.mouseEnter(screen.getByTestId('sidebar-status-transcoding'));
-    expect(screen.getByRole('tooltip')).toHaveStyle({ left: '0px', transform: 'none' });
+    // Portalled out of the clipping sidebar and kept inside the window.
+    const tooltip = screen.getByRole('tooltip');
+    expect(tooltip.parentElement).toBe(document.body);
+    expect(tooltip).toHaveStyle({ position: 'fixed', left: '8px', visibility: 'visible' });
+  });
+
+  it('keeps a wide tooltip inside the window when its indicator is near the edge', () => {
+    renderPanel();
+    const indicator = screen.getByTestId('sidebar-status-deep-analysis');
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
+    rect.mockImplementation(function (this: HTMLElement) {
+      if (this === indicator) return { left: 120, right: 158, top: 600, bottom: 638, width: 38, height: 38, x: 120, y: 600, toJSON: () => ({}) } as DOMRect;
+      return { left: 0, right: 280, top: 0, bottom: 60, width: 280, height: 60, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    fireEvent.mouseEnter(indicator);
+    // Centred would start at 120 + 19 - 140 = -1; clamped to the 8px margin, and 60 + 8 above the indicator.
+    expect(screen.getByRole('tooltip')).toHaveStyle({ left: '8px', top: '532px' });
+    rect.mockRestore();
   });
 
   it('visually distinguishes enabled transcoding from direct streaming', () => {
@@ -185,5 +203,62 @@ describe('SidebarStatusPanel', () => {
     expect(logout).toHaveStyle({ width: '38px', height: '38px' });
     fireEvent.click(logout);
     expect(onLogout).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows admins an Activity indicator that summarises and opens the page', () => {
+    const onOpen = vi.fn();
+    const activity = {
+      generatedAtMs: 0,
+      totals: { playing: 2, downloading: 1, mixJobs: 1, transcodes: 0, subsonicTranscodeLimit: 3, activeUsers: 3, serverJobs: 0 },
+      playing: [
+        { user: 'alice', client: 'Amperfy' },
+        { user: 'bob', client: 'Living room' },
+      ],
+      downloads: [{ user: 'bob', client: 'Amperfy' }],
+      mixJobs: [{ user: 'carol' }],
+      serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 },
+      recent: [],
+    } as unknown as ActivitySnapshot;
+    render(
+      <SidebarStatusPanel
+        currentUser={user}
+        collapsed={false}
+        streamDirect={false}
+        ffmpegAvailable
+        transcodeQuality="high"
+        activeScanJobs={[]}
+        libraries={libraries}
+        deepAnalysisStatus={deepStatus}
+        stats={stats}
+        onLogout={vi.fn()}
+        activity={activity}
+        onOpenActivity={onOpen}
+      />,
+    );
+    const indicator = screen.getByTestId('sidebar-status-activity');
+    expect(indicator).toHaveAttribute('role', 'button');
+    expect(indicator).toHaveAttribute('aria-label', 'Activity · 4 active');
+    expect(indicator).toHaveTextContent('4');
+    expect(screen.getByTestId('sidebar-status-scan')).toHaveAttribute('role', 'img');
+    expect(screen.getByTestId('sidebar-status-row').style.gridTemplateColumns).toBe('repeat(4, minmax(0, 1fr))');
+
+    fireEvent.mouseEnter(indicator);
+    const tooltip = screen.getByRole('tooltip');
+    expect(tooltip).toHaveTextContent('2 playing');
+    expect(tooltip).toHaveTextContent('alice · Amperfy, bob · Living room');
+    expect(tooltip).toHaveTextContent('1 downloading');
+    expect(tooltip).toHaveTextContent('1 BoogieMix jobs');
+    expect(tooltip).toHaveTextContent('Open Activity');
+
+    fireEvent.click(indicator);
+    fireEvent.keyDown(indicator, { key: 'Enter' });
+    fireEvent.keyDown(indicator, { key: ' ' });
+    expect(onOpen).toHaveBeenCalledTimes(3);
+  });
+
+  it('has no Activity indicator without the admin snapshot', () => {
+    renderPanel();
+    expect(screen.queryByTestId('sidebar-status-activity')).toBeNull();
+    expect(screen.getByTestId('sidebar-status-row').style.gridTemplateColumns).toBe('repeat(3, minmax(0, 1fr))');
   });
 });

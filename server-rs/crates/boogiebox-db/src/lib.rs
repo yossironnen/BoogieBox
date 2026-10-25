@@ -1,5 +1,6 @@
 //! SQLite initialization, migration, and shared database helpers for BoogieBox.
 
+pub mod activity;
 pub mod artwork;
 pub mod favourites;
 pub mod jobs;
@@ -812,6 +813,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
         Migration {
             id: "2026-10-22-subsonic-phase-3",
             apply: subsonic::ensure_subsonic_phase_3_schema,
+        },
+        Migration {
+            id: "2026-10-24-activity-events",
+            apply: activity::ensure_activity_schema,
         },
     ];
 

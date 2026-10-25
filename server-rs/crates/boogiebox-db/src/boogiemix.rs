@@ -829,6 +829,18 @@ pub fn update_mix_job_plan_info(
     Ok(())
 }
 
+/// Cancels any user's queued or analysing/planning mix job (admin, Activity page). Same states as
+/// [`cancel_mix_job`]: a render in progress or a finished job cannot be cancelled.
+pub fn cancel_mix_job_as_admin(conn: &Connection, job_id: &EntityId) -> Result<bool, JobError> {
+    Ok(conn.execute(
+        "UPDATE mix_jobs
+         SET cancel_requested=1, status='canceled', current_step='canceled',
+             finished_at=datetime('now'), updated_at=datetime('now')
+         WHERE id=?1 AND status IN ('pending','analyzing','planning')",
+        params![job_id],
+    )? > 0)
+}
+
 /// Documents the Reset Orphaned Mix Jobs public API surface.
 pub fn reset_orphaned_mix_jobs(conn: &Connection) -> Result<usize, JobError> {
     Ok(conn.execute(

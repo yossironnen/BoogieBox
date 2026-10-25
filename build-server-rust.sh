@@ -6,6 +6,7 @@ RUN_SMOKE=0
 SKIP_INSTALLER=0
 SKIP_TESTS=0
 SKIP_MODEL_CACHE=0
+RUN_E2E=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -13,6 +14,7 @@ for arg in "$@"; do
     --no-installer)    SKIP_INSTALLER=1 ;;
     --no-test)         SKIP_TESTS=1 ;;
     --no-model-cache)  SKIP_MODEL_CACHE=1 ;;
+    --e2e)             RUN_E2E=1 ;;
   esac
 done
 
@@ -395,4 +397,19 @@ if [ "$RUN_SMOKE" -eq 1 ]; then
     cat "$SMOKE_LOG"
     exit 1
   fi
+fi
+
+# ------------------------------------------------------------------
+# UI release suite (Playwright)
+# ------------------------------------------------------------------
+if [ "$RUN_E2E" -eq 1 ]; then
+  echo ""
+  echo " Running UI release suite (Playwright) against ${DIST_DIR}/ ..."
+  # A minimal server may also need Chromium's system libraries: sudo npx playwright install-deps chromium
+  npx playwright install chromium
+  if ! BOOGIEBOX_E2E_SERVER_EXE="$(realpath "${DIST_DIR}/boogiebox-server")" npm run e2e; then
+    echo "[ERROR] UI release suite failed. Run 'npm run e2e:report' for screenshots, videos and traces."
+    exit 1
+  fi
+  echo " UI release suite passed."
 fi

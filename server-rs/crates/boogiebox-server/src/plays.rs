@@ -13,7 +13,7 @@ use std::{
 use rand::Rng;
 use tokio::sync::Notify;
 
-use crate::{subsonic::SubsonicState, DbPool, SharedState};
+use crate::{activity::ActivityHub, subsonic::SubsonicState, DbPool, SharedState};
 
 /// How long a "now playing" notice stays listed without a refresh.
 const NOW_PLAYING_TTL: Duration = Duration::from_secs(600);
@@ -24,6 +24,17 @@ const MAX_LASTFM_STATES: usize = 256;
 /// Client name shown for the BoogieBox web player.
 pub const WEB_CLIENT: &str = "BoogieBox";
 
+/// Which kind of player reported a play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaySource {
+    /// The BoogieBox web player.
+    Web,
+    /// A Play On speaker session.
+    PlayOn,
+    /// A Subsonic app.
+    Subsonic,
+}
+
 /// Someone's player reporting what it is playing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowPlayingEntry {
@@ -33,6 +44,7 @@ pub struct NowPlayingEntry {
     pub client: String,
     /// Song id (`mx-…` for a BoogieMix mix).
     pub track_id: String,
+    pub source: PlaySource,
     pub at: Instant,
 }
 
@@ -117,6 +129,7 @@ pub struct PlayEnv {
     pub hub: PlayHub,
     pub subsonic: SubsonicState,
     pub db_folder: Option<PathBuf>,
+    pub activity: ActivityHub,
 }
 
 impl PlayEnv {
@@ -129,18 +142,30 @@ impl PlayEnv {
             hub: s.plays.clone(),
             subsonic: s.subsonic.clone(),
             db_folder: s.db_folder.clone(),
+            activity: s.activity.clone(),
         })
     }
 }
 
-/// A player started `track_id`: list it as now playing and tell the user's scrobbling services (best effort,
-/// in the background).
-pub fn play_started(env: &PlayEnv, user_id: &str, username: &str, track_id: &str, client: &str) {
+/// A player started `track_id`: list it as now playing, add it to the activity history and tell the user's
+/// scrobbling services (best effort, in the background).
+pub fn play_started(
+    env: &PlayEnv,
+    source: PlaySource,
+    user_id: &str,
+    username: &str,
+    track_id: &str,
+    client: &str,
+) {
+    let client: String = client.chars().take(64).collect();
+    env.activity
+        .record_play(source, user_id, username, &client, track_id);
     env.hub.set_now_playing(NowPlayingEntry {
         user_id: user_id.to_owned(),
         username: username.to_owned(),
-        client: client.chars().take(64).collect(),
+        client,
         track_id: track_id.to_owned(),
+        source,
         at: Instant::now(),
     });
     if crate::subsonic::model::mix_id(track_id).is_some() {
@@ -198,6 +223,7 @@ mod tests {
             username: user.into(),
             client: client.into(),
             track_id: track.into(),
+            source: PlaySource::Subsonic,
             at: Instant::now(),
         }
     }

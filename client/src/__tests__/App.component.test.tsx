@@ -16,6 +16,21 @@ const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi
       refresh: vi.fn().mockResolvedValue({ ok: true }),
       eventsUrl: () => '/api/remote/events',
     },
+    activity: {
+      // Plain functions: they survive the per-test mock resets.
+      snapshot: () => Promise.resolve({
+        generatedAtMs: 0,
+        totals: { playing: 0, downloading: 0, mixJobs: 0, transcodes: 0, subsonicTranscodeLimit: 3, activeUsers: 0, serverJobs: 0 },
+        playing: [],
+        downloads: [],
+        mixJobs: [],
+        serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 },
+        recent: [],
+      }),
+      eventsUrl: () => '/api/activity/events',
+      cancelMixJob: () => Promise.resolve({ ok: true }),
+      heartbeat: () => {},
+    },
     libraries: {
       list: vi.fn(),
       add: vi.fn(),

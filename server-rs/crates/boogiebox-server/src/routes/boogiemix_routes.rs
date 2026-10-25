@@ -657,18 +657,55 @@ async fn download_output_handler(
     };
 
     let safe_name = sanitize_filename(&file_name);
+    let size = file.metadata().await.map(|m| m.len()).ok();
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "audio/mpeg")
         .header(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{safe_name}\""),
-        )
+        );
+    if let Some(size) = size {
+        builder = builder.header(header::CONTENT_LENGTH, size);
+    }
+    let resp = builder
         .body(body)
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    track_mix_response(
+        &state,
+        &user,
+        &output_id_raw,
+        crate::activity::Source::MixFile,
+        crate::activity::TransferKind::Download,
+        resp,
+    )
+}
+
+/// Lists a BoogieMix download or web playback on the Activity page while its body is sent.
+fn track_mix_response(
+    state: &SharedState,
+    user: &AuthenticatedUser,
+    output_id: &str,
+    source: crate::activity::Source,
+    kind: crate::activity::TransferKind,
+    resp: Response,
+) -> Response {
+    crate::activity::hub_of(state).track_response(
+        crate::activity::TransferMeta {
+            source,
+            kind,
+            user_id: Some(user.id.clone()),
+            username: Some(user.username.clone()),
+            client: String::new(),
+            item_id: format!("mx-{}", output_id.trim()),
+            delivery: None,
+        },
+        resp,
+        false,
+    )
 }
 
 /// Streams a finished BoogieMix render inline (no forced download), with
@@ -680,12 +717,29 @@ async fn play_output_handler(
     Path(output_id_raw): Path<String>,
     req_headers: axum::http::HeaderMap,
 ) -> Response {
-    let Some(db) = get_db(&state) else {
+    let resp = play_output(&state, &user, &output_id_raw, req_headers).await;
+    track_mix_response(
+        &state,
+        &user,
+        &output_id_raw,
+        crate::activity::Source::Web,
+        crate::activity::TransferKind::Stream,
+        resp,
+    )
+}
+
+async fn play_output(
+    state: &SharedState,
+    user: &AuthenticatedUser,
+    output_id_raw: &str,
+    req_headers: axum::http::HeaderMap,
+) -> Response {
+    let Some(db) = get_db(state) else {
         return db_not_configured();
     };
 
     let (file_path, _file_name) =
-        match resolve_output_for_serving(&db, &output_id_raw, &user.id).await {
+        match resolve_output_for_serving(&db, output_id_raw, &user.id).await {
             Ok(v) => v,
             Err(resp) => return resp,
         };

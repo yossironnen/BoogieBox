@@ -218,8 +218,11 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
         )
     });
 
+    let meta =
+        |delivery: crate::activity::DeliveryInfo| subsonic_meta(ctx, &song.id, download, delivery);
     match delivery {
         Delivery::Original => {
+            let tracked = meta(crate::activity::DeliveryInfo::original(&file_path));
             let mime = ffmpeg::audio_mime_type(&file_path);
             let mut resp =
                 media_serve::serve_file(&file_path, mime, &ctx.headers, ctx.head, &[]).await;
@@ -233,9 +236,18 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
                     resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
                 }
             }
-            Ok(resp)
+            Ok(crate::activity::hub_of(&ctx.state).track_response(tracked, resp, ctx.head))
         }
         Delivery::Mp3(kbps) | Delivery::Encoded(_, kbps) => {
+            let target = match delivery {
+                Delivery::Encoded(codec, _) => codec.label(),
+                _ => "MP3",
+            };
+            let tracked = meta(crate::activity::DeliveryInfo::transcode(
+                &file_path,
+                target,
+                Some(kbps),
+            ));
             // `timeOffset` (OpenSubsonic `transcodeOffset`) only applies to transcodes; raw files seek by range.
             let start_seconds = ctx.params.int("timeOffset")?.unwrap_or(0).max(0) as f64;
             if song.duration > 0.0 && start_seconds >= song.duration {
@@ -290,7 +302,8 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
                 let _slot = &permit;
                 chunk
             });
-            Ok(Response::from_parts(parts, Body::from_stream(guarded)))
+            let resp = Response::from_parts(parts, Body::from_stream(guarded));
+            Ok(crate::activity::hub_of(&ctx.state).track_response(tracked, resp, ctx.head))
         }
     }
 }
@@ -359,7 +372,41 @@ async fn stream_mix(ctx: &Ctx, mix_id: String, download: bool) -> Result<Respons
             resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
         }
     }
-    Ok(resp)
+    let tracked = subsonic_meta(
+        ctx,
+        &format!("mx-{}", mix.id),
+        download,
+        crate::activity::DeliveryInfo::original(&file_path),
+    );
+    Ok(crate::activity::hub_of(&ctx.state).track_response(tracked, resp, ctx.head))
+}
+
+/// What the Activity page shows for a Subsonic `stream`/`download` response.
+fn subsonic_meta(
+    ctx: &Ctx,
+    item_id: &str,
+    download: bool,
+    delivery: crate::activity::DeliveryInfo,
+) -> crate::activity::TransferMeta {
+    crate::activity::TransferMeta {
+        source: crate::activity::Source::Subsonic,
+        kind: if download {
+            crate::activity::TransferKind::Download
+        } else {
+            crate::activity::TransferKind::Stream
+        },
+        user_id: Some(ctx.user.id.clone()),
+        username: Some(ctx.user.username.clone()),
+        client: ctx
+            .params
+            .text("c")
+            .unwrap_or("Subsonic app")
+            .chars()
+            .take(64)
+            .collect(),
+        item_id: item_id.to_owned(),
+        delivery: Some(delivery),
+    }
 }
 
 /// What a cover-art id refers to.

@@ -23,6 +23,7 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `docker/linux-amd64/` | Container entrypoint for the Linux image. |
 | `Docs/` | Public and project documentation. |
 | `client/` | React and TypeScript client. |
+| `e2e/` | Playwright UI release suite run against the packaged server build (see `e2e/README.md`). |
 | `server-rs/` | Rust server and database crates. |
 | `desktop/` | Tauri desktop shell. |
 | `Services/boogiemix/python/` | Optional Python BoogieMix deep-analysis worker assets. |

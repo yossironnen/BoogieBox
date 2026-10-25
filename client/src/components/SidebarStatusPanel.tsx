@@ -2,8 +2,11 @@
  * Unified desktop-sidebar identity, library totals and server activity panel.
  */
 
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { AuthUser, BoogieMixDeepAnalysisStatus, Library, ScanJob, Stats } from '../types';
+import { activeCount, type ActivitySnapshot } from '../activity/activityTypes';
+import { ActivityIcon, DownloadIcon, MixJobIcon, PlayIcon } from './activityIcons';
 
 interface Props {
   currentUser: AuthUser;
@@ -17,11 +20,19 @@ interface Props {
   /** Library totals: a quiet line when expanded, an indicator popover when collapsed. */
   stats?: Stats | null;
   onLogout: () => void;
+  /** Admins only: the live Activity snapshot; the indicator is hidden without it. */
+  activity?: ActivitySnapshot | null;
+  /** Admins only: opens the Activity page. */
+  onOpenActivity?: () => void;
 }
 
-type IndicatorKind = 'transcoding' | 'scan' | 'deep-analysis' | 'library';
+type IndicatorKind = 'transcoding' | 'scan' | 'deep-analysis' | 'library' | 'activity';
 
 type IconProps = { size?: number; style?: React.CSSProperties };
+
+/** Space between an indicator and its tooltip, and between a tooltip and the window edge. */
+const TOOLTIP_GAP = 8;
+const TOOLTIP_MARGIN = 8;
 
 function StatsTracksIcon({ size = 16, style }: IconProps) {
   return (
@@ -128,6 +139,42 @@ function LibraryStatsLine({ stats }: { stats: Stats | null | undefined }) {
   );
 }
 
+/** Up to two names, then `+N`. */
+function shortList(names: string[]): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  if (unique.length <= 2) return unique.join(', ');
+  return `${unique.slice(0, 2).join(', ')} +${unique.length - 2}`;
+}
+
+export function describeActivity(activity: ActivitySnapshot | null | undefined): string {
+  return `Activity · ${activeCount(activity?.totals)} active`;
+}
+
+function ActivitySummaryPopover({ activity }: { activity: ActivitySnapshot }) {
+  const { totals } = activity;
+  const playingNames = shortList(activity.playing.map((p) => [p.user, p.client].filter(Boolean).join(' · ')));
+  const downloadNames = shortList(activity.downloads.map((d) => [d.user, d.client].filter(Boolean).join(' · ')));
+  const mixNames = shortList(activity.mixJobs.map((j) => j.user ?? ''));
+  const rows = [
+    { key: 'play', Icon: PlayIcon, text: `${totals.playing} playing`, names: playingNames },
+    { key: 'dl', Icon: DownloadIcon, text: `${totals.downloading} downloading`, names: downloadNames },
+    { key: 'mix', Icon: MixJobIcon, text: `${totals.mixJobs} BoogieMix jobs`, names: mixNames },
+  ];
+  return (
+    <span style={styles.statsPopover}>
+      <span style={styles.statsPopoverTitle}>{describeActivity(activity)}</span>
+      {rows.map(({ key, Icon, text, names }) => (
+        <span key={key} style={styles.statsPopoverRow}>
+          <Icon size={14} style={styles.statIcon} />
+          <span style={styles.statsPopoverName}>{text}</span>
+          <span style={{ ...styles.statsPopoverValue, fontWeight: 500 }}>{names}</span>
+        </span>
+      ))}
+      <span style={{ ...styles.statsPopoverName, opacity: 0.8 }}>Open Activity</span>
+    </span>
+  );
+}
+
 function LibraryStatsPopover({ stats }: { stats: Stats | null | undefined }) {
   return (
     <span style={styles.statsPopover}>
@@ -206,6 +253,7 @@ function StatusIndicator({
   badge = 0,
   collapsed,
   tooltip,
+  onActivate,
   children,
 }: {
   kind: IndicatorKind;
@@ -216,21 +264,56 @@ function StatusIndicator({
   collapsed: boolean;
   /** Rich tooltip body; defaults to `description`. */
   tooltip?: React.ReactNode;
+  /** Makes the indicator a button (click, Enter or Space). */
+  onActivate?: () => void;
   children: React.ReactNode;
 }) {
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const [focused, setFocused] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const tipRef = useRef<HTMLSpanElement | null>(null);
+  const [tipPos, setTipPos] = useState<{ left: number; top: number } | null>(null);
+
+  // The sidebar clips its overflow, so the tooltip is portalled to <body> and placed from the indicator's
+  // screen position: above it (beside it when collapsed), kept inside the window.
+  useLayoutEffect(() => {
+    if (!tooltipVisible) {
+      setTipPos(null);
+      return;
+    }
+    const anchor = anchorRef.current?.getBoundingClientRect();
+    const tip = tipRef.current?.getBoundingClientRect();
+    if (!anchor || !tip) return;
+    const clamp = (value: number, max: number) => Math.max(TOOLTIP_MARGIN, Math.min(value, max - TOOLTIP_MARGIN));
+    const left = collapsed
+      ? anchor.right + TOOLTIP_GAP
+      : anchor.left + anchor.width / 2 - tip.width / 2;
+    const top = collapsed
+      ? anchor.top + anchor.height / 2 - tip.height / 2
+      : anchor.top - tip.height - TOOLTIP_GAP;
+    setTipPos({ left: clamp(left, window.innerWidth - tip.width), top: clamp(top, window.innerHeight - tip.height) });
+  }, [tooltipVisible, collapsed, tooltip, description]);
+
   return (
     <div
+      ref={anchorRef}
       data-testid={`sidebar-status-${kind}`}
       data-active={active ? 'true' : 'false'}
-      role="img"
+      role={onActivate ? 'button' : 'img'}
       tabIndex={0}
       aria-label={description}
+      onClick={onActivate}
+      onKeyDown={onActivate ? (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      } : undefined}
       style={{
         ...styles.indicator,
         ...(active ? styles.indicatorActive : {}),
         ...(focused ? styles.indicatorFocused : {}),
+        ...(onActivate ? { cursor: 'pointer' } : {}),
         color,
       }}
       onMouseEnter={() => setTooltipVisible(true)}
@@ -240,17 +323,20 @@ function StatusIndicator({
     >
       {children}
       {badge > 0 && <span style={styles.badge}>{badge > 99 ? '99+' : badge}</span>}
-      {tooltipVisible && (
+      {tooltipVisible && createPortal(
         <span
+          ref={tipRef}
           role="tooltip"
           style={{
             ...styles.tooltip,
-            ...(kind === 'transcoding' && !collapsed ? styles.tooltipLeftAligned : {}),
-            ...(collapsed ? styles.tooltipCollapsed : {}),
+            left: tipPos?.left ?? 0,
+            top: tipPos?.top ?? 0,
+            visibility: tipPos ? 'visible' : 'hidden',
           }}
         >
           {tooltip ?? description}
-        </span>
+        </span>,
+        document.body,
       )}
     </div>
   );
@@ -267,7 +353,10 @@ export default function SidebarStatusPanel({
   deepAnalysisStatus,
   stats = null,
   onLogout,
+  activity = null,
+  onOpenActivity,
 }: Props) {
+  const activityCount = activeCount(activity?.totals);
   const scanActive = activeScanJobs.some((job) => job.status === 'running');
   const deepQueueCount = deepAnalysisStatus
     ? deepAnalysisStatus.queue.pending + deepAnalysisStatus.queue.running
@@ -300,7 +389,15 @@ export default function SidebarStatusPanel({
       }}
     >
       {!collapsed && <LibraryStatsLine stats={stats} />}
-      <div style={{ ...styles.statusRow, ...(collapsed ? styles.statusRowCollapsed : {}) }}>
+      <div
+        data-testid="sidebar-status-row"
+        style={{
+          ...styles.statusRow,
+          // One column per indicator so the admin-only Activity indicator stays on the same row.
+          gridTemplateColumns: `repeat(${activity ? 4 : 3}, minmax(0, 1fr))`,
+          ...(collapsed ? styles.statusRowCollapsed : {}),
+        }}
+      >
         <StatusIndicator
           kind="transcoding"
           description={describeTranscoding(streamDirect, ffmpegAvailable, transcodeQuality)}
@@ -329,6 +426,20 @@ export default function SidebarStatusPanel({
         >
           <DeepAnalysisIcon />
         </StatusIndicator>
+        {activity && (
+          <StatusIndicator
+            kind="activity"
+            description={describeActivity(activity)}
+            color={activityCount > 0 ? 'var(--accent)' : 'var(--text-muted)'}
+            active={activityCount > 0}
+            badge={activityCount}
+            collapsed={collapsed}
+            tooltip={<ActivitySummaryPopover activity={activity} />}
+            onActivate={onOpenActivity}
+          >
+            <ActivityIcon size={22} />
+          </StatusIndicator>
+        )}
         {collapsed && (
           <StatusIndicator
             kind="library"
@@ -437,7 +548,6 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 58,
     padding: '8px 10px',
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
     alignItems: 'center',
     justifyItems: 'center',
     borderBottom: '1px solid color-mix(in srgb, var(--border) 68%, transparent)',
@@ -488,11 +598,9 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
   },
   tooltip: {
-    position: 'absolute',
-    left: '50%',
-    bottom: 'calc(100% + 8px)',
-    transform: 'translateX(-50%)',
-    zIndex: 40,
+    position: 'fixed',
+    zIndex: 1000,
+    fontFamily: 'var(--font), system-ui, sans-serif',
     width: 'max-content',
     maxWidth: 280,
     padding: '7px 9px',
@@ -506,15 +614,6 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.4,
     whiteSpace: 'normal',
     pointerEvents: 'none',
-  },
-  tooltipCollapsed: {
-    left: 'calc(100% + 8px)',
-    bottom: '50%',
-    transform: 'translateY(50%)',
-  },
-  tooltipLeftAligned: {
-    left: 0,
-    transform: 'none',
   },
   identityRow: {
     minHeight: 58,

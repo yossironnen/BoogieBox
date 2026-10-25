@@ -672,9 +672,7 @@ fn read_ogg_last_granule(path: &Path, sample_rate: i64) -> Option<f64> {
 }
 
 fn read_m4a_technical(path: &Path) -> Option<AudioTechnical> {
-    let file = fs::File::open(path).ok()?;
-    let mut data = Vec::new();
-    file.take(256 * 1024).read_to_end(&mut data).ok()?;
+    let data = read_mp4_metadata_region(path).ok()?;
     let duration = parse_m4a_duration(&data, 0)?;
     Some(AudioTechnical {
         duration: Some(duration),
@@ -924,10 +922,55 @@ fn read_ogg_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
 }
 
 fn read_mp4_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
-    let file = fs::File::open(path)?;
-    let mut data = Vec::new();
-    file.take(256 * 1024).read_to_end(&mut data)?;
-    Ok(parse_mp4_atoms(&data, 0))
+    Ok(parse_mp4_atoms(&read_mp4_metadata_region(path)?, 0))
+}
+
+/// Largest `moov` atom read into memory; embedded cover art makes multi-MB atoms normal.
+const MAX_MP4_MOOV_BYTES: u64 = 32 * 1024 * 1024;
+const MP4_HEAD_BYTES: u64 = 256 * 1024;
+
+/// Returns the bytes holding an MP4 file's `moov` atom (header included), found by seeking over the
+/// top-level atoms, so tags and duration are read even when `moov` follows a large `mdat` (FFmpeg's
+/// default layout). Falls back to the first 256 KB when no usable `moov` is found.
+fn read_mp4_metadata_region(path: &Path) -> Result<Vec<u8>, std::io::Error> {
+    let mut file = fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut offset = 0_u64;
+    for _ in 0..64 {
+        if offset + 8 > file_len {
+            break;
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        let mut header = [0_u8; 16];
+        let header_len = if offset + 16 <= file_len { 16 } else { 8 };
+        file.read_exact(&mut header[..header_len])?;
+        let size32 = u64::from(u32::from_be_bytes([
+            header[0], header[1], header[2], header[3],
+        ]));
+        let atom_size = match size32 {
+            0 => file_len - offset,
+            1 if header_len == 16 => u64::from_be_bytes(header[8..16].try_into().unwrap_or([0; 8])),
+            1 => break,
+            size => size,
+        };
+        if atom_size < 8 || offset.saturating_add(atom_size) > file_len {
+            break;
+        }
+        if &header[4..8] == b"moov" {
+            if atom_size > MAX_MP4_MOOV_BYTES {
+                break;
+            }
+            let mut moov = vec![0_u8; atom_size as usize];
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut moov)?;
+            return Ok(moov);
+        }
+        offset += atom_size;
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut head = Vec::new();
+    file.take(MP4_HEAD_BYTES).read_to_end(&mut head)?;
+    Ok(head)
 }
 
 fn read_id3v2_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
@@ -2247,6 +2290,40 @@ mod tests {
         assert_eq!(tags.title.as_deref(), Some("MP4 Song"));
         assert_eq!(tags.artist.as_deref(), Some("MP4 Artist"));
         assert_eq!(tags.bpm, Some(130));
+    }
+
+    #[test]
+    fn reads_mp4_tags_and_duration_when_moov_follows_a_large_mdat() {
+        let gen = mp4_atom(b"\xa9gen", &mp4_data_atom(b"Jazz"));
+        let day = mp4_atom(b"\xa9day", &mp4_data_atom(b"2020"));
+        let mut ilst_payload = gen;
+        ilst_payload.extend_from_slice(&day);
+        let mut meta_payload = vec![0u8, 0, 0, 0];
+        meta_payload.extend_from_slice(&mp4_atom(b"ilst", &ilst_payload));
+        let udta = mp4_atom(b"udta", &mp4_atom(b"meta", &meta_payload));
+
+        let mut mvhd_payload = vec![0u8; 12];
+        mvhd_payload.extend_from_slice(&1000u32.to_be_bytes());
+        mvhd_payload.extend_from_slice(&30_000u32.to_be_bytes());
+        let mut moov_payload = mp4_atom(b"mvhd", &mvhd_payload);
+        moov_payload.extend_from_slice(&udta);
+
+        // FFmpeg's default layout: ftyp, then the audio in mdat, with moov at the end of the file.
+        let mut file = mp4_atom(b"ftyp", b"M4A \0\0\x02\0");
+        file.extend_from_slice(&mp4_atom(b"mdat", &vec![0u8; 300 * 1024]));
+        file.extend_from_slice(&mp4_atom(b"moov", &moov_payload));
+
+        let dir = temp_dir("mp4-moov-last");
+        let path = dir.join("t.m4a");
+        fs::write(&path, &file).unwrap();
+
+        let tags = read_mp4_tags(&path).unwrap();
+        assert_eq!(tags.genre.as_deref(), Some("Jazz"));
+        assert_eq!(tags.year, Some(2020));
+        assert_eq!(
+            read_m4a_technical(&path).expect("m4a parse").duration,
+            Some(30.0)
+        );
     }
 
     #[test]

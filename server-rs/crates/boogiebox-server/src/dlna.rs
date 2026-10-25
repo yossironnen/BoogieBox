@@ -103,6 +103,8 @@ pub struct DlnaManagerInner {
     /// Documents the Friendly Name public API surface.
     pub friendly_name: Option<String>,
     handles: Vec<tokio::task::JoinHandle<()>>,
+    /// Where DLNA streams are reported for the admin Activity page.
+    activity: crate::activity::ActivityHub,
 }
 
 /// Documents the DLNA Manager public API surface.
@@ -110,11 +112,17 @@ pub type DlnaManager = Arc<Mutex<DlnaManagerInner>>;
 
 /// Documents the New DLNA Manager public API surface.
 pub fn new_dlna_manager() -> DlnaManager {
+    new_dlna_manager_with(crate::activity::ActivityHub::default())
+}
+
+/// A DLNA manager that reports streams to `activity`.
+pub fn new_dlna_manager_with(activity: crate::activity::ActivityHub) -> DlnaManager {
     Arc::new(Mutex::new(DlnaManagerInner {
         running: false,
         port: None,
         friendly_name: None,
         handles: Vec::new(),
+        activity,
     }))
 }
 
@@ -122,7 +130,7 @@ pub fn new_dlna_manager() -> DlnaManager {
 
 /// Documents the Start DLNA public API surface.
 pub fn start_dlna(manager: DlnaManager, db: DbPool, settings: DlnaSettings) {
-    {
+    let activity = {
         let mut mgr = manager.lock().expect("dlna lock");
         for h in mgr.handles.drain(..) {
             h.abort();
@@ -130,7 +138,8 @@ pub fn start_dlna(manager: DlnaManager, db: DbPool, settings: DlnaSettings) {
         mgr.running = false;
         mgr.port = None;
         mgr.friendly_name = None;
-    }
+        mgr.activity.clone()
+    };
 
     if !settings.enabled {
         tracing::info!("DLNA disabled; not starting");
@@ -152,6 +161,7 @@ pub fn start_dlna(manager: DlnaManager, db: DbPool, settings: DlnaSettings) {
     let h1 = tokio::spawn(run_ssdp(udn.clone(), friendly_name.clone(), port, local_ip));
     let h2 = tokio::spawn(run_dlna_http_server(
         db,
+        activity,
         udn.clone(),
         friendly_name.clone(),
         port,
@@ -363,6 +373,7 @@ async fn run_ssdp(udn: String, friendly_name: String, dlna_port: u16, local_ip: 
 #[derive(Clone)]
 struct DlnaHttpState {
     db: DbPool,
+    activity: crate::activity::ActivityHub,
     friendly_name: String,
     udn: String,
     local_ip: IpAddr,
@@ -371,6 +382,7 @@ struct DlnaHttpState {
 
 async fn run_dlna_http_server(
     db: DbPool,
+    activity: crate::activity::ActivityHub,
     udn: String,
     friendly_name: String,
     port: u16,
@@ -378,6 +390,7 @@ async fn run_dlna_http_server(
 ) {
     let state = DlnaHttpState {
         db,
+        activity,
         friendly_name,
         udn,
         local_ip,
@@ -415,7 +428,12 @@ async fn run_dlna_http_server(
         }
     };
     tracing::info!("DLNA HTTP server listening on http://{}:{}", local_ip, port);
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    {
         tracing::error!("DLNA HTTP server error: {e}");
     }
 }
@@ -578,6 +596,7 @@ async fn connection_manager_control_handler(
 
 async fn audio_stream_handler(
     State(state): State<DlnaHttpState>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
@@ -606,7 +625,18 @@ async fn audio_stream_handler(
     }
 
     let mime = crate::ffmpeg::audio_mime_type(&file_path);
-    crate::media_serve::serve_file(&file_path, mime, &headers, false, &[]).await
+    let resp = crate::media_serve::serve_file(&file_path, mime, &headers, false, &[]).await;
+    let tracked = crate::activity::TransferMeta {
+        source: crate::activity::Source::Dlna,
+        kind: crate::activity::TransferKind::Stream,
+        user_id: None,
+        username: None,
+        // The peer address only names the device in the snapshot; it is never shown.
+        client: peer.map(|p| p.0 .0.ip().to_string()).unwrap_or_default(),
+        item_id: id,
+        delivery: Some(crate::activity::DeliveryInfo::original(&file_path)),
+    };
+    state.activity.track_response(tracked, resp, false)
 }
 
 async fn event_stub_handler(_headers: HeaderMap) -> impl IntoResponse {

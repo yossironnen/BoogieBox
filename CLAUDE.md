@@ -19,6 +19,11 @@ When user says: plan only: output should be an implementation plan saved to an m
 When user says: Tighten code
 Switch to Code Tightening Mode as defined in docs/agents/code-tightening-agent.md.
 
+When user says: refresh e2e
+Build with `build-server-rust.bat --no-test --no-installer --e2e`, fix specs broken by UI drift, add tests for items in `wip/e2e-followups.md`, then clear the items handled. Real bugs found: report, don't encode them in tests.
+
+During normal work: do not update or run the e2e suite unless asked. When a change renames/moves/removes UI the suite depends on, or adds a user-facing feature, append one line to `wip/e2e-followups.md` (date, version, what changed).
+
 ### Dev
 - When coding the server side, always make sure that the code will work on Windows and Linux.
 - For Windows builds: dev.bat  (prefers Rust release in Releases\boogiebox-VERSION-win-rs\)
@@ -30,11 +35,13 @@ For Windows:
    build-server-rust.bat --no-installer  (release folder only, no Inno Setup)
    build-server-rust.bat --no-test --no-installer (release folder only, no Inno Setup, no testing)
    build-server-rust.bat --smoke         (build + start/probe/stop)
+   build-server-rust.bat --e2e           (build + Playwright UI release suite, see e2e/README.md)
 For Linux:
    build-server-rust.sh
    build-server-rust.sh --no-installer  (release folder only, no Inno Setup)
    build-server-rust.sh --no-test --no-installer (release folder only, no Inno Setup, no testing)
    build-server-rust.sh --smoke         (build + start/probe/stop)
+   build-server-rust.sh --e2e           (build + Playwright UI release suite, see e2e/README.md)
 
 ### DB
 Database is initialized/migrated by the Rust server at startup after first-run setup selects the data folder.
@@ -70,12 +77,13 @@ upnp/ — UPnP AV control point (XML, device descriptions, SOAP, SSDP discovery,
 remote/ — Play On: RemoteManager, renderer registry, media tokens (`/media/r/{token}`), queue, per-renderer session actors  
 subsonic/ — OpenSubsonic-compatible `/rest` API for third-party apps (auth via per-user Subsonic password or OpenSubsonic API key, XML/JSON rendering, browse/search/stream/scrobble, internet radio, jukebox via Play On, saved play queue, scan status/start, transcode offsets; LAN-only)  
 plays.rs — shared play hub: now-playing list (web, Play On, Subsonic), play started/finished events, scrobble threshold  
+activity.rs — admin Activity page: live transfer tracking (byte-counted responses), download sessions, web player heartbeats, persisted 7-day history, snapshot builder  
 scrobbling/ — Last.fm + ListenBrainz scrobble forwarder (encrypted per-user accounts, queued delivery with retries, Last.fm sign-in)  
 providers.rs — Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh  
 artwork_cache.rs — SHA-1 cache-key shards, UUID v7 markers, folder.jpg discovery  
 image_thumb.rs — JPEG thumbnail generation (pure Rust `image` crate)  
 deep_analysis.rs — Python/Demucs/Torch capability detection and job orchestration  
-routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session, subsonic [Subsonic password + API key management], favourites, radio [internet radio + stream relay], scrobble [scrobbling accounts])
+routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session, subsonic [Subsonic password + API key management], favourites, radio [internet radio + stream relay], scrobble [scrobbling accounts], activity [admin Activity snapshot + SSE, heartbeat, admin mix cancel])
 
 
 ### Client (`client/src`)
@@ -87,6 +95,8 @@ routes/ — Axum route modules per domain (admin, auth, settings, library [libra
 `components/HomeView.tsx` — home dashboard  
 `components/PlaylistsView.tsx` — playlists + BoogieMix controls  
 `components/SettingsPage.tsx` — settings/admin surfaces  
+`components/ActivityView.tsx` — admin Activity page (desktop)  
+`activity/` — Activity feed (SSE + polling fallback), web player heartbeat, types, wording  
 `components/ContextMenu.tsx` — shared context menu  
 `mobile/` — mobile shell and mobile-specific views  
 `platform/` — browser/desktop platform abstraction  
@@ -124,6 +134,7 @@ mix_jobs, mix_outputs
 upnp_renderers, remote_sessions  
 subsonic_credentials, subsonic_stars, subsonic_play_queues, user_track_stats  
 scrobble_accounts, scrobble_queue, internet_radio_stations  
+activity_events  
 settings, user_settings, provider_usage_stats  
 
 Fresh databases are music-only. Upgrade migrations remove legacy movie/TV/video tables and settings.  

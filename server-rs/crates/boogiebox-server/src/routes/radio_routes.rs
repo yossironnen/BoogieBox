@@ -300,7 +300,7 @@ pub async fn open_station(
 
 async fn stream_handler(
     State(state): State<SharedState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Response {
     if !valid_id(&id) {
@@ -332,7 +332,20 @@ async fn stream_handler(
         let _slot = &permit;
         chunk
     });
-    let mut resp = Response::new(Body::from_stream(body));
+    let tracked = crate::activity::TransferMeta {
+        source: crate::activity::Source::Radio,
+        kind: crate::activity::TransferKind::Stream,
+        user_id: Some(user.id.clone()),
+        username: Some(user.username.clone()),
+        client: String::new(),
+        item_id: format!("st-{}", station.id),
+        delivery: None,
+    };
+    let mut resp = crate::activity::hub_of(&state).track_response(
+        tracked,
+        Response::new(Body::from_stream(body)),
+        false,
+    );
     let headers = resp.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,

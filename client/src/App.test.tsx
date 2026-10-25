@@ -5,7 +5,7 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App, { HYBRID_THEME_MODE_STORAGE_KEY, VINTAGE_STYLE_STORAGE_KEY } from './App';
 import { api } from './api';
@@ -19,6 +19,20 @@ vi.mock('./api', () => ({
       session: vi.fn().mockResolvedValue(null),
       refresh: vi.fn().mockResolvedValue({ ok: true }),
       eventsUrl: () => '/api/remote/events',
+    },
+    activity: {
+      snapshot: vi.fn().mockResolvedValue({
+        generatedAtMs: 0,
+        totals: { playing: 2, downloading: 1, mixJobs: 0, transcodes: 0, subsonicTranscodeLimit: 3, activeUsers: 2, serverJobs: 0 },
+        playing: [],
+        downloads: [],
+        mixJobs: [],
+        serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 },
+        recent: [],
+      }),
+      eventsUrl: () => '/api/activity/events',
+      cancelMixJob: vi.fn().mockResolvedValue({ ok: true }),
+      heartbeat: vi.fn(),
     },
     auth: {
       me: vi.fn().mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }),
@@ -103,6 +117,24 @@ describe('App sidebar', () => {
     expect(screen.queryByText('Browse Music')).toBeNull();
     expect(screen.queryByText('admin')).toBeNull();
     expect(window.localStorage.getItem('boogiebox.sidebar.collapsed.v1')).toBe('true');
+  });
+
+  it('shows admins the Activity page with a live count, and hides it from other users', async () => {
+    const { container, unmount } = render(<App />);
+    const nav = await screen.findByRole('button', { name: 'Activity' });
+    await waitFor(() => expect(within(nav).getByLabelText('3 active')).toHaveTextContent('3'));
+    fireEvent.click(nav);
+    expect(nav).toHaveAttribute('aria-current', 'page');
+    expect(container.querySelector('[data-command-bar="activity"]')).not.toBeNull();
+    expect(screen.getByRole('tab', { name: 'Playback' })).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-status-activity')).toHaveAttribute('role', 'button');
+    unmount();
+
+    vi.mocked(api.auth.me).mockResolvedValueOnce({ id: '2', username: 'bob', role: 'user', canManageLibraries: false, canEditMetadata: false } as never);
+    render(<App />);
+    await screen.findByText('home-view');
+    expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+    expect(screen.queryByTestId('sidebar-status-activity')).toBeNull();
   });
 
   it('uses the approved production Hybrid shell without preview controls', async () => {

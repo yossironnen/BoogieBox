@@ -65,6 +65,13 @@ Build only the Rust server release folder without an installer:
 build-server-rust.bat --no-installer
 ```
 
+Build, then run the Playwright UI release suite against that build (combines with the other flags):
+
+```bat
+build-server-rust.bat --e2e
+build-server-rust.bat --no-test --no-installer --e2e
+```
+
 Build the desktop shell:
 
 ```bat
@@ -97,6 +104,12 @@ Build and run a smoke probe:
 ./build-server-rust.sh --smoke
 ```
 
+Build and run the Playwright UI release suite against that build:
+
+```bash
+./build-server-rust.sh --e2e
+```
+
 Output is placed in `Releases/boogiebox-VERSION-linux-rs/`.
 
 ## Verification
@@ -109,6 +122,22 @@ npm run lint
 npm run security:semgrep
 cargo clippy --manifest-path server-rs/Cargo.toml --all-targets --all-features -- -D warnings
 ```
+
+### UI release suite
+
+Browser end-to-end tests in `e2e/` drive the packaged server from `Releases/boogiebox-VERSION-*-rs` against a
+generated music library in a throwaway folder (`tmp/e2e-run/`). Run them before publishing a release:
+
+```bat
+npm run e2e:install                 :: once: Playwright's Chromium
+build-server-rust.bat --e2e         :: build + suite in one step
+npm run e2e                         :: suite only, against the existing build for VERSION
+npm run e2e:report                  :: HTML report with traces and videos of failures
+```
+
+`npm run e2e` checks that Playwright and Chromium are installed first and prints the install command if not.
+Set `BOOGIEBOX_E2E_STRICT_VERSION=1` to fail when the `VERSION` build is missing instead of testing the newest
+release folder. Commands, options and coverage: `e2e/README.md`.
 
 Useful focused Rust commands:
 

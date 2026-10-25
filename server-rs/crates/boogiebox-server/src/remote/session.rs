@@ -409,7 +409,14 @@ impl SessionEnv {
                 .await
                 .unwrap_or(false);
                 if let (true, Some(env)) = (counted, manager.play_env()) {
-                    crate::plays::play_started(&env, user_id, username, id, speaker);
+                    crate::plays::play_started(
+                        &env,
+                        crate::plays::PlaySource::PlayOn,
+                        user_id,
+                        username,
+                        id,
+                        speaker,
+                    );
                 }
             }
             #[cfg(test)]

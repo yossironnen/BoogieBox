@@ -59,3 +59,14 @@ describe('<ModuleName>', () => {
 - Happy path
 - Edge cases (nulls, empty arrays, boundary values)
 - Error/failure cases where applicable
+
+## UI Release Suite (Playwright)
+
+Browser end-to-end tests live in `e2e/` and run against the packaged release build, not the dev client.
+Run them before publishing a release, either with `build-server-rust.bat --e2e` (`./build-server-rust.sh --e2e`
+on Linux) or `npm run e2e` against an existing build. They are not part of `npm test` or the coverage thresholds.
+
+- Import `test`, `expect` and helpers from `e2e/support/test.ts`; every test fails on page errors, app console
+  errors and HTTP 5xx responses.
+- When a user-facing flow changes, update or add the matching spec in `e2e/tests/`.
+- See `e2e/README.md` for commands, options and coverage.

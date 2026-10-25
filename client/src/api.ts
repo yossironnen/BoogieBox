@@ -70,6 +70,7 @@ import type {
   RenderersResponse,
   SessionInUseInfo,
 } from './remote/remoteTypes';
+import type { ActivitySnapshot, PlayerHeartbeat } from './activity/activityTypes';
 
 type ApiEntityId = ClientEntityId;
 
@@ -717,6 +718,34 @@ export const api = {
       return remoteRequest<RemoteSessionState>('DELETE', `/sessions/${remoteUdn(udn)}${qs ? `?${qs}` : ''}`);
     },
     eventsUrl: () => `${BASE}/api/remote/events`,
+  },
+  activity: {
+    /** Admin only. */
+    snapshot:     () => get<ActivitySnapshot>('/activity'),
+    /** Admin only: SSE `snapshot` events. */
+    eventsUrl:    () => `${BASE}/api/activity/events`,
+    /** Admin only: cancels any user's queued or analysing/planning BoogieMix job. */
+    cancelMixJob: (jobId: string) => post<{ ok: boolean }>(`/activity/mix-jobs/${encodeURIComponent(jobId)}/cancel`, {}),
+    /** The web player's position for the admin Activity page. Fire and forget (204, no body). */
+    heartbeat:    (beat: PlayerHeartbeat, options: { closing?: boolean } = {}): void => {
+      const url = `${BASE}/api/activity/heartbeat`;
+      const body = JSON.stringify(beat);
+      try {
+        if (options.closing && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+          navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+          return;
+        }
+        fetch(url, {
+          ...FETCH_OPTS,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          keepalive: true,
+        }).catch(() => {});
+      } catch {
+        // Best effort.
+      }
+    },
   },
   crossfade: {
     config:          (entityType?: string, entityId?: ApiEntityId) =>

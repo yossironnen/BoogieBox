@@ -192,6 +192,17 @@ All routes require a session and return `404` while the `remotePlaybackEnabled` 
 | `GET` | `/api/remote/events` | Server-Sent Events: `renderers`, `session` (full snapshot), `position`, `takeover`, `notice`, `sessionEnded`. |
 | `GET`/`HEAD` | `/media/r/{token}` | Unauthenticated media for renderers. The token is random, short-lived and scoped to one track, mix or cover. |
 
+## Activity (Admin)
+
+The desktop Activity page. Everything except the heartbeat is admin-only (`403` otherwise). Live transfers are kept in memory and counted as response bodies are sent (web streams, Subsonic `stream`/`download`, Play On media, DLNA, the radio relay and BoogieMix downloads). History (plays, finished downloads, DLNA/radio streams over 30 s, Play On stops) is stored in `activity_events` for 7 days and merged with finished BoogieMix jobs and scans.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/activity` | Snapshot: `totals` (`playing`, `downloading`, `mixJobs`, `transcodes`, `subsonicTranscodeLimit`, `activeUsers`, `serverJobs`), `playing` (source `web`/`subsonic`/`playOn`/`dlna`/`radio`, user, client, item, `positionSec`, `durationSec`, `estimated`, `sampledAtMs`, `status`, `delivery`), `downloads` (`offlineSync` sessions per user and app, or single `file` downloads), `mixJobs` (with `canCancel`), `serverJobs` (scans, post-scan queue by type, deep-analysis counts) and `recent` (last 24 h, newest first). DLNA rows name the device when it is a known renderer and never show its address. |
+| `GET` | `/api/activity/events` | Server-Sent Events: `snapshot` with the same body, sent when something changed (at most once a second; job tables are re-read every 2 s while connected). |
+| `POST` | `/api/activity/heartbeat` | Any signed-in user: the web player's `{playerId, trackId, positionSec, durationSec, paused, stopped}` (`trackId` is a track id, `mx-{outputId}` or `st-{stationId}`). `204`. A player that stops reporting for 45 s is dropped. |
+| `POST` | `/api/activity/mix-jobs/{jobId}/cancel` | Cancel any user's queued or analysing/planning BoogieMix job (`409` once rendering or finished). |
+
 ## Subsonic Apps (OpenSubsonic `/rest`)
 
 Third-party Subsonic apps use `GET`/`POST` `/rest/{method}` (`.view` suffix optional; POST takes a form body).

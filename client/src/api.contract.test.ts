@@ -156,6 +156,8 @@ describe('API public endpoint contract', () => {
       () => api.admin.users.remove('user-1'),
       () => api.admin.users.setPin('user-1', '1234'),
       () => api.admin.users.setPermissions('user-1', { canManageLibraries: true, canEditMetadata: false }),
+      () => api.activity.snapshot(),
+      () => api.activity.cancelMixJob('job 1'),
     ];
 
     for (const invoke of calls) await invoke();
@@ -171,6 +173,24 @@ describe('API public endpoint contract', () => {
     expect(requests).toContainEqual(expect.objectContaining({ method: 'PATCH' }));
     expect(requests).toContainEqual(expect.objectContaining({ method: 'DELETE' }));
     expect(requests.every(({ url }) => new URL(url, window.location.href).pathname.startsWith('/api/'))).toBe(true);
+  });
+
+  it('sends Activity requests: admin snapshot, encoded mix-job cancel and a keepalive heartbeat', async () => {
+    await api.activity.snapshot();
+    await api.activity.cancelMixJob('job 1');
+    api.activity.heartbeat({ playerId: 'tab', trackId: 't1', positionSec: 3, durationSec: 200, paused: false });
+    const calls = vi.mocked(fetch).mock.calls.map(([url, options]) => ({ url: String(url), options }));
+    expect(new URL(calls[0].url, window.location.href).pathname).toBe('/api/activity');
+    expect(calls[1]).toMatchObject({ url: '/api/activity/mix-jobs/job%201/cancel', options: { method: 'POST' } });
+    expect(calls[2]).toMatchObject({ url: '/api/activity/heartbeat', options: { method: 'POST', keepalive: true } });
+    expect(JSON.parse(String(calls[2].options?.body))).toMatchObject({ trackId: 't1', positionSec: 3 });
+    expect(api.activity.eventsUrl()).toBe('/api/activity/events');
+
+    const beacon = vi.fn().mockReturnValue(true);
+    Object.defineProperty(navigator, 'sendBeacon', { value: beacon, configurable: true });
+    api.activity.heartbeat({ playerId: 'tab', trackId: null, positionSec: 0, durationSec: null, paused: true, stopped: true }, { closing: true });
+    expect(beacon).toHaveBeenCalledWith('/api/activity/heartbeat', expect.any(Blob));
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it('builds versioned artwork, stream, playlist export, and mix-output URLs', () => {

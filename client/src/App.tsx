@@ -25,6 +25,11 @@ import HomeView from './components/HomeView';
 import SetupView from './components/SetupView';
 import LoginScreen from './components/LoginScreen';
 import SidebarStatusPanel from './components/SidebarStatusPanel';
+import ActivityView from './components/ActivityView';
+import { ActivityIcon } from './components/activityIcons';
+import { useActivityFeed } from './activity/useActivityFeed';
+import { useWebPlayerHeartbeat } from './activity/useWebPlayerHeartbeat';
+import { activeCount } from './activity/activityTypes';
 import { ContextMenuRoot, KebabButton, TRACK_INFO_EVENT, type ContextMenuAction } from './components/ContextMenu';
 import TrackInfoModal from './components/TrackInfoModal';
 import StarRating from './components/StarRating';
@@ -984,7 +989,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
 
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
-type View = 'home' | 'search' | 'browse' | 'settings' | 'playlists' | 'mixes';
+type View = 'home' | 'search' | 'browse' | 'settings' | 'playlists' | 'mixes' | 'activity';
 type PlaybackMode = 'standard' | 'vinyl';
 const VINYL_PLAYBACK_MODE_STORAGE_KEY = 'boogiebox.playback.vinyl.v1';
 const VINYL_PREFS_STORAGE_KEY = 'boogiebox.playback.vinylPrefs.v1';
@@ -1530,12 +1535,28 @@ export default function App() {
     Boolean(currentUser && currentUser !== 'loading' && !isMobileShell),
   );
 
-  const navItems: { id: View; label: string; icon: React.ReactNode }[] = [
+  // Admin Activity page: one live feed shared by the nav badge, the sidebar indicator and the page (desktop only).
+  const signedIn = Boolean(currentUser && currentUser !== 'loading');
+  const activityFeed = useActivityFeed(isAdminUser && !isMobileShell && !setupRequired);
+  const activityActive = activeCount(activityFeed.snapshot?.totals);
+  // Every desktop web player reports its position so admins see real progress and pauses.
+  useWebPlayerHeartbeat(
+    isMobileShell ? null : playbackSnapshot,
+    signedIn && !isMobileShell && !setupRequired && playOn.target.kind === 'local',
+  );
+  useEffect(() => {
+    if (view === 'activity' && (!isAdminUser || isMobileShell) && currentUser !== 'loading') setView('home');
+  }, [view, isAdminUser, isMobileShell, currentUser]);
+
+  const navItems: { id: View; label: string; icon: React.ReactNode; badge?: number }[] = [
     { id: 'home',         label: 'Home',         icon: <Icon.Home /> },
     { id: 'search',       label: 'Search',       icon: <Icon.Search /> },
     { id: 'browse',       label: 'Browse Music', icon: <Icon.Browse /> },
     { id: 'playlists',    label: 'Playlists',    icon: <Icon.Playlist /> },
     { id: 'mixes',        label: 'Mixes',        icon: <Icon.Mixes /> },
+    ...(isAdminUser
+      ? [{ id: 'activity' as View, label: 'Activity', icon: <ActivityIcon />, badge: activityActive }]
+      : []),
     { id: 'settings',     label: 'Settings',     icon: <Icon.Settings /> },
   ];
 
@@ -1712,7 +1733,7 @@ export default function App() {
             {sidebarCollapsed ? <Icon.ChevronRight /> : <Icon.ChevronLeft />}
           </button>
           <nav style={{ ...S.nav, ...(sidebarCollapsed ? S.navCollapsed : {}) }}>
-            {navItems.map(({ id, label, icon }) => {
+            {navItems.map(({ id, label, icon, badge }) => {
               const isActive = view === id;
               return (
                 <button
@@ -1736,6 +1757,9 @@ export default function App() {
                 >
                   {icon}
                   {!sidebarCollapsed && label}
+                  {!sidebarCollapsed && badge ? (
+                    <span style={S.navBadge} aria-label={`${badge} active`}>{badge > 99 ? '99+' : badge}</span>
+                  ) : null}
                 </button>
               );
             })}
@@ -1838,6 +1862,8 @@ export default function App() {
             deepAnalysisStatus={deepAnalysisStatus}
             stats={stats}
             onLogout={handleLogout}
+            activity={isAdminUser ? activityFeed.snapshot : null}
+            onOpenActivity={isAdminUser ? () => openView('activity') : undefined}
           />
         </aside>
 
@@ -1948,6 +1974,7 @@ export default function App() {
               resetRequest={playlistsResetRequest}
             />
           )}
+          {view === 'activity' && isAdminUser && <ActivityView feed={activityFeed} />}
           {view === 'mixes' && (
             <MixesView
               playTrack={playTrack}
@@ -2170,6 +2197,11 @@ const S: Record<string, React.CSSProperties> = {
     height: 44,
     padding: 0,
     borderRadius: 10,
+  },
+  navBadge: {
+    marginLeft: 'auto', minWidth: 20, height: 20, padding: '0 6px', borderRadius: 10, boxSizing: 'border-box',
+    background: 'var(--accent)', color: 'var(--on-accent, #fff)', fontSize: 11, fontWeight: 700,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontVariantNumeric: 'tabular-nums',
   },
   navItemActive: {
     backgroundColor: 'color-mix(in srgb, var(--accent) 16%, transparent)',

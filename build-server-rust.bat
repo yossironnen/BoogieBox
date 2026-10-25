@@ -6,6 +6,7 @@ set RUN_SMOKE=0
 set SKIP_INSTALLER=0
 set SKIP_TESTS=0
 set SKIP_MODEL_CACHE=0
+set RUN_E2E=0
 
 :ParseArgs
 if "%~1"=="" goto ArgsDone
@@ -13,6 +14,7 @@ if /i "%~1"=="--smoke" set RUN_SMOKE=1
 if /i "%~1"=="--no-installer" set SKIP_INSTALLER=1
 if /i "%~1"=="--no-test" set SKIP_TESTS=1
 if /i "%~1"=="--no-model-cache" set SKIP_MODEL_CACHE=1
+if /i "%~1"=="--e2e" set RUN_E2E=1
 shift
 goto ParseArgs
 :ArgsDone
@@ -289,6 +291,8 @@ echo  =================================================================
 echo.
 
 if "%RUN_SMOKE%"=="1" call :SmokeTest
+IF ERRORLEVEL 1 exit /b %ERRORLEVEL%
+if "%RUN_E2E%"=="1" call :E2ETest
 exit /b %ERRORLEVEL%
 
 :ResolveIscc
@@ -312,6 +316,20 @@ IF NOT DEFINED ISCC_EXE (
 IF NOT DEFINED ISCC_EXE (
   IF EXIST "!ProgramFiles!\Inno Setup 6\iscc.exe" set "ISCC_EXE=!ProgramFiles!\Inno Setup 6\iscc.exe"
 )
+exit /b 0
+
+:E2ETest
+echo.
+echo  Running UI release suite (Playwright) against %DIST_DIR%\ ...
+call npx.cmd playwright install chromium
+IF ERRORLEVEL 1 (echo [ERROR] Could not install the Playwright Chromium browser & exit /b 1)
+set "BOOGIEBOX_E2E_SERVER_EXE=%CD%\%DIST_DIR%\boogiebox-server.exe"
+call npm.cmd run e2e
+IF ERRORLEVEL 1 (
+  echo [ERROR] UI release suite failed. Run 'npm run e2e:report' for screenshots, videos and traces.
+  exit /b 1
+)
+echo  UI release suite passed.
 exit /b 0
 
 :SmokeTest

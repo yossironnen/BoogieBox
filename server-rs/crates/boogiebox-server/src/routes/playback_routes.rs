@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path;
 
+use crate::activity;
 use crate::{
     auth::AuthenticatedUser,
     bpm_analysis, ffmpeg, media_serve, plays,
@@ -61,7 +62,7 @@ struct UserHistoryParams {
 
 async fn stream_track_handler(
     State(state): State<SharedState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     req_headers: HeaderMap,
     Path(id): Path<String>,
     Query(params): Query<StreamParams>,
@@ -154,11 +155,12 @@ async fn stream_track_handler(
             .await
             .unwrap_or_else(|_| ("low".into(), false))
         };
-        return media_serve::serve_mp3_transcode(media_serve::Mp3Transcode {
+        let kbps = ffmpeg::bitrate_for_quality(&quality);
+        let resp = media_serve::serve_mp3_transcode(media_serve::Mp3Transcode {
             file_path: &file_path,
             duration: track.duration,
             range: range_header.as_deref(),
-            bitrate_kbps: ffmpeg::bitrate_for_quality(&quality),
+            bitrate_kbps: kbps,
             start_seconds: 0.0,
             replay_gain,
             head_only: false,
@@ -167,6 +169,8 @@ async fn stream_track_handler(
             extra: &[],
         })
         .await;
+        let delivery = activity::DeliveryInfo::transcode(&file_path, "MP3", Some(kbps));
+        return track_web_stream(&state, &user, &id, delivery, resp);
     }
 
     // Native file stream
@@ -178,7 +182,32 @@ async fn stream_track_handler(
         "audio stream using native file response"
     );
     let mime = ffmpeg::audio_mime_type(&file_path);
-    media_serve::serve_file(&file_path, mime, &req_headers, false, &[]).await
+    let resp = media_serve::serve_file(&file_path, mime, &req_headers, false, &[]).await;
+    let delivery = activity::DeliveryInfo::original(&file_path);
+    track_web_stream(&state, &user, &id, delivery, resp)
+}
+
+/// Lists a web player stream on the Activity page while its body is sent.
+fn track_web_stream(
+    state: &SharedState,
+    user: &AuthenticatedUser,
+    track_id: &str,
+    delivery: activity::DeliveryInfo,
+    resp: Response,
+) -> Response {
+    activity::hub_of(state).track_response(
+        activity::TransferMeta {
+            source: activity::Source::Web,
+            kind: activity::TransferKind::Stream,
+            user_id: Some(user.id.clone()),
+            username: Some(user.username.clone()),
+            client: String::new(),
+            item_id: track_id.to_owned(),
+            delivery: Some(delivery),
+        },
+        resp,
+        false,
+    )
 }
 
 async fn user_history_handler(
@@ -230,7 +259,14 @@ async fn track_played_handler(
     match result {
         Ok(Ok(true)) => {
             if let Some(env) = plays::PlayEnv::from_state(&state) {
-                plays::play_started(&env, &user.id, &user.username, &track_id, plays::WEB_CLIENT);
+                plays::play_started(
+                    &env,
+                    plays::PlaySource::Web,
+                    &user.id,
+                    &user.username,
+                    &track_id,
+                    plays::WEB_CLIENT,
+                );
             }
             (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
         }

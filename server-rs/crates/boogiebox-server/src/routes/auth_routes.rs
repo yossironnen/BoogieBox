@@ -360,6 +360,7 @@ mod test_helpers {
             worker_cancel: tokio_util::sync::CancellationToken::new(),
             subsonic: crate::subsonic::SubsonicState::default(),
             plays: crate::plays::PlayHub::default(),
+            activity: crate::activity::ActivityHub::default(),
         };
         let shared = Arc::new(RwLock::new(state));
         auth_router(shared)

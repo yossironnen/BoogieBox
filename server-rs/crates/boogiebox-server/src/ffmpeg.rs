@@ -449,6 +449,14 @@ impl StreamCodec {
             StreamCodec::Aac => "audio/aac",
         }
     }
+
+    /// Display name (Activity page).
+    pub fn label(self) -> &'static str {
+        match self {
+            StreamCodec::Opus => "Opus",
+            StreamCodec::Aac => "AAC",
+        }
+    }
 }
 
 /// FFmpeg arguments for a streamed Opus/AAC encode; the empty string after `-i` is the input path placeholder

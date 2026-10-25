@@ -15,7 +15,7 @@ import {
 } from '../hybridPreview';
 import { DEFAULT_VINTAGE_STYLE, type VintageStyle } from '../vintageThemes';
 import VintageStylePicker from './VintageStylePicker';
-import { parseServerDate } from '../utils';
+import { formatBytes, parseServerDate } from '../utils';
 import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
 import FolderPickerModal from './FolderPickerModal';
@@ -50,17 +50,7 @@ export function fmtLastRun(iso: string | null): string {
   return (parseServerDate(iso) ?? new Date(iso)).toLocaleString();
 }
 
-export function formatBytes(bytes: number | null | undefined): string {
-  if (!bytes || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
-}
+export { formatBytes };
 
 function fmtQueueTime(iso: string | null): string {
   if (!iso) return 'n/a';

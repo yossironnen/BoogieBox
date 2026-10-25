@@ -28,6 +28,7 @@ use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
 };
+pub mod activity;
 pub mod artist_radio;
 pub mod artwork_cache;
 pub mod auth;
@@ -148,6 +149,9 @@ pub struct AppState {
     pub subsonic: subsonic::SubsonicState,
     /// Now-playing list, Last.fm sign-in states and the scrobble forwarder's wake-up; reset on a database switch.
     pub plays: plays::PlayHub,
+    /// Live transfers, web player reports and queued history for the admin Activity page; reset on a database
+    /// switch.
+    pub activity: activity::ActivityHub,
 }
 
 impl Default for AppState {
@@ -169,6 +173,7 @@ impl Default for AppState {
             None
         };
 
+        let activity = activity::ActivityHub::default();
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .user_agent("BoogieBox/1.0")
@@ -193,11 +198,12 @@ impl Default for AppState {
             login_attempts: auth::LoginAttemptTracker::default(),
             http_client,
             db_folder,
-            dlna_manager: dlna::new_dlna_manager(),
+            dlna_manager: dlna::new_dlna_manager_with(activity.clone()),
             remote: remote::RemoteManager::new(),
             worker_cancel: tokio_util::sync::CancellationToken::new(),
             subsonic: subsonic::SubsonicState::default(),
             plays: plays::PlayHub::default(),
+            activity,
         }
     }
 }
@@ -369,12 +375,20 @@ pub async fn run_from_env() -> Result<(), ServerError> {
             hub: state.plays.clone(),
             subsonic: state.subsonic.clone(),
             db_folder: state.db_folder.clone(),
+            activity: state.activity.clone(),
         };
         state.remote.set_play_env(play_env.clone());
         scrobbling::start_forwarder(play_env, cancel.clone());
         deep_analysis::start_deep_analysis_worker(ps_state.clone());
         mix_worker::start_mix_worker(ps_state);
         let dlna_mgr = state.dlna_manager.clone();
+        activity::start(
+            state.activity.clone(),
+            state.plays.clone(),
+            state.remote.clone(),
+            dlna_db.clone(),
+            cancel.clone(),
+        );
         remote::start_in_background(state.remote.clone(), dlna_db.clone(), cancel);
         tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
     }
@@ -563,6 +577,9 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
             shared_state.clone(),
         ))
         .merge(routes::radio_routes::radio_router(shared_state.clone()))
+        .merge(routes::activity_routes::activity_router(
+            shared_state.clone(),
+        ))
         .merge(routes::dlna_routes::dlna_router(shared_state.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer)
@@ -804,6 +821,7 @@ async fn setup_handler(
                 s.db_folder = Some(PathBuf::from(db_folder));
                 s.subsonic.reset();
                 s.plays.reset();
+                s.activity.reset();
                 s.worker_cancel.cancel();
                 let cancel = tokio_util::sync::CancellationToken::new();
                 s.worker_cancel = cancel.clone();
@@ -829,6 +847,7 @@ async fn setup_handler(
                     hub: s.plays.clone(),
                     subsonic: s.subsonic.clone(),
                     db_folder: s.db_folder.clone(),
+                    activity: s.activity.clone(),
                 };
                 s.remote.set_play_env(play_env.clone());
                 scrobbling::start_forwarder(play_env, cancel.clone());
@@ -836,6 +855,13 @@ async fn setup_handler(
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
                 let dlna_db = s.db.as_ref().expect("db set").clone();
+                activity::start(
+                    s.activity.clone(),
+                    s.plays.clone(),
+                    s.remote.clone(),
+                    dlna_db.clone(),
+                    cancel.clone(),
+                );
                 remote::start_in_background(s.remote.clone(), dlna_db.clone(), cancel.clone());
                 tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
                 (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
@@ -916,6 +942,7 @@ async fn switch_db_handler(
                 s.db_folder = Some(PathBuf::from(db_folder));
                 s.subsonic.reset();
                 s.plays.reset();
+                s.activity.reset();
                 s.worker_cancel.cancel();
                 let cancel = tokio_util::sync::CancellationToken::new();
                 s.worker_cancel = cancel.clone();
@@ -942,6 +969,7 @@ async fn switch_db_handler(
                     hub: s.plays.clone(),
                     subsonic: s.subsonic.clone(),
                     db_folder: s.db_folder.clone(),
+                    activity: s.activity.clone(),
                 };
                 s.remote.set_play_env(play_env.clone());
                 scrobbling::start_forwarder(play_env, cancel.clone());
@@ -949,6 +977,13 @@ async fn switch_db_handler(
                 mix_worker::start_mix_worker(ps_state);
                 let dlna_mgr = s.dlna_manager.clone();
                 let dlna_db = s.db.as_ref().expect("db set").clone();
+                activity::start(
+                    s.activity.clone(),
+                    s.plays.clone(),
+                    s.remote.clone(),
+                    dlna_db.clone(),
+                    cancel.clone(),
+                );
                 remote::start_in_background(s.remote.clone(), dlna_db.clone(), cancel.clone());
                 tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
                 (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
