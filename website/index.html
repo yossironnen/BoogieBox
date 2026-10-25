@@ -18,6 +18,7 @@
       </a>
       <nav aria-label="Primary navigation">
         <a href="#features">Features</a>
+        <a href="#apps">Apps</a>
         <a href="#play-on">Play On</a>
         <a href="#boogiemix">BoogieMix</a>
         <a href="#gallery">Screenshots</a>
@@ -55,7 +56,7 @@
           <article>
             <span class="feature-number">01</span>
             <h3>Rediscover</h3>
-            <p>Explore artists, albums, listening history, ratings, and genres, or start an Artist Radio built from similar artists and matching moods.</p>
+            <p>Explore artists, albums, listening history, ratings, favourites, and genres, or start an Artist Radio built from similar artists and matching moods.</p>
           </article>
           <article>
             <span class="feature-number">02</span>
@@ -65,14 +66,40 @@
           <article>
             <span class="feature-number">03</span>
             <h3>Keep it local</h3>
-            <p>Run it on Windows or Linux, stream across your local network to browsers, phones, and speakers, and enrich your library with optional metadata providers - no fees required.</p>
+            <p>Run it on Windows or Linux, stream across your local network to browsers, phone apps, and speakers, and enrich your library with optional metadata providers - no fees required.</p>
           </article>
+        </div>
+      </section>
+
+      <section class="spotlight" id="apps">
+        <div class="spotlight-copy">
+          <p class="eyebrow spotlight-eyebrow-pink">New — Subsonic apps</p>
+          <h2>Take your music with you.</h2>
+          <p>BoogieBox supports the Subsonic/OpenSubsonic API, so music apps like Amperfy can connect to your library and play it, no browser needed. Download albums and playlists for offline, listen through CarPlay in the car, and with the right app, even sync music to your watch.</p>
+          <ul>
+            <li>Download music for offline listening, wherever you are</li>
+            <li>CarPlay, lock-screen controls, AirPlay, and Bluetooth, the way phone apps do it</li>
+            <li>Playlists, favourites, and ratings stay in sync with BoogieBox</li>
+            <li>Your BoogieMixes, lyrics, Instant Mix, and internet radio, right in the app</li>
+            <li>Scrobble to your own Last.fm or ListenBrainz account from any app or speaker</li>
+          </ul>
+        </div>
+        <div class="phone-trio">
+          <button class="image-button" type="button" data-lightbox="assets/screenshots/amperfy_home.png" aria-label="Open Amperfy home screenshot">
+            <img src="assets/screenshots/amperfy_home.png" alt="Amperfy on iPhone showing random albums, recently played albums, and playlists from a BoogieBox library">
+          </button>
+          <button class="image-button" type="button" data-lightbox="assets/screenshots/amperfy_album.png" aria-label="Open Amperfy album screenshot">
+            <img src="assets/screenshots/amperfy_album.png" alt="Amperfy album page with play, shuffle, and per-track download buttons">
+          </button>
+          <button class="image-button" type="button" data-lightbox="assets/screenshots/amperfy_playback.png" aria-label="Open Amperfy playback screenshot">
+            <img src="assets/screenshots/amperfy_playback.png" alt="Amperfy now playing screen with synced lyrics from BoogieBox">
+          </button>
         </div>
       </section>
 
       <section class="spotlight spotlight-alt" id="play-on">
         <div class="spotlight-copy">
-          <p class="eyebrow spotlight-eyebrow-pink">New — Play On</p>
+          <p class="eyebrow spotlight-eyebrow-pink">Play On</p>
           <h2>Your music, on every speaker.</h2>
           <p>Send playback from BoogieBox to the network speakers, streamers, and smart TVs around your house. Think Spotify Connect, but for the library you own.</p>
           <ul>
@@ -145,7 +172,7 @@
 
       <section class="spotlight spotlight-alt">
         <div class="spotlight-copy">
-          <p class="eyebrow spotlight-eyebrow-pink">New — refreshed UI</p>
+          <p class="eyebrow spotlight-eyebrow-pink">Refreshed UI</p>
           <h2>Slicker design.</h2>
           <p>Every page got a cleanup. Bulky headers are gone, controls sit where you expect them, and your collection gets more of the screen.</p>
           <ul>
@@ -158,6 +185,24 @@
         </div>
         <button class="image-button" type="button" data-lightbox="assets/screenshots/playlist_drill.png" aria-label="Open playlist page screenshot">
           <img src="assets/screenshots/playlist_drill.png" alt="BoogieBox playlist page with the compact command bar, playlist details row, and track list">
+        </button>
+      </section>
+
+      <section class="spotlight">
+        <div class="spotlight-copy">
+          <p class="eyebrow spotlight-eyebrow-pink">New — Activity</p>
+          <h2>See what's playing.</h2>
+          <p>Ever wondered who's listening to what, or why the server is busy? The Activity page shows admins everything going on, live.</p>
+          <ul>
+            <li>Now playing across the web player, speakers, Subsonic apps, DLNA, and radio</li>
+            <li>Downloads, including apps syncing music for offline</li>
+            <li>BoogieMix jobs, with a cancel button</li>
+            <li>Library scans and deep analysis progress</li>
+            <li>The last 24 hours at a glance</li>
+          </ul>
+        </div>
+        <button class="image-button" type="button" data-lightbox="assets/screenshots/activity_page.png" aria-label="Open Activity page screenshot">
+          <img src="assets/screenshots/activity_page.png" alt="BoogieBox Activity page with now playing, downloads, BoogieMix jobs, server jobs, and recent activity">
         </button>
       </section>
 
@@ -297,7 +342,7 @@
         <div class="detail-list">
           <div><span>Playback</span><p>MP3, FLAC, M4A, OGG, OPUS, WAV, AAC, WMA, AIFF, and APE.</p></div>
           <div><span>Analysis</span><p>Waveforms, BPM detection, Sonic Fingerprint stem analysis, listening history, and optional BoogieMix deep analysis with Demucs.</p></div>
-          <div><span>Connected</span><p>Play On to UPnP/DLNA speakers, a built-in DLNA server, Last.fm, lyrics, metadata enrichment, and mobile access.</p></div>
+          <div><span>Connected</span><p>Subsonic/OpenSubsonic apps, Play On to UPnP/DLNA speakers, a built-in DLNA server, Last.fm and ListenBrainz scrobbling, internet radio, lyrics, metadata enrichment, and mobile access.</p></div>
           <div><span>Built with</span><p>Rust, React, TypeScript, Tauri 2, SQLite, and FFmpeg.</p></div>
         </div>
       </section>

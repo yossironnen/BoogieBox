@@ -369,6 +369,23 @@ h2 {
   transform: scale(1.012);
 }
 
+.phone-trio {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+  max-width: 640px;
+  justify-self: center;
+}
+
+.phone-trio .image-button {
+  border-radius: 18px;
+}
+
+.phone-trio .image-button:nth-child(2) {
+  margin-top: 40px;
+}
+
 .section-heading {
   display: grid;
   grid-template-columns: 1.4fr .6fr;
@@ -609,6 +626,18 @@ footer div {
   .spotlight-alt .spotlight-copy,
   .spotlight-alt .image-button {
     order: unset;
+  }
+
+  .phone-trio {
+    gap: 10px;
+  }
+
+  .phone-trio .image-button {
+    border-radius: 12px;
+  }
+
+  .phone-trio .image-button:nth-child(2) {
+    margin-top: 24px;
   }
 
   .section-heading {
