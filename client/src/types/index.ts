@@ -30,7 +30,13 @@ export interface Library {
   track_count: number;
   folder_count?: number;
   folders?: LibraryFolder[];
+  /** Missing tracks the last scan kept instead of deleting (offline folder, unreadable folder, mass removal). */
+  missing_kept?: number;
+  missing_kept_reason?: MissingKeptReason | null;
 }
+
+/** Why a scan kept tracks whose files it could not find. */
+export type MissingKeptReason = 'folder_unavailable' | 'mass_removal' | 'unreadable_folder';
 
 /** Track is part of this module's public API. */
 export interface Track {

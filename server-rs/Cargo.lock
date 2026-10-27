@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-db"
-version = "0.9.40"
+version = "0.9.41"
 dependencies = [
  "rusqlite",
  "serde",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-server"
-version = "0.9.40"
+version = "0.9.41"
 dependencies = [
  "ab_glyph",
  "aes-gcm",

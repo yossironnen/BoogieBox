@@ -63,13 +63,13 @@ Every test also fails on uncaught page errors, app `console.error` output and an
 | --- | --- |
 | First-run setup, library add + scan | `tests/first-run.setup.ts` |
 | Every view and Settings tab renders, version, sidebar | `tests/desktop/shell.spec.ts` |
-| Browse artists/albums, drill-down, per-format tags, artwork, genres, ratings | `tests/desktop/library.spec.ts` |
-| Real audio playback per format, transport, queue, seek, auto-advance | `tests/desktop/playback.spec.ts` |
+| Browse artists/albums, drill-down, per-format tags, artwork, genres, ratings, scan safety (offline folder, mass-removal brake, Remove missing tracks) | `tests/desktop/library.spec.ts` |
+| Real audio playback per format, transport, queue, seek, auto-advance, OS media controls (MediaSession) | `tests/desktop/playback.spec.ts` |
 | Playlist create / add / rename / play / delete | `tests/desktop/playlists.spec.ts` |
 | Search by title/artist/album, genre filter | `tests/desktop/search.spec.ts` |
 | PIN users, wrong PIN, non-admin UI, sign-out, delete | `tests/desktop/users.spec.ts` |
 | Favourites, radio stations, themes, Subsonic switch, Activity, Home, Auto DJ | `tests/desktop/features.spec.ts` |
-| Mobile shell, browse, search, Now Playing | `tests/mobile/mobile.spec.ts` |
+| Mobile shell, browse, search, Now Playing, OS media controls | `tests/mobile/mobile.spec.ts` |
 
 Not covered (needs hardware or network): Play On renderers, DLNA, BoogieMix rendering/deep analysis, Last.fm,
 ListenBrainz and provider lookups, the desktop (Tauri) shell.
@@ -81,6 +81,7 @@ ListenBrainz and provider lookups, the desktop (Tauri) shell.
 | `BOOGIEBOX_E2E_SERVER_EXE` | release for `VERSION` | Test a specific `boogiebox-server(.exe)` |
 | `BOOGIEBOX_E2E_STRICT_VERSION` | off | `1` = fail when the `VERSION` build is missing |
 | `BOOGIEBOX_E2E_PORT` | `3917` | Server port |
+| `BOOGIEBOX_PRUNE_BRAKE_MIN` | `2` | Passed to the server: lowers the scan's mass-removal brake floor (normally 200 tracks) so the fixture library can trip it |
 
 ## Writing tests
 

@@ -23,6 +23,21 @@ struct ScanCounters {
     files_scanned: i64,
     errors: i64,
     messages: Vec<String>,
+    /// Library folders that could not be opened at all (offline NAS, unplugged drive).
+    unavailable_roots: Vec<String>,
+    /// Folders (or entries) whose listing failed partway; nothing under them may be pruned.
+    failed_dirs: Vec<String>,
+}
+
+/// Test-only override for the prune brake's track floor, so the e2e fixture library (a handful of
+/// tracks) can trip it. Unset in normal use.
+const PRUNE_BRAKE_MIN_ENV: &str = "BOOGIEBOX_PRUNE_BRAKE_MIN";
+
+fn prune_brake_min_tracks() -> usize {
+    std::env::var(PRUNE_BRAKE_MIN_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(boogiebox_db::jobs::PRUNE_BRAKE_MIN_TRACKS)
 }
 
 #[derive(Debug, Default)]
@@ -238,8 +253,19 @@ fn scan_music_library(db: &DbPool, claimed: &ClaimedScanJob) -> Result<(), JobEr
         // Lock is released here between batches, allowing other handlers to proceed.
     }
 
+    let guard = boogiebox_db::jobs::PruneGuard {
+        protected_prefixes: counters
+            .unavailable_roots
+            .iter()
+            .chain(&counters.failed_dirs)
+            .map(|path| boogiebox_db::jobs::normalize_scan_path(path))
+            .collect(),
+        brake_min_tracks: prune_brake_min_tracks(),
+    };
     let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-    boogiebox_db::jobs::prune_missing_tracks(&conn, &claimed.library_id, &seen_paths)?;
+    let outcome =
+        boogiebox_db::jobs::prune_missing_tracks(&conn, &claimed.library_id, &seen_paths, &guard)?;
+    record_prune_outcome(&conn, &claimed.library_id, &mut counters, &outcome)?;
     boogiebox_db::jobs::prune_orphaned_music_entities(&conn)?;
     boogiebox_db::jobs::enqueue_default_music_post_scan_jobs(&conn, &claimed.library_id)?;
     let error_log = (!counters.messages.is_empty()).then(|| counters.messages.join("\n"));
@@ -255,10 +281,127 @@ fn scan_music_library(db: &DbPool, claimed: &ClaimedScanJob) -> Result<(), JobEr
     Ok(())
 }
 
+/// Writes the prune result to the library row and the scan log. Whatever the guard kept stays
+/// visible in Settings → Libraries until a later scan finds the files or an admin removes them.
+fn record_prune_outcome(
+    conn: &rusqlite::Connection,
+    library_id: &EntityId,
+    counters: &mut ScanCounters,
+    outcome: &boogiebox_db::jobs::PruneOutcome,
+) -> Result<(), JobError> {
+    use boogiebox_db::jobs::{
+        MISSING_KEPT_FOLDER_UNAVAILABLE, MISSING_KEPT_MASS_REMOVAL, MISSING_KEPT_UNREADABLE_FOLDER,
+    };
+    let kept = outcome.kept_protected + outcome.kept_braked;
+    let reason = if outcome.kept_protected > 0 && !counters.unavailable_roots.is_empty() {
+        Some(MISSING_KEPT_FOLDER_UNAVAILABLE)
+    } else if outcome.kept_braked > 0 {
+        Some(MISSING_KEPT_MASS_REMOVAL)
+    } else if outcome.kept_protected > 0 {
+        Some(MISSING_KEPT_UNREADABLE_FOLDER)
+    } else {
+        None
+    };
+    if outcome.kept_protected > 0 {
+        tracing::warn!(
+            "Scan of library {library_id} kept {} track(s) under folders it could not read",
+            outcome.kept_protected
+        );
+    }
+    if outcome.kept_braked > 0 {
+        tracing::warn!(
+            "Scan of library {library_id} skipped removing {} of {} track(s): too many missing at once",
+            outcome.kept_braked,
+            outcome.total
+        );
+        counters.messages.push(format!(
+            "Kept {} of {} tracks whose files were not found: too many missing at once. Use Remove missing tracks to delete them.",
+            outcome.kept_braked, outcome.total
+        ));
+    }
+    boogiebox_db::jobs::set_library_missing_kept(conn, library_id, kept, reason)
+}
+
+/// Result of [`remove_missing_tracks`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct RemoveMissingOutcome {
+    /// Tracks deleted because their file no longer exists.
+    pub removed: usize,
+    /// Tracks kept because their file could not be checked (permission or I/O error).
+    pub unchecked: usize,
+}
+
+/// Admin "Remove missing tracks": deletes every track in `library_id` whose file does not exist,
+/// without the scan guard. File checks run with the database lock released.
+pub fn remove_missing_tracks(
+    db: &DbPool,
+    library_id: &EntityId,
+) -> Result<RemoveMissingOutcome, JobError> {
+    let tracks = {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        let exists = conn
+            .query_row("SELECT 1 FROM libraries WHERE id=?1", [library_id], |_| {
+                Ok(())
+            })
+            .is_ok();
+        if !exists {
+            return Err(JobError::LibraryNotFound);
+        }
+        boogiebox_db::jobs::library_track_paths(&conn, library_id)?
+    };
+    let mut outcome = RemoveMissingOutcome::default();
+    let mut doomed = Vec::new();
+    for (track_id, rowid, file_path) in tracks {
+        match fs::metadata(&file_path) {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                doomed.push((track_id, rowid))
+            }
+            Err(_) => outcome.unchecked += 1,
+        }
+    }
+    const DELETE_BATCH: usize = 500;
+    for chunk in doomed.chunks(DELETE_BATCH) {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute_batch("BEGIN")?;
+        match boogiebox_db::jobs::delete_tracks(&conn, chunk) {
+            Ok(removed) => {
+                conn.execute_batch("COMMIT")?;
+                outcome.removed += removed;
+            }
+            Err(err) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+    }
+    let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+    boogiebox_db::jobs::prune_orphaned_music_entities(&conn)?;
+    boogiebox_db::jobs::set_library_missing_kept(&conn, library_id, 0, None)?;
+    boogiebox_db::refresh_denormalized_counts(&conn)?;
+    boogiebox_db::refresh_stats_cache(&conn)?;
+    tracing::info!(
+        "Removed {} missing track(s) from library {library_id} ({} could not be checked)",
+        outcome.removed,
+        outcome.unchecked
+    );
+    Ok(outcome)
+}
+
 fn discover_audio_files(folders: &[String], counters: &mut ScanCounters) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for folder in folders {
-        collect_audio_files(Path::new(folder), &mut files, counters);
+        let root = Path::new(folder);
+        // Probe the root first: an offline share must protect its tracks, not look empty.
+        if let Err(err) = fs::read_dir(root) {
+            counters.errors += 1;
+            counters.unavailable_roots.push(folder.clone());
+            counters.messages.push(format!(
+                "{folder}: library folder unavailable, its tracks were kept: {err}"
+            ));
+            continue;
+        }
+        collect_audio_files(root, &mut files, counters);
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     files
@@ -270,17 +413,33 @@ fn collect_audio_files(path: &Path, files: &mut Vec<PathBuf>, counters: &mut Sca
         Err(err) => {
             counters.errors += 1;
             counters
+                .failed_dirs
+                .push(path.to_string_lossy().into_owned());
+            counters
                 .messages
                 .push(format!("{}: cannot read folder: {err}", path.display()));
             return;
         }
     };
-    for entry in read_dir.flatten() {
+    for entry in read_dir {
+        let Ok(entry) = entry else {
+            // The listing broke partway, so anything under this folder may be unseen.
+            counters
+                .failed_dirs
+                .push(path.to_string_lossy().into_owned());
+            continue;
+        };
         let entry_path = entry.path();
         // Skip symlinks entirely to prevent directory cycles on Windows.
         let metadata = match entry.metadata() {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(_) => {
+                // Unknown whether this is a file or a folder; keep whatever sits at this path.
+                counters
+                    .failed_dirs
+                    .push(entry_path.to_string_lossy().into_owned());
+                continue;
+            }
         };
         if metadata.is_symlink() {
             continue;
@@ -1857,6 +2016,161 @@ mod tests {
             )
             .unwrap();
         assert_eq!(track_count, 1);
+    }
+
+    fn scan_once(db: &DbPool, library_id: &str) {
+        let claimed = {
+            let conn = db.lock().unwrap();
+            enqueue_scan_job(&conn, library_id).unwrap();
+            claim_next_scan_job(&conn).unwrap().expect("job claimable")
+        };
+        scan_music_library(db, &claimed).unwrap();
+    }
+
+    fn library_missing_kept(db: &DbPool, library_id: &str) -> (i64, Option<String>, i64) {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT missing_kept, missing_kept_reason,
+                    (SELECT COUNT(*) FROM tracks WHERE library_id = l.id)
+             FROM libraries l WHERE id = ?1",
+            [library_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scan_with_unavailable_root_keeps_tracks_and_their_history() {
+        let (db, dir) = init_test_db("scan-offline-root");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(music_dir.join("Album")).unwrap();
+        for name in ["01.mp3", "02.mp3", "03.mp3"] {
+            fs::write(music_dir.join("Album").join(name), b"fake mp3 bytes").unwrap();
+        }
+        let library_id = {
+            let conn = db.lock().unwrap();
+            create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("Offline".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap()
+            .id
+            .to_string()
+        };
+        scan_once(&db, &library_id);
+        assert_eq!(library_missing_kept(&db, &library_id), (0, None, 3));
+        {
+            let conn = db.lock().unwrap();
+            conn.execute_batch(
+                "INSERT INTO users(id, username) VALUES('u1', 'user');
+                 INSERT INTO play_history(id, user_id, track_id)
+                   SELECT 'h-' || id, 'u1', id FROM tracks;",
+            )
+            .unwrap();
+        }
+
+        // The share goes offline: the folder can no longer be opened.
+        let offline_dir = dir.join("music-offline");
+        fs::rename(&music_dir, &offline_dir).unwrap();
+        scan_once(&db, &library_id);
+        assert_eq!(
+            library_missing_kept(&db, &library_id),
+            (3, Some("folder_unavailable".into()), 3)
+        );
+        let history: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM play_history", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(history, 3);
+
+        // Back online: the warning clears and nothing was lost.
+        fs::rename(&offline_dir, &music_dir).unwrap();
+        scan_once(&db, &library_id);
+        assert_eq!(library_missing_kept(&db, &library_id), (0, None, 3));
+
+        // Offline again, then the admin confirms the tracks are gone for good.
+        fs::rename(&music_dir, &offline_dir).unwrap();
+        scan_once(&db, &library_id);
+        let outcome =
+            remove_missing_tracks(&db, &boogiebox_db::music::coerce_entity_id(&library_id))
+                .unwrap();
+        assert_eq!(
+            outcome,
+            RemoveMissingOutcome {
+                removed: 3,
+                unchecked: 0
+            }
+        );
+        assert_eq!(library_missing_kept(&db, &library_id), (0, None, 0));
+    }
+
+    #[test]
+    fn remove_missing_tracks_rejects_unknown_library() {
+        let (db, _dir) = init_test_db("remove-missing-unknown");
+        assert!(matches!(
+            remove_missing_tracks(
+                &db,
+                &boogiebox_db::music::coerce_entity_id("no-such-library")
+            ),
+            Err(JobError::LibraryNotFound)
+        ));
+    }
+
+    #[test]
+    fn scan_still_prunes_a_few_deleted_files() {
+        let (db, dir) = init_test_db("scan-small-prune");
+        let music_dir = dir.join("music");
+        fs::create_dir_all(&music_dir).unwrap();
+        for name in ["01.mp3", "02.mp3"] {
+            fs::write(music_dir.join(name), b"fake mp3 bytes").unwrap();
+        }
+        let library_id = {
+            let conn = db.lock().unwrap();
+            create_library(
+                &conn,
+                CreateLibraryInput {
+                    folders: vec![music_dir.to_string_lossy().into_owned()],
+                    name: Some("Small".into()),
+                    library_type: None,
+                    scanner_profile: None,
+                    metadata_mode: None,
+                },
+            )
+            .unwrap()
+            .id
+            .to_string()
+        };
+        scan_once(&db, &library_id);
+        fs::remove_file(music_dir.join("02.mp3")).unwrap();
+        scan_once(&db, &library_id);
+        assert_eq!(library_missing_kept(&db, &library_id), (0, None, 1));
+    }
+
+    #[test]
+    fn discover_audio_files_marks_missing_root_unavailable() {
+        let dir = temp_dir("discover-unavailable");
+        let missing = dir.join("offline").to_string_lossy().into_owned();
+        let mut counters = ScanCounters::default();
+        discover_audio_files(std::slice::from_ref(&missing), &mut counters);
+        assert_eq!(counters.unavailable_roots, vec![missing]);
+        assert!(counters.failed_dirs.is_empty());
+    }
+
+    #[test]
+    fn prune_brake_min_tracks_defaults_without_override() {
+        if std::env::var(PRUNE_BRAKE_MIN_ENV).is_err() {
+            assert_eq!(
+                prune_brake_min_tracks(),
+                boogiebox_db::jobs::PRUNE_BRAKE_MIN_TRACKS
+            );
+        }
     }
 
     #[test]

@@ -798,12 +798,68 @@ pub fn upsert_scanned_track(
     Ok(track_id)
 }
 
-/// Documents the Prune Missing Tracks public API surface.
+/// A scan skips its prune when the tracks it would remove number more than this **and** more than
+/// [`PRUNE_BRAKE_MAX_PERCENT`] of the library.
+pub const PRUNE_BRAKE_MIN_TRACKS: usize = 200;
+/// See [`PRUNE_BRAKE_MIN_TRACKS`].
+pub const PRUNE_BRAKE_MAX_PERCENT: usize = 25;
+
+/// What a scan's prune must not remove. Deleting a track cascades to its play history, ratings,
+/// playlist entries and analysis, so anything the scan could not actually look at is kept.
+#[derive(Debug, Clone)]
+pub struct PruneGuard {
+    /// Folders the scan could not list (unavailable library folders and unreadable subfolders),
+    /// normalised with [`normalize_scan_path`]. Tracks under them are always kept.
+    pub protected_prefixes: Vec<String>,
+    /// Mass-removal brake floor; see [`PRUNE_BRAKE_MIN_TRACKS`].
+    pub brake_min_tracks: usize,
+}
+
+impl Default for PruneGuard {
+    fn default() -> Self {
+        Self {
+            protected_prefixes: Vec::new(),
+            brake_min_tracks: PRUNE_BRAKE_MIN_TRACKS,
+        }
+    }
+}
+
+/// Result of [`prune_missing_tracks`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneOutcome {
+    /// Tracks deleted.
+    pub removed: usize,
+    /// Missing tracks kept because they sit under a protected folder.
+    pub kept_protected: usize,
+    /// Missing tracks kept because removing them would have tripped the mass-removal brake.
+    pub kept_braked: usize,
+    /// Tracks in the library before the prune.
+    pub total: usize,
+}
+
+/// Lowercases `path` and turns it into a `/`-separated path without a trailing separator, so
+/// Windows, UNC and Linux paths compare by prefix the same way the scanner's seen-set does.
+pub fn normalize_scan_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/").to_ascii_lowercase();
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn is_under_prefix(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || prefix.ends_with('/'))
+}
+
+/// Deletes the tracks in `library_id` the scan did not see, except those `guard` protects. When
+/// the remaining set trips the mass-removal brake, nothing is deleted.
 pub fn prune_missing_tracks(
     conn: &Connection,
     library_id: &EntityId,
     seen_paths: &std::collections::HashSet<String>,
-) -> Result<usize, JobError> {
+    guard: &PruneGuard,
+) -> Result<PruneOutcome, JobError> {
     let existing: Vec<(EntityId, String, i64)> = {
         let mut stmt =
             conn.prepare("SELECT id, file_path, rowid FROM tracks WHERE library_id=?1")?;
@@ -814,17 +870,82 @@ pub fn prune_missing_tracks(
             .collect::<rusqlite::Result<_>>()?;
         rows
     };
-    let mut pruned = 0;
+    let mut outcome = PruneOutcome {
+        total: existing.len(),
+        ..PruneOutcome::default()
+    };
+    let mut doomed = Vec::new();
     for (track_id, file_path, track_rowid) in existing {
-        if !seen_paths.contains(&file_path.to_ascii_lowercase()) {
-            // See `refresh_track_fts`: delete by rowid, not the UNINDEXED
-            // `track_id` column, to avoid a full scan of the FTS table.
-            conn.execute("DELETE FROM tracks_fts WHERE rowid=?1", [track_rowid])?;
-            conn.execute("DELETE FROM tracks WHERE id=?1", [&track_id])?;
-            pruned += 1;
+        if seen_paths.contains(&file_path.to_ascii_lowercase()) {
+            continue;
+        }
+        let normalized = normalize_scan_path(&file_path);
+        if guard
+            .protected_prefixes
+            .iter()
+            .any(|prefix| is_under_prefix(&normalized, prefix))
+        {
+            outcome.kept_protected += 1;
+        } else {
+            doomed.push((track_id, track_rowid));
         }
     }
-    Ok(pruned)
+    if doomed.len() > guard.brake_min_tracks
+        && doomed.len() * 100 > outcome.total * PRUNE_BRAKE_MAX_PERCENT
+    {
+        outcome.kept_braked = doomed.len();
+        return Ok(outcome);
+    }
+    outcome.removed = delete_tracks(conn, &doomed)?;
+    Ok(outcome)
+}
+
+/// Deletes `(track id, track rowid)` pairs and their FTS rows; returns how many tracks went.
+pub fn delete_tracks(conn: &Connection, tracks: &[(EntityId, i64)]) -> Result<usize, JobError> {
+    let mut removed = 0;
+    for (track_id, track_rowid) in tracks {
+        // See `refresh_track_fts`: delete by rowid, not the UNINDEXED
+        // `track_id` column, to avoid a full scan of the FTS table.
+        conn.execute("DELETE FROM tracks_fts WHERE rowid=?1", [track_rowid])?;
+        removed += conn.execute("DELETE FROM tracks WHERE id=?1", [track_id])?;
+    }
+    Ok(removed)
+}
+
+/// Every track in `library_id` as `(id, rowid, file path)`, for the admin "remove missing
+/// tracks" action, which checks the files without holding the database lock.
+pub fn library_track_paths(
+    conn: &Connection,
+    library_id: &EntityId,
+) -> Result<Vec<(EntityId, i64, String)>, JobError> {
+    let mut stmt = conn.prepare("SELECT id, rowid, file_path FROM tracks WHERE library_id=?1")?;
+    let rows = stmt
+        .query_map([library_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// Why the last scan kept tracks it could not find (stored in `libraries.missing_kept_reason`).
+pub const MISSING_KEPT_FOLDER_UNAVAILABLE: &str = "folder_unavailable";
+/// See [`MISSING_KEPT_FOLDER_UNAVAILABLE`].
+pub const MISSING_KEPT_MASS_REMOVAL: &str = "mass_removal";
+/// See [`MISSING_KEPT_FOLDER_UNAVAILABLE`].
+pub const MISSING_KEPT_UNREADABLE_FOLDER: &str = "unreadable_folder";
+
+/// Records how many missing tracks the last scan kept and why (`0`/`None` clears it).
+pub fn set_library_missing_kept(
+    conn: &Connection,
+    library_id: &EntityId,
+    count: usize,
+    reason: Option<&str>,
+) -> Result<(), JobError> {
+    conn.execute(
+        "UPDATE libraries SET missing_kept=?1, missing_kept_reason=?2 WHERE id=?3",
+        params![count as i64, reason.filter(|_| count > 0), library_id],
+    )?;
+    Ok(())
 }
 
 /// Deletes albums and artists left with no tracks after a scan — e.g. the
@@ -2078,8 +2199,10 @@ mod tests {
 
         let mut seen = std::collections::HashSet::new();
         seen.insert(kept_path.to_string());
-        let pruned = prune_missing_tracks(&f.conn, &f.library_id, &seen).unwrap();
-        assert_eq!(pruned, 1);
+        let outcome =
+            prune_missing_tracks(&f.conn, &f.library_id, &seen, &PruneGuard::default()).unwrap();
+        assert_eq!(outcome.removed, 1);
+        assert_eq!(outcome.total, 2);
 
         let remaining: i64 = f
             .conn
@@ -2093,6 +2216,152 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tracks_fts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining_fts, 1);
+    }
+
+    fn insert_tracks(f: &Fixture, paths: &[String]) {
+        for path in paths {
+            upsert_scanned_track(&f.conn, &scanned_track(&f.library_id, path, path)).unwrap();
+        }
+    }
+
+    fn track_total(f: &Fixture) -> i64 {
+        f.conn
+            .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn normalize_scan_path_unifies_separators_case_and_trailing_slashes() {
+        assert_eq!(
+            normalize_scan_path(r"\\NAS\Share\Music\"),
+            "//nas/share/music"
+        );
+        assert_eq!(normalize_scan_path(r"D:\Music\Rock"), "d:/music/rock");
+        assert_eq!(normalize_scan_path("/srv/music/"), "/srv/music");
+        assert_eq!(normalize_scan_path("/"), "/");
+    }
+
+    #[test]
+    fn is_under_prefix_matches_whole_path_segments_only() {
+        assert!(is_under_prefix(
+            "//nas/share/music/a.mp3",
+            "//nas/share/music"
+        ));
+        assert!(is_under_prefix("//nas/share/music", "//nas/share/music"));
+        assert!(!is_under_prefix(
+            "//nas/share/music2/a.mp3",
+            "//nas/share/music"
+        ));
+        assert!(is_under_prefix("/srv/a.mp3", "/"));
+        assert!(!is_under_prefix("/other/a.mp3", "/srv"));
+    }
+
+    #[test]
+    fn prune_keeps_tracks_under_protected_unc_prefix_with_different_case() {
+        let f = fixture("prune-protected");
+        let offline = vec![
+            r"\\NAS\Share\Music\Album\01.mp3".to_string(),
+            r"\\NAS\Share\Music\Album\02.mp3".to_string(),
+        ];
+        let local = r"D:\Local\gone.mp3".to_string();
+        insert_tracks(&f, &offline);
+        insert_tracks(&f, std::slice::from_ref(&local));
+
+        let guard = PruneGuard {
+            protected_prefixes: vec![normalize_scan_path(r"\\nas\share\MUSIC\")],
+            ..PruneGuard::default()
+        };
+        let outcome =
+            prune_missing_tracks(&f.conn, &f.library_id, &Default::default(), &guard).unwrap();
+        assert_eq!(outcome.kept_protected, 2);
+        assert_eq!(outcome.removed, 1);
+        assert_eq!(track_total(&f), 2);
+    }
+
+    #[test]
+    fn prune_brake_skips_mass_removal_but_allows_small_removals() {
+        let f = fixture("prune-brake");
+        let paths: Vec<String> = (0..20).map(|i| format!("/music/{i:02}.mp3")).collect();
+        insert_tracks(&f, &paths);
+        let guard = PruneGuard {
+            brake_min_tracks: 1,
+            ..PruneGuard::default()
+        };
+
+        // 2 of 20 missing (10%): pruned normally.
+        let seen: std::collections::HashSet<String> = paths[2..].iter().cloned().collect();
+        let outcome = prune_missing_tracks(&f.conn, &f.library_id, &seen, &guard).unwrap();
+        assert_eq!(outcome.removed, 2);
+        assert_eq!(outcome.kept_braked, 0);
+
+        // 9 of the remaining 18 missing (50%): braked, nothing deleted.
+        let seen: std::collections::HashSet<String> = paths[11..].iter().cloned().collect();
+        let outcome = prune_missing_tracks(&f.conn, &f.library_id, &seen, &guard).unwrap();
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.kept_braked, 9);
+        assert_eq!(track_total(&f), 18);
+    }
+
+    #[test]
+    fn prune_brake_needs_both_the_floor_and_the_percentage() {
+        let f = fixture("prune-brake-floor");
+        let paths: Vec<String> = (0..10).map(|i| format!("/music/{i}.mp3")).collect();
+        insert_tracks(&f, &paths);
+        // Every track missing, but under the default 200-track floor: pruned.
+        let outcome = prune_missing_tracks(
+            &f.conn,
+            &f.library_id,
+            &Default::default(),
+            &PruneGuard::default(),
+        )
+        .unwrap();
+        assert_eq!(outcome.removed, 10);
+    }
+
+    #[test]
+    fn set_library_missing_kept_records_and_clears() {
+        let f = fixture("missing-kept");
+        set_library_missing_kept(&f.conn, &f.library_id, 7, Some(MISSING_KEPT_MASS_REMOVAL))
+            .unwrap();
+        let row: (i64, Option<String>) = f
+            .conn
+            .query_row(
+                "SELECT missing_kept, missing_kept_reason FROM libraries WHERE id=?1",
+                [&f.library_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (7, Some(MISSING_KEPT_MASS_REMOVAL.to_string())));
+
+        set_library_missing_kept(&f.conn, &f.library_id, 0, Some(MISSING_KEPT_MASS_REMOVAL))
+            .unwrap();
+        let row: (i64, Option<String>) = f
+            .conn
+            .query_row(
+                "SELECT missing_kept, missing_kept_reason FROM libraries WHERE id=?1",
+                [&f.library_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (0, None));
+    }
+
+    #[test]
+    fn library_track_paths_and_delete_tracks_round_trip() {
+        let f = fixture("delete-tracks");
+        insert_tracks(
+            &f,
+            &["/music/a.mp3".to_string(), "/music/b.mp3".to_string()],
+        );
+        let rows = library_track_paths(&f.conn, &f.library_id).unwrap();
+        assert_eq!(rows.len(), 2);
+        let doomed: Vec<(EntityId, i64)> = rows
+            .into_iter()
+            .filter(|(_, _, path)| path.ends_with("a.mp3"))
+            .map(|(id, rowid, _)| (id, rowid))
+            .collect();
+        assert_eq!(delete_tracks(&f.conn, &doomed).unwrap(), 1);
+        assert_eq!(track_total(&f), 1);
     }
 
     #[test]

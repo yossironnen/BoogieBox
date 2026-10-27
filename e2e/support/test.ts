@@ -105,6 +105,58 @@ export async function expectAudioPlaying(page: Page, seconds = 1) {
     .toBeGreaterThan(seconds)
 }
 
+export type MediaSessionSnapshot = {
+  title: string | null
+  artist: string | null
+  album: string | null
+  artwork: string[]
+  playbackState: string
+  handlers: string[]
+}
+
+/**
+ * Records the app's MediaSession action handlers so tests can press the OS controls. Call before
+ * `openApp` (it is an init script); then use `mediaSession` and `pressMediaKey`.
+ */
+export async function captureMediaSession(page: Page) {
+  await page.addInitScript(() => {
+    const session = navigator.mediaSession
+    if (!session) return
+    const handlers: Record<string, ((details: object) => void) | null> = {}
+    ;(window as unknown as { __bbMediaHandlers: typeof handlers }).__bbMediaHandlers = handlers
+    const original = session.setActionHandler.bind(session)
+    session.setActionHandler = (action, handler) => {
+      handlers[action] = handler as ((details: object) => void) | null
+      original(action, handler)
+    }
+  })
+}
+
+export async function mediaSession(page: Page): Promise<MediaSessionSnapshot> {
+  return page.evaluate(() => {
+    const session = navigator.mediaSession
+    const handlers = (window as unknown as { __bbMediaHandlers?: Record<string, unknown> }).__bbMediaHandlers ?? {}
+    return {
+      title: session.metadata?.title ?? null,
+      artist: session.metadata?.artist ?? null,
+      album: session.metadata?.album ?? null,
+      artwork: Array.from(session.metadata?.artwork ?? []).map((art) => art.src),
+      playbackState: session.playbackState,
+      handlers: Object.keys(handlers).filter((action) => handlers[action]).sort(),
+    }
+  })
+}
+
+/** Invokes the app's MediaSession handler for `action`, as an OS media key would. */
+export async function pressMediaKey(page: Page, action: string, details: Record<string, unknown> = {}) {
+  await page.evaluate(([name, extra]) => {
+    const handlers = (window as unknown as { __bbMediaHandlers?: Record<string, ((d: object) => void) | null> }).__bbMediaHandlers
+    const handler = handlers?.[name as string]
+    if (!handler) throw new Error(`no MediaSession handler for ${name}`)
+    handler({ action: name, ...(extra as object) })
+  }, [action, details] as const)
+}
+
 export function uniqueName(prefix: string): string {
   return `${prefix} ${Date.now().toString(36)}`
 }

@@ -54,6 +54,8 @@ export async function startServer(build: ServerBuild): Promise<ChildProcess> {
     BOOGIEBOX_LOG_DIR: LOG_DIR,
     BOOGIEBOX_DATA_DIR: path.join(SANDBOX_DIR, 'data'),
     BOOGIEBOX_LOAD_DEV_CONFIG: '',
+    // Lets the 10-track fixture library trip the scan's mass-removal brake (library.spec.ts).
+    BOOGIEBOX_PRUNE_BRAKE_MIN: process.env.BOOGIEBOX_PRUNE_BRAKE_MIN ?? '2',
     // The fallback locator paths (ProgramData / ~/.config) and the suggested data folder all derive from these.
     PROGRAMDATA: SANDBOX_DIR,
     LOCALAPPDATA: SANDBOX_DIR,

@@ -218,7 +218,9 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           scanner_profile TEXT NOT NULL DEFAULT 'default',
           metadata_mode TEXT NOT NULL DEFAULT 'path_only',
           added_at TEXT NOT NULL DEFAULT (datetime('now')),
-          last_scan TEXT
+          last_scan TEXT,
+          missing_kept INTEGER NOT NULL DEFAULT 0,
+          missing_kept_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS library_folders (
@@ -817,6 +819,10 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
         Migration {
             id: "2026-10-24-activity-events",
             apply: activity::ensure_activity_schema,
+        },
+        Migration {
+            id: "2026-10-27-library-missing-kept",
+            apply: ensure_library_missing_kept_columns,
         },
     ];
 
@@ -2829,6 +2835,24 @@ fn ensure_provider_usage_and_art_tables(connection: &Connection) -> Result<(), r
           ON artist_styles(updated_at);
         "#,
     )?;
+    Ok(())
+}
+
+/// Scan safety (F09-0): how many missing tracks the last scan kept, and why.
+fn ensure_library_missing_kept_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !table_exists(connection, "libraries") {
+        return Ok(());
+    }
+    for (column, definition) in [
+        ("missing_kept", "INTEGER NOT NULL DEFAULT 0"),
+        ("missing_kept_reason", "TEXT"),
+    ] {
+        if !column_exists(connection, "libraries", column)? {
+            connection.execute_batch(&format!(
+                "ALTER TABLE libraries ADD COLUMN {column} {definition}"
+            ))?;
+        }
+    }
     Ok(())
 }
 

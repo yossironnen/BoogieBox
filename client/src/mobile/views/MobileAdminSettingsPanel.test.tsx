@@ -71,6 +71,13 @@ describe('MobileAdminSettingsPanel', () => {
     expect(screen.getByRole('button', { name: 'Scan' })).toHaveStyle({ minHeight: '44px' });
   });
 
+  it('shows the kept missing tracks warning for a library', async () => {
+    vi.spyOn(api.libraries, 'list').mockResolvedValue([{ ...library, missing_kept: 12, missing_kept_reason: 'folder_unavailable' }] as any);
+    render(<MobileAdminSettingsPanel />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open admin tools' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('12 tracks kept: a library folder was unavailable during the last scan.');
+  });
+
   it('queues scans and analysis, changes the background mode, and pauses work', async () => {
     render(<MobileAdminSettingsPanel />);
     fireEvent.click(screen.getByRole('button', { name: 'Open admin tools' }));

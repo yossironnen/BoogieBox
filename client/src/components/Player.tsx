@@ -39,6 +39,7 @@ import { OutputIcon, RefreshIcon } from '../remote/OutputIcon';
 import { isLibraryTrackId, isLiveTrack } from '../radioStations';
 import { RadioIcon } from './FavouriteIcons';
 import { OutputPickerList, pickerRenderers } from '../remote/OutputPicker';
+import { useMediaSession } from '../platform/mediaSession';
 
 /** Player State is part of this module's public API. */
 export interface PlayerState {
@@ -3091,6 +3092,28 @@ export default function Player({
       audioError,
     });
   }, [audioError, currentTime, currentTrack, duration, isPlaying, onPlaybackSnapshotChange, shownLoading, shownMuted, shownVolume]);
+
+  useMediaSession(
+    {
+      track: currentTrack,
+      isPlaying,
+      position: currentTime,
+      duration,
+      canSeek: !liveTrack && !(isVinylMode && vinylHardcore) && !(isRemote && !remote?.canSeek),
+      albumOverride: isBoogieMixSyntheticTrackId(currentTrack?.id) ? 'BoogieMix' : null,
+    },
+    {
+      play: () => onStateChange({ ...state, isPlaying: true }),
+      pause: () => onStateChange({ ...state, isPlaying: false }),
+      stop: () => {
+        onStateChange({ ...state, isPlaying: false });
+        if (!liveTrack) seekToTime(0, true);
+      },
+      previous: playPrev,
+      next: playNextClick,
+      seekTo: (seconds) => seekToTime(seconds, true),
+    },
+  );
 
   if (queue.length === 0) return null;
 

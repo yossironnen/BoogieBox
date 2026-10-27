@@ -320,6 +320,8 @@ export const api = {
     removeFolder: (id: ApiEntityId, folderId: ApiEntityId) => del<Library>(`/libraries/${id}/folders/${folderId}`),
     scan: (id: ApiEntityId) => post<{ jobId: ApiEntityId }>(`/libraries/${id}/scan`),
     scanJobs: (id: ApiEntityId) => get<ScanJob[]>(`/libraries/${id}/scan-jobs`),
+    removeMissingTracks: (id: ApiEntityId) =>
+      post<{ removed: number; unchecked: number }>(`/libraries/${id}/remove-missing-tracks`),
   },
   scanJobs: {
     get: (id: ApiEntityId) => get<ScanJob>(`/scan-jobs/${id}`),

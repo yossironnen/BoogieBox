@@ -8,7 +8,7 @@ import FolderPickerModal from './FolderPickerModal';
 import ConfirmModal from './ConfirmModal';
 import { platform } from '../platform';
 import { hybridControlStyles } from '../hybridPreview';
-import type { ClientEntityId, Library, LibraryFolder, ScanJob } from '../types';
+import type { ClientEntityId, Library, LibraryFolder, MissingKeptReason, ScanJob } from '../types';
 import { parseServerDate } from '../utils';
 
 type Props = {
@@ -103,7 +103,27 @@ const Icon = {
       <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   ),
+  Warning: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  ),
 };
+
+/** Settings → Libraries warning for tracks the last scan kept instead of deleting. */
+export function missingKeptMessage(count: number, reason: MissingKeptReason | null | undefined): string {
+  const tracks = `${count.toLocaleString()} ${count === 1 ? 'track' : 'tracks'} kept`;
+  switch (reason) {
+    case 'folder_unavailable':
+      return `${tracks}: a library folder was unavailable during the last scan.`;
+    case 'unreadable_folder':
+      return `${tracks}: some folders could not be read.`;
+    default:
+      return `${tracks}: too many files were missing at once.`;
+  }
+}
 
 const L = {
   sectionTitle: { fontSize: 18, fontWeight: 700, marginBottom: 8, color: 'var(--text)' },
@@ -125,6 +145,23 @@ const L = {
   iconBtnDanger: { ...hybridControlStyles.iconButton, color: 'var(--danger)' },
   iconBtnAccent: { ...hybridControlStyles.iconButton, color: 'var(--accent)' },
   errorMsg: { color: '#ef4444', marginTop: 8, fontSize: 14 },
+  noticeMsg: { color: 'var(--text-muted)', marginTop: 8, fontSize: 14 },
+  missingWarn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap' as const,
+    marginTop: 10,
+    padding: '8px 10px',
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    backgroundColor: 'var(--bg)',
+    color: 'var(--text)',
+    fontSize: 14,
+  },
+  missingWarnIcon: { color: 'var(--warning, #f59e0b)', display: 'inline-flex', flexShrink: 0 },
+  missingWarnText: { flex: '1 1 220px' },
+  textBtnDanger: { ...hybridControlStyles.iconButton, width: 'auto', padding: '0 10px', gap: 6, color: 'var(--danger)', fontSize: 13 },
   helperCard: {
     marginTop: 8,
     padding: '10px 14px',
@@ -184,6 +221,8 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
   const [pendingFolders, setPendingFolders] = useState<string[]>([]);
   const [newName, setNewName] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [removingMissing, setRemovingMissing] = useState<ClientEntityId | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerInitial, setPickerInitial] = useState<string | undefined>(undefined);
   const pickerResolveRef = useRef<((path: string | null) => void) | null>(null);
@@ -283,6 +322,28 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
     message: 'This also removes all of its scanned data — tracks, artwork, playlists entries, everything.',
     confirmLabel: 'Remove Library',
     onConfirm: () => removeLibrary(id),
+  });
+
+  const removeMissingTracks = async (library: Library) => {
+    setError('');
+    setNotice('');
+    setRemovingMissing(library.id);
+    try {
+      const { removed } = await api.libraries.removeMissingTracks(library.id);
+      setNotice(`Removed ${removed.toLocaleString()} ${removed === 1 ? 'track' : 'tracks'}.`);
+      await refreshLibraries();
+    } catch {
+      setError('Failed to remove missing tracks');
+    } finally {
+      setRemovingMissing(null);
+    }
+  };
+
+  const confirmRemoveMissing = (library: Library) => setPendingConfirm({
+    title: 'Remove missing tracks?',
+    message: `Tracks in ${library.name} whose files can't be found will be removed, along with their play history, ratings and playlist entries. Tracks whose files are still there are kept.`,
+    confirmLabel: 'Remove',
+    onConfirm: () => { void removeMissingTracks(library); },
   });
 
   const addFolderToLibrary = async (libraryId: ClientEntityId) => {
@@ -509,6 +570,7 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
         </div>
       )}
       {error && <div style={L.errorMsg}>{error}</div>}
+      {notice && <div style={L.noticeMsg} role="status">{notice}</div>}
       {testResult && (
         <div
           style={{
@@ -667,6 +729,21 @@ export default function LibrarySettingsTab({ libraries, onRefresh }: Props) {
                   </button>
                 </div>
               </div>
+              {(library.missing_kept ?? 0) > 0 && (
+                <div style={L.missingWarn} role="alert">
+                  <span style={L.missingWarnIcon}><Icon.Warning /></span>
+                  <span style={L.missingWarnText}>{missingKeptMessage(library.missing_kept ?? 0, library.missing_kept_reason)}</span>
+                  <button
+                    style={L.textBtnDanger}
+                    type="button"
+                    disabled={removingMissing === library.id}
+                    onClick={() => confirmRemoveMissing(library)}
+                  >
+                    <Icon.Trash />
+                    Remove missing tracks
+                  </button>
+                </div>
+              )}
               {job && (
                 <div style={L.progressWrap}>
                   <div style={L.progressBar}>

@@ -177,6 +177,10 @@ pub struct LibraryRow {
     pub folder_count: i64,
     /// Documents the Folders public API surface.
     pub folders: Vec<LibraryFolder>,
+    /// Missing tracks the last scan kept instead of deleting (scan safety).
+    pub missing_kept: i64,
+    /// Why they were kept: `folder_unavailable`, `mass_removal` or `unreadable_folder`.
+    pub missing_kept_reason: Option<String>,
 }
 
 /// Documents the List Libraries public API surface.
@@ -204,17 +208,24 @@ pub fn list_libraries(conn: &Connection) -> rusqlite::Result<Vec<LibraryRow>> {
     } else {
         "NULL"
     };
+    let (missing_kept_col, missing_reason_col) =
+        if column_exists_local(conn, "libraries", "missing_kept")? {
+            ("l.missing_kept", "l.missing_kept_reason")
+        } else {
+            ("0", "NULL")
+        };
 
     let sql = if has_library_type {
         format!(
             "SELECT l.id, l.name, l.path, l.library_type, {scanner_col}, {metadata_col}, {added_at_col}, {last_scan_col},
-             (SELECT COUNT(*) FROM tracks t WHERE t.library_id = l.id) AS track_count
+             (SELECT COUNT(*) FROM tracks t WHERE t.library_id = l.id) AS track_count,
+             {missing_kept_col}, {missing_reason_col}
              FROM libraries l ORDER BY l.name"
         )
     } else {
         format!(
             "SELECT l.id, l.name, l.path, NULL AS library_type, {scanner_col}, {metadata_col}, {added_at_col}, {last_scan_col},
-             COUNT(t.id) AS track_count
+             COUNT(t.id) AS track_count, {missing_kept_col}, {missing_reason_col}
              FROM libraries l LEFT JOIN tracks t ON t.library_id = l.id
              GROUP BY l.id ORDER BY l.name"
         )
@@ -231,6 +242,8 @@ pub fn list_libraries(conn: &Connection) -> rusqlite::Result<Vec<LibraryRow>> {
         Option<String>,
         Option<String>,
         i64,
+        i64,
+        Option<String>,
     )> = conn
         .prepare(&sql)?
         .query_map([], |row| {
@@ -244,6 +257,8 @@ pub fn list_libraries(conn: &Connection) -> rusqlite::Result<Vec<LibraryRow>> {
                 row.get(6)?,
                 row.get(7)?,
                 row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -259,6 +274,8 @@ pub fn list_libraries(conn: &Connection) -> rusqlite::Result<Vec<LibraryRow>> {
         added_at,
         last_scan,
         track_count,
+        missing_kept,
+        missing_kept_reason,
     ) in rows
     {
         let folders: Vec<LibraryFolder> = if has_folders_table {
@@ -311,6 +328,8 @@ pub fn list_libraries(conn: &Connection) -> rusqlite::Result<Vec<LibraryRow>> {
             primary_path,
             folder_count,
             folders,
+            missing_kept,
+            missing_kept_reason,
         });
     }
 

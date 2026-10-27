@@ -4,7 +4,8 @@
 
 import { ALBUMS } from '../../support/library.ts'
 import {
-  audioState, dock, expect, expectAudioPlaying, main, openAlbum, openApp, test, trackRow,
+  audioState, captureMediaSession, dock, expect, expectAudioPlaying, main, mediaSession, openAlbum, openApp,
+  pressMediaKey, test, trackRow,
 } from '../../support/test.ts'
 
 test.beforeEach(async ({ page }) => openApp(page))
@@ -82,6 +83,34 @@ test('a finished track advances to the next one', async ({ page }) => {
   })
   await expect(dock(page)).toContainText(album.tracks[1].title, { timeout: 15_000 })
   await expectAudioPlaying(page, 0)
+})
+
+test('OS media controls show the track and drive playback', async ({ page }) => {
+  const album = ALBUMS[0]
+  await captureMediaSession(page)
+  await openApp(page)
+  await openAlbum(page, album.artist, album.album)
+  await main(page).getByRole('button', { name: 'Play All', exact: true }).click()
+  await expectAudioPlaying(page)
+
+  await expect.poll(async () => (await mediaSession(page)).title).toBe(album.tracks[0].title)
+  const session = await mediaSession(page)
+  expect(session).toMatchObject({ artist: album.artist, album: album.album, playbackState: 'playing' })
+  expect(session.artwork.every((src) => /^https?:\/\/.+\/api\/albums\/.+\/art\?size=\d+$/.test(src))).toBe(true)
+  expect(session.handlers).toEqual(expect.arrayContaining(['nexttrack', 'pause', 'play', 'previoustrack', 'seekto']))
+
+  await pressMediaKey(page, 'pause')
+  await expect.poll(async () => (await audioState(page))?.paused).toBe(true)
+  await expect.poll(async () => (await mediaSession(page)).playbackState).toBe('paused')
+  await pressMediaKey(page, 'play')
+  await expectAudioPlaying(page, 0)
+
+  await pressMediaKey(page, 'seekto', { seekTime: 20 })
+  await expect.poll(async () => (await audioState(page))?.currentTime ?? 0).toBeGreaterThan(19)
+
+  await pressMediaKey(page, 'nexttrack')
+  await expect(dock(page)).toContainText(album.tracks[1].title)
+  await expect.poll(async () => (await mediaSession(page)).title).toBe(album.tracks[1].title)
 })
 
 test('shuffle and repeat toggles change state', async ({ page }) => {

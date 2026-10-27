@@ -12,6 +12,7 @@ import type {
   Library,
 } from '../../types';
 import { MobileCheckRow } from '../components/MobilePlaybackTools';
+import { missingKeptMessage } from '../../components/LibrarySettingsTab';
 
 type AdminSnapshot = {
   libraries: Library[];
@@ -201,6 +202,11 @@ export default function MobileAdminSettingsPanel({ focus = null }: { focus?: 'pl
                             <span style={styles.libraryPath}>
                               {library.primary_path || library.path || 'Library path unavailable'}
                             </span>
+                            {(library.missing_kept ?? 0) > 0 && (
+                              <span style={styles.libraryMeta} role="alert">
+                                {missingKeptMessage(library.missing_kept ?? 0, library.missing_kept_reason)}
+                              </span>
+                            )}
                           </div>
                           <button
                             type="button"

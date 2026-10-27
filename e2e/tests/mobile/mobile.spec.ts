@@ -2,7 +2,7 @@
  * Mobile shell (phone viewport): tabs, browse drill-down, search and playback with the mini player.
  */
 
-import { expect, expectAudioPlaying, test } from '../../support/test.ts'
+import { captureMediaSession, expect, expectAudioPlaying, mediaSession, pressMediaKey, test } from '../../support/test.ts'
 import type { Page } from '@playwright/test'
 
 const tabs = (page: Page) => page.getByRole('navigation', { name: 'Mobile tabs' })
@@ -60,4 +60,19 @@ test('Now Playing shows the current track and transport works', async ({ page })
   await expect(page.getByRole('main').getByText('Ink Sky').first()).toBeVisible()
   await page.getByRole('main').getByRole('button', { name: 'Pause' }).click()
   await expect(page.getByRole('main').getByRole('button', { name: 'Play', exact: true })).toBeVisible()
+})
+
+test('OS media controls follow the mobile player', async ({ page }) => {
+  await captureMediaSession(page)
+  await page.reload()
+  await tabs(page).getByRole('button', { name: 'Browse', exact: true }).click()
+  await page.getByLabel('Artists').getByRole('button', { name: /^The Velvet Owls/ }).click()
+  await page.getByLabel('Albums').getByRole('button', { name: /^Paper Moons/ }).click()
+  await page.getByLabel('Album tracks').getByRole('button', { name: /^Cardboard Comet/ }).click()
+  await expectAudioPlaying(page)
+  await expect.poll(async () => (await mediaSession(page)).title).toBe('Cardboard Comet')
+  await pressMediaKey(page, 'nexttrack')
+  await expect.poll(async () => (await mediaSession(page)).title).toBe('Ink Sky')
+  await pressMediaKey(page, 'pause')
+  await expect.poll(async () => (await mediaSession(page)).playbackState).toBe('paused')
 })

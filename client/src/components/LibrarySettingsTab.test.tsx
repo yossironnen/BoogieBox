@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import LibrarySettingsTab, { formatPendingStatus } from './LibrarySettingsTab';
+import LibrarySettingsTab, { formatPendingStatus, missingKeptMessage } from './LibrarySettingsTab';
 import type { ScanJob } from '../types';
 
 const { apiMock, platformMock } = vi.hoisted(() => ({
@@ -12,6 +12,7 @@ const { apiMock, platformMock } = vi.hoisted(() => ({
       removeFolder: vi.fn(),
       rename: vi.fn(),
       scan: vi.fn(),
+      removeMissingTracks: vi.fn(),
     },
     debugTestPath: vi.fn(),
     scanJobs: { active: vi.fn(), get: vi.fn() },
@@ -227,5 +228,37 @@ describe('LibrarySettingsTab', () => {
     expect(await screen.findByText('Remove library failed')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Scan library' }));
     expect(await screen.findByText('Scan failed')).toBeInTheDocument();
+  });
+
+  it('words the kept-tracks warning by reason', () => {
+    expect(missingKeptMessage(1, 'folder_unavailable')).toBe('1 track kept: a library folder was unavailable during the last scan.');
+    expect(missingKeptMessage(3, 'unreadable_folder')).toBe('3 tracks kept: some folders could not be read.');
+    expect(missingKeptMessage(1200, 'mass_removal')).toBe(`${(1200).toLocaleString()} tracks kept: too many files were missing at once.`);
+    expect(missingKeptMessage(2, null)).toContain('too many files were missing at once');
+  });
+
+  it('shows kept missing tracks and removes them after confirmation', async () => {
+    const onRefresh = vi.fn().mockResolvedValue(undefined);
+    apiMock.libraries.removeMissingTracks.mockResolvedValueOnce({ removed: 4, unchecked: 0 })
+      .mockRejectedValueOnce(new Error('boom'));
+    render(<LibrarySettingsTab libraries={[{ ...library, missing_kept: 4, missing_kept_reason: 'folder_unavailable' }]} onRefresh={onRefresh} />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('4 tracks kept: a library folder was unavailable during the last scan.');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove missing tracks' }));
+    expect(screen.getByText('Remove missing tracks?')).toBeInTheDocument();
+    expect(screen.getByText(/Tracks in Music whose files can't be found will be removed/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText('Removed 4 tracks.')).toBeInTheDocument();
+    expect(apiMock.libraries.removeMissingTracks).toHaveBeenCalledWith('1');
+    expect(onRefresh).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove missing tracks' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText('Failed to remove missing tracks')).toBeInTheDocument();
+  });
+
+  it('hides the warning when nothing was kept', () => {
+    render(<LibrarySettingsTab libraries={[{ ...library, missing_kept: 0 }]} />);
+    expect(screen.queryByRole('button', { name: 'Remove missing tracks' })).toBeNull();
   });
 });

@@ -1,9 +1,13 @@
 /**
- * Browse: artists, albums, drill-down, artwork, per-format metadata and ratings.
+ * Browse: artists, albums, drill-down, artwork, per-format metadata and ratings; scan safety.
  */
 
-import { ALBUMS, ARTISTS, TRACK_SECONDS } from '../../support/library.ts'
-import { expect, goTo, main, openAlbum, openApp, openArtist, test, trackRow } from '../../support/test.ts'
+import fs from 'node:fs'
+import path from 'node:path'
+import type { Page } from '@playwright/test'
+import { ALBUMS, ARTISTS, TRACK_COUNT, TRACK_SECONDS } from '../../support/library.ts'
+import { MUSIC_DIR } from '../../support/paths.ts'
+import { expect, goTo, main, openAlbum, openApp, openArtist, openSettingsTab, test, trackRow } from '../../support/test.ts'
 
 test.beforeEach(async ({ page }) => openApp(page))
 
@@ -85,4 +89,62 @@ test('rating a track persists after reload', async ({ page }) => {
   await page.reload()
   await openAlbum(page, 'Mira Kestrel', 'Quiet Hours')
   await expect(main(page).getByRole('slider', { name: 'Window Seat track rating' })).toHaveAttribute('aria-valuenow', '4')
+})
+
+test.describe('scan safety', () => {
+  const offlineDir = `${MUSIC_DIR}-offline`
+  const heldAlbum = ALBUMS.find((album) => album.album === 'Paper Moons')!
+  const heldFrom = path.join(MUSIC_DIR, 'The Velvet Owls')
+  const heldTo = path.join(path.dirname(MUSIC_DIR), 'held-the-velvet-owls')
+
+  // Windows can briefly hold a handle on a folder the server just read; retry the rename.
+  async function move(from: string, to: string) {
+    await expect(async () => fs.renameSync(from, to)).toPass({ timeout: 15_000 })
+  }
+
+  async function scanLibrary(page: Page) {
+    await openSettingsTab(page, 'Libraries')
+    await page.getByRole('button', { name: 'Scan library' }).click()
+    await expect(page.getByText(/^Done - /)).toBeVisible({ timeout: 60_000 })
+  }
+
+  const keptWarning = (page: Page) => page.getByRole('alert').filter({ hasText: /tracks? kept:/ })
+
+  test.afterAll(() => {
+    if (fs.existsSync(offlineDir) && !fs.existsSync(MUSIC_DIR)) fs.renameSync(offlineDir, MUSIC_DIR)
+    if (fs.existsSync(heldTo) && !fs.existsSync(heldFrom)) fs.renameSync(heldTo, heldFrom)
+  })
+
+  test('an unavailable library folder keeps its tracks', async ({ page }) => {
+    await move(MUSIC_DIR, offlineDir)
+    await scanLibrary(page)
+    await expect(keptWarning(page))
+      .toHaveText(new RegExp(`${TRACK_COUNT} tracks kept: a library folder was unavailable during the last scan\\.`))
+    await expect(page.getByText(new RegExp(`MUSIC - ${TRACK_COUNT} tracks - 1 folder`))).toBeVisible()
+
+    await move(offlineDir, MUSIC_DIR)
+    await scanLibrary(page)
+    await expect(keptWarning(page)).toBeHidden()
+    await expect(page.getByText(new RegExp(`MUSIC - ${TRACK_COUNT} tracks - 1 folder`))).toBeVisible()
+  })
+
+  test('the mass-removal brake keeps tracks until they are removed on purpose', async ({ page }) => {
+    const held = heldAlbum.tracks.length
+    await move(heldFrom, heldTo)
+    await scanLibrary(page)
+    await expect(keptWarning(page)).toHaveText(new RegExp(`${held} tracks kept: too many files were missing at once\\.`))
+    await expect(page.getByText(new RegExp(`MUSIC - ${TRACK_COUNT} tracks - 1 folder`))).toBeVisible()
+
+    await keptWarning(page).getByRole('button', { name: 'Remove missing tracks' }).click()
+    const confirm = page.getByRole('alertdialog', { name: 'Remove missing tracks?' })
+    await expect(confirm).toContainText('whose files can\'t be found will be removed')
+    await confirm.getByRole('button', { name: 'Remove', exact: true }).click()
+    await expect(page.getByRole('status').filter({ hasText: `Removed ${held} tracks.` })).toBeVisible()
+    await expect(keptWarning(page)).toBeHidden()
+    await expect(page.getByText(new RegExp(`MUSIC - ${TRACK_COUNT - held} tracks - 1 folder`))).toBeVisible()
+
+    await move(heldTo, heldFrom)
+    await scanLibrary(page)
+    await expect(page.getByText(new RegExp(`MUSIC - ${TRACK_COUNT} tracks - 1 folder`))).toBeVisible()
+  })
 })

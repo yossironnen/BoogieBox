@@ -38,6 +38,10 @@ pub fn library_router(state: SharedState) -> Router {
         )
         .route("/api/libraries/{id}/scan", post(enqueue_scan_handler))
         .route(
+            "/api/libraries/{id}/remove-missing-tracks",
+            post(remove_missing_tracks_handler),
+        )
+        .route(
             "/api/libraries/{id}/scan-jobs",
             get(library_scan_jobs_handler),
         )
@@ -270,6 +274,28 @@ async fn enqueue_scan_handler(
         (StatusCode::OK, Json(Response { job_id })).into_response()
     })
     .unwrap_or_else(map_job_error)
+}
+
+/// Deletes the tracks whose files are gone, bypassing the scan's offline-folder guard and
+/// mass-removal brake. The client confirms first; the server checks every file again.
+async fn remove_missing_tracks_handler(
+    State(state): State<SharedState>,
+    _user: LibraryManager,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(db) = get_db(&state) else {
+        return setup_required();
+    };
+    let library_id = coerce_entity_id(&id);
+    match tokio::task::spawn_blocking(move || {
+        crate::scanner::remove_missing_tracks(&db, &library_id)
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => (StatusCode::OK, Json(outcome)).into_response(),
+        Ok(Err(err)) => map_job_error(err),
+        Err(_) => internal_error(),
+    }
 }
 
 async fn active_scan_jobs_handler(
@@ -1502,6 +1528,31 @@ mod route_tests {
             )
             .await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_missing_tracks_requires_library_manager_and_known_library() {
+        let (app, pool) = new_test_app_with_pool("lib-remove-missing");
+        let user_cookie = crate::test_support::seed_user_session(&pool, "user1");
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+        let path = "/api/libraries/no-such-library/remove-missing-tracks";
+
+        for (cookie, expected) in [
+            (user_cookie, StatusCode::FORBIDDEN),
+            (admin_cookie, StatusCode::NOT_FOUND),
+        ] {
+            let (status, _) = send(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, expected);
         }
     }
 
