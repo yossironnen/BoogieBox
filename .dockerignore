@@ -43,7 +43,7 @@ tools/winsw/
 .agents/
 .mcp.json
 .vscode/
-Docs/memory/
+docs/memory/
 wip/
 
 # Unneeded desktop/public-site artifacts for the server container

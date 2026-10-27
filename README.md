@@ -14,53 +14,53 @@ Also includes waveform and BPM analysis, mobile-friendly access, Subsonic/OpenSu
 
 ### Home
 
-![BoogieBox home dashboard](Docs/Screenshots/home_screen1.png)
+![BoogieBox home dashboard](docs/Screenshots/home_screen1.png)
 
-![BoogieBox listening dashboard](Docs/Screenshots/home_screen2.png)
+![BoogieBox listening dashboard](docs/Screenshots/home_screen2.png)
 
 ### Browse Albums
 
-![Album browser](Docs/Screenshots/album_browse.png)
+![Album browser](docs/Screenshots/album_browse.png)
 
 ### Artist Page
 
-![Artist detail page](Docs/Screenshots/artist_page.png)
+![Artist detail page](docs/Screenshots/artist_page.png)
 
 ### Auto DJ
 
-![Auto DJ](Docs/Screenshots/auto_dj.png)
+![Auto DJ](docs/Screenshots/auto_dj.png)
 
 ### BoogieMix
 
-![BoogieMix](Docs/Screenshots/boogiemix.png)
+![BoogieMix](docs/Screenshots/boogiemix.png)
 
 ### Karaoke Playback
 
-![Karaoke playback](Docs/Screenshots/karaoke_playback.png)
+![Karaoke playback](docs/Screenshots/karaoke_playback.png)
 
 ### Play On
 
-![Play On picker listing This browser, a WiiM Ultra, and an offline smart TV as playback targets](Docs/Screenshots/remote_playback.png)
+![Play On picker listing This browser, a WiiM Ultra, and an offline smart TV as playback targets](docs/Screenshots/remote_playback.png)
 
 ### Vinyl Mode
 
-![Vinyl Mode](Docs/Screenshots/vinyl_mode.png)
+![Vinyl Mode](docs/Screenshots/vinyl_mode.png)
 
 ### Parametric EQ
 
-![Parametric equalizer](Docs/Screenshots/param_eq.png)
+![Parametric equalizer](docs/Screenshots/param_eq.png)
 
 ### Mobile Playback
 
-![Mobile playback](Docs/Screenshots/mobile_playback.png)
+![Mobile playback](docs/Screenshots/mobile_playback.png)
 
 ### Themes
 
-![BoogieBox themes](Docs/Screenshots/themes.png)
+![BoogieBox themes](docs/Screenshots/themes.png)
 
 ### Library Settings
 
-![Library settings](Docs/Screenshots/lib_settings.png)
+![Library settings](docs/Screenshots/lib_settings.png)
 
 ---
 
@@ -198,7 +198,7 @@ BoogieBox speaks the Subsonic/OpenSubsonic API, so apps built for Subsonic serve
 - **Tested with:** Amperfy (iOS). Other Subsonic apps such as Symfonium, Feishin and DSub should work but have not been tested yet.
 - **Away from home:** download music in the app while you are on your home network. BoogieBox is not meant to be reachable from the internet (see the Security Notice).
 
-Method-level details are in [`Docs/API.md`](Docs/API.md#subsonic-apps-opensubsonic-rest).
+Method-level details are in [`docs/API.md`](docs/API.md#subsonic-apps-opensubsonic-rest).
 
 ---
 
@@ -289,10 +289,10 @@ This includes Subsonic apps: they send your Subsonic password or API key over pl
 
 ### Developer Documentation
 
-- `Docs/Architecture.md`
-- `Docs/API.md`
-- `Docs/Development.md`
-- `Docs/ProjectStructure.md`
+- `docs/Architecture.md`
+- `docs/API.md`
+- `docs/Development.md`
+- `docs/ProjectStructure.md`
 
 ---
 

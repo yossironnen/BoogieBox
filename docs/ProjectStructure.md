@@ -12,7 +12,6 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `VERSION` | Canonical app version (synced by `npm run version:bump`). |
 | `package.json` | Root developer scripts for tests, linting, Semgrep, and Rust checks. |
 | `setup-dev.bat` | Interactive developer environment bootstrap. |
-| `setup.bat` | Compatibility wrapper for `setup-dev.bat`. |
 | `dev.bat` | Development launcher (Windows). |
 | `dev.sh` | Development launcher (Linux); mirrors `dev.bat`. |
 | `build-server-rust.bat` | Rust standalone server release and installer build flow (Windows). |
@@ -21,7 +20,7 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `build-docker-linux-amd64.bat` / `.sh` | Builds the Linux amd64 Docker image (CPU-only BoogieMix). |
 | `Dockerfile.linux-amd64` / `docker-compose.linux-amd64.yml` | Linux amd64 Docker image and compose definitions. |
 | `docker/linux-amd64/` | Container entrypoint for the Linux image. |
-| `Docs/` | Public and project documentation. |
+| `docs/` | Public and project documentation. |
 | `client/` | React and TypeScript client. |
 | `e2e/` | Playwright UI release suite run against the packaged server build (see `e2e/README.md`). |
 | `server-rs/` | Rust server and database crates. |
@@ -29,7 +28,6 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `Services/boogiemix/python/` | Optional Python BoogieMix deep-analysis worker assets. |
 | `installer/` | Installer definitions (Inno Setup for Windows, systemd unit and install script for Linux). |
 | `scripts/` | Repo-level helper scripts (version sync, Semgrep runner, seed data, UPnP probe, stale-deps check). |
-| `seed-random-playback-history.bat` / `seed-random-ratings.bat` | Dev wrappers for the seed scripts. |
 | `website/` | Static public landing page (published by `.github/workflows/pages.yml`). |
 | `_site/` | Committed copy of the landing page build. |
 | `.github/` | GitHub Pages and Docker image workflows. |
@@ -39,17 +37,18 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 
 | Path | Purpose |
 | --- | --- |
-| `Docs/Architecture.md` | Runtime architecture and component responsibilities. |
-| `Docs/API.md` | REST API overview. |
-| `Docs/Development.md` | Local setup, build, and verification workflow. |
-| `Docs/ProjectStructure.md` | Repository layout reference. |
-| `Docs/backend-safety.md` | Backend safety rules. |
-| `Docs/testing.md` | Testing expectations. |
-| `Docs/git.md` | Git workflow notes. |
-| `Docs/DockerLinux.md` | Linux Docker image usage. |
-| `Docs/Screenshots/` | Screenshots used by the README. |
-| `Docs/Agents/` | Agent workflow documentation. |
-| `Docs/memory/` | Repo-tracked project memory for development sessions. |
+| `docs/Architecture.md` | Runtime architecture and component responsibilities. |
+| `docs/API.md` | REST API overview. |
+| `docs/Development.md` | Local setup, build, and verification workflow. |
+| `docs/ProjectStructure.md` | Repository layout reference. |
+| `docs/backend-safety.md` | Backend safety rules. |
+| `docs/testing.md` | Testing expectations. |
+| `docs/git.md` | Git workflow notes. |
+| `docs/DockerLinux.md` | Linux Docker image usage. |
+| `docs/Screenshots/` | Screenshots used by the README. |
+| `docs/agents/` | Agent workflow documentation. |
+| `docs/adr/` | Architecture Decision Records (MADR-style; `template.md`, files `NNNN-kebab-title.md`). |
+| `docs/memory/` | Repo-tracked project memory for development sessions. |
 
 ## Client
 

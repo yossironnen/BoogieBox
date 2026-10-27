@@ -48,9 +48,9 @@ d?ProjectsBoogieBoxchanges.log
 .playwright-mcp/
 
 # Internal project memory; replace with curated public docs before publishing
-Docs/memory/
-!Docs/memory/README.md
+docs/memory/
+!docs/memory/README.md
 
 # Local AI-generated planning docs not for public repo
-Docs/boogiemix-ai-enhancements-plan.md
-Docs/sonic-fingerprint-plan.md
+docs/boogiemix-ai-enhancements-plan.md
+docs/sonic-fingerprint-plan.md

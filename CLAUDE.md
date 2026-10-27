@@ -154,22 +154,23 @@ Never skip. Create file if missing.
 
 ## Project Memory (MANDATORY)
 
-Use the repo-tracked memory files in `Docs/memory/` to preserve context across machines.
+Use the repo-tracked memory files in `docs/memory/` to preserve context across machines.
 
 At the start of a task:
-- Read `Docs/memory/CURRENT_STATE.md`
-- Read `Docs/memory/ACTIVE_WORK.md`
+- Read `docs/memory/CURRENT_STATE.md`
+- Read `docs/memory/ACTIVE_WORK.md`
 
 During work:
-- Update `Docs/memory/ACTIVE_WORK.md` when a task becomes active, blocked, or handed off
-- Update `Docs/memory/CURRENT_STATE.md` when durable project state changes
-- Update `Docs/memory/DECISIONS.md` for important decisions worth keeping
-- Update `Docs/memory/ENVIRONMENT.md` only for machine-specific notes
+- Update `docs/memory/ACTIVE_WORK.md` when a task becomes active, blocked, or handed off
+- Update `docs/memory/CURRENT_STATE.md` when durable project state changes
+- Update `docs/memory/DECISIONS.md` for important decisions worth keeping
+- For big decisions (architecture, product scope, cross-cutting rules, anything hard to reverse), also add an ADR in `docs/adr/`: copy `docs/adr/template.md` to `NNNN-kebab-title.md` (next number), status Proposed until the user accepts it. When a decision replaces an older ADR, mark the old one Superseded and link both ways.
+- Update `docs/memory/ENVIRONMENT.md` only for machine-specific notes
 
 Do not store secrets, tokens, or private credentials in memory files.
 
 General memory rule:
-All files under the Docs/memory/archive folder have already been implemented and should not be used, except for reference if asked.
+All files under the docs/memory/archive folder have already been implemented and should not be used, except for reference if asked.
 
 ## Versioning (MANDATORY)
 
@@ -202,6 +203,6 @@ If ANY code file changes (`.ts/.tsx/.js/.jsx/.css/.rs` or scripts):
 Do NOT push or commit to GitHUB unless explicitly asked.
 
 Follow:
-- Docs/backend-safety.md
-- Docs/testing.md
-- Docs/git.md ONLY if asked to push to GIT
+- docs/backend-safety.md
+- docs/testing.md
+- docs/git.md ONLY if asked to push to GIT
