@@ -126,6 +126,8 @@ pub struct SessionState {
     pub revision: u64,
     /// Last error/notice, if any.
     pub error: Option<String>,
+    /// Sleep timer, shown by every browser controlling this speaker.
+    pub sleep: Option<SleepTimer>,
     /// Last owner activity (not serialized).
     #[serde(skip)]
     pub last_activity: Option<Instant>,
@@ -156,6 +158,7 @@ impl SessionState {
             // Seeded from the clock so a later session on the same renderer never reuses a lower revision.
             revision: now_ms(),
             error: None,
+            sleep: None,
             last_activity: None,
         }
     }
@@ -260,11 +263,45 @@ pub enum Command {
     SetVolume(u8),
     /// Device mute.
     SetMute(bool),
+    /// Start or replace the sleep timer (`minutes` is required for [`SleepMode::Minutes`], 1–600).
+    SetSleep {
+        /// Mode.
+        mode: SleepMode,
+        /// Minutes until pause.
+        minutes: Option<u32>,
+    },
+    /// Cancel the sleep timer.
+    ClearSleep,
     /// End the session (optionally stopping the device).
     Release {
         /// Stop the device first.
         stop: bool,
     },
+}
+
+/// When a sleep timer stops playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SleepMode {
+    /// Pause after a number of minutes.
+    Minutes,
+    /// Stop when the current item ends instead of advancing.
+    EndOfTrack,
+    /// Stop before the next item from a different album.
+    EndOfAlbum,
+}
+
+/// Longest minutes timer.
+pub const SLEEP_MAX_MINUTES: u32 = 600;
+
+/// Active sleep timer as clients see it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SleepTimer {
+    /// Mode.
+    pub mode: SleepMode,
+    /// Wall-clock deadline (ms since epoch) for [`SleepMode::Minutes`].
+    pub deadline_ms: Option<u64>,
 }
 
 /// Details for the takeover prompt (409 `session_in_use`).
@@ -625,6 +662,7 @@ pub(crate) fn spawn_session(
         last_position_saved: None,
         restoring: false,
         resume_at: None,
+        sleep_deadline: None,
     };
     if let Some(saved) = restore {
         actor.restore(saved);
@@ -671,6 +709,8 @@ struct Actor {
     restoring: bool,
     /// Where a restored session resumes once the device lost our stream.
     resume_at: Option<f64>,
+    /// Minutes sleep timer deadline (the snapshot carries the wall-clock copy).
+    sleep_deadline: Option<Instant>,
 }
 
 /// Why the actor stopped.
@@ -1011,6 +1051,30 @@ impl Actor {
                 self.set_position(0.0);
                 Ok(())
             }
+            Command::SetSleep { mode, minutes } => {
+                let deadline = match (mode, minutes) {
+                    (SleepMode::Minutes, Some(m)) if (1..=SLEEP_MAX_MINUTES).contains(&m) => {
+                        Some(Duration::from_secs(u64::from(m) * 60))
+                    }
+                    (SleepMode::Minutes, _) => {
+                        return Err(SessionError::BadRequest("minutes must be 1–600".into()))
+                    }
+                    _ => None,
+                };
+                self.sleep_deadline = deadline.map(|d| Instant::now() + d);
+                self.state.sleep = Some(SleepTimer {
+                    mode,
+                    deadline_ms: deadline.map(|d| now_ms() + d.as_millis() as u64),
+                });
+                // The device must not slide into an item the timer is about to stop before.
+                self.resync_upcoming().await;
+                Ok(())
+            }
+            Command::ClearSleep => {
+                self.clear_sleep();
+                self.resync_upcoming().await;
+                Ok(())
+            }
             Command::Next => {
                 if self.queue.skip_next() {
                     self.play_current(0.0).await
@@ -1314,8 +1378,39 @@ impl Actor {
         }
     }
 
+    fn clear_sleep(&mut self) {
+        self.state.sleep = None;
+        self.sleep_deadline = None;
+    }
+
+    /// An end-of-track/album timer stops playback when the current item finishes.
+    fn sleep_stops_after_current(&self) -> bool {
+        fn album_key(entry: Option<&QueueEntry>) -> Option<&str> {
+            match &entry?.item {
+                QueueItem::Track {
+                    album_id, album, ..
+                } => album_id.as_deref().or(album.as_deref()),
+                QueueItem::Mix { .. } => None,
+            }
+        }
+        match self.state.sleep.as_ref().map(|s| s.mode) {
+            Some(SleepMode::EndOfTrack) => true,
+            Some(SleepMode::EndOfAlbum) => {
+                let next = self.queue.peek_next();
+                next.is_none()
+                    || album_key(next).is_none()
+                    || album_key(next) != album_key(self.queue.current())
+            }
+            _ => false,
+        }
+    }
+
     async fn set_next_for_upcoming(&mut self) {
         if !self.cfg.set_next {
+            return;
+        }
+        if self.sleep_stops_after_current() {
+            self.clear_next().await;
             return;
         }
         let owner = self.state.owner_user_id.clone().unwrap_or_default();
@@ -1394,6 +1489,20 @@ impl Actor {
         }
         self.failures = 0;
         let now = Instant::now();
+
+        if self.sleep_deadline.is_some_and(|d| now >= d) {
+            // Fixed-volume renderers can't fade, so the timer simply pauses.
+            self.clear_sleep();
+            if matches!(
+                ti.state,
+                TransportState::Playing | TransportState::Transitioning
+            ) {
+                let _ = self.pause().await;
+            }
+            tracing::info!(target: "remote", udn = %self.cfg.udn, "Play On sleep timer paused playback");
+            self.publish(true);
+            return;
+        }
 
         if std::mem::take(&mut self.restoring)
             && matches!(ti.state, TransportState::Stopped | TransportState::NoMedia)
@@ -1512,6 +1621,14 @@ impl Actor {
                         Some(d) => rel >= d - 3.0 || self.last_rel.is_some_and(|l| l >= d - 3.0),
                         None => true,
                     };
+                    if natural_end && self.sleep_stops_after_current() {
+                        self.clear_sleep();
+                        self.stop_at_end().await;
+                        tracing::info!(target: "remote", udn = %self.cfg.udn, "Play On sleep timer stopped at the end of the item");
+                        self.finish_poll(before);
+                        self.publish(true);
+                        return;
+                    }
                     if natural_end {
                         if self.queue.advance() {
                             let _ = self.play_current(0.0).await;
@@ -2645,5 +2762,161 @@ pub(crate) mod tests {
             },
             701
         ));
+    }
+
+    fn on_album(id: &str, secs: f64, album: &str) -> QueueItem {
+        match timed(id, secs) {
+            QueueItem::Track {
+                id,
+                title,
+                artist,
+                duration,
+                radio_reason,
+                ..
+            } => QueueItem::Track {
+                id,
+                title,
+                artist,
+                album: Some(album.into()),
+                album_id: Some(album.into()),
+                duration,
+                radio_reason,
+            },
+            other => other,
+        }
+    }
+
+    fn sleep_cmd(mode: SleepMode, minutes: Option<u32>) -> Command {
+        Command::SetSleep { mode, minutes }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sleep_minutes_pauses_at_the_deadline() {
+        let h = harness(true);
+        h.handle
+            .send(load(vec![timed("a", 600.0)], 0), alice(), false)
+            .await
+            .unwrap();
+        sleep_s(2.0).await;
+        assert!(h
+            .handle
+            .send(sleep_cmd(SleepMode::Minutes, None), alice(), false)
+            .await
+            .is_err());
+        assert!(h
+            .handle
+            .send(sleep_cmd(SleepMode::Minutes, Some(601)), alice(), false)
+            .await
+            .is_err());
+        let s = h
+            .handle
+            .send(sleep_cmd(SleepMode::Minutes, Some(1)), alice(), false)
+            .await
+            .unwrap();
+        let timer = s.sleep.expect("timer in the snapshot");
+        assert_eq!(timer.mode, SleepMode::Minutes);
+        assert!(timer.deadline_ms.is_some_and(|d| d > now_ms()));
+        sleep_s(50.0).await;
+        assert_eq!(h.handle.snapshot().status, SessionStatus::Playing);
+        sleep_s(12.0).await;
+        let s = h.handle.snapshot();
+        assert_eq!(s.status, SessionStatus::Paused, "paused at the deadline");
+        assert_eq!(s.sleep, None, "timer cleared once it fired");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sleep_end_of_track_stops_instead_of_advancing() {
+        for set_next in [true, false] {
+            let h = harness(set_next);
+            h.handle
+                .send(
+                    load(vec![timed("a", 6.0), timed("b", 6.0)], 0),
+                    alice(),
+                    false,
+                )
+                .await
+                .unwrap();
+            sleep_s(3.0).await;
+            h.handle
+                .send(sleep_cmd(SleepMode::EndOfTrack, None), alice(), false)
+                .await
+                .unwrap();
+            sleep_s(8.0).await;
+            let s = h.handle.snapshot();
+            assert_eq!(s.status, SessionStatus::Stopped, "set_next={set_next}");
+            assert_eq!(current_title(&h).as_deref(), Some("Title a"));
+            assert_eq!(s.sleep, None);
+            assert!(
+                !h.mock
+                    .calls()
+                    .iter()
+                    .any(|c| c.starts_with("SetAVTransportURI http://mock/b/")),
+                "never loaded b (set_next={set_next})"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sleep_end_of_album_finishes_the_album() {
+        let h = harness(true);
+        h.handle
+            .send(
+                load(
+                    vec![
+                        on_album("a", 6.0, "x"),
+                        on_album("b", 6.0, "x"),
+                        on_album("c", 6.0, "y"),
+                    ],
+                    0,
+                ),
+                alice(),
+                false,
+            )
+            .await
+            .unwrap();
+        sleep_s(2.0).await;
+        h.handle
+            .send(sleep_cmd(SleepMode::EndOfAlbum, None), alice(), false)
+            .await
+            .unwrap();
+        sleep_s(7.0).await;
+        assert_eq!(
+            current_title(&h).as_deref(),
+            Some("Title b"),
+            "same album continues"
+        );
+        assert_eq!(h.handle.snapshot().status, SessionStatus::Playing);
+        sleep_s(8.0).await;
+        let s = h.handle.snapshot();
+        assert_eq!(s.status, SessionStatus::Stopped, "stopped before album y");
+        assert_eq!(current_title(&h).as_deref(), Some("Title b"));
+        assert_eq!(s.sleep, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn clearing_the_sleep_timer_restores_gapless() {
+        let h = harness(true);
+        h.handle
+            .send(
+                load(vec![timed("a", 6.0), timed("b", 6.0)], 0),
+                alice(),
+                false,
+            )
+            .await
+            .unwrap();
+        sleep_s(2.0).await;
+        h.handle
+            .send(sleep_cmd(SleepMode::EndOfTrack, None), alice(), false)
+            .await
+            .unwrap();
+        let s = h
+            .handle
+            .send(Command::ClearSleep, alice(), false)
+            .await
+            .unwrap();
+        assert_eq!(s.sleep, None);
+        sleep_s(8.0).await;
+        assert_eq!(current_title(&h).as_deref(), Some("Title b"));
+        assert_eq!(h.handle.snapshot().status, SessionStatus::Playing);
     }
 }

@@ -235,6 +235,34 @@ describe('MobileNowPlayingView', () => {
     expect(bins.some((value) => value === 0.5)).toBe(true);
   });
 
+  it('opens the Sleep tool and shows a running timer', () => {
+    const track = { id: '1', file_path: 'x', file_name: 'song.mp3', title: 'Song', artist: 'Artist', album: 'Album', album_id: '9', duration: 120 } as any;
+    const start = vi.fn();
+    const cancel = vi.fn();
+    const props = {
+      snapshot: { currentTrack: track, currentTime: 30, duration: 120, isPlaying: true, volume: 0.5, muted: false, loading: false, audioError: null },
+      playerState: { queue: [track], currentIndex: 0, isPlaying: true, playToken: 1 },
+      onStateChange: vi.fn(),
+    };
+    const { rerender } = render(
+      <MobileNowPlayingView {...props} sleepControls={{ timer: null, local: true, start, cancel }} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Sleep' }));
+    const sheet = screen.getByRole('dialog', { name: 'Sleep timer' });
+    fireEvent.click(within(sheet).getByRole('button', { name: '45 min' }));
+    expect(start).toHaveBeenCalledWith('minutes', 45);
+    expect(screen.queryByRole('dialog', { name: 'Sleep timer' })).not.toBeInTheDocument();
+
+    rerender(
+      <MobileNowPlayingView {...props} sleepControls={{ timer: { mode: 'endOfTrack', deadlineMs: null }, local: true, start, cancel }} />,
+    );
+    const tool = screen.getByRole('button', { name: 'Sleep timer: end of track' });
+    expect(tool).toHaveTextContent('End');
+    fireEvent.click(tool);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel timer' }));
+    expect(cancel).toHaveBeenCalled();
+  });
+
   it('opens the live Equalizer and persisted Vinyl tools from the Now Playing header', () => {
     const track = {
       id: '1', file_path: 'x', file_name: 'song.mp3', file_size: 1, format: 'MP3',

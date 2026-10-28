@@ -196,7 +196,7 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
       }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div style={{
+      <div role="dialog" aria-modal="true" style={{
         width: '100%', maxWidth: 640,
         maxHeight: '90vh',
         background: 'var(--surface)',

@@ -63,7 +63,7 @@ export default function MergeArtistsModal({ artists, onClose, onMerged }: Props)
       }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div style={{
+      <div role="dialog" aria-modal="true" style={{
         width: '100%', maxWidth: 600,
         maxHeight: '90vh',
         background: 'var(--surface)',

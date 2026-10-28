@@ -2,6 +2,7 @@
  * Play On (UPnP/DLNA renderer) wire types, mirroring the Rust `remote` module's JSON.
  */
 
+import type { SleepMode, SleepTimer } from '../audio/sleepTimer';
 import type { RadioReason } from '../types';
 
 export type RemoteSessionStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'lostControl' | 'offline';
@@ -52,6 +53,8 @@ export interface RemoteSessionState {
   canSetVolume: boolean;
   revision: number;
   error: string | null;
+  /** Sleep timer on this speaker (absent from older servers). */
+  sleep?: SleepTimer | null;
 }
 
 export interface RendererSessionSummary {
@@ -144,7 +147,9 @@ export type RemoteCommand =
   | { cmd: 'jump'; value: number }
   | { cmd: 'shuffle' | 'mute'; value: boolean }
   | { cmd: 'repeat'; value: RemoteRepeat }
-  | { cmd: 'volume'; value: number };
+  | { cmd: 'volume'; value: number }
+  | { cmd: 'sleep'; value: { mode: SleepMode; minutes?: number } }
+  | { cmd: 'sleepClear' };
 
 export type RemoteQueueOp =
   | { op: 'enqueue'; items: RemoteItemRef[]; mode: 'end' | 'next' }

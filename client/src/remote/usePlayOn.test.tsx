@@ -98,6 +98,26 @@ describe('usePlayOn', () => {
     expect(jump).toHaveBeenCalledWith('uuid:wiim', { cmd: 'jump', value: 2 }, false);
   });
 
+  it('sends sleep timer commands and mirrors the speaker timer', async () => {
+    localStorage.setItem(PLAYBACK_TARGET_STORAGE_KEY, JSON.stringify({ kind: 'renderer', udn: 'uuid:wiim' }));
+    const timer = { mode: 'minutes' as const, deadlineMs: 1_900_000_000_000 };
+    const command = vi.spyOn(api.remote, 'command').mockResolvedValue(session({ sleep: timer, revision: 11 }));
+    const { result } = setup();
+    await waitFor(() => expect(result.current.playOn.remoteView).not.toBeNull());
+    expect(result.current.playOn.remoteView?.sleep).toBeNull();
+
+    act(() => result.current.playOn.remoteActions.setSleep('minutes', 30));
+    await waitFor(() => expect(result.current.playOn.remoteView?.sleep).toEqual(timer));
+    expect(command).toHaveBeenLastCalledWith('uuid:wiim', { cmd: 'sleep', value: { mode: 'minutes', minutes: 30 } }, false);
+
+    command.mockResolvedValue(session({ sleep: null, revision: 12 }));
+    act(() => result.current.playOn.remoteActions.setSleep('endOfAlbum'));
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith('uuid:wiim', { cmd: 'sleep', value: { mode: 'endOfAlbum' } }, false));
+    act(() => result.current.playOn.remoteActions.clearSleep());
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith('uuid:wiim', { cmd: 'sleepClear' }, false));
+    await waitFor(() => expect(result.current.playOn.remoteView?.sleep).toBeNull());
+  });
+
   it('prompts before taking over another user and retries with takeover', async () => {
     localStorage.setItem(PLAYBACK_TARGET_STORAGE_KEY, JSON.stringify({ kind: 'renderer', udn: 'uuid:wiim' }));
     const inUse = { code: 'session_in_use', udn: 'uuid:wiim', deviceName: 'WiiM Ultra', ownerUserId: 'u2', ownerName: 'Dana', status: 'playing', nowPlaying: { title: 'Fragments' } };

@@ -19,8 +19,11 @@ import MobileSettingsView from './MobileSettingsView';
 import {
   MobileEqualizerSheet,
   MobilePlayOnSheet,
+  MobileSleepSheet,
   MobileVinylSheet,
 } from '../components/MobilePlaybackTools';
+import { sleepTimerBadge, sleepTimerLabel, useSleepClock, type SleepTimerControls } from '../../audio/sleepTimer';
+import { MoonIcon } from '../../components/SleepTimerControl';
 import MobileConfirmationSheet from '../components/MobileConfirmationSheet';
 import { OutputIcon } from '../../remote/OutputIcon';
 import { usePlayOnContext } from '../../remote/usePlayOn';
@@ -79,6 +82,7 @@ export default function MobileNowPlayingView({
   onAdaptiveAccentEnabledChange,
   eqControls,
   transportControls = null,
+  sleepControls = null,
   playbackMode = 'standard',
   vinylHardcore = false,
   vinylNeedleDrop = false,
@@ -102,6 +106,7 @@ export default function MobileNowPlayingView({
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
   eqControls?: PlayerEqControls | null;
   transportControls?: PlayerTransportControls | null;
+  sleepControls?: SleepTimerControls | null;
   playbackMode?: 'standard' | 'vinyl';
   vinylHardcore?: boolean;
   vinylNeedleDrop?: boolean;
@@ -124,7 +129,10 @@ export default function MobileNowPlayingView({
   const settledFingerprintTrackId = useRef<ClientEntityId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<'play-on' | null>(null);
-  const [playbackTool, setPlaybackTool] = useState<'output' | 'equalizer' | 'vinyl' | null>(null);
+  const [playbackTool, setPlaybackTool] = useState<'output' | 'equalizer' | 'vinyl' | 'sleep' | null>(null);
+  const sleepTimer = sleepControls?.timer ?? null;
+  const sleepNow = useSleepClock(sleepTimer?.mode === 'minutes');
+  const sleepBadge = sleepTimerBadge(sleepTimer, sleepNow);
   const playOn = usePlayOnContext();
   const playingOnRenderer = playOn?.target.kind === 'renderer';
   const remoteView = playingOnRenderer ? playOn?.remoteView ?? null : null;
@@ -510,6 +518,20 @@ export default function MobileNowPlayingView({
           ››
         </button>
       </div>
+      {sleepControls ? (
+        <div style={styles.sleepRow}>
+          <button
+            type="button"
+            style={{ ...styles.toolButton, ...styles.sleepButton, ...(sleepTimer ? styles.toolButtonActive : null) }}
+            onClick={() => setPlaybackTool('sleep')}
+            aria-label={sleepTimer ? sleepTimerLabel(sleepTimer, sleepNow) : 'Sleep'}
+          >
+            <MoonIcon size={16} />
+            <span>Sleep</span>
+            {sleepBadge ? <span style={styles.sleepBadge} aria-hidden="true">{sleepBadge}</span> : null}
+          </button>
+        </div>
+      ) : null}
       {remoteView && transportControls ? (
         <div style={styles.volumeRow}>
           <button
@@ -671,6 +693,9 @@ export default function MobileNowPlayingView({
           } : undefined}
         />
       ) : null}
+      {playbackTool === 'sleep' && sleepControls ? (
+        <MobileSleepSheet controls={sleepControls} onClose={() => setPlaybackTool(null)} />
+      ) : null}
       {playbackTool === 'equalizer' ? (
         <MobileEqualizerSheet
           controls={eqControls ?? null}
@@ -759,6 +784,26 @@ const styles: Record<string, React.CSSProperties> = {
     borderColor: 'var(--accent)',
     background: 'var(--accent-soft)',
     color: 'var(--accent)',
+  },
+  sleepRow: {
+    display: 'flex',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  sleepButton: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '0 14px',
+    borderRadius: 999,
+  },
+  sleepBadge: {
+    padding: '1px 6px',
+    borderRadius: 999,
+    background: 'var(--accent)',
+    color: 'var(--on-accent)',
+    fontSize: 11,
+    fontVariantNumeric: 'tabular-nums',
   },
   toolButtonWithIcon: {
     display: 'inline-grid',

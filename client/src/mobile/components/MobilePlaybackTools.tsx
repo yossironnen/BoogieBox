@@ -11,6 +11,8 @@ import { hybridMobileContentStyles } from '../../hybridPreview';
 import { RefreshIcon } from '../../remote/OutputIcon';
 import { OutputPickerList } from '../../remote/OutputPicker';
 import type { PlayOnApi } from '../../remote/usePlayOn';
+import type { SleepTimerControls } from '../../audio/sleepTimer';
+import { SleepTimerPanel } from '../../components/SleepTimerControl';
 import MobileBottomSheet, { mobileSheetHeaderButtonStyle } from './MobileBottomSheet';
 
 /** Play On picker sheet for Now Playing (plan 8.6 mobile picker). */
@@ -40,6 +42,14 @@ export function MobilePlayOnSheet({ playOn, onClose, onOpenSettings }: {
       )}
     >
       <OutputPickerList playOn={playOn} variant="mobile" onPicked={onClose} onOpenSettings={onOpenSettings} />
+    </MobileBottomSheet>
+  );
+}
+
+export function MobileSleepSheet({ controls, onClose }: { controls: SleepTimerControls; onClose: () => void }) {
+  return (
+    <MobileBottomSheet title="Sleep timer" onClose={onClose} closeLabel="Close sleep timer">
+      <SleepTimerPanel controls={controls} onDone={onClose} />
     </MobileBottomSheet>
   );
 }

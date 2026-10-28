@@ -121,3 +121,66 @@ test('shuffle and repeat toggles change state', async ({ page }) => {
   await repeat.click()
   await expect(dock(page).getByRole('button', { name: /^Repeat (queue|track)$/ })).toBeVisible()
 })
+
+test.describe('sleep timer', () => {
+  const activeVolume = (page: import('@playwright/test').Page) => page.evaluate(() => {
+    const els = Array.from(document.querySelectorAll('audio')).filter((a) => a.currentSrc || a.src)
+    return (els.find((a) => !a.paused) ?? els[0])?.volume ?? -1
+  })
+
+  test('a minutes timer fades out, pauses and can be cancelled', async ({ page }) => {
+    await page.clock.install()
+    await openApp(page)
+    const album = ALBUMS[0]
+    await openAlbum(page, album.artist, album.album)
+    await main(page).getByRole('button', { name: 'Play All', exact: true }).click()
+    await expectAudioPlaying(page)
+    const player = dock(page)
+
+    await test.step('start and cancel', async () => {
+      await player.getByRole('button', { name: 'Sleep timer', exact: true }).click()
+      await page.getByRole('dialog', { name: 'Sleep timer' }).getByRole('button', { name: '30 min' }).click()
+      const running = player.getByRole('button', { name: /^Sleep timer: \d+:\d\d left$/ })
+      await expect(running).toContainText('30m')
+      await running.click()
+      await page.getByRole('dialog', { name: 'Sleep timer' }).getByRole('button', { name: 'Cancel timer' }).click()
+      await expect(player.getByRole('button', { name: 'Sleep timer', exact: true })).toBeVisible()
+    })
+
+    await test.step('fade and pause at the deadline', async () => {
+      await player.getByRole('button', { name: 'Sleep timer', exact: true }).click()
+      const popover = page.getByRole('dialog', { name: 'Sleep timer' })
+      await expect(popover).toContainText('Reloading the page clears the timer.')
+      await popover.getByRole('button', { name: '15 min' }).click()
+      await expect(player.getByRole('button', { name: /^Sleep timer: \d+:\d\d left$/ })).toContainText('15m')
+      const full = await activeVolume(page)
+      await page.clock.fastForward('14:50')
+      await expect.poll(() => activeVolume(page)).toBeLessThan(full)
+      expect((await audioState(page))?.paused).toBe(false)
+      await page.clock.fastForward('00:15')
+      await expect.poll(async () => (await audioState(page))?.paused).toBe(true)
+      await expect(player.getByRole('button', { name: 'Play', exact: true })).toBeVisible()
+      await expect(player.getByRole('button', { name: 'Sleep timer', exact: true })).toBeVisible()
+      await expect.poll(() => activeVolume(page)).toBeCloseTo(full, 2)
+    })
+  })
+
+  test('"End of track" stops at the end instead of advancing', async ({ page }) => {
+    const album = ALBUMS[1]
+    await openAlbum(page, album.artist, album.album)
+    await main(page).getByRole('button', { name: 'Play All', exact: true }).click()
+    await expectAudioPlaying(page, 0)
+    const player = dock(page)
+    await player.getByRole('button', { name: 'Sleep timer', exact: true }).click()
+    await page.getByRole('dialog', { name: 'Sleep timer' }).getByRole('button', { name: 'End of track' }).click()
+    await expect(player.getByRole('button', { name: 'Sleep timer: end of track' })).toContainText('End')
+    await page.evaluate(() => {
+      const audio = Array.from(document.querySelectorAll('audio')).find((a) => !a.paused)
+      if (audio) audio.currentTime = Math.max(0, audio.duration - 1)
+    })
+    await expect(player.getByRole('button', { name: 'Play', exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(player).toContainText(album.tracks[0].title)
+    await expect(player).not.toContainText(album.tracks[1].title)
+    await expect(player.getByRole('button', { name: 'Sleep timer', exact: true })).toBeVisible()
+  })
+})

@@ -32,7 +32,7 @@ const tv: RendererInfo = {
 function remoteView(over: Partial<PlayerRemoteView> = {}): PlayerRemoteView {
   return {
     udn: 'uuid:wiim', deviceName: 'WiiM Ultra', status: 'playing', positionSec: 61, positionAt: Date.now(),
-    durationSec: 200, volume: 0.4, muted: false, canSeek: true, canSetVolume: true, shuffle: false, repeat: 'off', ...over,
+    durationSec: 200, volume: 0.4, muted: false, canSeek: true, canSetVolume: true, shuffle: false, repeat: 'off', sleep: null, ...over,
   };
 }
 
@@ -51,7 +51,7 @@ function playOnApi(over: Partial<PlayOnApi> = {}): PlayOnApi {
     deviceName: 'WiiM Ultra',
     remoteView: remoteView(),
     remoteActions: {
-      next: vi.fn(), prev: vi.fn(), seek: vi.fn(), setVolume: vi.fn(), setMuted: vi.fn(), setShuffle: vi.fn(), setRepeat: vi.fn(),
+      next: vi.fn(), prev: vi.fn(), seek: vi.fn(), setVolume: vi.fn(), setMuted: vi.fn(), setShuffle: vi.fn(), setRepeat: vi.fn(), setSleep: vi.fn(), clearSleep: vi.fn(),
     },
     playerState: { queue: [], currentIndex: 0, isPlaying: false, playToken: 0 },
     dispatch: vi.fn(),

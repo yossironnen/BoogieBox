@@ -10,7 +10,9 @@ import type {
 } from './types';
 import type { EntityId } from './entityId';
 import { DEFAULT_SETTINGS } from './types';
-import Player, { type PlaybackSnapshot, type PlayerState } from './components/Player';
+import Player, { type PlaybackSnapshot, type PlayerState, type PlayerTransportControls } from './components/Player';
+import KeyboardShortcutsDialog from './components/KeyboardShortcutsDialog';
+import { SHORTCUT_SEEK_SECONDS, SHORTCUT_VOLUME_STEP, usePlayerShortcuts } from './hooks/usePlayerShortcuts';
 import { createScrobbleTracker } from './scrobbling';
 import { isLibraryTrackId, isLiveTrack, isRadioTrackId, radioStationTrack, type RadioStation } from './radioStations';
 import { favouritesStore } from './favourites';
@@ -764,6 +766,7 @@ function SearchView({ libraries, playTrack, addToQueue, onOpenArtist, onOpenAlbu
         >
           <Icon.Search />
           <input style={S.searchInput} placeholder="Search titles, artists, albums..."
+            data-global-search
             value={query} onChange={e => setQuery(e.target.value)}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setSearchFocused(false)}
@@ -1595,6 +1598,26 @@ export default function App() {
     setView('browse');
   }, []);
 
+  const [transportControls, setTransportControls] = useState<PlayerTransportControls | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const focusSearch = useCallback(() => {
+    const input = document.querySelector<HTMLInputElement>('[data-global-search]');
+    if (input) input.focus();
+    else openView('search');
+  }, [openView]);
+  usePlayerShortcuts(signedIn && !isMobileShell && !setupRequired && transportControls ? {
+    togglePlay: transportControls.togglePlay,
+    seekBack: () => transportControls.seekBy(-SHORTCUT_SEEK_SECONDS),
+    seekForward: () => transportControls.seekBy(SHORTCUT_SEEK_SECONDS),
+    previous: transportControls.previous,
+    next: transportControls.next,
+    volumeUp: () => transportControls.nudgeVolume(SHORTCUT_VOLUME_STEP),
+    volumeDown: () => transportControls.nudgeVolume(-SHORTCUT_VOLUME_STEP),
+    mute: transportControls.toggleMute,
+    search: focusSearch,
+    help: () => setShortcutsOpen(true),
+  } : null);
+
   // Auth gate
   if (currentUser === 'loading') return null;
   if (setupRequired) {
@@ -2028,11 +2051,13 @@ export default function App() {
         vinylAnalogFxDisabled={vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={vinylNeedleDropIntensity}
         onPlaybackSnapshotChange={handlePlaybackSnapshot}
+        onTransportControlsChange={setTransportControls}
         hybridPreview={hybridDesignActive}
         adaptiveAccentEnabled={effectiveAdaptiveAccent}
       />
       <ContextMenuRoot />
       {playOn.takeover && <PlayOnTakeoverModal prompt={playOn.takeover} />}
+      {shortcutsOpen && <KeyboardShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {infoTrackId && (
         <TrackInfoModal
           trackId={infoTrackId}

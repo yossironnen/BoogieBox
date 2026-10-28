@@ -108,7 +108,7 @@ function PinModal({ userId, username, onClose }: { userId: EntityId; username: s
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-      <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, minWidth: 300, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div role="dialog" aria-modal="true" aria-label={`Set PIN for ${username}`} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, minWidth: 300, display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>Set PIN for {username}</div>
         <PinRow arr={pin} setArr={setPin} label="New PIN" refs2={refs} />
         <PinRow arr={confirm} setArr={setConfirm} label="Confirm PIN" refs2={crefs} />
@@ -145,7 +145,7 @@ function SubsonicPasswordModal({ user, onClose }: { user: AdminUser; onClose: ()
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-      <div role="dialog" aria-label={`Subsonic password for ${user.username}`} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, width: 'min(560px, calc(100vw - 32px))', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div role="dialog" aria-modal="true" aria-label={`Subsonic password for ${user.username}`} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: 28, width: 'min(560px, calc(100vw - 32px))', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>Subsonic password for {user.username}</div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           Used by Subsonic-compatible apps instead of the PIN. {user.hasSubsonicPassword ? 'A password is set.' : 'No password is set.'}

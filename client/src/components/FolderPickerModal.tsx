@@ -275,7 +275,7 @@ export default function FolderPickerModal({ initialPath, onSelect, onClose }: Pr
 
   return (
     <div style={S.overlay} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={S.modal}>
+      <div role="dialog" aria-modal="true" style={S.modal}>
         <div style={S.header}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
             <div style={S.title}>Choose a folder</div>

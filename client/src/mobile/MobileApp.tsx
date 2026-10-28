@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Player, { type PlaybackSnapshot, type PlayerEqControls, type PlayerTransportControls } from '../components/Player';
+import type { SleepTimerControls } from '../audio/sleepTimer';
 import { api } from '../api';
 import type { MobileBrowseSelection, MobilePlaylistSelection, MobileSharedProps, MobileTabId } from './mobileShell';
 import MobileMiniPlayer from './components/MobileMiniPlayer';
@@ -28,6 +29,7 @@ export default function MobileApp(props: MobileSharedProps) {
   const [playbackSnapshot, setPlaybackSnapshot] = useState<PlaybackSnapshot | null>(props.playbackSnapshot);
   const [eqControls, setEqControls] = useState<PlayerEqControls | null>(null);
   const [transportControls, setTransportControls] = useState<PlayerTransportControls | null>(null);
+  const [sleepControls, setSleepControls] = useState<SleepTimerControls | null>(null);
   const [requestedPlaylistId, setRequestedPlaylistId] = useState<string | null>(null);
   const takeover = usePlayOnContext()?.takeover ?? null;
   const { onPlaybackPosition } = props;
@@ -134,6 +136,7 @@ export default function MobileApp(props: MobileSharedProps) {
           onAdaptiveAccentEnabledChange={props.onAdaptiveAccentEnabledChange}
           eqControls={eqControls}
           transportControls={transportControls}
+          sleepControls={sleepControls}
           playbackMode={props.playbackMode}
           vinylHardcore={props.vinylHardcore}
           vinylNeedleDrop={props.vinylNeedleDrop}
@@ -160,6 +163,7 @@ export default function MobileApp(props: MobileSharedProps) {
         onPlaybackSnapshotChange={handlePlaybackSnapshot}
         onEqControlsChange={setEqControls}
         onTransportControlsChange={setTransportControls}
+        onSleepTimerChange={setSleepControls}
       />
       {tab !== 'now-playing' ? (
         <MobileMiniPlayer

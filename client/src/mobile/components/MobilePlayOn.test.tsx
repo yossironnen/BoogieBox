@@ -47,7 +47,7 @@ function playOnApi(over: Partial<PlayOnApi> = {}): PlayOnApi {
     pendingUdn: null,
     deviceName: null,
     remoteView: null,
-    remoteActions: { next: vi.fn(), prev: vi.fn(), seek: vi.fn(), setVolume: vi.fn(), setMuted: vi.fn(), setShuffle: vi.fn(), setRepeat: vi.fn() },
+    remoteActions: { next: vi.fn(), prev: vi.fn(), seek: vi.fn(), setVolume: vi.fn(), setMuted: vi.fn(), setShuffle: vi.fn(), setRepeat: vi.fn(), setSleep: vi.fn(), clearSleep: vi.fn() },
     playerState: state,
     dispatch: vi.fn(),
     notice: null,
@@ -122,7 +122,7 @@ describe('mobile Play On', () => {
   });
 
   it('seeks from the progress bar when the drag ends', () => {
-    const controls: PlayerTransportControls = { seek: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() };
+    const controls: PlayerTransportControls = { seek: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), togglePlay: vi.fn(), previous: vi.fn(), next: vi.fn(), seekBy: vi.fn(), nudgeVolume: vi.fn() };
     const snapshot: PlaybackSnapshot = { currentTrack: song, currentTime: 10, duration: 120, isPlaying: true, volume: 1, muted: false, loading: false, audioError: null };
     render(
       <PlayOnContext.Provider value={playOnApi()}>
@@ -140,11 +140,11 @@ describe('mobile Play On', () => {
   });
 
   it('shows the speaker volume on a renderer and explains a fixed one', () => {
-    const controls: PlayerTransportControls = { seek: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() };
+    const controls: PlayerTransportControls = { seek: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), togglePlay: vi.fn(), previous: vi.fn(), next: vi.fn(), seekBy: vi.fn(), nudgeVolume: vi.fn() };
     const snapshot: PlaybackSnapshot = { currentTrack: song, currentTime: 10, duration: 120, isPlaying: true, volume: 0.4, muted: false, loading: false, audioError: null };
     const view: PlayerRemoteView = {
       udn: 'uuid:wiim', deviceName: 'WiiM Ultra', status: 'playing', positionSec: 10, positionAt: 0, durationSec: 120,
-      volume: 0.4, muted: false, canSeek: true, canSetVolume: true, shuffle: false, repeat: 'off',
+      volume: 0.4, muted: false, canSeek: true, canSetVolume: true, shuffle: false, repeat: 'off', sleep: null,
     };
     const remote = playOnApi({ target: { kind: 'renderer', udn: 'uuid:wiim' }, deviceName: 'WiiM Ultra', remoteView: view });
     const { rerender } = render(

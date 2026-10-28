@@ -40,6 +40,15 @@ import { isLibraryTrackId, isLiveTrack } from '../radioStations';
 import { RadioIcon } from './FavouriteIcons';
 import { OutputPickerList, pickerRenderers } from '../remote/OutputPicker';
 import { useMediaSession } from '../platform/mediaSession';
+import {
+  sleepStopsAfterCurrent,
+  sleepTimerBadge,
+  sleepTimerLabel,
+  useLocalSleepTimer,
+  useSleepClock,
+  type SleepTimerControls,
+} from '../audio/sleepTimer';
+import { MoonIcon, SleepTimerPanel } from './SleepTimerControl';
 
 /** Player State is part of this module's public API. */
 export interface PlayerState {
@@ -85,6 +94,13 @@ export interface PlayerTransportControls {
   /** 0–1. */
   setVolume: (volume: number) => void;
   toggleMute: () => void;
+  togglePlay: () => void;
+  previous: () => void;
+  next: () => void;
+  /** Seek relative to the current position (no-op where seeking is unavailable). */
+  seekBy: (deltaSeconds: number) => void;
+  /** Change the volume by a 0–1 step. */
+  nudgeVolume: (delta: number) => void;
 }
 interface PlayerProps {
   state: PlayerState;
@@ -101,6 +117,8 @@ interface PlayerProps {
   onPlaybackSnapshotChange?: (snapshot: PlaybackSnapshot) => void;
   onEqControlsChange?: (controls: PlayerEqControls | null) => void;
   onTransportControlsChange?: (controls: PlayerTransportControls | null) => void;
+  /** Sleep timer for alternate control surfaces (this browser's, or the Play On speaker's). */
+  onSleepTimerChange?: (controls: SleepTimerControls | null) => void;
   hybridPreview?: boolean;
   adaptiveAccentEnabled?: boolean;
 }
@@ -1982,6 +2000,7 @@ export default function Player({
   onPlaybackSnapshotChange,
   onEqControlsChange,
   onTransportControlsChange,
+  onSleepTimerChange,
   hybridPreview = false,
   adaptiveAccentEnabled = true,
 }: PlayerProps) {
@@ -2901,10 +2920,43 @@ export default function Player({
     return () => window.clearInterval(id);
   }, [currentTrack?.duration, remote, seeking]);
 
+  // This browser's sleep timer: fades out over the last seconds, then pauses and restores the volume.
+  const localSleep = useLocalSleepTimer(() => {
+    cancelCrossfade();
+    getActiveAudio()?.pause();
+    onStateChange({ ...state, isPlaying: false });
+  });
+  const cancelLocalSleep = localSleep.cancel;
+  useEffect(() => {
+    if (isRemote) cancelLocalSleep();
+  }, [cancelLocalSleep, isRemote]);
+  const [sleepOpen, setSleepOpen] = useState(false);
+  const sleepButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sleepPopupRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!sleepOpen) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (sleepPopupRef.current?.contains(target) || sleepButtonRef.current?.contains(target))) return;
+      setSleepOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSleepOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [sleepOpen]);
+
+  // The audio elements mount with the first queued track, after the saved volume loaded.
+  const hasAudio = queue.length > 0;
   useEffect(() => {
     const active = getActiveAudio();
-    if (active && !crossfadeActiveRef.current) { active.volume = volume; active.muted = muted; }
-  }, [volume, muted, getActiveAudio]);
+    if (active && !crossfadeActiveRef.current) { active.volume = volume * localSleep.fade; active.muted = muted; }
+  }, [volume, muted, getActiveAudio, localSleep.fade, hasAudio]);
 
   useEffect(() => {
     if (!isVinylMode || !shouldRunVinylFx) return;
@@ -3021,18 +3073,60 @@ export default function Player({
     setMuted((m) => !m);
   };
 
+  const togglePlay = () => {
+    if (queue.length > 0) onStateChange({ ...state, isPlaying: !isPlaying });
+  };
+  const seekBy = (deltaSeconds: number) => {
+    if (liveTrack || !(duration > 0)) return;
+    seekToTime(currentTimeRef.current + deltaSeconds, true);
+  };
+  const nudgeVolume = (delta: number) => {
+    if (volumeLocked) return;
+    changeVolume(Math.max(0, Math.min(1, (shownMuted ? 0 : shownVolume) + delta)));
+  };
+
   // One stable object; the handlers it calls are refreshed every render.
-  const transportHandlersRef = useRef({ seekToTime, changeVolume, toggleMuted });
-  transportHandlersRef.current = { seekToTime, changeVolume, toggleMuted };
+  const transportHandlersRef = useRef({ seekToTime, changeVolume, toggleMuted, togglePlay, playPrev, playNextClick, seekBy, nudgeVolume });
+  transportHandlersRef.current = { seekToTime, changeVolume, toggleMuted, togglePlay, playPrev, playNextClick, seekBy, nudgeVolume };
   const transportControls = useMemo<PlayerTransportControls>(() => ({
     seek: (seconds) => transportHandlersRef.current.seekToTime(seconds, true),
     setVolume: (value) => transportHandlersRef.current.changeVolume(value),
     toggleMute: () => transportHandlersRef.current.toggleMuted(),
+    togglePlay: () => transportHandlersRef.current.togglePlay(),
+    previous: () => transportHandlersRef.current.playPrev(),
+    next: () => transportHandlersRef.current.playNextClick(),
+    seekBy: (delta) => transportHandlersRef.current.seekBy(delta),
+    nudgeVolume: (delta) => transportHandlersRef.current.nudgeVolume(delta),
   }), []);
   useEffect(() => {
     onTransportControlsChange?.(transportControls);
     return () => onTransportControlsChange?.(null);
   }, [onTransportControlsChange, transportControls]);
+
+  // End-of-track/album timers stop here instead of advancing (also blocks the crossfade/zerogap start).
+  const sleepNextEntry = currentIndex + 1 < queue.length ? queue[currentIndex + 1] : repeatMode === 'all' ? queue[0] : null;
+  const sleepStopsRef = useRef(false);
+  sleepStopsRef.current = !isRemote && sleepStopsAfterCurrent(localSleep.timer, queue[currentIndex], sleepNextEntry);
+  const stopForSleep = () => {
+    localSleep.cancel();
+    onStateChange({ ...state, isPlaying: false });
+  };
+  const remoteSleep = remote ? remote.sleep : null;
+  const sleepControls = useMemo<SleepTimerControls>(() => (
+    isRemote
+      ? {
+        timer: remoteSleep,
+        local: false,
+        start: (mode, minutes) => remoteActions?.setSleep(mode, minutes),
+        cancel: () => remoteActions?.clearSleep(),
+      }
+      : { timer: localSleep.timer, local: true, start: localSleep.start, cancel: localSleep.cancel }
+  ), [isRemote, localSleep.cancel, localSleep.start, localSleep.timer, remoteActions, remoteSleep]);
+  useEffect(() => { onSleepTimerChange?.(sleepControls); }, [onSleepTimerChange, sleepControls]);
+  useEffect(() => () => onSleepTimerChange?.(null), [onSleepTimerChange]);
+  const sleepNow = useSleepClock(sleepControls.timer?.mode === 'minutes');
+  const sleepBadge = sleepTimerBadge(sleepControls.timer, sleepNow);
+  const sleepLabel = sleepTimerLabel(sleepControls.timer, sleepNow);
 
   useEffect(() => {
     if (!lyricsOpen || !currentTrack?.id) return;
@@ -3152,6 +3246,7 @@ export default function Player({
         }}
         onTimeUpdate={e => {
           if (activeSlotRef.current !== 'A') return;
+          localSleep.check();
           const t = e.currentTarget.currentTime;
           if (!seeking) { currentTimeRef.current = t; setCurrentTime(t); }
           if (!seeking && t > 0 && t - lastProgressSaveTimeRef.current >= 5) {
@@ -3160,7 +3255,7 @@ export default function Player({
           }
           // Crossfade/zerogap trigger
           const audio = e.currentTarget;
-          if (repeatModeRef.current !== 'one' && crossfadeConfig.mode !== 'off' && audio.duration > 0 && !crossfadeTriggeredRef.current && !crossfadeActiveRef.current) {
+          if (repeatModeRef.current !== 'one' && crossfadeConfig.mode !== 'off' && audio.duration > 0 && !crossfadeTriggeredRef.current && !crossfadeActiveRef.current && !sleepStopsRef.current) {
             const nextIdx = currentIndex + 1;
             if (nextIdx < queue.length || repeatModeRef.current === 'all') {
               const safeNextIdx = nextIdx < queue.length ? nextIdx : 0;
@@ -3181,6 +3276,7 @@ export default function Player({
         onEnded={() => {
           if (activeSlotRef.current !== 'A') return;
           setCurrentTime((prev) => Math.max(prev, duration));
+          if (sleepStopsRef.current) { stopForSleep(); return; }
           console.info('[Player] ended', {
             ...buildPlaybackDebugInfo(currentTrack, loadedUrlRef.current),
           });
@@ -3272,6 +3368,7 @@ export default function Player({
         ref={audioBRef}
         onTimeUpdate={e => {
           if (activeSlotRef.current !== 'B') return;
+          localSleep.check();
           const t = e.currentTarget.currentTime;
           if (!seeking) { currentTimeRef.current = t; setCurrentTime(t); }
           if (!seeking && t > 0 && t - lastProgressSaveTimeRef.current >= 5) {
@@ -3280,7 +3377,7 @@ export default function Player({
           }
           // Crossfade/zerogap trigger (same logic as Audio A)
           const audio = e.currentTarget;
-          if (repeatModeRef.current !== 'one' && crossfadeConfig.mode !== 'off' && audio.duration > 0 && !crossfadeTriggeredRef.current && !crossfadeActiveRef.current) {
+          if (repeatModeRef.current !== 'one' && crossfadeConfig.mode !== 'off' && audio.duration > 0 && !crossfadeTriggeredRef.current && !crossfadeActiveRef.current && !sleepStopsRef.current) {
             const nextIdx = currentIndex + 1;
             if (nextIdx < queue.length || repeatModeRef.current === 'all') {
               const safeNextIdx = nextIdx < queue.length ? nextIdx : 0;
@@ -3301,6 +3398,7 @@ export default function Player({
         onEnded={() => {
           if (activeSlotRef.current !== 'B') return;
           setCurrentTime((prev) => Math.max(prev, duration));
+          if (sleepStopsRef.current) { stopForSleep(); return; }
           if (repeatModeRef.current === 'one') {
             const audio = audioBRef.current;
             if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
@@ -3656,6 +3754,23 @@ export default function Player({
               >
                 <EqIcon />
               </button>
+              <button
+                ref={sleepButtonRef}
+                type="button"
+                style={{
+                  ...ctrlBtn,
+                  position: 'relative',
+                  color: sleepControls.timer || sleepOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted,
+                  ...(sleepControls.timer || sleepOpen ? P.ctrlBtnActive : {}),
+                }}
+                title={sleepLabel}
+                aria-label={sleepLabel}
+                aria-expanded={sleepOpen}
+                onClick={() => setSleepOpen((open) => !open)}
+              >
+                <MoonIcon />
+                {sleepBadge ? <span style={P.sleepBadge} aria-hidden="true">{sleepBadge}</span> : null}
+              </button>
             </div>
             <div
               title={volumeLocked ? volumeLockedTitle : undefined}
@@ -3709,6 +3824,12 @@ export default function Player({
                   onDeleteProfile={deleteParametricProfile}
                   accentColor={PLAYER_THEME_TOKENS.accent}
                 />
+              </div>
+            )}
+            {sleepOpen && (
+              <div style={{ ...dockPopupVars, ...P.sleepPopup, bottom: playerDockHeight + DESKTOP_PLAYER_POPUP_GAP }} ref={sleepPopupRef} role="dialog" aria-label="Sleep timer">
+                <strong style={{ fontSize: 14 }}>Sleep timer</strong>
+                <SleepTimerPanel controls={sleepControls} onDone={() => setSleepOpen(false)} />
               </div>
             )}
             {/* Play On */}
@@ -3949,6 +4070,32 @@ const P: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     padding: 12,
     gap: 12,
+  },
+  sleepPopup: {
+    ...hybridAudioPanelStyles.popup,
+    position: 'fixed',
+    right: 20,
+    width: 340,
+    zIndex: 220,
+    display: 'flex',
+    flexDirection: 'column',
+    padding: 14,
+    gap: 10,
+  },
+  sleepBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 16,
+    padding: '0 3px',
+    borderRadius: 6,
+    background: PLAYER_THEME_TOKENS.accent,
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: 700,
+    lineHeight: '13px',
+    textAlign: 'center',
+    pointerEvents: 'none',
   },
   eqHeader: {
     ...hybridAudioPanelStyles.header,

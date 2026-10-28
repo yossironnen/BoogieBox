@@ -340,9 +340,10 @@ async fn load_handler(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandBody {
-    /// `play|pause|toggle|stop|next|prev|seek|jump|shuffle|repeat|volume|mute`.
+    /// `play|pause|toggle|stop|next|prev|seek|jump|shuffle|repeat|volume|mute|sleep|sleepClear`.
     pub cmd: String,
-    /// Argument for `seek` (s), `jump` (qid), `shuffle`/`mute` (bool), `repeat` (`off|one|all`), `volume` (0–100).
+    /// Argument for `seek` (s), `jump` (qid), `shuffle`/`mute` (bool), `repeat` (`off|one|all`), `volume` (0–100),
+    /// `sleep` (`{ mode: minutes|endOfTrack|endOfAlbum, minutes? }`).
     #[serde(default)]
     pub value: Option<Value>,
     /// Confirmed takeover.
@@ -373,6 +374,23 @@ pub fn parse_command(body: &CommandBody) -> Result<Command, String> {
             }
             Command::SetVolume(n.round() as u8)
         }
+        "sleep" => {
+            #[derive(serde::Deserialize)]
+            struct SleepValue {
+                mode: crate::remote::session::SleepMode,
+                #[serde(default)]
+                minutes: Option<u32>,
+            }
+            let value: SleepValue = v
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .ok_or("sleep needs a mode of minutes, endOfTrack or endOfAlbum")?;
+            Command::SetSleep {
+                mode: value.mode,
+                minutes: value.minutes,
+            }
+        }
+        "sleepClear" => Command::ClearSleep,
         "repeat" => Command::SetRepeat(
             v.cloned()
                 .and_then(|v| serde_json::from_value::<Repeat>(v).ok())
@@ -617,7 +635,7 @@ fn event_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::session::{InUseInfo, SessionStatus};
+    use crate::remote::session::{InUseInfo, SessionStatus, SleepMode};
 
     fn body(cmd: &str, value: Option<Value>) -> CommandBody {
         CommandBody {
@@ -657,7 +675,31 @@ mod tests {
             parse_command(&body("repeat", Some(json!("all")))).unwrap(),
             Command::SetRepeat(Repeat::All)
         );
+        assert_eq!(
+            parse_command(&body(
+                "sleep",
+                Some(json!({"mode": "minutes", "minutes": 15}))
+            ))
+            .unwrap(),
+            Command::SetSleep {
+                mode: SleepMode::Minutes,
+                minutes: Some(15)
+            }
+        );
+        assert_eq!(
+            parse_command(&body("sleep", Some(json!({"mode": "endOfAlbum"})))).unwrap(),
+            Command::SetSleep {
+                mode: SleepMode::EndOfAlbum,
+                minutes: None
+            }
+        );
+        assert_eq!(
+            parse_command(&body("sleepClear", None)).unwrap(),
+            Command::ClearSleep
+        );
         for bad in [
+            body("sleep", None),
+            body("sleep", Some(json!({"mode": "forever"}))),
             body("seek", None),
             body("jump", Some(json!(-1))),
             body("shuffle", Some(json!("yes"))),

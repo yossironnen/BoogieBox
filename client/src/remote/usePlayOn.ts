@@ -6,6 +6,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { api, RemoteApiError } from '../api';
 import type { PlayerState } from '../components/Player';
+import type { SleepMode, SleepTimer } from '../audio/sleepTimer';
 import type { Track } from '../types';
 import { subscribeRemoteEvents } from './remoteEvents';
 import {
@@ -63,6 +64,7 @@ export interface PlayerRemoteView {
   canSetVolume: boolean;
   shuffle: boolean;
   repeat: RemoteRepeat;
+  sleep: SleepTimer | null;
 }
 
 export interface PlayerRemoteActions {
@@ -73,6 +75,8 @@ export interface PlayerRemoteActions {
   setMuted: (muted: boolean) => void;
   setShuffle: (on: boolean) => void;
   setRepeat: (mode: RemoteRepeat) => void;
+  setSleep: (mode: SleepMode, minutes?: number) => void;
+  clearSleep: () => void;
 }
 
 export interface PlayOnTakeoverPrompt {
@@ -563,6 +567,9 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
     setMuted: (muted: boolean) => command({ kind: 'command', command: { cmd: 'mute', value: muted } }),
     setShuffle: (on: boolean) => command({ kind: 'command', command: { cmd: 'shuffle', value: on } }),
     setRepeat: (mode: RemoteRepeat) => command({ kind: 'command', command: { cmd: 'repeat', value: mode } }),
+    setSleep: (mode: SleepMode, minutes?: number) =>
+      command({ kind: 'command', command: { cmd: 'sleep', value: minutes == null ? { mode } : { mode, minutes } } }),
+    clearSleep: () => command({ kind: 'command', command: { cmd: 'sleepClear' } }),
   }), [command, run]);
 
   const remoteView = useMemo<PlayerRemoteView | null>(() => {
@@ -581,6 +588,7 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
       canSetVolume: s.canSetVolume && (activeRenderer?.capabilities.volume ?? true),
       shuffle: s.shuffle,
       repeat: s.repeat,
+      sleep: s.sleep ?? null,
     };
   }, [activeRenderer, deviceName, targetUdn, view, volumeOverride]);
 
