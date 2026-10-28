@@ -71,6 +71,8 @@ Every test also fails on uncaught page errors, app `console.error` output and an
 | PIN users, wrong PIN, non-admin UI, sign-out, delete | `tests/desktop/users.spec.ts` |
 | Favourites, radio stations, themes, Subsonic switch, Activity, Home, Auto DJ | `tests/desktop/features.spec.ts` |
 | Mobile shell, browse, search, Now Playing, OS media controls, Sleep tool | `tests/mobile/mobile.spec.ts` |
+| Backup: back up now (with an uploaded cover), schedule/keep, delete | `tests/desktop/backup.spec.ts` |
+| Restore (project `restore`, runs last because it signs everyone out): live restore, first-run restore on a second fresh server with a remapped music folder | `tests/restore/restore.spec.ts` |
 
 Not covered (needs hardware or network): Play On renderers, DLNA, BoogieMix rendering/deep analysis, Last.fm,
 ListenBrainz and provider lookups, the desktop (Tauri) shell.
@@ -82,6 +84,7 @@ ListenBrainz and provider lookups, the desktop (Tauri) shell.
 | `BOOGIEBOX_E2E_SERVER_EXE` | release for `VERSION` | Test a specific `boogiebox-server(.exe)` |
 | `BOOGIEBOX_E2E_STRICT_VERSION` | off | `1` = fail when the `VERSION` build is missing |
 | `BOOGIEBOX_E2E_PORT` | `3917` | Server port |
+| `BOOGIEBOX_E2E_PORT2` | `3918` | Port of the second, fresh server the first-run restore test starts |
 | `BOOGIEBOX_PRUNE_BRAKE_MIN` | `2` | Passed to the server: lowers the scan's mass-removal brake floor (normally 200 tracks) so the fixture library can trip it |
 
 ## Writing tests

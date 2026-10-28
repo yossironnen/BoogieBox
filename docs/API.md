@@ -17,6 +17,24 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 | `GET` | `/api/system/status` | Report setup state, FFmpeg status, log path, and discovery metadata. |
 | `POST` | `/api/system/setup` | Complete first-run setup by selecting the database folder. |
 | `POST` | `/api/system/select-folder` | Open the native folder picker during local first-run setup. |
+| `POST` | `/api/system/backups/inspect` | First-run only: validate a backup folder (`{path}`) and summarize it. |
+| `POST` | `/api/system/setup-restore` | First-run only: restore a backup into an empty database folder (`{backupPath, dbFolder, remaps}`). |
+
+## Backups (Admin)
+
+While a restore swaps the database, every `/api` and `/rest` call except `/api/system/status` answers
+`503 {code: "restoring"}`; the status reports `restoring` and `restoreStep`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/admin/backups` | Settings, running job, last failure, next run, staleness and the list of backups. |
+| `PUT` | `/api/admin/backups/settings` | Save `{schedule, day, time, keep, path, includeAllArtwork, includeMixes}`. |
+| `POST` | `/api/admin/backups` | Back up now (202; one backup or restore at a time, 409 otherwise). |
+| `GET` | `/api/admin/backups/health` | `ok`, `failed`, `stale` or `off`, for the sidebar warning. |
+| `POST` | `/api/admin/backups/inspect` | Validate a backup folder (`{path}`) and summarize it. |
+| `POST` | `/api/admin/backups/{name}/restore` | Restore a listed backup (`{remaps}`); signs everyone out. 202 `pending` if it must finish at the next start. |
+| `POST` | `/api/admin/backups/restore-from` | Restore a backup from another folder (`{path, remaps}`). |
+| `DELETE` | `/api/admin/backups/{name}` | Delete a backup. |
 
 ## Authentication
 

@@ -183,6 +183,17 @@ pub fn start_dlna(manager: DlnaManager, db: DbPool, settings: DlnaSettings) {
     );
 }
 
+/// Stops the DLNA server, releasing its database handle.
+pub fn stop_dlna(manager: &DlnaManager) {
+    let mut mgr = manager.lock().unwrap_or_else(|p| p.into_inner());
+    for h in mgr.handles.drain(..) {
+        h.abort();
+    }
+    mgr.running = false;
+    mgr.port = None;
+    mgr.friendly_name = None;
+}
+
 /// Documents the Restart DLNA public API surface.
 pub async fn restart_dlna(manager: DlnaManager, db: DbPool) {
     let settings = tokio::task::spawn_blocking({

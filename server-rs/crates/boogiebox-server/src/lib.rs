@@ -32,6 +32,7 @@ pub mod activity;
 pub mod artist_radio;
 pub mod artwork_cache;
 pub mod auth;
+pub mod backup;
 pub mod beat_grid;
 pub mod bpm_analysis;
 pub mod cors;
@@ -152,6 +153,8 @@ pub struct AppState {
     /// Live transfers, web player reports and queued history for the admin Activity page; reset on a database
     /// switch.
     pub activity: activity::ActivityHub,
+    /// Running backup/restore and the maintenance flag a live restore raises.
+    pub backup: backup::BackupHub,
 }
 
 impl Default for AppState {
@@ -204,6 +207,7 @@ impl Default for AppState {
             subsonic: subsonic::SubsonicState::default(),
             plays: plays::PlayHub::default(),
             activity,
+            backup: backup::BackupHub::default(),
         }
     }
 }
@@ -231,6 +235,11 @@ struct StatusResponse {
     setup_required: bool,
     suggested_db_folder: String,
     db_folder: Option<String>,
+    /// A backup is being restored; other API calls answer 503 `restoring` until it's done.
+    restoring: bool,
+    /// What the restore is doing now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_step: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,7 +297,11 @@ pub struct ErrorResponse {
 pub async fn run_from_env() -> Result<(), ServerError> {
     let log_file = init_logging();
     let config = ServerConfig::from_env()?;
-    let state = AppState::default();
+    // A live restore that couldn't close the database finishes here, before the database is opened.
+    if let Some(db_config) = server_config::read_db_config() {
+        backup::complete_pending_restore(Path::new(&db_config.db_folder));
+    }
+    let mut state = AppState::default();
     state.remote.set_http_port(config.port);
     let startup_banner = format!(
         "BoogieBox Rust server starting; version={}; log_file={}; ffmpeg_path={}; ffmpeg_available={}; ffprobe_available={}",
@@ -350,47 +363,8 @@ pub async fn run_from_env() -> Result<(), ServerError> {
                 }
             }
         }
-        db_warmup::warm_in_background(db.clone());
-        let dlna_db = db.clone();
-        let cancel = state.worker_cancel.clone();
-        let ps_state = post_scan::PostScanState {
-            db,
-            http_client: state.http_client.clone(),
-            db_folder: state.db_folder.clone(),
-            cancel: cancel.clone(),
-        };
-        scanner::start_scan_scheduler(ps_state.clone());
-        post_scan::start_post_scan_scheduler(ps_state.clone());
-        waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
-        bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
-        radio_metadata::start_radio_metadata_scheduler(
-            ps_state.db.clone(),
-            ps_state.http_client.clone(),
-            cancel.clone(),
-        );
-        db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
-        let play_env = plays::PlayEnv {
-            db: ps_state.db.clone(),
-            http: state.http_client.clone(),
-            hub: state.plays.clone(),
-            subsonic: state.subsonic.clone(),
-            db_folder: state.db_folder.clone(),
-            activity: state.activity.clone(),
-        };
-        state.remote.set_play_env(play_env.clone());
-        scrobbling::start_forwarder(play_env, cancel.clone());
-        deep_analysis::start_deep_analysis_worker(ps_state.clone());
-        mix_worker::start_mix_worker(ps_state);
-        let dlna_mgr = state.dlna_manager.clone();
-        activity::start(
-            state.activity.clone(),
-            state.plays.clone(),
-            state.remote.clone(),
-            dlna_db.clone(),
-            cancel.clone(),
-        );
-        remote::start_in_background(state.remote.clone(), dlna_db.clone(), cancel);
-        tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
+        let folder = state.db_folder.clone().unwrap_or_default();
+        activate_db(&mut state, db, folder);
     }
     let app = build_app(state, config.client_build_dir.clone());
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -501,6 +475,86 @@ pub fn resolve_log_file() -> Option<PathBuf> {
         .map(|dir| dir.join("logs").join("boogiebox-server.log"))
 }
 
+/// Makes `db_pool` the active database: resets per-database caches and (re)starts every background worker
+/// against it. Used at startup, by first-run setup, by switching databases and by a restore.
+pub fn activate_db(s: &mut AppState, db_pool: DbPool, db_folder: PathBuf) {
+    s.db = Some(db_pool.clone());
+    s.db_folder = Some(db_folder.clone());
+    s.subsonic.reset();
+    s.plays.reset();
+    s.activity.reset();
+    s.worker_cancel.cancel();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    s.worker_cancel = cancel.clone();
+    let ps_state = post_scan::PostScanState {
+        db: db_pool.clone(),
+        http_client: s.http_client.clone(),
+        db_folder: s.db_folder.clone(),
+        cancel: cancel.clone(),
+    };
+    db_warmup::warm_in_background(db_pool.clone());
+    scanner::start_scan_scheduler(ps_state.clone());
+    post_scan::start_post_scan_scheduler(ps_state.clone());
+    waveform_map::start_waveform_map_scheduler(db_pool.clone(), cancel.clone());
+    bpm_analysis::start_bpm_analysis_scheduler(db_pool.clone(), cancel.clone());
+    radio_metadata::start_radio_metadata_scheduler(
+        db_pool.clone(),
+        s.http_client.clone(),
+        cancel.clone(),
+    );
+    db_maintenance::start_db_maintenance_scheduler(db_pool.clone(), cancel.clone());
+    if let Some(paths) = backup::DataPaths::for_folder(&db_folder) {
+        backup::hold_data_lock(&paths.data_dir);
+        backup::start_backup_scheduler(db_pool.clone(), paths, s.backup.clone(), cancel.clone());
+    }
+    let play_env = plays::PlayEnv {
+        db: db_pool.clone(),
+        http: s.http_client.clone(),
+        hub: s.plays.clone(),
+        subsonic: s.subsonic.clone(),
+        db_folder: s.db_folder.clone(),
+        activity: s.activity.clone(),
+    };
+    s.remote.set_play_env(play_env.clone());
+    scrobbling::start_forwarder(play_env, cancel.clone());
+    deep_analysis::start_deep_analysis_worker(ps_state.clone());
+    mix_worker::start_mix_worker(ps_state);
+    activity::start(
+        s.activity.clone(),
+        s.plays.clone(),
+        s.remote.clone(),
+        db_pool.clone(),
+        cancel.clone(),
+    );
+    remote::start_in_background(s.remote.clone(), db_pool.clone(), cancel);
+    tokio::spawn(dlna::start_dlna_if_enabled(s.dlna_manager.clone(), db_pool));
+}
+
+/// While a restore has the database out, API and Subsonic calls answer 503 `restoring` (status excepted).
+async fn restoring_guard(
+    State(state): State<SharedState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let restoring = state
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .backup
+        .is_restoring();
+    let path = request.uri().path();
+    if restoring
+        && (path.starts_with("/api/") || path.starts_with("/rest/"))
+        && path != "/api/system/status"
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "Restoring a backup", "code": "restoring" })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 /// Documents the Build App public API surface.
 pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
     let shared_state: SharedState = Arc::new(RwLock::new(state));
@@ -542,6 +596,7 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         .with_state(shared_state.clone())
         .merge(routes::auth_routes::auth_router(shared_state.clone()))
         .merge(routes::admin_routes::admin_router(shared_state.clone()))
+        .merge(routes::backup_routes::backup_router(shared_state.clone()))
         .merge(routes::settings_routes::settings_router(
             shared_state.clone(),
         ))
@@ -584,7 +639,11 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer)
         // `/rest` brings its own body limit and non-credentialed CORS, so it is merged after the API layers.
-        .merge(subsonic::router(shared_state));
+        .merge(subsonic::router(shared_state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            shared_state,
+            restoring_guard,
+        ));
 
     // Compression is layered after the static fallback so the client bundle
     // is compressed too; it matters most for clients on another machine.
@@ -766,6 +825,12 @@ async fn status_handler(State(state): State<SharedState>) -> impl IntoResponse {
                 .db_folder
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
+            restoring: state.backup.is_restoring(),
+            restore_step: state
+                .backup
+                .running()
+                .filter(|job| job.kind == "restore")
+                .map(|job| job.step),
         }),
     )
 }
@@ -817,53 +882,7 @@ async fn setup_handler(
                 let db_pool = Arc::new(Mutex::new(initialized.connection));
                 let mut s = state.write().unwrap_or_else(|p| p.into_inner());
                 s.setup_required = false;
-                s.db = Some(db_pool);
-                s.db_folder = Some(PathBuf::from(db_folder));
-                s.subsonic.reset();
-                s.plays.reset();
-                s.activity.reset();
-                s.worker_cancel.cancel();
-                let cancel = tokio_util::sync::CancellationToken::new();
-                s.worker_cancel = cancel.clone();
-                let ps_state = post_scan::PostScanState {
-                    db: s.db.as_ref().expect("db set").clone(),
-                    http_client: s.http_client.clone(),
-                    db_folder: s.db_folder.clone(),
-                    cancel: cancel.clone(),
-                };
-                scanner::start_scan_scheduler(ps_state.clone());
-                post_scan::start_post_scan_scheduler(ps_state.clone());
-                waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
-                bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
-                radio_metadata::start_radio_metadata_scheduler(
-                    ps_state.db.clone(),
-                    ps_state.http_client.clone(),
-                    cancel.clone(),
-                );
-                db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
-                let play_env = plays::PlayEnv {
-                    db: ps_state.db.clone(),
-                    http: s.http_client.clone(),
-                    hub: s.plays.clone(),
-                    subsonic: s.subsonic.clone(),
-                    db_folder: s.db_folder.clone(),
-                    activity: s.activity.clone(),
-                };
-                s.remote.set_play_env(play_env.clone());
-                scrobbling::start_forwarder(play_env, cancel.clone());
-                deep_analysis::start_deep_analysis_worker(ps_state.clone());
-                mix_worker::start_mix_worker(ps_state);
-                let dlna_mgr = s.dlna_manager.clone();
-                let dlna_db = s.db.as_ref().expect("db set").clone();
-                activity::start(
-                    s.activity.clone(),
-                    s.plays.clone(),
-                    s.remote.clone(),
-                    dlna_db.clone(),
-                    cancel.clone(),
-                );
-                remote::start_in_background(s.remote.clone(), dlna_db.clone(), cancel.clone());
-                tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
+                activate_db(&mut s, db_pool, PathBuf::from(db_folder));
                 (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
             }
             Err(err) => map_init_db_error(err).into_response(),
@@ -938,54 +957,7 @@ async fn switch_db_handler(
             Ok(initialized) => {
                 let db_pool = Arc::new(Mutex::new(initialized.connection));
                 let mut s = state.write().unwrap_or_else(|p| p.into_inner());
-                s.db = Some(db_pool);
-                s.db_folder = Some(PathBuf::from(db_folder));
-                s.subsonic.reset();
-                s.plays.reset();
-                s.activity.reset();
-                s.worker_cancel.cancel();
-                let cancel = tokio_util::sync::CancellationToken::new();
-                s.worker_cancel = cancel.clone();
-                let ps_state = post_scan::PostScanState {
-                    db: s.db.as_ref().expect("db set").clone(),
-                    http_client: s.http_client.clone(),
-                    db_folder: s.db_folder.clone(),
-                    cancel: cancel.clone(),
-                };
-                db_warmup::warm_in_background(ps_state.db.clone());
-                scanner::start_scan_scheduler(ps_state.clone());
-                post_scan::start_post_scan_scheduler(ps_state.clone());
-                waveform_map::start_waveform_map_scheduler(ps_state.db.clone(), cancel.clone());
-                bpm_analysis::start_bpm_analysis_scheduler(ps_state.db.clone(), cancel.clone());
-                radio_metadata::start_radio_metadata_scheduler(
-                    ps_state.db.clone(),
-                    ps_state.http_client.clone(),
-                    cancel.clone(),
-                );
-                db_maintenance::start_db_maintenance_scheduler(ps_state.db.clone(), cancel.clone());
-                let play_env = plays::PlayEnv {
-                    db: ps_state.db.clone(),
-                    http: s.http_client.clone(),
-                    hub: s.plays.clone(),
-                    subsonic: s.subsonic.clone(),
-                    db_folder: s.db_folder.clone(),
-                    activity: s.activity.clone(),
-                };
-                s.remote.set_play_env(play_env.clone());
-                scrobbling::start_forwarder(play_env, cancel.clone());
-                deep_analysis::start_deep_analysis_worker(ps_state.clone());
-                mix_worker::start_mix_worker(ps_state);
-                let dlna_mgr = s.dlna_manager.clone();
-                let dlna_db = s.db.as_ref().expect("db set").clone();
-                activity::start(
-                    s.activity.clone(),
-                    s.plays.clone(),
-                    s.remote.clone(),
-                    dlna_db.clone(),
-                    cancel.clone(),
-                );
-                remote::start_in_background(s.remote.clone(), dlna_db.clone(), cancel.clone());
-                tokio::spawn(dlna::start_dlna_if_enabled(dlna_mgr, dlna_db));
+                activate_db(&mut s, db_pool, PathBuf::from(db_folder));
                 (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
             }
             Err(err) => map_init_db_error(err).into_response(),

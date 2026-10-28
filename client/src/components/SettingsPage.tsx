@@ -19,6 +19,7 @@ import { formatBytes, parseServerDate } from '../utils';
 import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
 import FolderPickerModal from './FolderPickerModal';
+import BackupSettingsSection from './BackupSettingsSection';
 import ConfirmModal from './ConfirmModal';
 import CommandBar from './CommandBar';
 import RadioMetadataSettings from './RadioMetadataSettings';
@@ -2035,7 +2036,7 @@ export default function SettingsPage({
                 ['advanced-dlna', 'DLNA'],
                 ...(isAdmin ? [['advanced-play-on', 'Play On'], ['advanced-subsonic', 'Subsonic apps']] : []),
                 ['advanced-debug', 'Diagnostics'],
-                ...(isAdmin ? [['advanced-database', 'Database']] : []),
+                ...(isAdmin ? [['advanced-database', 'Database'], ['advanced-backup', 'Backup']] : []),
               ].map(([target, label]) => (
                 <a key={target} href={`#${target}`} style={hybridSettingsStyles.advancedNavItem}>{label}</a>
               ))}
@@ -3023,6 +3024,8 @@ export default function SettingsPage({
                   onClose={() => setShowDbFolderPicker(false)}
                 />
               )}
+
+              <BackupSettingsSection titleStyle={P.advancedSectionTitle} />
             </>
           )}
         </div>

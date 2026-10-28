@@ -63,6 +63,7 @@ pub fn build_test_state(db_path: &std::path::Path) -> AppState {
         subsonic: crate::subsonic::SubsonicState::default(),
         plays: crate::plays::PlayHub::default(),
         activity: crate::activity::ActivityHub::default(),
+        backup: crate::backup::BackupHub::default(),
     }
 }
 

@@ -160,6 +160,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 - Connect to free metadata providers
 - Multi-user support
 - Local and network library support
+- Scheduled backups and one-click restore, including moving to a new machine
 - Optional Windows desktop application with automatic server discovery (in dev)
 
 ---
@@ -266,6 +267,22 @@ Then open `http://localhost:3001` in a browser to complete first-run setup.
 ### Developers
 
 See the documentation below for development setup and build instructions.
+
+### Backup and restore
+
+Settings › Advanced › Backup (admins) backs up the database weekly at 03:30 by default and keeps the last 4.
+Each backup is a folder `boogiebox-<date>-<time>-v<version>` holding the database, the key that protects Subsonic
+and scrobbling passwords, and artwork you uploaded or picked. Music files are never copied. BoogieBox also keeps a
+copy of the database before every upgrade (the last 2).
+
+- **Keep the backup folder private**: it holds the password key. A folder on another disk survives a disk failure.
+- **Restore** from the list, or "Restore from another folder…". Your current data is saved first to
+  `pre-restore-<date>-<time>` in the data folder, and everyone signs in again.
+- **New machine**: copy a backup folder over, start BoogieBox, choose **Restore from a backup** on the first-run
+  screen, and point each music folder at its new location.
+- **Without the UI** (stop the server first):
+  `boogiebox-server --list-backups [--path DIR]` and
+  `boogiebox-server --restore <backup folder> [--data-folder DIR] [--remap OLD=NEW]...`
 
 ---
 

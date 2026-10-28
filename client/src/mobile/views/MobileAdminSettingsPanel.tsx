@@ -12,6 +12,7 @@ import type {
   Library,
 } from '../../types';
 import { MobileCheckRow } from '../components/MobilePlaybackTools';
+import MobileBackupSection from '../components/MobileBackupSection';
 import { missingKeptMessage } from '../../components/LibrarySettingsTab';
 
 type AdminSnapshot = {
@@ -317,6 +318,8 @@ export default function MobileAdminSettingsPanel({ focus = null }: { focus?: 'pl
                   />
                 </div>
               ) : null}
+
+              <MobileBackupSection />
 
               <div style={styles.subsection}>
                 <div style={styles.subsectionTitle}>Work queues</div>

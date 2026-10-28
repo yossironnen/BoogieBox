@@ -361,6 +361,7 @@ mod test_helpers {
             subsonic: crate::subsonic::SubsonicState::default(),
             plays: crate::plays::PlayHub::default(),
             activity: crate::activity::ActivityHub::default(),
+            backup: crate::backup::BackupHub::default(),
         };
         let shared = Arc::new(RwLock::new(state));
         auth_router(shared)

@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod artwork;
+pub mod backup;
 pub mod favourites;
 pub mod jobs;
 pub mod maintenance;
@@ -24,7 +25,8 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const DB_FILE_NAME: &str = "boogiebox.db";
+/// File name of the database inside its folder.
+pub const DB_FILE_NAME: &str = "boogiebox.db";
 const DEFAULT_BUSY_TIMEOUT_MS: u32 = 15_000;
 const LOCAL_MMAP_SIZE: i64 = 268_435_456;
 const CACHE_SIZE_KIB: i64 = -32_000;
@@ -127,6 +129,7 @@ pub fn init_db(db_folder: &Path) -> Result<InitializedDatabase, InitDbError> {
         })?;
     }
 
+    let existed = db_path.metadata().is_ok_and(|meta| meta.len() > 0);
     let connection = Connection::open(&db_path).map_err(|source| InitDbError::Open {
         path: db_path.clone(),
         source,
@@ -137,6 +140,9 @@ pub fn init_db(db_folder: &Path) -> Result<InitializedDatabase, InitDbError> {
             source,
         }
     })?;
+    if existed {
+        snapshot_before_migrations(&connection, &db_path);
+    }
     initialize_schema(&connection).map_err(|source| InitDbError::Schema {
         path: db_path.clone(),
         source,
@@ -670,8 +676,8 @@ struct Migration {
     apply: fn(&Connection) -> Result<(), rusqlite::Error>,
 }
 
-fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error> {
-    let migrations = [
+fn tracked_migrations() -> Vec<Migration> {
+    vec![
         Migration {
             id: "2026-05-23-users-schema-fix",
             apply: ensure_correct_users_schema,
@@ -824,13 +830,92 @@ fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error
             id: "2026-10-27-library-missing-kept",
             apply: ensure_library_missing_kept_columns,
         },
-    ];
+    ]
+}
 
-    for migration in migrations {
+fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error> {
+    for migration in tracked_migrations() {
         apply_tracked_migration(connection, migration)?;
     }
-
     Ok(())
+}
+
+/// Every migration id this build knows. A backup that applied any other id came from a newer build.
+pub fn known_migration_ids() -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = tracked_migrations().iter().map(|m| m.id).collect();
+    ids.push(INCREMENTAL_AUTOVACUUM_MIGRATION_ID);
+    ids
+}
+
+/// Known migrations not yet recorded in `schema_migrations` (all of them for a database without the table).
+pub fn pending_migration_ids(connection: &Connection) -> Vec<&'static str> {
+    let applied: std::collections::HashSet<String> =
+        if table_exists(connection, "schema_migrations") {
+            connection
+                .prepare("SELECT id FROM schema_migrations")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>(0))?
+                        .collect::<Result<_, _>>()
+                })
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+    known_migration_ids()
+        .into_iter()
+        .filter(|id| !applied.contains(*id))
+        .collect()
+}
+
+/// Before an upgrade migrates an existing database, keep a copy of it (tracked migrations run once per
+/// database, so a bad one can't be undone any other way). Failures are logged, never fatal.
+fn snapshot_before_migrations(connection: &Connection, db_path: &Path) {
+    let has_user_tables = table_exists(connection, "users") || table_exists(connection, "tracks");
+    if !has_user_tables {
+        return;
+    }
+    let pending = pending_migration_ids(connection);
+    if pending.is_empty() {
+        return;
+    }
+    let Some(data_dir) = db_path.parent() else {
+        return;
+    };
+    let configured = backup::configured_backup_path(db_path);
+    let dir = backup::resolve_backup_dir(data_dir, configured.as_deref());
+    let version = env!("CARGO_PKG_VERSION");
+    let (stamp, created_at) = backup::utc_stamp(std::time::SystemTime::now());
+    let result = (|| -> Result<PathBuf, backup::BackupError> {
+        let partial = backup::begin_bundle(&dir, &backup::bundle_name(&stamp, version))?;
+        let mut manifest = backup::snapshot_into_bundle(
+            db_path,
+            &partial,
+            backup::BackupReason::PreMigration,
+            version,
+            &created_at,
+        )?;
+        manifest.key_included =
+            backup::copy_key(&data_dir.join(backup::BUNDLE_KEY_FILE), &partial)?;
+        let done = backup::finish_bundle(&partial, &manifest)?;
+        backup::prune_backups(
+            &dir,
+            backup::PRE_MIGRATION_KEEP,
+            &[backup::BackupReason::PreMigration],
+        )?;
+        Ok(done)
+    })();
+    match result {
+        Ok(done) => tracing::info!(
+            "Saved a backup before upgrading the database ({} pending migration(s)): {}",
+            pending.len(),
+            done.display()
+        ),
+        Err(err) => tracing::warn!(
+            "Could not back up the database before upgrading it ({} pending migration(s)) in {}: {err}",
+            pending.len(),
+            dir.display()
+        ),
+    }
 }
 
 fn apply_tracked_migration(

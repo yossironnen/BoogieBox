@@ -4,6 +4,12 @@
  */
 
 import type {
+  BackupHealth,
+  BackupSettings,
+  BackupSummary,
+  BackupsOverview,
+  PathRemap,
+  RestoreResult,
   Library,
   Track,
   Artist,
@@ -60,6 +66,7 @@ import type { FavouriteIds, FavouriteKind, Favourites } from './favourites';
 import type { RadioStation, RadioStationInput } from './radioStations';
 import type { ScrobbleAccountsResponse } from './scrobbling';
 import { invalidateHomeData } from './homeCache';
+import { notifyServerRestoring } from './restoreState';
 import type {
   RemoteCommand,
   RemoteDiagnostics,
@@ -124,6 +131,7 @@ async function readErrorMessage(res: Response): Promise<string> {
   const contentType = res.headers?.get?.('content-type') || '';
   if (contentType.includes('application/json')) {
     const body = await res.json().catch(() => ({}));
+    if (res.status === 503 && body?.code === 'restoring') notifyServerRestoring();
     return body?.error || `Server error ${res.status}`;
   }
   if (!contentType && typeof res.json === 'function') {
@@ -533,7 +541,22 @@ export const api = {
   fsMkdir: (parent: string, name: string) =>
     post<{ path: string }>('/admin/fs/mkdir', { parent, name }),
   debugTestPath: (path: string) => post<any>('/debug/test-path', { path }),
-  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string; dbFolder?: string; version?: string; logFile?: string; scanDebugLogFile?: string; deepDebugLogFile?: string }>('/system/status'),
+  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string; dbFolder?: string; version?: string; logFile?: string; scanDebugLogFile?: string; deepDebugLogFile?: string; restoring?: boolean; restoreStep?: string }>('/system/status'),
+  backups: {
+    overview: () => get<BackupsOverview>('/admin/backups'),
+    saveSettings: (settings: BackupSettings) => put<BackupsOverview>('/admin/backups/settings', settings),
+    create: () => post<{ ok: boolean }>('/admin/backups'),
+    remove: (name: string) => del<{ ok: boolean }>(`/admin/backups/${encodeURIComponent(name)}`),
+    health: () => get<BackupHealth>('/admin/backups/health'),
+    inspect: (path: string) => post<BackupSummary>('/admin/backups/inspect', { path }),
+    restore: (name: string, remaps: PathRemap[]) =>
+      post<RestoreResult>(`/admin/backups/${encodeURIComponent(name)}/restore`, { remaps }),
+    restoreFrom: (path: string, remaps: PathRemap[]) =>
+      post<RestoreResult>('/admin/backups/restore-from', { path, remaps }),
+    setupInspect: (path: string) => post<BackupSummary>('/system/backups/inspect', { path }),
+    setupRestore: (backupPath: string, dbFolder: string, remaps: PathRemap[]) =>
+      post<{ ok: boolean }>('/system/setup-restore', { backupPath, dbFolder, remaps }),
+  },
   systemSelectFolder: (initialDir?: string) => post<{ folder: string | null }>('/system/select-folder', { initialDir }),
   systemSetup: (dbFolder: string) => post<{ ok: boolean }>('/system/setup', { dbFolder }),
   systemSwitchDb: (dbFolder: string) => post<{ ok: boolean }>('/system/switch-db', { dbFolder }),

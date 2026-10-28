@@ -16,6 +16,9 @@ const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi
       refresh: vi.fn().mockResolvedValue({ ok: true }),
       eventsUrl: () => '/api/remote/events',
     },
+    backups: {
+      health: () => Promise.resolve({ state: 'ok', schedule: 'weekly', lastBackupAt: null, lastFailure: null }),
+    },
     activity: {
       // Plain functions: they survive the per-test mock resets.
       snapshot: () => Promise.resolve({

@@ -955,3 +955,73 @@ export interface ProviderSearchWarning {
   provider: string;
   reason: 'rate_limited' | 'unavailable';
 }
+
+// ── Backups (F03) ───────────────────────────────────────────────────────────
+
+export type BackupReason = 'scheduled' | 'manual' | 'pre-migration' | 'pre-restore';
+export type BackupSchedule = 'off' | 'daily' | 'weekly';
+
+export interface BackupSettings {
+  schedule: BackupSchedule;
+  /** 0 = Sunday … 6 = Saturday. */
+  day: number;
+  /** Local HH:MM. */
+  time: string;
+  keep: number;
+  /** Empty = the data folder's `backups` folder. */
+  path: string;
+  includeAllArtwork: boolean;
+  includeMixes: boolean;
+}
+
+export interface BackupSummary {
+  name: string;
+  path: string;
+  /** UTC RFC 3339. */
+  createdAt: string;
+  reason: BackupReason;
+  appVersion: string;
+  sizeBytes: number;
+  counts: { tracks: number; albums: number; playlists: number; users: number };
+  keyIncluded: boolean;
+  artworkCount: number;
+  mixCount: number;
+  libraryRoots: string[];
+  /** Library roots that don't exist on this server. */
+  missingRoots: string[];
+}
+
+export interface BackupFailure {
+  at: string;
+  message: string;
+}
+
+export interface BackupsOverview {
+  folder: string;
+  settings: BackupSettings;
+  running: { kind: 'backup' | 'restore'; step: string } | null;
+  lastFailure: BackupFailure | null;
+  /** Local `YYYY-MM-DDTHH:MM`. */
+  nextRun: string | null;
+  stale: boolean;
+  backups: BackupSummary[];
+}
+
+export interface BackupHealth {
+  state: 'ok' | 'failed' | 'stale' | 'off';
+  schedule: BackupSchedule;
+  lastBackupAt: string | null;
+  lastFailure: BackupFailure | null;
+}
+
+export interface PathRemap {
+  from: string;
+  to: string;
+}
+
+export interface RestoreResult {
+  ok: boolean;
+  savedTo?: string;
+  pending?: boolean;
+  error?: string;
+}

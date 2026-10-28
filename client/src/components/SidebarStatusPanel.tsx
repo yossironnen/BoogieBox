@@ -4,7 +4,7 @@
 
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { AuthUser, BoogieMixDeepAnalysisStatus, Library, ScanJob, Stats } from '../types';
+import type { AuthUser, BackupHealth, BoogieMixDeepAnalysisStatus, Library, ScanJob, Stats } from '../types';
 import { activeCount, type ActivitySnapshot } from '../activity/activityTypes';
 import { ActivityIcon, DownloadIcon, MixJobIcon, PlayIcon } from './activityIcons';
 
@@ -24,6 +24,45 @@ interface Props {
   activity?: ActivitySnapshot | null;
   /** Admins only: opens the Activity page. */
   onOpenActivity?: () => void;
+  /** Admins only: backup health; a warning shows when the last backup failed or is overdue. */
+  backupHealth?: BackupHealth | null;
+  /** Opens Settings › Advanced › Backup. */
+  onOpenBackup?: () => void;
+}
+
+/** The sidebar backup warning's title and detail, or null while backups are on time. */
+export function describeBackupWarning(health: BackupHealth | null | undefined, now = Date.now()): { tone: 'danger' | 'warning'; title: string; detail: string } | null {
+  if (!health) return null;
+  const last = health.lastBackupAt ? new Date(health.lastBackupAt) : null;
+  if (health.state === 'failed') {
+    const when = last ? last.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : null;
+    return {
+      tone: 'danger',
+      title: 'Backup failed',
+      detail: when ? `Last good backup: ${when}. Open Backup settings.` : 'Open Backup settings.',
+    };
+  }
+  if (health.state === 'stale' && last) {
+    const days = Math.floor((now - last.getTime()) / 86_400_000);
+    return {
+      tone: 'warning',
+      title: `No backup for ${days} days`,
+      detail: `Backups are ${health.schedule === 'daily' ? 'daily' : 'weekly'}. Open Backup settings.`,
+    };
+  }
+  return null;
+}
+
+function BackupWarningIcon({ tone }: { tone: 'danger' | 'warning' }) {
+  return tone === 'danger' ? (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, marginTop: 1 }}>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /><path d="M12 9v4" /><path d="M12 17h.01" />
+    </svg>
+  ) : (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="var(--warning)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, marginTop: 1 }}>
+      <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+    </svg>
+  );
 }
 
 type IndicatorKind = 'transcoding' | 'scan' | 'deep-analysis' | 'library' | 'activity';
@@ -355,7 +394,10 @@ export default function SidebarStatusPanel({
   onLogout,
   activity = null,
   onOpenActivity,
+  backupHealth = null,
+  onOpenBackup,
 }: Props) {
+  const backupWarning = describeBackupWarning(backupHealth);
   const activityCount = activeCount(activity?.totals);
   const scanActive = activeScanJobs.some((job) => job.status === 'running');
   const deepQueueCount = deepAnalysisStatus
@@ -388,6 +430,29 @@ export default function SidebarStatusPanel({
         ...(collapsed ? styles.panelCollapsed : {}),
       }}
     >
+      {backupWarning && (
+        <button
+          type="button"
+          data-testid="sidebar-backup-warning"
+          onClick={onOpenBackup}
+          title={collapsed ? `${backupWarning.title}. ${backupWarning.detail}` : undefined}
+          aria-label={collapsed ? backupWarning.title : undefined}
+          style={{
+            ...styles.backupWarning,
+            borderColor: `var(--${backupWarning.tone})`,
+            background: `color-mix(in srgb, var(--${backupWarning.tone}) 12%, transparent)`,
+            ...(collapsed ? styles.backupWarningCollapsed : {}),
+          }}
+        >
+          <BackupWarningIcon tone={backupWarning.tone} />
+          {!collapsed && (
+            <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>{backupWarning.title}</span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.45 }}>{backupWarning.detail}</span>
+            </span>
+          )}
+        </button>
+      )}
       {!collapsed && <LibraryStatsLine stats={stats} />}
       <div
         data-testid="sidebar-status-row"
@@ -480,6 +545,11 @@ export default function SidebarStatusPanel({
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  backupWarning: {
+    display: 'flex', gap: 10, alignItems: 'flex-start', textAlign: 'left', width: '100%', padding: 12, marginBottom: 10,
+    borderRadius: 12, border: '1px solid', color: 'var(--text)', fontFamily: 'inherit', cursor: 'pointer',
+  },
+  backupWarningCollapsed: { justifyContent: 'center', padding: 8 },
   panel: {
     flexShrink: 0,
     margin: '0 12px 12px',

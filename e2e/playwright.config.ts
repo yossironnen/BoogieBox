@@ -46,5 +46,12 @@ export default defineConfig({
       dependencies: ['setup'],
       use: { ...devices['Pixel 7'], storageState: ADMIN_STATE },
     },
+    {
+      // Last: restoring clears every session, including the shared admin one.
+      name: 'restore',
+      testMatch: /restore\/.*\.spec\.ts/,
+      dependencies: ['desktop', 'mobile'],
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 }, storageState: ADMIN_STATE },
+    },
   ],
 })

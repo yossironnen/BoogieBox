@@ -12,6 +12,9 @@ import type { EntityId } from './entityId';
 import { DEFAULT_SETTINGS } from './types';
 import Player, { type PlaybackSnapshot, type PlayerState, type PlayerTransportControls } from './components/Player';
 import KeyboardShortcutsDialog from './components/KeyboardShortcutsDialog';
+import RestoreScreen from './components/RestoreScreen';
+import { useRestoreOverlay } from './restoreState';
+import { useBackupHealth } from './hooks/useBackupHealth';
 import { SHORTCUT_SEEK_SECONDS, SHORTCUT_VOLUME_STEP, usePlayerShortcuts } from './hooks/usePlayerShortcuts';
 import { createScrobbleTracker } from './scrobbling';
 import { isLibraryTrackId, isLiveTrack, isRadioTrackId, radioStationTrack, type RadioStation } from './radioStations';
@@ -1127,6 +1130,10 @@ export default function App() {
     setSettingsSectionRequest({ tab: 'advanced', anchor: 'advanced-play-on', token: Date.now() });
     setView('settings');
   }, []);
+  const openBackupSettings = useCallback(() => {
+    setSettingsSectionRequest({ tab: 'advanced', anchor: 'advanced-backup', token: Date.now() });
+    setView('settings');
+  }, []);
   const setLocalPlayerState = useCallback((action: React.SetStateAction<PlayerState>, options?: { alreadyRecorded?: boolean }) => {
     // A Play On handoff continues a track the renderer already counted.
     if (options?.alreadyRecorded && typeof action !== 'function') {
@@ -1600,6 +1607,8 @@ export default function App() {
 
   const [transportControls, setTransportControls] = useState<PlayerTransportControls | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const restoreOverlay = useRestoreOverlay();
+  const backupHealth = useBackupHealth(isAdminUser && !isMobileShell && !setupRequired && view !== 'settings');
   const focusSearch = useCallback(() => {
     const input = document.querySelector<HTMLInputElement>('[data-global-search]');
     if (input) input.focus();
@@ -1617,6 +1626,9 @@ export default function App() {
     search: focusSearch,
     help: () => setShortcutsOpen(true),
   } : null);
+
+  // A restore takes the whole window, signed in or not.
+  if (restoreOverlay) return <RestoreScreen overlay={restoreOverlay} />;
 
   // Auth gate
   if (currentUser === 'loading') return null;
@@ -1887,6 +1899,8 @@ export default function App() {
             onLogout={handleLogout}
             activity={isAdminUser ? activityFeed.snapshot : null}
             onOpenActivity={isAdminUser ? () => openView('activity') : undefined}
+            backupHealth={backupHealth}
+            onOpenBackup={openBackupSettings}
           />
         </aside>
 

@@ -4,6 +4,7 @@ pub mod activity_routes;
 pub mod admin_routes;
 pub mod artwork_routes;
 pub mod auth_routes;
+pub mod backup_routes;
 pub mod boogiemix_routes;
 pub mod crossfade_routes;
 pub mod dlna_routes;

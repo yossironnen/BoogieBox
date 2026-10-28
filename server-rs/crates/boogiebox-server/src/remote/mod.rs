@@ -215,6 +215,11 @@ impl RemoteManager {
         *self.inner.plays.lock().unwrap_or_else(|p| p.into_inner()) = Some(env);
     }
 
+    /// Forgets the play hub (and its database handle) until the next [`Self::set_play_env`].
+    pub fn clear_play_env(&self) {
+        *self.inner.plays.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
     /// The play hub, once a database is open.
     pub fn play_env(&self) -> Option<crate::plays::PlayEnv> {
         self.inner

@@ -7,6 +7,8 @@ import { api } from '../api';
 import { hybridControlStyles, hybridEntryStyles } from '../hybridPreview';
 import { platform } from '../platform';
 import FolderPickerModal from './FolderPickerModal';
+import SetupRestoreForm from './SetupRestoreForm';
+import { BackupIcons } from './backupUi';
 
 const DEFAULT_DATABASE_FOLDER = 'C:\\Users\\Public\\BoogieBox';
 
@@ -18,6 +20,7 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerInitial, setPickerInitial] = useState<string | undefined>(undefined);
+  const [mode, setMode] = useState<'new' | 'restore'>('new');
   const pickerResolveRef = useRef<((path: string | null) => void) | null>(null);
   const userEditedFolderRef = useRef(false);
 
@@ -49,29 +52,29 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
     }
   };
 
-  const handleBrowse = async () => {
+  /** The desktop app's native picker, otherwise the server folder browser. */
+  const pickFolder = async (initial: string): Promise<string | null> => {
     if (platform.isDesktop) {
       setBrowsing(true);
       setError(null);
       try {
-        const selected = await platform.selectFolder(folder.trim() || DEFAULT_DATABASE_FOLDER);
-        if (selected) {
-          userEditedFolderRef.current = true;
-          setFolder(selected);
-        }
+        return await platform.selectFolder(initial || DEFAULT_DATABASE_FOLDER);
       } catch (pickerError: any) {
         setError(pickerError.message || 'Folder picker failed');
+        return null;
       } finally {
         setBrowsing(false);
       }
-      return;
     }
-
-    const selected = await new Promise<string | null>(resolve => {
+    return new Promise<string | null>(resolve => {
       pickerResolveRef.current = resolve;
-      setPickerInitial(folder.trim() || undefined);
+      setPickerInitial(initial || undefined);
       setPickerOpen(true);
     });
+  };
+
+  const handleBrowse = async () => {
+    const selected = await pickFolder(folder.trim());
     if (selected) {
       userEditedFolderRef.current = true;
       setFolder(selected);
@@ -121,12 +124,44 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
           <header>
             <div style={hybridEntryStyles.eyebrow}>Welcome</div>
             <h1 id="setup-title" style={hybridEntryStyles.title}>Set up your server</h1>
-            <p style={hybridEntryStyles.description}>
-              Choose where BoogieBox will keep its database. Your music stays in its existing
-              folders.
-            </p>
+            {mode === 'new' && (
+              <p style={hybridEntryStyles.description}>
+                Choose where BoogieBox will keep its database. Your music stays in its existing
+                folders.
+              </p>
+            )}
           </header>
 
+          <div role="radiogroup" aria-label="How to start" style={S.choices}>
+            {([
+              ['new', 'New server', 'Start with an empty database.', <BackupIcons.Plus key="i" size={16} />],
+              ['restore', 'Restore from a backup', 'Bring users, playlists, history and settings from another BoogieBox.', <BackupIcons.Restore key="i" size={16} />],
+            ] as const).map(([value, title, text, icon]) => {
+              const active = mode === value;
+              return (
+                <label key={value} style={{ ...S.choice, ...(active ? S.choiceActive : null) }}>
+                  <input
+                    type="radio"
+                    name="setup-start"
+                    checked={active}
+                    onChange={() => setMode(value)}
+                    disabled={loading}
+                    style={{ marginTop: 3, accentColor: 'var(--accent)' }}
+                  />
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 15, fontWeight: 700, color: active ? 'var(--accent)' : 'var(--text)' }}>
+                      {icon}{title}
+                    </span>
+                    <span style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>{text}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+
+          {mode === 'restore' ? (
+            <SetupRestoreForm defaultDbFolder={folder} pickFolder={pickFolder} onComplete={onComplete} />
+          ) : (<>
           <ol aria-label="Setup progress" style={{ ...hybridEntryStyles.progress, listStyle: 'none', padding: 0 }}>
             <li aria-current="step" style={{ ...hybridEntryStyles.progressItem, ...hybridEntryStyles.progressItemActive }}>
               1. Choose storage
@@ -208,12 +243,24 @@ export default function SetupView({ onComplete }: { onComplete: () => void }) {
               {loading ? 'Setting up…' : 'Set up BoogieBox'}
             </button>
           </form>
+          </>)}
 
           <footer style={hybridEntryStyles.footer}>
-            One-time setup • You can manage libraries after signing in
+            {mode === 'restore'
+              ? 'One-time setup • Sign in with your existing user afterwards'
+              : 'One-time setup • You can manage libraries after signing in'}
           </footer>
         </section>
       </main>
     </>
   );
 }
+
+const S: Record<string, React.CSSProperties> = {
+  choices: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 },
+  choice: {
+    display: 'flex', gap: 12, alignItems: 'flex-start', padding: 14, borderRadius: 12,
+    border: '1px solid var(--border)', background: 'var(--surface-raised, var(--surface))', cursor: 'pointer',
+  },
+  choiceActive: { borderColor: 'var(--accent)', background: 'var(--accent-soft, var(--surface))' },
+};

@@ -20,6 +20,9 @@ vi.mock('./api', () => ({
       refresh: vi.fn().mockResolvedValue({ ok: true }),
       eventsUrl: () => '/api/remote/events',
     },
+    backups: {
+      health: () => Promise.resolve({ state: 'ok', schedule: 'weekly', lastBackupAt: null, lastFailure: null }),
+    },
     activity: {
       snapshot: vi.fn().mockResolvedValue({
         generatedAtMs: 0,

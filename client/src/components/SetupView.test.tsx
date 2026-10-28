@@ -48,6 +48,21 @@ describe('SetupView', () => {
     platformMock.selectFolder.mockResolvedValue(null);
   });
 
+  it('switches to restoring from a backup with the suggested database folder', async () => {
+    render(<SetupView onComplete={vi.fn()} />);
+    const suggested = 'C:\\Users\\Yossi\\AppData\\Local\\BoogieBox';
+    await waitFor(() => expect(screen.getByLabelText(/Database folder/i)).toHaveValue(suggested));
+    fireEvent.click(screen.getByRole('radio', { name: /Restore from a backup/ }));
+    expect(screen.getByLabelText('Backup folder')).toBeInTheDocument();
+    expect(screen.getByLabelText('Database folder')).toHaveValue(suggested);
+    expect(screen.getByRole('list', { name: 'Setup progress' })).toHaveTextContent('1. Choose backup');
+    expect(screen.queryByRole('button', { name: /Set up BoogieBox/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restore BoogieBox' })).toBeDisabled();
+    expect(screen.getByText('One-time setup • Sign in with your existing user afterwards')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: /New server/ }));
+    expect(screen.getByRole('button', { name: /Set up BoogieBox/i })).toBeInTheDocument();
+  });
+
   it('prefills the server suggested database folder and still allows manual editing', async () => {
     const onComplete = vi.fn();
     render(<SetupView onComplete={onComplete} />);
