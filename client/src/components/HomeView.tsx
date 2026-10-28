@@ -13,6 +13,7 @@ import type { EntityId } from '../entityId';
 import { HYBRID_ARTWORK_HOVER, hybridHomeStyles } from '../hybridPreview';
 import { useVintageStyle } from '../vintageThemes';
 import ArtImage from './ArtImage';
+import CommandBar from './CommandBar';
 import VintageRecord, { VINTAGE_SLEEVE_COVER_STYLE } from './VintageRecord';
 
 function safeLocalStorageGet(key: string): string | null {
@@ -1828,57 +1829,60 @@ export default function HomeView({
   }
 
   return (
-    <div
-      data-ui-design={hybridDesign ? 'hybrid' : undefined}
-      style={{ ...H.root, ...(hybridDesign ? hybridHomeStyles.root : {}) }}
-    >
-      <div style={{ ...H.grid, ...(hybridDesign ? hybridHomeStyles.grid : {}) }}>
-        <WidgetCard title="Recent Albums" span hybridDesign={hybridDesign}>
-          <RecentAlbumsWidget
-            refreshKey={refreshKey}
-            onOpenAlbum={onOpenAlbum}
-            onPlayTrack={onPlayTrack}
-            hybridDesign={hybridDesign}
-          />
-        </WidgetCard>
-
-        <WidgetCard title="Let's Boogie!" className="boogie-section" titleClassName="boogie-title" span hero hybridDesign={hybridDesign}>
-          <RecentlyPlayedWidget
-            allGenres={allGenres}
-            homeGenres={homeGenres}
-            onPlayTrack={onPlayTrack}
-            onOpenArtist={onOpenArtist}
-            onStartAutoDj={onStartAutoDj}
-          />
-        </WidgetCard>
-
-
-        <WidgetCard title="Playlists" span hybridDesign={hybridDesign}>
-          <QuickPlaylistsWidget onOpenPlaylist={onOpenPlaylist} onPlayTrack={onPlayTrack} />
-        </WidgetCard>
-
-        {onOpenFavourites && (
-          <WidgetCard title="Favourites" span hybridDesign={hybridDesign}>
-            <FavouritesWidget onOpenAlbum={onOpenAlbum} onPlayTrack={onPlayTrack} onOpenFavourites={onOpenFavourites} />
+    <div style={H.shell}>
+      <CommandBar watermark="BoogieBox">{null}</CommandBar>
+      <div
+        data-ui-design={hybridDesign ? 'hybrid' : undefined}
+        style={{ ...H.root, ...(hybridDesign ? hybridHomeStyles.root : {}) }}
+      >
+        <div style={{ ...H.grid, ...(hybridDesign ? hybridHomeStyles.grid : {}) }}>
+          <WidgetCard title="Recent Albums" span hybridDesign={hybridDesign}>
+            <RecentAlbumsWidget
+              refreshKey={refreshKey}
+              onOpenAlbum={onOpenAlbum}
+              onPlayTrack={onPlayTrack}
+              hybridDesign={hybridDesign}
+            />
           </WidgetCard>
-        )}
 
-        <WidgetCard title="Top Rated" hybridDesign={hybridDesign}>
-          <TopRatedWidget
-            refreshKey={refreshKey}
-            onOpenArtist={onOpenArtist}
-            onOpenAlbum={onOpenAlbum}
-            onPlayTrack={onPlayTrack}
-          />
-        </WidgetCard>
+          <WidgetCard title="Let's Boogie!" className="boogie-section" titleClassName="boogie-title" span hero hybridDesign={hybridDesign}>
+            <RecentlyPlayedWidget
+              allGenres={allGenres}
+              homeGenres={homeGenres}
+              onPlayTrack={onPlayTrack}
+              onOpenArtist={onOpenArtist}
+              onStartAutoDj={onStartAutoDj}
+            />
+          </WidgetCard>
 
-        <WidgetCard title="Genres" hybridDesign={hybridDesign}>
-          <HomeGenresWidget
-            genres={homeGenres}
-            onOpenGenre={onOpenGenre}
-            onBrowseMusic={onBrowseMusic}
-          />
-        </WidgetCard>
+
+          <WidgetCard title="Playlists" span hybridDesign={hybridDesign}>
+            <QuickPlaylistsWidget onOpenPlaylist={onOpenPlaylist} onPlayTrack={onPlayTrack} />
+          </WidgetCard>
+
+          {onOpenFavourites && (
+            <WidgetCard title="Favourites" span hybridDesign={hybridDesign}>
+              <FavouritesWidget onOpenAlbum={onOpenAlbum} onPlayTrack={onPlayTrack} onOpenFavourites={onOpenFavourites} />
+            </WidgetCard>
+          )}
+
+          <WidgetCard title="Top Rated" hybridDesign={hybridDesign}>
+            <TopRatedWidget
+              refreshKey={refreshKey}
+              onOpenArtist={onOpenArtist}
+              onOpenAlbum={onOpenAlbum}
+              onPlayTrack={onPlayTrack}
+            />
+          </WidgetCard>
+
+          <WidgetCard title="Genres" hybridDesign={hybridDesign}>
+            <HomeGenresWidget
+              genres={homeGenres}
+              onOpenGenre={onOpenGenre}
+              onBrowseMusic={onBrowseMusic}
+            />
+          </WidgetCard>
+        </div>
       </div>
     </div>
   );
@@ -1887,6 +1891,7 @@ export default function HomeView({
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
 const H: Record<string, React.CSSProperties> = {
+  shell: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 },
   root: { flex: 1, overflowY: 'auto', padding: 20 },
   grid: {
     display: 'grid',

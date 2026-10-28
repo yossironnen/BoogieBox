@@ -190,6 +190,13 @@ describe('HomeView boogie visuals', () => {
     expect(screen.getByText("Let's Boogie!").className).toContain('boogie-title');
   });
 
+  it('shows the shared command bar header with the BoogieBox watermark', async () => {
+    const { container } = renderHome();
+    await waitFor(() => expect(screen.getByText('Recent Albums')).toBeInTheDocument());
+    expect(container.querySelector('[data-command-bar="boogiebox"]')).not.toBeNull();
+    expect(screen.getByTestId('command-bar-watermark')).toHaveTextContent('BoogieBox');
+  });
+
   it('applies the approved Hybrid Home surface without changing its modules', async () => {
     const { container } = renderHome(true);
 
