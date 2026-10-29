@@ -1643,9 +1643,13 @@ mod tests {
 
     #[test]
     fn estimated_rows_expire_after_the_track_and_web_heartbeats_win() {
+        // Windows `Instant` counts from boot: no 5-minutes-ago exists right after a reboot.
+        let Some(stale_at) = Instant::now().checked_sub(Duration::from_secs(300)) else {
+            return;
+        };
         let now = now_ms();
         let mut stale = np(PlaySource::Subsonic, "u2", "Amperfy", "t1");
-        stale.at = Instant::now() - Duration::from_secs(300);
+        stale.at = stale_at;
         let fresh = np(PlaySource::Subsonic, "u1", "Amperfy", "t1");
         let web_notice = np(PlaySource::Web, "u3", crate::plays::WEB_CLIENT, "t1");
         let live = Live {

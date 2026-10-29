@@ -176,11 +176,14 @@ mod tests {
             cache.read(&db, &conn, "error".into(), |_| Ok(1)).unwrap(),
             b"1"
         );
-        cache.0.lock().unwrap().entries.get_mut("error").unwrap().0 = Instant::now() - MAX_AGE;
-        assert_eq!(
-            cache.read(&db, &conn, "error".into(), |_| Ok(2)).unwrap(),
-            b"2"
-        );
+        // Windows `Instant` counts from boot: no MAX_AGE-ago exists right after a reboot.
+        if let Some(expired) = Instant::now().checked_sub(MAX_AGE) {
+            cache.0.lock().unwrap().entries.get_mut("error").unwrap().0 = expired;
+            assert_eq!(
+                cache.read(&db, &conn, "error".into(), |_| Ok(2)).unwrap(),
+                b"2"
+            );
+        }
         for n in 0..MAX_ENTRIES + 2 {
             cache.read(&db, &conn, n.to_string(), |_| Ok(n)).unwrap();
         }

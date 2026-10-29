@@ -55,7 +55,8 @@ if ($PythonExe -eq "python") {
   # string, and $wheelVersions[0] would then index a *character* of that
   # string ("3.10"[0] -> "3") instead of the version itself, silently
   # breaking the download-fallback's version lookup below.
-  $wheelVersions = @($wheelVersions | Select-Object -Unique)
+  # Newest first, so a stray older wheel never wins the probe/download order.
+  $wheelVersions = @($wheelVersions | Select-Object -Unique | Sort-Object { [version]$_ } -Descending)
   $requireExactMatch = $wheelVersions.Count -gt 0
   # Versions this run will accept: only the wheel's own version(s) if a wheel
   # is bundled (no substitutes), otherwise the general compatible range.
