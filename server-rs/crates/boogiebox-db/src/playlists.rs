@@ -536,6 +536,36 @@ pub fn batch_add_tracks(
     Ok(Some(added))
 }
 
+/// Creates a playlist holding `track_ids` in that order, in one transaction. Ids of tracks that no
+/// longer exist and repeats are skipped. Returns the playlist and how many tracks it holds.
+pub fn create_playlist_with_tracks(
+    conn: &Connection,
+    name: &str,
+    description: &str,
+    user_id: &str,
+    track_ids: &[String],
+) -> Result<(PlaylistRow, i64), CreatePlaylistError> {
+    let tx = conn.unchecked_transaction()?;
+    let created = create_playlist(&tx, name, description, user_id)?;
+    let mut added: i64 = 0;
+    {
+        let mut insert = tx.prepare(
+            "INSERT OR IGNORE INTO playlist_tracks(playlist_id, track_id, position)
+             SELECT ?1, id, ?3 FROM tracks WHERE id = ?2",
+        )?;
+        for track_id in track_ids {
+            if insert.execute(rusqlite::params![created.id, track_id, added])? > 0 {
+                added += 1;
+            }
+        }
+    }
+    let row = get_playlist_by_id(&tx, &created.id)?.ok_or(CreatePlaylistError::Db(
+        rusqlite::Error::QueryReturnedNoRows,
+    ))?;
+    tx.commit()?;
+    Ok((row, added))
+}
+
 /// Documents the Remove Track From Playlist public API surface.
 pub fn remove_track_from_playlist(
     conn: &Connection,

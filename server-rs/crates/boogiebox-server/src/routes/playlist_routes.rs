@@ -7,15 +7,21 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use boogiebox_db::{
+    backup::PathRemap,
     music::coerce_entity_id,
+    playlist_import::{
+        decode_playlist, load_library_snapshot, parse_playlist, preview_import, MAX_IMPORT_BYTES,
+        MAX_IMPORT_ENTRIES,
+    },
     playlists::{
-        add_track_to_playlist, batch_add_tracks, create_playlist, delete_playlist, get_playlist,
-        get_playlist_export_tracks, list_playlist_tracks, list_playlists,
-        remove_track_from_playlist, reorder_playlist_tracks, set_album_rating, set_artist_rating,
-        set_track_rating, update_album_metadata, update_artist_metadata, update_playlist,
-        update_track_progress, AddTrackError, AlbumMetadataUpdate, ArtistMetadataUpdate,
-        CreatePlaylistError, UpdatePlaylistError,
+        add_track_to_playlist, batch_add_tracks, create_playlist, create_playlist_with_tracks,
+        delete_playlist, get_playlist, get_playlist_export_tracks, list_playlist_tracks,
+        list_playlists, remove_track_from_playlist, reorder_playlist_tracks, set_album_rating,
+        set_artist_rating, set_track_rating, update_album_metadata, update_artist_metadata,
+        update_playlist, update_track_progress, AddTrackError, AlbumMetadataUpdate,
+        ArtistMetadataUpdate, CreatePlaylistError, UpdatePlaylistError,
     },
 };
 use serde::Deserialize;
@@ -56,6 +62,11 @@ pub fn playlist_router(state: SharedState) -> Router {
             patch(update_track_progress_handler),
         )
         .route("/api/playlists/{id}/export.m3u", get(export_m3u_handler))
+        .route(
+            "/api/playlists/import/preview",
+            post(import_preview_handler),
+        )
+        .route("/api/playlists/import/commit", post(import_commit_handler))
         .route("/api/albums/{id}/rating", patch(album_rating_handler))
         .route("/api/artists/{id}/rating", patch(artist_rating_handler))
         .route("/api/tracks/{id}/rating", patch(track_rating_handler))
@@ -84,6 +95,23 @@ struct BatchAddPayload {
 #[derive(Debug, Deserialize)]
 struct ReorderPayload {
     track_ids: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportPreviewPayload {
+    content_base64: Option<String>,
+    #[serde(default)]
+    remaps: Vec<PathRemap>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportCommitPayload {
+    name: Option<String>,
+    description: Option<String>,
+    #[serde(default)]
+    track_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -593,6 +621,115 @@ async fn export_m3u_handler(
                 .into_response()
         }
         Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Playlist not found"),
+        _ => internal_error(),
+    }
+}
+
+/// An import error the client shows with its own copy, keyed by `code`.
+fn import_error(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "error": message, "code": code })),
+    )
+        .into_response()
+}
+
+async fn import_preview_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+    Json(payload): Json<ImportPreviewPayload>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let Some(bytes) = payload
+        .content_base64
+        .as_deref()
+        .and_then(|raw| STANDARD.decode(raw.trim()).ok())
+    else {
+        return error(StatusCode::BAD_REQUEST, "contentBase64 is required");
+    };
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return import_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "too_big",
+            "This file is too big",
+        );
+    }
+    let entries = parse_playlist(&decode_playlist(&bytes));
+    if entries.is_empty() {
+        return import_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "empty",
+            "No tracks in this file",
+        );
+    }
+    if entries.len() > MAX_IMPORT_ENTRIES {
+        return import_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "too_long",
+            "This playlist is too long",
+        );
+    }
+    let remaps = payload.remaps;
+    match tokio::task::spawn_blocking(move || {
+        // Read once under the lock; match without holding it.
+        let snapshot = load_library_snapshot(&db.lock().expect("db"))?;
+        Ok::<_, rusqlite::Error>(preview_import(&snapshot, &entries, &remaps))
+    })
+    .await
+    {
+        Ok(Ok(preview)) => (StatusCode::OK, Json(preview)).into_response(),
+        _ => internal_error(),
+    }
+}
+
+async fn import_commit_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Json(payload): Json<ImportCommitPayload>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let Some(name) = payload
+        .name
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    else {
+        return error(StatusCode::BAD_REQUEST, "Name is required");
+    };
+    if payload.track_ids.is_empty() || payload.track_ids.len() > MAX_IMPORT_ENTRIES {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "trackIds must hold 1 to 10,000 track ids",
+        );
+    }
+    let description = payload.description.unwrap_or_default().trim().to_owned();
+    let track_ids = payload.track_ids;
+    let user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        create_playlist_with_tracks(
+            &db.lock().expect("db"),
+            &name,
+            &description,
+            &user_id,
+            &track_ids,
+        )
+    })
+    .await
+    {
+        Ok(Ok((playlist, added))) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "playlist": playlist, "added": added })),
+        )
+            .into_response(),
+        Ok(Err(CreatePlaylistError::NameTaken)) => error(
+            StatusCode::CONFLICT,
+            "A playlist with this name already exists",
+        ),
         _ => internal_error(),
     }
 }
@@ -1191,5 +1328,161 @@ mod tests {
         )
         .await;
         assert_eq!(bad_name_status, StatusCode::BAD_REQUEST);
+    }
+
+    fn post_json(uri: &str, cookie: &str, body: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("cookie", cookie)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn encoded(text: &str) -> String {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        STANDARD.encode(text)
+    }
+
+    #[tokio::test]
+    async fn import_preview_matches_with_remaps_and_commit_keeps_order() {
+        let (app, pool) = new_test_app_with_pool("playlist-import");
+        let cookie = seed_user_session(&pool, "u1");
+        let (artist_id, album_id, first) = seed_music(&pool);
+        let second = Uuid::now_v7().to_string();
+        pool.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path) \
+                 SELECT ?, library_id, ?, ?, 'Second', ? FROM tracks WHERE id = ?",
+                params![
+                    second,
+                    artist_id,
+                    album_id,
+                    format!("/music/{second}.mp3"),
+                    first
+                ],
+            )
+            .unwrap();
+        let m3u = format!(
+            "#EXTM3U\r\nD:\\Old\\{second}.mp3\r\n/music/{first}.mp3\r\nhttps://radio.example/live\r\nmissing.mp3\r\n"
+        );
+
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists/import/preview",
+                &cookie,
+                serde_json::json!({
+                    "contentBase64": encoded(&m3u),
+                    "remaps": [{ "from": "D:\\Old", "to": "/music" }]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let preview = json_body(&body);
+        let statuses: Vec<&str> = preview["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(statuses, ["matched", "matched", "remote", "unmatched"]);
+        assert_eq!(preview["entries"][0]["trackId"], second.as_str());
+        assert_eq!(preview["appliedRemaps"][0]["gain"], 1);
+        assert_eq!(preview["totals"]["matched"], 2);
+
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists/import/commit",
+                &cookie,
+                serde_json::json!({
+                    "name": "Imported",
+                    "trackIds": [second, first, second, "gone"]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let created = json_body(&body);
+        assert_eq!(created["added"], 2);
+        assert_eq!(created["playlist"]["track_count"], 2);
+        let playlist_id = created["playlist"]["id"].as_str().unwrap().to_owned();
+
+        let (_, list_body) = send(
+            app.clone(),
+            Request::builder()
+                .uri(format!("/api/playlists/{playlist_id}/tracks"))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let ids: Vec<String> = json_body(&list_body)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ids, [second.clone(), first.clone()]);
+
+        let (status, _) = send(
+            app,
+            post_json(
+                "/api/playlists/import/commit",
+                &cookie,
+                serde_json::json!({ "name": "imported", "trackIds": [first] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn import_preview_rejects_empty_oversized_and_missing_content() {
+        let (app, pool) = new_test_app_with_pool("playlist-import-errors");
+        let cookie = seed_user_session(&pool, "u1");
+        let cases = [
+            (
+                serde_json::json!({ "contentBase64": encoded("#EXTM3U\n# nothing\n") }),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Some("empty"),
+            ),
+            (
+                serde_json::json!({ "contentBase64": encoded(&"a.mp3\n".repeat(10_001)) }),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Some("too_long"),
+            ),
+            (
+                serde_json::json!({ "contentBase64": encoded(&"x".repeat(2 * 1024 * 1024 + 1)) }),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Some("too_big"),
+            ),
+            (serde_json::json!({}), StatusCode::BAD_REQUEST, None),
+        ];
+        for (body, want_status, want_code) in cases {
+            let (status, response) = send(
+                app.clone(),
+                post_json("/api/playlists/import/preview", &cookie, body),
+            )
+            .await;
+            assert_eq!(status, want_status);
+            if let Some(code) = want_code {
+                assert_eq!(json_body(&response)["code"], code);
+            }
+        }
+        let (status, _) = send(
+            app,
+            post_json(
+                "/api/playlists/import/commit",
+                &cookie,
+                serde_json::json!({ "name": "Empty", "trackIds": [] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

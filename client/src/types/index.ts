@@ -1019,6 +1019,43 @@ export interface PathRemap {
   to: string;
 }
 
+// ── Playlist import (M3U/M3U8) ───────────────────────────────────────────────
+
+export type PlaylistImportStatus = 'matched' | 'ambiguous' | 'unmatched' | 'remote' | 'duplicate';
+
+export interface PlaylistImportCandidate {
+  trackId: string;
+  title: string;
+  artist: string | null;
+  album: string | null;
+  year: number | null;
+  duration: number | null;
+}
+
+export interface PlaylistImportEntry {
+  line: number;
+  raw: string;
+  status: PlaylistImportStatus;
+  trackId?: string;
+  /** "Artist – Title" from #EXTINF, else the file name. */
+  label: string;
+  candidates?: PlaylistImportCandidate[];
+  /** The candidate closest in duration, when the file gives one. */
+  suggestedTrackId?: string;
+}
+
+/** A folder swap; `gain` is how many more lines it finds. */
+export interface PlaylistImportRemap extends PathRemap {
+  gain: number;
+}
+
+export interface PlaylistImportPreview {
+  entries: PlaylistImportEntry[];
+  totals: Record<PlaylistImportStatus, number>;
+  suggestedRemaps: PlaylistImportRemap[];
+  appliedRemaps: PlaylistImportRemap[];
+}
+
 export interface RestoreResult {
   ok: boolean;
   savedTo?: string;

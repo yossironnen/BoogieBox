@@ -29,6 +29,8 @@ const { apiMock } = vi.hoisted(() => ({
       reorder: vi.fn(),
       removeTrack: vi.fn(),
       exportM3uUrl: vi.fn(),
+      importPreview: vi.fn(),
+      importCommit: vi.fn(),
     },
     boogiemix: {
       listAllOutputs: vi.fn(),
@@ -260,6 +262,27 @@ describe('MobilePlaylistsView', () => {
 
     await waitFor(() => expect(apiMock.playlists.create).toHaveBeenCalledWith('Fresh Queue', ''));
     await waitFor(() => expect(apiMock.playlists.get).toHaveBeenCalledWith('99'));
+  });
+
+  it('imports an M3U from the mobile root and opens the new playlist with a toast', async () => {
+    apiMock.playlists.importPreview.mockResolvedValue({
+      entries: [{ line: 1, raw: 'one.mp3', status: 'matched', trackId: '11', label: 'one' }],
+      totals: { matched: 1, ambiguous: 0, unmatched: 0, remote: 0, duplicate: 0 },
+      suggestedRemaps: [],
+      appliedRemaps: [],
+    });
+    apiMock.playlists.importCommit.mockResolvedValue({ playlist: { ...playlist, id: '77' }, added: 1 });
+    render(<TestHarness initialSelection={{ playlist: null, tracks: [] }} />);
+
+    const importButton = await screen.findByRole('button', { name: 'Import playlist' });
+    expect(importButton).toHaveStyle({ minHeight: '48px' });
+    fireEvent.change(screen.getByTestId('playlist-import-input'), { target: { files: [new File(['one.mp3\n'], 'Gym.m3u8')] } });
+    expect(await screen.findByRole('dialog', { name: 'Import playlist' })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Create playlist' }));
+
+    await waitFor(() => expect(apiMock.playlists.importCommit).toHaveBeenCalledWith('Gym', ['11']));
+    await waitFor(() => expect(apiMock.playlists.get).toHaveBeenCalledWith('77'));
+    expect(await screen.findByText('1 track added.')).toBeInTheDocument();
   });
 
   it('renders artwork-backed Hybrid playlist rows with mobile-sized actions', async () => {

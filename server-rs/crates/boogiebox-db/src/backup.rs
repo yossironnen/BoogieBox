@@ -508,7 +508,7 @@ pub struct PathRemap {
     pub to: String,
 }
 
-fn looks_windows(path: &str) -> bool {
+pub(crate) fn looks_windows(path: &str) -> bool {
     let b = path.as_bytes();
     path.starts_with(r"\\") || (b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic())
 }

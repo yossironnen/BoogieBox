@@ -104,6 +104,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 
 - Organize and browse music across multiple folders and drives
 - Fast search, playlists, Favourites, and personalized listening history with per-user play counts
+- Import M3U/M3U8 playlists from other players, with a preview of what matched and folder swaps for music that lives somewhere else now
 - Individual user profiles with avatars, optional PIN protection, and personal preferences
 - Rate artists, albums, and tracks with half-star precision
 

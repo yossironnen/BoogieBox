@@ -18,6 +18,9 @@ import MobileBottomSheet from '../components/MobileBottomSheet';
 import MobileBoogieMixPanel from '../components/MobileBoogieMixPanel';
 import MobileConfirmationSheet from '../components/MobileConfirmationSheet';
 import MobileMixesView from './MobileMixesView';
+import MobilePlaylistImportSheet from '../components/MobilePlaylistImportSheet';
+import { ImportIcons, PlaylistImportToast, type ImportedPlaylist } from '../../components/PlaylistImport';
+import { PLAYLIST_FILE_ACCEPT } from '../../playlistImport';
 
 type LibraryTab = 'playlists' | 'mixes';
 
@@ -268,6 +271,9 @@ export default function MobilePlaylistsView({
   const [sortOpen, setSortOpen] = useState(false);
   const [addTracksOpen, setAddTracksOpen] = useState(false);
   const [pendingRemoveTrack, setPendingRemoveTrack] = useState<PlaylistTrack | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [imported, setImported] = useState<ImportedPlaylist | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const pullStartYRef = useRef<number | null>(null);
   const suppressRowClickRef = useRef(false);
   const selectedPlaylistId = selection.playlist?.id ?? initialPlaylistId ?? null;
@@ -293,6 +299,17 @@ export default function MobilePlaylistsView({
     onSelectionChange({ playlist, tracks });
     setPlaylists((prev) => prev.map((entry) => (entry.id === playlist.id ? playlist : entry)));
   }, [onSelectionChange]);
+
+  const handleImported = useCallback((result: ImportedPlaylist) => {
+    setImportFile(null);
+    setImported(result);
+    void loadPlaylists();
+    loadSelectedPlaylist(result.playlist.id).catch(() => setError('Could not load that playlist.'));
+  }, [loadPlaylists, loadSelectedPlaylist]);
+  const dismissImported = useCallback(() => setImported(null), []);
+  const importToast = imported ? (
+    <PlaylistImportToast added={imported.added} leftOut={imported.leftOut} onDismiss={dismissImported} mobile />
+  ) : null;
 
   const openMixSourcePlaylist = useCallback((playlistId: EntityId) => {
     setLibraryTab('playlists');
@@ -822,6 +839,7 @@ export default function MobilePlaylistsView({
           onClose={() => setPendingRemoveTrack(null)}
           onConfirm={() => pendingRemoveTrack ? removeTrack(pendingRemoveTrack) : undefined}
         />
+        {importToast}
       </main>
     );
   }
@@ -870,7 +888,30 @@ export default function MobilePlaylistsView({
           </button>
         </div>
         {libraryTab === 'playlists' ? (
-          <button type="button" style={styles.newPlaylistButton} onClick={openCreateEditor}>New Playlist</button>
+          <div style={styles.newPlaylistRow}>
+            <button type="button" style={styles.newPlaylistButton} onClick={openCreateEditor}>New Playlist</button>
+            <button
+              type="button"
+              aria-label="Import playlist"
+              title="Import playlist"
+              style={styles.importButton}
+              onClick={() => importInputRef.current?.click()}
+            >
+              <ImportIcons.ImportFile size={18} />
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept={PLAYLIST_FILE_ACCEPT}
+              hidden
+              data-testid="playlist-import-input"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) setImportFile(file);
+              }}
+            />
+          </div>
         ) : null}
       </header>
 
@@ -936,6 +977,10 @@ export default function MobilePlaylistsView({
         }}
         onSubmit={handleEditorSubmit}
       />
+      {importFile ? (
+        <MobilePlaylistImportSheet file={importFile} onClose={() => setImportFile(null)} onImported={handleImported} />
+      ) : null}
+      {importToast}
     </main>
   );
 }
@@ -1237,10 +1282,22 @@ const styles: Record<string, React.CSSProperties> = {
     ...hybridMobileContentStyles.feedback,
     marginTop: 14,
   },
+  newPlaylistRow: { display: 'flex', gap: 8, marginTop: 4 },
+  importButton: {
+    width: 48,
+    minWidth: 48,
+    minHeight: 48,
+    borderRadius: 12,
+    border: '1px solid var(--accent)',
+    background: 'var(--surface)',
+    color: 'var(--text)',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   newPlaylistButton: {
     minHeight: 48,
-    width: '100%',
-    marginTop: 4,
+    flex: 1,
     borderRadius: 12,
     border: 'none',
     background: 'var(--accent)',

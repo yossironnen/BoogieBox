@@ -16,6 +16,8 @@ import {
 } from '../hybridPreview';
 import ArtImage from './ArtImage';
 import CommandBar from './CommandBar';
+import { ImportIcons, PlaylistImportDialog, PlaylistImportToast, type ImportedPlaylist } from './PlaylistImport';
+import { PLAYLIST_FILE_ACCEPT } from '../playlistImport';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1547,14 +1549,16 @@ function PlaylistsCountIcon() {
 }
 
 function PlaylistsGrid({
-  playlists, onOpen, onOptions, onCreate,
+  playlists, onOpen, onOptions, onCreate, onImport,
 }: {
   playlists: Playlist[];
   onOpen: (p: Playlist) => void;
   onOptions: (p: Playlist) => void;
   onCreate: () => void;
+  onImport: (file: File) => void;
 }) {
   const [search, setSearch] = useState('');
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const query = search.trim().toLowerCase();
   const filtered = query ? playlists.filter(pl => pl.name.toLowerCase().includes(query)) : playlists;
   const countLabel = `${playlists.length.toLocaleString()} playlist${playlists.length !== 1 ? 's' : ''}`;
@@ -1565,9 +1569,32 @@ function PlaylistsGrid({
         watermark="Playlists"
         style={PG.bar}
         actions={(
-          <button type="button" aria-label="New playlist" style={PG.newBtn} onClick={onCreate} title="New playlist">
-            <PlusIcon size={16} />
-          </button>
+          <>
+            <button
+              type="button"
+              aria-label="Import playlist"
+              style={PG.importBtn}
+              onClick={() => importInputRef.current?.click()}
+              title={'Import playlist\nFrom an .m3u or .m3u8 file'}
+            >
+              <ImportIcons.ImportFile size={17} />
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept={PLAYLIST_FILE_ACCEPT}
+              hidden
+              data-testid="playlist-import-input"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) onImport(file);
+              }}
+            />
+            <button type="button" aria-label="New playlist" style={PG.newBtn} onClick={onCreate} title="New playlist">
+              <PlusIcon size={16} />
+            </button>
+          </>
         )}
       >
         <div style={PG.searchBox}>
@@ -1649,6 +1676,7 @@ const PG: Record<string, React.CSSProperties> = {
   },
   searchInput: { background: 'none', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 13, width: '100%', fontFamily: 'inherit' },
   newBtn: { ...hybridControlStyles.iconButton, width: 34, minWidth: 34, height: 34, background: 'var(--accent)', color: 'var(--on-accent)' },
+  importBtn: { ...hybridControlStyles.iconButton, width: 34, minWidth: 34, height: 34, border: '1px solid var(--accent)' },
   empty: { padding: '28px 16px', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.7, textAlign: 'center' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 18 },
   card: { position: 'relative', minWidth: 0 },
@@ -1695,6 +1723,9 @@ export default function PlaylistsView({
   const [showCreate, setShowCreate] = useState(false);
   const [createError, setCreateError] = useState('');
   const [optionsPlaylist, setOptionsPlaylist] = useState<Playlist | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [imported, setImported] = useState<ImportedPlaylist | null>(null);
+  const dismissImported = useCallback(() => setImported(null), []);
 
   const loadPlaylists = useCallback(async () => {
     const list = await api.playlists.list();
@@ -1745,6 +1776,13 @@ export default function PlaylistsView({
     }
   };
 
+  const handleImported = async (result: ImportedPlaylist) => {
+    setImportFile(null);
+    setImported(result);
+    await loadPlaylists();
+    setSelected(result.playlist);
+  };
+
   const handleDeleted = async (id: EntityId) => {
     setOptionsPlaylist(null);
     setSelected(current => current?.id === id ? null : current);
@@ -1762,6 +1800,7 @@ export default function PlaylistsView({
           onOpen={pl => setSelected(pl)}
           onOptions={setOptionsPlaylist}
           onCreate={() => { setCreateError(''); setShowCreate(true); }}
+          onImport={setImportFile}
         />
       )}
       {selected && (
@@ -1792,6 +1831,10 @@ export default function PlaylistsView({
           error={createError}
         />
       )}
+      {importFile && (
+        <PlaylistImportDialog file={importFile} onClose={() => setImportFile(null)} onImported={(result) => void handleImported(result)} />
+      )}
+      {imported && <PlaylistImportToast added={imported.added} leftOut={imported.leftOut} onDismiss={dismissImported} />}
     </div>
   );
 }

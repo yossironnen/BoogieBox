@@ -21,6 +21,8 @@ const { apiMock } = vi.hoisted(() => ({
       remove: vi.fn(),
       removeTrack: vi.fn(),
       addTrack: vi.fn(),
+      importPreview: vi.fn(),
+      importCommit: vi.fn(),
     },
     search: vi.fn(),
     albumArtUrl: vi.fn(),
@@ -181,6 +183,41 @@ describe('PlaylistsView integration flows', () => {
     expect(within(bar).getByLabelText('2 playlists')).toHaveTextContent('2');
     expect(within(bar).getByRole('button', { name: 'New playlist' })).toBeInTheDocument();
     expect(screen.queryByText('Browse and create playlists. Click a cover to open it.')).not.toBeInTheDocument();
+  });
+
+  it('imports an M3U from the header: preview, create, then open the new playlist with a toast', async () => {
+    const created = { ...playlist, id: '9', name: 'Drive', track_count: 2 };
+    apiMock.playlists.importPreview.mockResolvedValue({
+      entries: [
+        { line: 1, raw: 'a.mp3', status: 'matched', trackId: '101', label: 'a' },
+        { line: 2, raw: 'b.mp3', status: 'matched', trackId: '102', label: 'b' },
+        { line: 3, raw: 'gone.mp3', status: 'unmatched', label: 'gone' },
+      ],
+      totals: { matched: 2, ambiguous: 0, unmatched: 1, remote: 0, duplicate: 0 },
+      suggestedRemaps: [],
+      appliedRemaps: [],
+    });
+    apiMock.playlists.importCommit.mockResolvedValue({ playlist: created, added: 2 });
+    const { container } = render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} />);
+    await screen.findByText('Road Trip');
+    const bar = container.querySelector('[data-command-bar="playlists"]') as HTMLElement;
+    const importButton = within(bar).getByRole('button', { name: 'Import playlist' });
+    expect(importButton).toHaveAttribute('title', 'Import playlist\nFrom an .m3u or .m3u8 file');
+    const input = screen.getByTestId('playlist-import-input') as HTMLInputElement;
+    expect(input.accept).toContain('.m3u8');
+    const clickSpy = vi.spyOn(input, 'click');
+    fireEvent.click(importButton);
+    expect(clickSpy).toHaveBeenCalled();
+
+    apiMock.playlists.list.mockResolvedValue([playlist, created]);
+    fireEvent.change(input, { target: { files: [new File(['a.mp3\n'], 'Drive.m3u')] } });
+    const dialog = await screen.findByRole('dialog', { name: 'Import playlist' });
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Create playlist' }));
+
+    expect(await screen.findByText('2 tracks added. 1 line was left out.')).toBeInTheDocument();
+    expect(apiMock.playlists.importCommit).toHaveBeenCalledWith('Drive', ['101', '102']);
+    expect(screen.queryByRole('dialog', { name: 'Import playlist' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Back to Playlists' })).toBeInTheDocument();
   });
 
   it('shares grid card artwork with the opened playlist header without extra track fetches', async () => {

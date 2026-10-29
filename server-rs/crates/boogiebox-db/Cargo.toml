@@ -13,3 +13,4 @@ hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+unicode-normalization = "0.1"

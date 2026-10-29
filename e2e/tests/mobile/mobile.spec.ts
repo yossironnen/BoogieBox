@@ -2,7 +2,8 @@
  * Mobile shell (phone viewport): tabs, browse drill-down, search and playback with the mini player.
  */
 
-import { captureMediaSession, expect, expectAudioPlaying, mediaSession, pressMediaKey, test } from '../../support/test.ts'
+import { IMPORTED_TITLES, writeImportFixture } from '../../support/m3u.ts'
+import { captureMediaSession, expect, expectAudioPlaying, mediaSession, pressMediaKey, test, uniqueName } from '../../support/test.ts'
 import type { Page } from '@playwright/test'
 
 const tabs = (page: Page) => page.getByRole('navigation', { name: 'Mobile tabs' })
@@ -75,6 +76,30 @@ test('OS media controls follow the mobile player', async ({ page }) => {
   await expect.poll(async () => (await mediaSession(page)).title).toBe('Ink Sky')
   await pressMediaKey(page, 'pause')
   await expect.poll(async () => (await mediaSession(page)).playbackState).toBe('paused')
+})
+
+test('import an M3U from the Playlists tab', async ({ page }) => {
+  const name = uniqueName('E2E Mobile Import')
+  const file = writeImportFixture(`${name}.m3u`)
+  await tabs(page).getByRole('button', { name: 'Playlists', exact: true }).click()
+  const chooser = page.waitForEvent('filechooser')
+  await page.getByRole('main').getByRole('button', { name: 'Import playlist' }).click()
+  await (await chooser).setFiles(file)
+
+  const sheet = page.getByRole('dialog', { name: 'Import playlist' })
+  await expect(sheet.locator('[data-import-tile="matched"]')).toContainText('4')
+  await expect(sheet.getByText('Not found · 1')).toBeVisible()
+  await expect(sheet.getByRole('status')).toHaveText("4 tracks will be added, in the file's order")
+  await sheet.getByRole('button', { name: 'Create playlist' }).click()
+  await expect(sheet).toBeHidden()
+  await expect(page.getByRole('status').filter({ hasText: 'Playlist imported' })).toContainText('4 tracks added. 3 lines were left out.')
+  for (const title of IMPORTED_TITLES) {
+    await expect(page.getByRole('main').getByText(title, { exact: true }).first()).toBeVisible()
+  }
+
+  const playlists: Array<{ id: string; name: string }> = await (await page.request.get('/api/playlists')).json()
+  const created = playlists.find((p) => p.name === name)!
+  expect((await page.request.delete(`/api/playlists/${created.id}`)).ok()).toBe(true)
 })
 
 test('the Now Playing Sleep tool starts and cancels a timer', async ({ page }) => {

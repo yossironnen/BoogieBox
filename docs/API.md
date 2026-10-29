@@ -141,6 +141,9 @@ passes the same threshold as the web player.
 | `DELETE` | `/api/playlists/{id}` | Delete a playlist. |
 | `POST` | `/api/playlists/{id}/tracks` | Add tracks to a playlist. |
 | `PUT` | `/api/playlists/{id}/tracks/order` | Reorder playlist tracks. |
+| `GET` | `/api/playlists/{id}/export.m3u` | Download a playlist as M3U. |
+| `POST` | `/api/playlists/import/preview` | Match an M3U/M3U8 file (`{ contentBase64, remaps? }`, ≤ 2 MB, ≤ 10,000 entries) against library tracks. Returns each entry's status (`matched` / `ambiguous` / `unmatched` / `remote` / `duplicate`), candidates for ambiguous lines, totals, and up to 3 suggested folder swaps. File problems answer `413`/`422` with `code` `too_big` / `too_long` / `empty`. Nothing is written. |
+| `POST` | `/api/playlists/import/commit` | Create a playlist from `{ name, description?, trackIds }` in that order, in one transaction (unknown ids and repeats skipped). Returns `{ playlist, added }`; `409` when the name is taken. |
 
 ## Ratings And Metadata
 

@@ -2,6 +2,7 @@
  * Playlists: create, add tracks, rename, play and delete.
  */
 
+import { IMPORTED_TITLES, writeImportFixture } from '../../support/m3u.ts'
 import { expect, expectAudioPlaying, goTo, main, openApp, test, uniqueName } from '../../support/test.ts'
 
 test.beforeEach(async ({ page }) => openApp(page))
@@ -74,6 +75,44 @@ test('playlist lifecycle', async ({ page }) => {
     await confirm.getByRole('button', { name: 'Delete', exact: true }).click()
     await expect(main(page).getByText(renamed, { exact: true })).toHaveCount(0)
   })
+})
+
+test('import an M3U: preview counts, not-found list, then the playlist in file order', async ({ page }) => {
+  const name = uniqueName('E2E Import')
+  const file = writeImportFixture(`${name}.m3u8`)
+  await goTo(page, 'Playlists')
+
+  const chooser = page.waitForEvent('filechooser')
+  await main(page).getByRole('button', { name: 'Import playlist' }).click()
+  await (await chooser).setFiles(file)
+
+  const dialog = page.getByRole('dialog', { name: 'Import playlist' })
+  await expect(dialog.getByText('· 7 lines')).toBeVisible()
+  await expect(dialog.getByRole('textbox', { name: 'Playlist name' })).toHaveValue(name)
+  const tile = (key: string) => dialog.locator(`[data-import-tile="${key}"]`)
+  await expect(tile('matched')).toContainText('4')
+  await expect(tile('ambiguous')).toContainText('0')
+  await expect(tile('unmatched')).toContainText('1')
+  await expect(tile('remote')).toContainText('1')
+  await expect(tile('duplicate')).toContainText('1')
+  await expect(dialog.locator('[data-import-missing]')).toContainText('Missing Song.mp3')
+  await expect(dialog.getByText("Web links aren't imported. BoogieBox plays only music in your libraries.")).toBeVisible()
+  await expect(dialog.getByRole('status')).toHaveText("4 tracks will be added, in the file's order")
+
+  const download = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Download the list' }).click()
+  expect((await download).suggestedFilename()).toBe(`${name} - not found.txt`)
+
+  await dialog.getByRole('button', { name: 'Create playlist' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('status').filter({ hasText: 'Playlist imported' })).toContainText('4 tracks added. 3 lines were left out.')
+  await expect(main(page).getByText(name, { exact: true })).toBeVisible()
+
+  const playlists: Array<{ id: string; name: string }> = await (await page.request.get('/api/playlists')).json()
+  const created = playlists.find((p) => p.name === name)!
+  const tracks: Array<{ title: string }> = await (await page.request.get(`/api/playlists/${created.id}/tracks`)).json()
+  expect(tracks.map((t) => t.title)).toEqual(IMPORTED_TITLES)
+  expect((await page.request.delete(`/api/playlists/${created.id}`)).ok()).toBe(true)
 })
 
 test('duplicate playlist names are rejected', async ({ page }) => {

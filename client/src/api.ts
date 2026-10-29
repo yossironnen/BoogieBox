@@ -9,6 +9,7 @@ import type {
   BackupSummary,
   BackupsOverview,
   PathRemap,
+  PlaylistImportPreview,
   RestoreResult,
   Library,
   Track,
@@ -263,6 +264,35 @@ async function patch<T>(path: string, body?: unknown): Promise<T> {
   const result = await readJson<T>(res);
   homeMutation(path);
   return result;
+}
+
+/** Playlist import failure; `code` is `too_big`, `too_long` or `empty` when the file is the problem. */
+export class PlaylistImportError extends Error {
+  constructor(message: string, readonly code: string | null) {
+    super(message);
+    this.name = 'PlaylistImportError';
+  }
+}
+
+async function postPlaylistImportPreview(contentBase64: string, remaps: PathRemap[]): Promise<PlaylistImportPreview> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api/playlists/import/preview`, {
+      ...FETCH_OPTS,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentBase64, remaps }),
+    });
+  } catch (error) {
+    throw new Error(describeNetworkError(error));
+  }
+  if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
+    const body = await res.clone().json().catch(() => ({}));
+    const code = typeof body?.code === 'string' ? body.code : res.status === 413 ? 'too_big' : null;
+    throw new PlaylistImportError(await readErrorMessage(res), code);
+  }
+  return readJson<PlaylistImportPreview>(res);
 }
 
 /** Play On request failure that keeps the HTTP status and JSON body (409 carries the takeover details). */
@@ -644,6 +674,9 @@ export const api = {
     saveTrackProgress: (playlistId: EntityId, trackId: ApiEntityId, seconds: number) =>
                    patch<{ ok: boolean }>(`/playlists/${playlistId}/tracks/${trackId}/progress`, { seconds }),
     exportM3uUrl: (id: EntityId) => `${BASE}/api/playlists/${id}/export.m3u`,
+    importPreview: (contentBase64: string, remaps: PathRemap[] = []) => postPlaylistImportPreview(contentBase64, remaps),
+    importCommit: (name: string, trackIds: string[], description?: string) =>
+                   post<{ playlist: Playlist; added: number }>('/playlists/import/commit', { name, description, trackIds }),
   },
   boogiemix: {
     createJob: (

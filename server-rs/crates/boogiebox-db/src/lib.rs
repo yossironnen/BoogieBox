@@ -8,6 +8,7 @@ pub mod jobs;
 pub mod maintenance;
 pub mod music;
 pub mod playback;
+pub mod playlist_import;
 pub mod playlists;
 pub mod radio;
 pub mod radio_stations;
