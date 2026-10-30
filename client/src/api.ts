@@ -418,9 +418,9 @@ export const api = {
     track_rating_sort_dir?: SortOrder;
     sonic_fingerprint_only?: boolean;
   }) => get<SearchResult>('/search', params as any),
-  autoDjTracks: (params: { genres: string[]; library_id?: ApiEntityId; limit?: number }) =>
-    get<{ tracks: Track[] }>('/auto-dj/tracks', {
-      genres: encodeGenresParam(params.genres),
+  /** A shuffled, artist-interleaved queue from one library ("Play library radio"). */
+  libraryRadioTracks: (params: { library_id: ApiEntityId; limit?: number }) =>
+    get<{ tracks: Track[] }>('/library-radio/tracks', {
       library_id: params.library_id,
       limit: params.limit,
     }),
@@ -710,6 +710,8 @@ export const api = {
     exportM3uUrl: (id: EntityId) => `${BASE}/api/playlists/${id}/export.m3u`,
     /** A playlist and its tracks from one read (smart playlists refresh first). */
     snapshot:    (id: EntityId) => smartRequest<PlaylistSnapshot>('GET', `/playlists/${id}/snapshot`),
+    /** One playlist's card row; a smart playlist refreshes first when its inputs changed. */
+    summary:     (id: EntityId) => get<Playlist>(`/playlists/${id}/summary`),
     /** Re-evaluates a smart playlist now. */
     refresh:     (id: EntityId) => smartRequest<PlaylistSnapshot>('POST', `/playlists/${id}/refresh`),
     createSmart: (name: string, definition: SmartDefinition) =>

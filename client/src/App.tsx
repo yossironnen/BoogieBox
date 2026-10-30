@@ -1410,37 +1410,8 @@ export default function App() {
     }));
   }, [dispatchPlayerState]);
 
-  const startAutoDj = useCallback(async (selectedGenres: string[], libraryId?: ClientEntityId): Promise<number> => {
-    const cleanedGenres = selectedGenres.map((genre) => genre.trim()).filter(Boolean);
-    if (!cleanedGenres.length) {
-      throw new Error('Select at least one genre for Auto DJ.');
-    }
-
-    const response = await api.autoDjTracks({
-      genres: cleanedGenres,
-      library_id: libraryId,
-      limit: 200,
-    });
-    const queue = response.tracks ?? [];
-    if (!queue.length) {
-      throw new Error('No tracks found for the selected genres.');
-    }
-
-    if (playbackMode === 'vinyl') {
-      setPlaybackMode('standard');
-    }
-    dispatchPlayerState((prev) => ({
-      queue,
-      currentIndex: 0,
-      isPlaying: true,
-      playToken: prev.playToken + 1,
-      queueSource: { type: 'autodj', id: '0' },
-    }));
-    return queue.length;
-  }, [dispatchPlayerState, playbackMode]);
-
   const startLibraryRadio = useCallback(async (libraryId: ClientEntityId): Promise<void> => {
-    const response = await api.autoDjTracks({ genres: [], library_id: libraryId, limit: 200 });
+    const response = await api.libraryRadioTracks({ library_id: libraryId, limit: 200 });
     const queue = response.tracks ?? [];
     if (!queue.length) return;
     if (playbackMode === 'vinyl') setPlaybackMode('standard');
@@ -1449,7 +1420,7 @@ export default function App() {
       currentIndex: 0,
       isPlaying: true,
       playToken: prev.playToken + 1,
-      queueSource: { type: 'autodj', id: libraryId },
+      queueSource: { type: 'library', id: libraryId },
     }));
   }, [dispatchPlayerState, playbackMode]);
 
@@ -1965,7 +1936,12 @@ export default function App() {
               onPlayTrack={(track, allTracks) => {
                 playTrack(track, allTracks ?? [track]);
               }}
-              onStartAutoDj={(selectedGenres) => startAutoDj(selectedGenres)}
+              onOpenPlaylists={() => setView('playlists')}
+              onPlayPlaylist={(playlist, tracks) => {
+                if (tracks.length) {
+                  playTrack(tracks[0], tracks, { type: 'playlist', id: playlist.id, rememberProgress: !!playlist.remember_progress });
+                }
+              }}
               hybridDesign={hybridDesignActive}
             />
           )}

@@ -7,7 +7,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import HomeView from '../components/HomeView';
-import type { Artist, ClientEntityId, Stats } from '../types';
+import type { Artist, ClientEntityId, Playlist, PlaylistTrack, Stats } from '../types';
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -27,11 +27,7 @@ const { apiMock } = vi.hoisted(() => ({
     playlists: {
       list: vi.fn(),
       create: vi.fn(),
-    },
-    crossfade: {
-      config: vi.fn(),
-      upsertOverride: vi.fn(),
-      removeOverride: vi.fn(),
+      snapshot: vi.fn(),
     },
   },
 }));
@@ -39,6 +35,22 @@ const { apiMock } = vi.hoisted(() => ({
 vi.mock('../api', () => ({
   api: apiMock,
 }));
+
+// The rule editor has its own tests; here it reports what Home opened it with and saves on request.
+vi.mock('../components/SmartPlaylistEditor', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/SmartPlaylistEditor')>();
+  const created = { id: 'new', name: 'Rock', description: '', created_at: null, updated_at: null, track_count: 2, total_duration: 300, kind: 'smart' };
+  return {
+    ...actual,
+    default: (props: any) => (
+      <div role="dialog" aria-label="Smart editor" data-preset={JSON.stringify(props.preset)}>
+        <button type="button" onClick={() => props.onSaved(created)}>stub create</button>
+        <button type="button" onClick={() => props.onCreateAndPlay(created)}>stub create and play</button>
+        <button type="button" onClick={props.onClose}>stub close</button>
+      </div>
+    ),
+  };
+});
 
 const STATS: Stats = {
   total_tracks: 1,
@@ -64,7 +76,7 @@ function mockIntersectionObserver(): void {
 
 function renderHome(
   onOpenPlaylist?: (playlistId: string) => void,
-  onStartAutoDj?: (genres: string[]) => Promise<number>,
+  onPlayPlaylist?: (playlist: Playlist, tracks: PlaylistTrack[]) => void,
   refreshKey = 0,
   onBrowseMusic?: () => void,
   onOpenArtist?: (artist: Artist) => void,
@@ -80,10 +92,18 @@ function renderHome(
       onBrowseMusic={onBrowseMusic ?? (() => {})}
       onOpenPlaylist={onOpenPlaylist ?? (() => {})}
       onPlayTrack={() => {}}
-      onStartAutoDj={onStartAutoDj ?? (async () => 0)}
+      onOpenPlaylists={onOpenPlaylists}
+      onPlayPlaylist={onPlayPlaylist ?? (() => {})}
     />
   );
 }
+
+let onOpenPlaylists = vi.fn();
+const ROCK = { label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] };
+const presetOf = () => JSON.parse(screen.getByRole('dialog', { name: 'Smart editor' }).getAttribute('data-preset') ?? 'null');
+const smartRow = (id: string, updated_at: string): Playlist => ({
+  id, name: `Smart ${id}`, description: '', created_at: null, updated_at, track_count: 3, total_duration: 3720, kind: 'smart',
+});
 
 describe('HomeView playback activity tabs', () => {
   beforeEach(() => {
@@ -103,9 +123,7 @@ describe('HomeView playback activity tabs', () => {
     apiMock.artists.mockResolvedValue([]);
     apiMock.playlists.list.mockResolvedValue([]);
     apiMock.playlists.create.mockResolvedValue({ id: '1', name: 'New Playlist' });
-    apiMock.crossfade.config.mockResolvedValue({ mode: 'off', duration: 2, source: 'global' });
-    apiMock.crossfade.upsertOverride.mockResolvedValue({ ok: true });
-    apiMock.crossfade.removeOverride.mockResolvedValue({ ok: true });
+    onOpenPlaylists = vi.fn();
   });
 
   it('keeps successful genre covers when another genre fails, then retries on refresh', async () => {
@@ -347,41 +365,130 @@ describe('HomeView playback activity tabs', () => {
     promptSpy.mockRestore();
   });
 
-  it('shows a genre\'s sampled album covers as a collage on its Auto DJ quick card', async () => {
-    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
+  it('shows a genre\'s sampled album covers as a collage on its smart playlist card', async () => {
+    apiMock.homeGenres.mockResolvedValue([ROCK]);
     apiMock.homeGenreCovers.mockResolvedValue(['301', '302']);
 
     renderHome();
 
     await waitFor(() => expect(apiMock.homeGenreCovers).toHaveBeenCalledWith('Rock'));
-    const card = await screen.findByRole('button', { name: 'Start Home Auto DJ with Rock' });
+    const card = await screen.findByRole('button', { name: 'New smart playlist from Rock' });
     const sources = within(card).getAllByRole('presentation').map((img) => img.getAttribute('src'));
     expect(sources.sort()).toEqual(['/api/albums/301/art?size=300', '/api/albums/302/art?size=300']);
   });
 
-  it('starts Auto DJ from the Let\'s Boogie quick genre chips', async () => {
-    const onStartAutoDj = vi.fn(async () => 12);
-    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
+  it('opens the smart playlist editor from a genre card, an idea, the picker and the header', async () => {
+    apiMock.homeGenres.mockResolvedValue([ROCK]);
+    apiMock.genres.mockResolvedValue([{ genre: 'Rock', track_count: 3 }, { genre: 'Jazz', track_count: 2 }]);
+    renderHome();
+    expect(screen.queryByText(/Auto DJ/i)).toBeNull();
 
-    renderHome(undefined, onStartAutoDj);
+    fireEvent.click(await screen.findByRole('button', { name: 'New smart playlist from Rock' }));
+    expect(presetOf()).toMatchObject({
+      name: 'Rock',
+      definition: { root: { mode: 'all', children: [{ field: 'genre', operator: 'is', value: 'Rock' }] } },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'stub close' }));
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Start Home Auto DJ with Rock' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Forgotten favourites/ }));
+    expect(presetOf()).toMatchObject({ name: 'Forgotten favourites' });
+    expect(presetOf().definition.root.children).toEqual([
+      { field: 'rating', operator: 'gte', value: 4 },
+      { field: 'last_played_at', operator: 'not_in_last_days', value: 90 },
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: 'stub close' }));
+    for (const idea of ['Recently added', 'Never played', 'Most played']) {
+      expect(screen.getByRole('button', { name: new RegExp(`^${idea}`) })).toBeInTheDocument();
+    }
 
-    await waitFor(() => expect(onStartAutoDj).toHaveBeenCalledWith(['Rock']));
-    await waitFor(() => expect(screen.getByText(/Auto DJ started/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'More genres' }));
+    expect(screen.getByRole('button', { name: 'New smart playlist from 0 genres' })).toBeDisabled();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search genres' }), { target: { value: 'zzz' } });
+    expect(screen.getByText('No genres match "zzz"')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search genres' }), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Rock/, pressed: false }));
+    fireEvent.click(screen.getByRole('button', { name: /^Jazz/, pressed: false }));
+    fireEvent.click(screen.getByRole('button', { name: /^Jazz/, pressed: true }));
+    expect(screen.getByText('1 genre selected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Jazz/, pressed: false }));
+    expect(screen.getByText('2 genres selected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'New smart playlist from 2 genres' }));
+    expect(presetOf()).toMatchObject({ name: 'Rock, Jazz', definition: { root: { mode: 'any' } } });
+    fireEvent.click(screen.getByRole('button', { name: 'stub close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide genre browser' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'New smart playlist' }));
+    expect(presetOf()).toBeNull();
   });
 
-  it('opens the extra Auto DJ picker and starts selected genres', async () => {
-    const onStartAutoDj = vi.fn(async () => 8);
-    apiMock.genres.mockResolvedValue([{ genre: 'Rock', track_count: 3 }]);
+  it('creates and plays a smart playlist from Home, or opens it after a plain create', async () => {
+    const onOpenPlaylist = vi.fn();
+    const onPlayPlaylist = vi.fn();
+    const tracks = [{ id: 't1', title: 'One' }, { id: 't2', title: 'Two' }];
+    apiMock.homeGenres.mockResolvedValue([ROCK]);
+    apiMock.playlists.snapshot.mockResolvedValue({ playlist: { id: 'new', name: 'Rock' }, tracks, membershipRevision: 1, refreshError: null });
+    renderHome(onOpenPlaylist, onPlayPlaylist);
 
-    renderHome(undefined, onStartAutoDj);
+    fireEvent.click(await screen.findByRole('button', { name: 'New smart playlist from Rock' }));
+    fireEvent.click(screen.getByRole('button', { name: 'stub create and play' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Created “Rock” and started playing.');
+    expect(apiMock.playlists.snapshot).toHaveBeenCalledWith('new');
+    expect(onPlayPlaylist).toHaveBeenCalledWith({ id: 'new', name: 'Rock' }, tracks);
+    expect(screen.queryByRole('dialog', { name: 'Smart editor' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Open playlist' }));
+    expect(onOpenPlaylist).toHaveBeenCalledWith('new');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Browse all genres for Home Auto DJ' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Add Rock to the Home Auto DJ selection' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Start Home Auto DJ from picker' }));
+    apiMock.playlists.snapshot.mockResolvedValue({ playlist: { id: 'new', name: 'Rock' }, tracks: [], membershipRevision: 1, refreshError: null });
+    fireEvent.click(screen.getByRole('button', { name: 'New smart playlist from Rock' }));
+    fireEvent.click(screen.getByRole('button', { name: 'stub create and play' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('No tracks match these rules.'));
+    expect(onPlayPlaylist).toHaveBeenCalledTimes(1);
 
-    await waitFor(() => expect(onStartAutoDj).toHaveBeenCalledWith(['Rock']));
+    onOpenPlaylist.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'New smart playlist from Rock' }));
+    fireEvent.click(screen.getByRole('button', { name: 'stub create' }));
+    expect(onOpenPlaylist).toHaveBeenCalledWith('new');
+  });
+
+  it('lists the newest smart playlists with play, open and "See all"', async () => {
+    const onOpenPlaylist = vi.fn();
+    const onPlayPlaylist = vi.fn();
+    apiMock.playlists.list.mockResolvedValue([
+      smartRow('a', '2026-10-01'), smartRow('b', '2026-10-05'), smartRow('c', '2026-10-03'),
+      smartRow('d', '2026-10-04'), smartRow('e', '2026-10-02'),
+      { id: 'm', name: 'Manual', description: '', created_at: null, updated_at: '2026-10-09', track_count: 1, total_duration: 60, kind: 'manual' },
+    ]);
+    const tracks = [{ id: 't1' }];
+    apiMock.playlists.snapshot
+      .mockResolvedValueOnce({ playlist: smartRow('b', '2026-10-05'), tracks, membershipRevision: 1, refreshError: null })
+      .mockRejectedValueOnce(new Error('offline'));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderHome(onOpenPlaylist, onPlayPlaylist);
+
+    const open = await screen.findAllByRole('button', { name: /— Smart playlist · 3 tracks · 1h 2m$/ });
+    expect(open.map((button) => button.textContent)).toEqual([
+      'Smart bSmart · 3 tracks · 1h 2m', 'Smart dSmart · 3 tracks · 1h 2m',
+      'Smart cSmart · 3 tracks · 1h 2m', 'Smart eSmart · 3 tracks · 1h 2m',
+    ]);
+    fireEvent.click(open[0]);
+    expect(onOpenPlaylist).toHaveBeenCalledWith('b');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Play Smart b' }));
+    await waitFor(() => expect(onPlayPlaylist).toHaveBeenCalledWith(expect.objectContaining({ id: 'b' }), tracks));
+    fireEvent.click(screen.getByRole('button', { name: 'Play Smart d' }));
+    await waitFor(() => expect(logged).toHaveBeenCalledWith('Could not play smart playlist', expect.any(Error)));
+    expect(onPlayPlaylist).toHaveBeenCalledTimes(1);
+    logged.mockRestore();
+
+    fireEvent.click(screen.getByRole('button', { name: 'See all' }));
+    expect(onOpenPlaylists).toHaveBeenCalled();
+  });
+
+  it('hides "Your smart playlists" when there are none', async () => {
+    apiMock.playlists.list.mockResolvedValue([{ id: 'm', name: 'Manual', track_count: 1, total_duration: 0, kind: 'manual' }]);
+    renderHome();
+    expect(await screen.findByText('Smart playlists')).toBeInTheDocument();
+    expect(screen.queryByText('Your smart playlists')).toBeNull();
   });
 
   it('shows a random sampled album cover as the Genres panel row thumbnail', async () => {
@@ -485,7 +592,8 @@ describe('HomeView playback activity tabs', () => {
         onBrowseMusic={() => {}}
         onOpenPlaylist={() => {}}
         onPlayTrack={onPlayTrack}
-        onStartAutoDj={async () => 0}
+        onOpenPlaylists={() => {}}
+        onPlayPlaylist={() => {}}
       />,
     );
 
@@ -543,56 +651,13 @@ describe('HomeView playback activity tabs', () => {
         onBrowseMusic={() => {}}
         onOpenPlaylist={() => {}}
         onPlayTrack={() => {}}
-        onStartAutoDj={async () => 0}
+        onOpenPlaylists={() => {}}
+        onPlayPlaylist={() => {}}
       />,
     );
 
     await waitFor(() => expect(apiMock.latestAlbums).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByText('Fresh Arrival')).toBeInTheDocument());
-  });
-
-  it('saves Home Auto DJ transition override mode and duration changes', async () => {
-    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
-
-    renderHome();
-
-    await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledWith('autodj', '0'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Toggle Home Auto DJ transition options' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Set Home Auto DJ transition mode Crossfade' }));
-
-    await waitFor(() => expect(apiMock.crossfade.upsertOverride).toHaveBeenCalledWith({
-      entity_type: 'autodj',
-      entity_id: '0',
-      mode: 'crossfade',
-      duration: 2,
-    }));
-
-    const durationSlider = screen.getByLabelText('Home Auto DJ crossfade duration');
-    fireEvent.change(durationSlider, { target: { value: '6' } });
-
-    await waitFor(() => expect(apiMock.crossfade.upsertOverride).toHaveBeenLastCalledWith({
-      entity_type: 'autodj',
-      entity_id: '0',
-      mode: 'crossfade',
-      duration: 6,
-    }));
-  });
-
-  it('resets Home Auto DJ transition override to global default', async () => {
-    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
-    apiMock.crossfade.config
-      .mockResolvedValueOnce({ mode: 'crossfade', duration: 4, source: 'override' })
-      .mockResolvedValueOnce({ mode: 'off', duration: 2, source: 'global' });
-
-    renderHome();
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Toggle Home Auto DJ transition options' }));
-    const resetButton = await screen.findByRole('button', { name: 'Reset Home Auto DJ transition override' });
-    fireEvent.click(resetButton);
-
-    await waitFor(() => expect(apiMock.crossfade.removeOverride).toHaveBeenCalledWith('autodj', '0'));
-    await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByText('Using global default')).toBeInTheDocument());
   });
 
   it('persists collapsed dashboard panes and expands a previously collapsed pane', async () => {
@@ -618,7 +683,6 @@ describe('HomeView playback activity tabs', () => {
     apiMock.homeGenres.mockRejectedValue(new Error('genres unavailable'));
     apiMock.genres.mockRejectedValue(new Error('genres unavailable'));
     apiMock.recentlyPlayed.mockRejectedValue(new Error('history unavailable'));
-    apiMock.crossfade.config.mockRejectedValue(new Error('crossfade unavailable'));
 
     renderHome(undefined, undefined, 0, undefined, undefined, null);
 
@@ -654,7 +718,8 @@ describe('HomeView playback activity tabs', () => {
         onBrowseMusic={() => {}}
         onOpenPlaylist={() => {}}
         onPlayTrack={onPlayTrack}
-        onStartAutoDj={async () => 0}
+        onOpenPlaylists={() => {}}
+        onPlayPlaylist={() => {}}
       />,
     );
 
@@ -671,27 +736,6 @@ describe('HomeView playback activity tabs', () => {
     fireEvent.mouseEnter(playable);
     fireEvent.click(screen.getByRole('button', { name: 'Play album Playable Album' }));
     await waitFor(() => expect(onPlayTrack).toHaveBeenCalledWith(track, [track]));
-  });
-
-  it('handles Auto DJ validation, launch failure, and transition persistence failures', async () => {
-    apiMock.homeGenres.mockResolvedValue([{ label: 'Rock', canonical_key: 'rock', track_count: 3, artist_count: 2, album_count: 1, raw_labels: ['Rock'] }]);
-    apiMock.genres.mockResolvedValue([{ genre: 'Rock', track_count: 3 }]);
-    apiMock.crossfade.config.mockResolvedValue({ mode: 'crossfade', duration: 4, source: 'override' });
-    apiMock.crossfade.upsertOverride.mockRejectedValue(new Error('save failed'));
-    apiMock.crossfade.removeOverride.mockRejectedValue(new Error('reset failed'));
-    const onStartAutoDj = vi.fn().mockRejectedValue({});
-    renderHome(undefined, onStartAutoDj);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Start Home Auto DJ with Rock' }));
-    expect(await screen.findByText('Failed to start Auto DJ.')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Browse all genres for Home Auto DJ' }));
-    expect(screen.getByRole('button', { name: 'Start Home Auto DJ from picker' })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle Home Auto DJ transition options' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Set Home Auto DJ transition mode Zero-gap' }));
-    await waitFor(() => expect(apiMock.crossfade.upsertOverride).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Reset Home Auto DJ transition override' }));
-    await waitFor(() => expect(apiMock.crossfade.removeOverride).toHaveBeenCalled());
   });
 
   it('handles cancelled, blank, id-less, and rejected Home playlist creation', async () => {

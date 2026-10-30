@@ -135,7 +135,8 @@ function renderHome(hybridDesign = false) {
       onBrowseMusic={() => {}}
       onOpenPlaylist={() => {}}
       onPlayTrack={() => {}}
-      onStartAutoDj={async () => 0}
+      onOpenPlaylists={() => {}}
+      onPlayPlaylist={() => {}}
       hybridDesign={hybridDesign}
     />,
   );

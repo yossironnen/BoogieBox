@@ -719,7 +719,7 @@ export interface CrossfadeConfig {
 /** Crossfade Override is part of this module's public API. */
 export interface CrossfadeOverride {
   id: ClientEntityId;
-  entity_type: 'album' | 'playlist' | 'autodj';
+  entity_type: 'album' | 'playlist';
   entity_id: ClientEntityId;
   mode: CrossfadeMode;
   duration: number;
@@ -807,7 +807,7 @@ export interface BpmBatchResult {
 }
 
 /** Queue Source Type is part of this module's public API. */
-export type QueueSourceType = 'album' | 'playlist' | 'autodj' | 'search' | 'single' | 'radio' | 'favourites' | 'station';
+export type QueueSourceType = 'album' | 'playlist' | 'library' | 'search' | 'single' | 'radio' | 'favourites' | 'station';
 
 /** Queue Source is part of this module's public API. */
 export interface QueueSource {

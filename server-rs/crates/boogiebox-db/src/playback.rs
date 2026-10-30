@@ -909,7 +909,7 @@ pub fn get_track_eq_profile(
 
 // ── Crossfade ─────────────────────────────────────────────────────────────────
 
-const VALID_CF_ENTITY_TYPES: &[&str] = &["album", "playlist", "autodj"];
+const VALID_CF_ENTITY_TYPES: &[&str] = &["album", "playlist"];
 const VALID_CF_MODES: &[&str] = &["off", "zerogap", "crossfade"];
 
 /// Public Crossfade Config data shape used by BoogieBox.
@@ -1036,7 +1036,7 @@ impl std::fmt::Display for CrossfadeUpsertError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidEntityType => {
-                write!(f, "entity_type must be one of: album, playlist, autodj")
+                write!(f, "entity_type must be one of: album, playlist")
             }
             Self::InvalidMode => write!(f, "mode must be one of: off, zerogap, crossfade"),
             Self::InvalidDuration => write!(f, "duration must be an integer between 1 and 10"),
@@ -1585,7 +1585,7 @@ mod tests {
     fn get_crossfade_overrides_unfiltered_returns_all_entity_types() {
         let f = fixture("cf-unfiltered");
         upsert_crossfade_override(&f.conn, "album", "a1", "crossfade", 3).unwrap();
-        upsert_crossfade_override(&f.conn, "autodj", "global", "zerogap", 1).unwrap();
+        upsert_crossfade_override(&f.conn, "playlist", "p1", "zerogap", 1).unwrap();
         let all = get_crossfade_overrides(&f.conn, None).unwrap();
         assert_eq!(all.len(), 2);
         // Filtering by an entity_type not in VALID_CF_ENTITY_TYPES falls back to unfiltered.
@@ -1606,7 +1606,7 @@ mod tests {
     fn crossfade_upsert_error_display_messages() {
         assert_eq!(
             CrossfadeUpsertError::InvalidEntityType.to_string(),
-            "entity_type must be one of: album, playlist, autodj"
+            "entity_type must be one of: album, playlist"
         );
         assert_eq!(
             CrossfadeUpsertError::InvalidMode.to_string(),

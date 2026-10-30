@@ -838,6 +838,10 @@ fn tracked_migrations() -> Vec<Migration> {
             id: "2026-10-29-smart-playlists",
             apply: smart_playlists::ensure_smart_playlists_schema,
         },
+        Migration {
+            id: "2026-10-30-remove-auto-dj-crossfade",
+            apply: remove_auto_dj_crossfade_overrides,
+        },
     ]
 }
 
@@ -2932,6 +2936,17 @@ fn ensure_provider_usage_and_art_tables(connection: &Connection) -> Result<(), r
 }
 
 /// Scan safety (F09-0): how many missing tracks the last scan kept, and why.
+/// Auto DJ left the UI (smart playlists replace it), so its crossfade overrides can no longer be set or used.
+fn remove_auto_dj_crossfade_overrides(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "crossfade_overrides") {
+        connection.execute(
+            "DELETE FROM crossfade_overrides WHERE entity_type = 'autodj'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn ensure_library_missing_kept_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
     if !table_exists(connection, "libraries") {
         return Ok(());
@@ -3663,6 +3678,28 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn removing_auto_dj_keeps_other_crossfade_overrides() {
+        let connection = Connection::open_in_memory().expect("db");
+        connection
+            .execute_batch(
+                "CREATE TABLE crossfade_overrides (id TEXT PRIMARY KEY, entity_type TEXT, entity_id TEXT);
+                 INSERT INTO crossfade_overrides VALUES ('1', 'autodj', '0'), ('2', 'playlist', 'p1');",
+            )
+            .expect("seed");
+        remove_auto_dj_crossfade_overrides(&connection).expect("migrate");
+        let left: Vec<String> = connection
+            .prepare("SELECT entity_type FROM crossfade_overrides")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(left, ["playlist"]);
+        remove_auto_dj_crossfade_overrides(&Connection::open_in_memory().unwrap())
+            .expect("no table is fine");
     }
 
     #[test]

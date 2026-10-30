@@ -141,6 +141,9 @@ test('smart playlist API: preview, create, refuse manual edits, export, analysis
     expect(snapshot.tracks.map((t: { title: string }) => t.title)).toEqual(rockTitles)
     expect(snapshot.refreshError).toBeNull()
 
+    const summary = await (await page.request.get(`/api/playlists/${playlist.id}/summary`)).json()
+    expect(summary).toMatchObject({ id: playlist.id, kind: 'smart', track_count: 3 })
+
     const add = await page.request.post(`/api/playlists/${playlist.id}/tracks`, { data: { track_id: snapshot.tracks[0].id } })
     expect(add.status()).toBe(409)
     expect((await add.json()).code).toBe('smart_playlist')

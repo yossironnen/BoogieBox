@@ -8,12 +8,14 @@ import { api } from '../api';
 import { useHomeData } from '../hooks/useHomeData';
 import { homeSnapshot, invalidateHomeData, updateHomeData } from '../homeCache';
 import { useScanActivityRefresh } from '../hooks/useScanActivityRefresh';
-import type { Album, LatestAlbum, Artist, ClientEntityId, Genre, HomeGenreSummary, Library, Stats, Track, Playlist, CrossfadeMode, HomeTopRated } from '../types';
+import type { Album, LatestAlbum, Artist, ClientEntityId, Genre, HomeGenreSummary, Library, Stats, Track, Playlist, PlaylistTrack, HomeTopRated } from '../types';
 import type { EntityId } from '../entityId';
 import { HYBRID_ARTWORK_HOVER, hybridHomeStyles } from '../hybridPreview';
 import { useVintageStyle } from '../vintageThemes';
 import ArtImage from './ArtImage';
 import CommandBar from './CommandBar';
+import SmartPlaylistEditor, { SmartIcon, lengthLabel } from './SmartPlaylistEditor';
+import { SMART_IDEAS, genrePreset, type SmartIdeaId, type SmartPreset } from '../smartPlaylistRules';
 import VintageRecord, { VINTAGE_SLEEVE_COVER_STYLE } from './VintageRecord';
 
 function safeLocalStorageGet(key: string): string | null {
@@ -190,37 +192,20 @@ function GenreCollage({ albumIds }: { albumIds: ClientEntityId[] }) {
   const ids = albumIds.slice(0, 4);
   const fallbackCount = Math.max(0, 4 - ids.length);
   return (
-    <div style={H.autoDjGenreCollage}>
+    <div style={H.smartGenreCollage}>
       {ids.map((albumId) => (
-        <div key={albumId} style={H.autoDjGenreCollageTile}>
-          <ArtImage src={api.albumArtUrl(albumId, 300)} alt="" imgStyle={H.autoDjGenreCollageArt} />
+        <div key={albumId} style={H.smartGenreCollageTile}>
+          <ArtImage src={api.albumArtUrl(albumId, 300)} alt="" imgStyle={H.smartGenreCollageArt} />
         </div>
       ))}
       {Array.from({ length: fallbackCount }, (_, index) => (
-        <div key={`fallback-${index}`} style={{ ...H.autoDjGenreCollageTile, ...H.autoDjGenreCollageFallback }} />
+        <div key={`fallback-${index}`} style={{ ...H.smartGenreCollageTile, ...H.smartGenreCollageFallback }} />
       ))}
     </div>
   );
 }
 
-function AutoDjIcon({ size = 20, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <path d="M4 4h4l7 16h5" />
-      <path d="M4 20h4l3.5-8" />
-      <path d="M17 4h3l-2 2 2 2h-3" />
-    </svg>
-  );
-}
 
-function SettingsIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
 
 function PlusIcon({ size = 18, style }: { size?: number; style?: React.CSSProperties }) {
   return (
@@ -247,31 +232,8 @@ function SearchIcon({ size = 14, style }: { size?: number; style?: React.CSSProp
   );
 }
 
-function CrossfadeModeIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <path d="M3 12h4l2-9 4 18 2-9h6" />
-    </svg>
-  );
-}
 
-function ZeroGapModeIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <rect x="3" y="10" width="7" height="4" />
-      <rect x="14" y="10" width="7" height="4" />
-    </svg>
-  );
-}
 
-function OffModeIcon({ size = 16, style }: { size?: number; style?: React.CSSProperties }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}>
-      <line x1="4" y1="4" x2="20" y2="20" />
-      <line x1="20" y1="4" x2="4" y2="20" />
-    </svg>
-  );
-}
 
 // ─── Recent Albums Carousel ──────────────────────────────────────────────────
 
@@ -721,43 +683,52 @@ function HomeGenresWidget({
   );
 }
 
-function HomeAutoDjModule({
+const SMART_IDEA_ICONS: Record<SmartIdeaId, string> = {
+  recently_added: 'M4 5h16v16H4zM4 10h16M12 13v5M9.5 15.5h5',
+  forgotten_favourites: 'm12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z',
+  never_played: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0zM12 7v5l3 2',
+  most_played: 'M9 18V5l12-2v13M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+};
+
+function SmartIdeaIcon({ id }: { id: SmartIdeaId }) {
+  return (
+    <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={H.smartIdeaIcon}>
+      <path d={SMART_IDEA_ICONS[id]} />
+    </svg>
+  );
+}
+
+function smartCardMeta(playlist: Playlist): string {
+  const count = `${playlist.track_count.toLocaleString()} track${playlist.track_count === 1 ? '' : 's'}`;
+  return playlist.total_duration ? `${count} · ${lengthLabel(playlist.total_duration)}` : count;
+}
+
+/** Home's smart playlist starters: genre cards, ideas and the user's own smart playlists. */
+function HomeSmartPlaylistsPanel({
   quickGenres,
   allGenres,
-  onStartAutoDj,
+  onOpenPlaylist,
+  onOpenPlaylists,
+  onPlayPlaylist,
 }: {
   quickGenres: HomeGenreSummary[];
   allGenres: Genre[];
-  onStartAutoDj: (genres: string[]) => Promise<number>;
+  onOpenPlaylist: (playlistId: EntityId) => void;
+  onOpenPlaylists: () => void;
+  onPlayPlaylist: (playlist: Playlist, tracks: PlaylistTrack[]) => void;
 }) {
-  const [autoDjGenres, setAutoDjGenres] = useState<string[]>([]);
-  const [autoDjLoading, setAutoDjLoading] = useState(false);
-  const [autoDjStatus, setAutoDjStatus] = useState('');
+  const { data: playlists } = useHomeData<Playlist[]>('playlists', () => api.playlists.list(), []);
+  const [pickedGenres, setPickedGenres] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [optionsOpen, setOptionsOpen] = useState(false);
   const [genreSearch, setGenreSearch] = useState('');
-  const [autoDjCfMode, setAutoDjCfMode] = useState<CrossfadeMode>('off');
-  const [autoDjCfDuration, setAutoDjCfDuration] = useState(2);
-  const [autoDjCfHasOverride, setAutoDjCfHasOverride] = useState(false);
-  const [autoDjCfSaving, setAutoDjCfSaving] = useState(false);
+  const [editor, setEditor] = useState<{ preset: SmartPreset | null } | null>(null);
+  const [status, setStatus] = useState<{ playlist: Playlist; played: boolean } | null>(null);
   const genreAlbumIds = useGenreCovers(quickGenres);
 
-  useEffect(() => {
-    api.crossfade.config('autodj', '0').then((config) => {
-      setAutoDjCfMode(config.mode);
-      setAutoDjCfDuration(config.duration);
-      setAutoDjCfHasOverride(config.source === 'override');
-    }).catch(() => {});
-  }, []);
-
-  const toggleAutoDjGenre = (genreName: string) => {
-    setAutoDjGenres((current) => (
-      current.includes(genreName)
-        ? current.filter((value) => value !== genreName)
-        : [...current, genreName]
-    ));
-    setAutoDjStatus('');
-  };
+  const mine = useMemo(() => playlists
+    .filter(p => p.kind === 'smart')
+    .sort((a, b) => String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? '')))
+    .slice(0, 4), [playlists]);
 
   const filteredGenres = useMemo(() => {
     const query = genreSearch.trim().toLowerCase();
@@ -765,114 +736,83 @@ function HomeAutoDjModule({
     return allGenres.filter((genre) => genre.genre.toLowerCase().includes(query));
   }, [allGenres, genreSearch]);
 
-  const launchAutoDj = async (selectedGenres: string[]) => {
-    if (!selectedGenres.length) {
-      setAutoDjStatus('Select at least one genre for Auto DJ.');
-      return;
-    }
-    setAutoDjLoading(true);
-    setAutoDjStatus('');
+  const toggleGenre = (genreName: string) => {
+    setPickedGenres((current) => (
+      current.includes(genreName) ? current.filter((value) => value !== genreName) : [...current, genreName]
+    ));
+  };
+
+  /** Plays a smart playlist from its freshly refreshed tracks; false when it has none. */
+  const play = async (playlist: Playlist): Promise<boolean> => {
     try {
-      const queuedCount = await onStartAutoDj(selectedGenres);
-      setAutoDjStatus(`Auto DJ started (${queuedCount.toLocaleString()} tracks queued).`);
-    } catch (e: any) {
-      setAutoDjStatus(e?.message || 'Failed to start Auto DJ.');
-    } finally {
-      setAutoDjLoading(false);
+      const snapshot = await api.playlists.snapshot(playlist.id);
+      if (!snapshot.tracks.length) return false;
+      onPlayPlaylist(snapshot.playlist, snapshot.tracks);
+      return true;
+    } catch (error) {
+      console.error('Could not play smart playlist', error);
+      return false;
     }
   };
 
-  const saveAutoDjCrossfadeOverride = async (mode: CrossfadeMode, duration: number) => {
-    setAutoDjCfSaving(true);
-    try {
-      await api.crossfade.upsertOverride({
-        entity_type: 'autodj',
-        entity_id: '0',
-        mode,
-        duration,
-      });
-      setAutoDjCfHasOverride(true);
-    } catch {
-      // Keep the control responsive even if saving fails.
-    } finally {
-      setAutoDjCfSaving(false);
-    }
+  const remember = (created: Playlist) => {
+    setEditor(null);
+    updateHomeData<Playlist[]>('playlists', (previous = []) => (
+      previous.some(p => p.id === created.id) ? previous : [created, ...previous]
+    ));
   };
-
-  const resetAutoDjCrossfadeOverride = async () => {
-    setAutoDjCfSaving(true);
-    try {
-      await api.crossfade.removeOverride('autodj', '0');
-      const config = await api.crossfade.config('autodj', '0');
-      setAutoDjCfMode(config.mode);
-      setAutoDjCfDuration(config.duration);
-      setAutoDjCfHasOverride(config.source === 'override');
-    } catch {
-      // Keep the current local values on reset failure.
-    } finally {
-      setAutoDjCfSaving(false);
-    }
-  };
-
-  const transitionTitle = autoDjCfMode === 'crossfade'
-    ? `Transition options (${autoDjCfDuration}s crossfade)`
-    : `Transition options (${autoDjCfMode})`;
 
   return (
-    <div style={H.autoDjPanel}>
-      <div style={H.autoDjPanelHead}>
-        <div style={H.autoDjHeaderLeft}>
-          <div style={H.autoDjHeaderIconWrap}>
-            <AutoDjIcon size={20} />
-          </div>
-          <div>
-            <div style={H.autoDjLabel}>Auto DJ</div>
-            <div style={H.autoDjIntro}>Start from a genre, then let the queue keep moving.</div>
-          </div>
+    <section aria-labelledby="home-smart-title" style={H.smartPanel}>
+      <div style={H.smartPanelHead}>
+        <div style={H.smartHeaderLeft}>
+          <div style={H.smartHeaderIconWrap}><SmartIcon size={20} /></div>
+          <h3 id="home-smart-title" style={H.smartLabel}>Smart playlists</h3>
         </div>
         <button
           type="button"
-          style={{ ...H.autoDjIconBtn, ...(optionsOpen ? H.autoDjIconBtnActive : {}) }}
-          onClick={() => setOptionsOpen((value) => !value)}
-          aria-expanded={optionsOpen}
-          aria-label="Toggle Home Auto DJ transition options"
-          title={transitionTitle}
+          style={H.smartIconBtn}
+          onClick={() => setEditor({ preset: null })}
+          aria-label="New smart playlist"
+          aria-haspopup="dialog"
+          title="New smart playlist"
         >
-          <SettingsIcon size={18} />
+          <SmartIcon size={18} />
         </button>
       </div>
 
+      <div style={H.smartSectionLabel}>Start from a genre</div>
       {!pickerOpen && (
-        <div style={H.autoDjQuickGrid}>
-          {quickGenres.slice(0, 5).map((genre) => (
-            <button
-              key={genre.canonical_key}
-              type="button"
-              onClick={() => launchAutoDj([genre.label])}
-              disabled={autoDjLoading}
-              style={H.autoDjGenreCard}
-              aria-label={`Start Home Auto DJ with ${genre.label}`}
-              title={`Start Auto DJ with ${genre.label}`}
-            >
-              {(() => {
-                const albumIds = genreAlbumIds[genre.label];
-                return albumIds?.length
+        <div style={H.smartQuickGrid}>
+          {quickGenres.slice(0, 5).map((genre) => {
+            const albumIds = genreAlbumIds[genre.label];
+            return (
+              <button
+                key={genre.canonical_key}
+                type="button"
+                onClick={() => setEditor({ preset: genrePreset([genre.label]) })}
+                style={H.smartGenreCard}
+                aria-label={`New smart playlist from ${genre.label}`}
+                title={`New smart playlist from ${genre.label}`}
+              >
+                <span style={H.smartGenreBadge}><SmartIcon size={13} /></span>
+                {albumIds?.length
                   ? <GenreCollage albumIds={albumIds} />
-                  : <div style={H.autoDjGenreCardIcon}><GenreIcon size={18} /></div>;
-              })()}
-              <div style={H.autoDjGenreCardName}>{genre.label}</div>
-              <div style={H.autoDjGenreCardCount}>{genre.track_count.toLocaleString()} tracks</div>
-            </button>
-          ))}
+                  : <div style={H.smartGenreCardIcon}><GenreIcon size={18} /></div>}
+                <div style={H.smartGenreCardName}>{genre.label}</div>
+                <div style={H.smartGenreCardCount}>{genre.track_count.toLocaleString()} tracks</div>
+              </button>
+            );
+          })}
           <button
             type="button"
             onClick={() => setPickerOpen(true)}
-            style={H.autoDjMoreCard}
-            aria-label="Browse all genres for Home Auto DJ"
+            style={H.smartMoreCard}
+            aria-label="More genres"
             title="Browse all genres"
           >
-            <div style={H.autoDjMoreCardIcon}><PlusIcon size={18} /></div>
-            <div style={H.autoDjGenreCardName}>More genres</div>
+            <div style={H.smartMoreCardIcon}><PlusIcon size={18} /></div>
+            <div style={H.smartGenreCardName}>More genres</div>
           </button>
         </div>
       )}
@@ -882,7 +822,7 @@ function HomeAutoDjModule({
           <button
             type="button"
             onClick={() => { setPickerOpen(false); setGenreSearch(''); }}
-            style={H.autoDjBrowseToggle}
+            style={H.smartBrowseToggle}
             aria-expanded={pickerOpen}
             aria-label="Hide genre browser"
           >
@@ -890,56 +830,52 @@ function HomeAutoDjModule({
             Hide genre browser
           </button>
 
-          <div style={H.autoDjPickerBox}>
-            <div style={H.autoDjPickerHead}>
-              <div style={H.autoDjSearchRow}>
+          <div style={H.smartPickerBox}>
+            <div style={H.smartPickerHead}>
+              <div style={H.smartSearchRow}>
                 <SearchIcon size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                 <input
                   type="text"
                   value={genreSearch}
                   onChange={(event) => setGenreSearch(event.target.value)}
                   placeholder={`Search genres (${allGenres.length} total)`}
-                  style={H.autoDjSearchInput}
-                  aria-label="Search Home Auto DJ genres"
+                  style={H.smartSearchInput}
+                  aria-label="Search genres"
                 />
               </div>
-              <span style={H.autoDjPickerCount}>
-                {autoDjGenres.length
-                  ? `${autoDjGenres.length} genre${autoDjGenres.length === 1 ? '' : 's'} selected`
+              <span style={H.smartPickerCount}>
+                {pickedGenres.length
+                  ? `${pickedGenres.length} genre${pickedGenres.length === 1 ? '' : 's'} selected`
                   : 'Select one or more genres'}
               </span>
               <button
                 type="button"
-                onClick={() => launchAutoDj(autoDjGenres)}
-                disabled={autoDjLoading || autoDjGenres.length === 0}
-                style={{
-                  ...H.autoDjStartIconBtn,
-                  opacity: (autoDjLoading || autoDjGenres.length === 0) ? 0.5 : 1,
-                }}
-                aria-label="Start Home Auto DJ from picker"
-                title="Start Auto DJ"
+                onClick={() => setEditor({ preset: genrePreset(pickedGenres) })}
+                disabled={pickedGenres.length === 0}
+                style={{ ...H.smartStartIconBtn, opacity: pickedGenres.length === 0 ? 0.5 : 1 }}
+                aria-label={`New smart playlist from ${pickedGenres.length} genre${pickedGenres.length === 1 ? '' : 's'}`}
+                title={`New smart playlist from ${pickedGenres.length} genre${pickedGenres.length === 1 ? '' : 's'}`}
               >
-                <PlayIcon size={16} />
+                <SmartIcon size={17} />
               </button>
             </div>
 
-            <div style={H.autoDjChipScroll}>
+            <div style={H.smartChipScroll}>
               {filteredGenres.map((genre) => {
-                const selected = autoDjGenres.includes(genre.genre);
+                const selected = pickedGenres.includes(genre.genre);
                 return (
                   <button
                     key={genre.genre}
                     type="button"
-                    onClick={() => toggleAutoDjGenre(genre.genre)}
-                    style={{ ...H.autoDjPickChip, ...(selected ? H.autoDjPickChipSelected : {}) }}
+                    onClick={() => toggleGenre(genre.genre)}
+                    style={{ ...H.smartPickChip, ...(selected ? H.smartPickChipSelected : {}) }}
                     aria-pressed={selected}
-                    aria-label={`${selected ? 'Remove' : 'Add'} ${genre.genre} ${selected ? 'from' : 'to'} the Home Auto DJ selection`}
                   >
-                    <span style={{ ...H.autoDjPickChipIcon, ...(selected ? H.autoDjPickChipIconSelected : {}) }}>
+                    <span style={{ ...H.smartPickChipIcon, ...(selected ? H.smartPickChipIconSelected : {}) }}>
                       <GenreIcon size={16} />
                     </span>
                     {genre.genre}
-                    <span style={H.autoDjPickChipCount}>{genre.track_count.toLocaleString()}</span>
+                    <span style={H.smartPickChipCount}>{genre.track_count.toLocaleString()}</span>
                   </button>
                 );
               })}
@@ -951,76 +887,83 @@ function HomeAutoDjModule({
         </>
       )}
 
-      {autoDjStatus && <div style={H.autoDjStatus}>{autoDjStatus}</div>}
+      <div style={H.smartSectionLabel}>Ideas</div>
+      <div style={H.smartIdeaGrid}>
+        {SMART_IDEAS.map((idea) => (
+          <button
+            key={idea.id}
+            type="button"
+            style={H.smartIdeaCard}
+            onClick={() => setEditor({ preset: idea.preset })}
+          >
+            <SmartIdeaIcon id={idea.id} />
+            <span style={{ minWidth: 0 }}>
+              <span style={H.smartIdeaName}>{idea.preset.name}</span>
+              <span style={H.smartIdeaSub}>{idea.description}</span>
+            </span>
+          </button>
+        ))}
+      </div>
 
-      {optionsOpen && (
-        <div style={H.autoDjOptionsPanel}>
-          <div style={H.autoDjModeRow}>
-            {([
-              { value: 'crossfade' as const, label: 'Crossfade', Icon: CrossfadeModeIcon },
-              { value: 'zerogap' as const, label: 'Zero-gap', Icon: ZeroGapModeIcon },
-              { value: 'off' as const, label: 'Off', Icon: OffModeIcon },
-            ]).map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => {
-                  setAutoDjCfMode(option.value);
-                  saveAutoDjCrossfadeOverride(option.value, autoDjCfDuration);
-                }}
-                style={{
-                  ...H.autoDjModeBtn,
-                  ...(autoDjCfMode === option.value ? H.autoDjModeBtnActive : {}),
-                }}
-                aria-label={`Set Home Auto DJ transition mode ${option.label}`}
-                aria-pressed={autoDjCfMode === option.value}
-              >
-                <option.Icon size={16} />
-                <span>{option.label}</span>
-              </button>
+      {mine.length > 0 && (
+        <>
+          <div style={H.smartSectionRow}>
+            <div style={H.smartSectionLabel}>Your smart playlists</div>
+            <button type="button" style={H.smartLinkBtn} onClick={onOpenPlaylists}>See all</button>
+          </div>
+          <div style={H.smartMineGrid}>
+            {mine.map((playlist) => (
+              <div key={playlist.id} style={H.smartMineCard}>
+                <GenreCollage albumIds={playlist.art_album_ids ?? []} />
+                <button
+                  type="button"
+                  style={H.smartMineOpen}
+                  onClick={() => onOpenPlaylist(playlist.id)}
+                  aria-label={`${playlist.name} — Smart playlist · ${smartCardMeta(playlist)}`}
+                  title={`Open ${playlist.name}`}
+                >
+                  <span style={H.smartMineName}>{playlist.name}</span>
+                  <span style={H.smartMineMeta}>Smart · {smartCardMeta(playlist)}</span>
+                </button>
+                <button
+                  type="button"
+                  style={H.smartPlayBtn}
+                  onClick={() => { void play(playlist); }}
+                  aria-label={`Play ${playlist.name}`}
+                  title={`Play ${playlist.name}`}
+                >
+                  <PlayIcon size={15} />
+                </button>
+              </div>
             ))}
           </div>
+        </>
+      )}
 
-          {autoDjCfMode === 'crossfade' && (
-            <div style={H.autoDjDurationRow}>
-              <span style={H.autoDjDurationEdge}>1s</span>
-              <input
-                type="range"
-                min={1}
-                max={10}
-                step={1}
-                value={autoDjCfDuration}
-                onChange={(event) => {
-                  const nextDuration = Number(event.target.value);
-                  setAutoDjCfDuration(nextDuration);
-                  saveAutoDjCrossfadeOverride(autoDjCfMode, nextDuration);
-                }}
-                style={H.autoDjDurationSlider}
-                aria-label="Home Auto DJ crossfade duration"
-              />
-              <span style={H.autoDjDurationEdge}>10s</span>
-              <span style={H.autoDjDurationValue}>{autoDjCfDuration}s</span>
-            </div>
-          )}
-
-          <div style={H.autoDjTransitionMeta}>
-            {autoDjCfHasOverride ? (
-              <button
-                type="button"
-                onClick={resetAutoDjCrossfadeOverride}
-                style={H.autoDjResetBtn}
-                aria-label="Reset Home Auto DJ transition override"
-              >
-                Reset to default
-              </button>
-            ) : (
-              <span style={H.autoDjTransitionHint}>Using global default</span>
-            )}
-            {autoDjCfSaving && <span style={H.autoDjTransitionHint}>Saving...</span>}
-          </div>
+      {status && (
+        <div role="status" style={H.smartStatus}>
+          {status.played
+            ? <><span style={{ color: 'var(--accent)', display: 'flex' }}><PlayIcon size={14} /></span>Created “{status.playlist.name}” and started playing.</>
+            : <>No tracks match these rules.</>}
+          <button type="button" style={{ ...H.smartLinkBtn, marginLeft: 'auto' }} onClick={() => onOpenPlaylist(status.playlist.id)}>
+            Open playlist
+          </button>
         </div>
       )}
-    </div>
+
+      {editor && (
+        <SmartPlaylistEditor
+          preset={editor.preset}
+          existingNames={playlists.map(p => p.name)}
+          onClose={() => setEditor(null)}
+          onSaved={(created) => { remember(created); onOpenPlaylist(created.id); }}
+          onCreateAndPlay={(created) => {
+            remember(created);
+            void play(created).then(played => setStatus({ playlist: created, played }));
+          }}
+        />
+      )}
+    </section>
   );
 }
 
@@ -1271,13 +1214,17 @@ function RecentlyPlayedWidget({
   homeGenres,
   onPlayTrack,
   onOpenArtist,
-  onStartAutoDj,
+  onOpenPlaylist,
+  onOpenPlaylists,
+  onPlayPlaylist,
 }: {
   allGenres: Genre[];
   homeGenres: HomeGenreSummary[];
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
   onOpenArtist: (artist: Artist) => void;
-  onStartAutoDj: (genres: string[]) => Promise<number>;
+  onOpenPlaylist: (playlistId: EntityId) => void;
+  onOpenPlaylists: () => void;
+  onPlayPlaylist: (playlist: Playlist, tracks: PlaylistTrack[]) => void;
 }) {
   const [tab, setTab] = useState<PlaybackActivityTab>('recently-played');
   const { data: heatmapTracks, loading: recentLoading } = useHomeData<Track[]>(
@@ -1557,10 +1504,12 @@ function RecentlyPlayedWidget({
           : <div style={H.widgetEmpty}>No played artists yet</div>
       )}
 
-      <HomeAutoDjModule
+      <HomeSmartPlaylistsPanel
         quickGenres={homeGenres}
         allGenres={allGenres}
-        onStartAutoDj={onStartAutoDj}
+        onOpenPlaylist={onOpenPlaylist}
+        onOpenPlaylists={onOpenPlaylists}
+        onPlayPlaylist={onPlayPlaylist}
       />
     </div>
   );
@@ -1801,7 +1750,8 @@ export default function HomeView({
   onBrowseMusic,
   onOpenPlaylist,
   onPlayTrack,
-  onStartAutoDj,
+  onOpenPlaylists,
+  onPlayPlaylist,
   onOpenFavourites,
   hybridDesign = false,
 }: {
@@ -1814,7 +1764,10 @@ export default function HomeView({
   onBrowseMusic: () => void;
   onOpenPlaylist: (playlistId: EntityId) => void;
   onPlayTrack: (track: Track, allTracks?: Track[]) => void;
-  onStartAutoDj: (genres: string[]) => Promise<number>;
+  /** Opens the Playlists view (Home "See all"). */
+  onOpenPlaylists: () => void;
+  /** Plays a playlist's tracks as a playlist queue. */
+  onPlayPlaylist: (playlist: Playlist, tracks: PlaylistTrack[]) => void;
   /** Opens Browse → Favourites (the widget is hidden without it). */
   onOpenFavourites?: () => void;
   hybridDesign?: boolean;
@@ -1851,7 +1804,9 @@ export default function HomeView({
               homeGenres={homeGenres}
               onPlayTrack={onPlayTrack}
               onOpenArtist={onOpenArtist}
-              onStartAutoDj={onStartAutoDj}
+              onOpenPlaylist={onOpenPlaylist}
+              onOpenPlaylists={onOpenPlaylists}
+              onPlayPlaylist={onPlayPlaylist}
             />
           </WidgetCard>
 
@@ -2238,7 +2193,7 @@ const H: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     fontFamily: 'inherit',
   },
-  autoDjPanel: {
+  smartPanel: {
     display: 'flex',
     flexDirection: 'column',
     gap: 10,
@@ -2246,19 +2201,19 @@ const H: Record<string, React.CSSProperties> = {
     paddingTop: 12,
     borderTop: '1px solid color-mix(in srgb, var(--border) 74%, transparent)',
   },
-  autoDjPanelHead: {
+  smartPanelHead: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
-  autoDjHeaderLeft: {
+  smartHeaderLeft: {
     display: 'flex',
     alignItems: 'center',
     gap: 12,
     minWidth: 0,
   },
-  autoDjHeaderIconWrap: {
+  smartHeaderIconWrap: {
     width: 40,
     height: 40,
     borderRadius: 12,
@@ -2269,19 +2224,133 @@ const H: Record<string, React.CSSProperties> = {
     background: 'color-mix(in srgb, var(--accent) 20%, var(--bg))',
     color: 'var(--accent)',
   },
-  autoDjLabel: {
+  smartLabel: {
+    margin: 0,
     color: 'var(--text)',
     fontSize: 16,
     letterSpacing: -0.2,
     fontWeight: 700,
   },
-  autoDjIntro: {
+  smartSectionLabel: {
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
     color: 'var(--text-muted)',
+    marginTop: 4,
+  },
+  smartSectionRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  smartLinkBtn: {
+    border: 'none',
+    background: 'none',
+    padding: '4px 2px',
+    color: 'var(--accent)',
     fontSize: 13,
-    lineHeight: 1.4,
+    fontWeight: 700,
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+  },
+  smartGenreBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    display: 'flex',
+    color: 'var(--accent)',
+    opacity: 0.85,
+  },
+  smartIdeaGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+    gap: 10,
+  },
+  smartIdeaCard: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '12px 14px',
+    borderRadius: 14,
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    textAlign: 'left',
+    fontFamily: 'inherit',
+  },
+  smartIdeaIcon: {
+    flexShrink: 0,
+    color: 'var(--accent)',
+    opacity: 0.85,
+  },
+  smartIdeaName: {
+    display: 'block',
+    fontSize: 13.5,
+    fontWeight: 700,
+  },
+  smartIdeaSub: {
+    display: 'block',
+    fontSize: 12,
+    color: 'var(--text-muted)',
     marginTop: 2,
   },
-  autoDjIconBtn: {
+  smartMineGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+    gap: 10,
+  },
+  smartMineCard: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: 10,
+    borderRadius: 14,
+    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
+    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
+  },
+  smartMineOpen: {
+    flex: 1,
+    minWidth: 0,
+    border: 'none',
+    background: 'none',
+    padding: 0,
+    textAlign: 'left',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
+  smartMineName: {
+    display: 'block',
+    fontSize: 13.5,
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  smartMineMeta: {
+    display: 'block',
+    fontSize: 12,
+    color: 'var(--text-muted)',
+    marginTop: 2,
+  },
+  smartPlayBtn: {
+    width: 38,
+    height: 38,
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    borderRadius: 999,
+    border: 'none',
+    background: 'var(--accent)',
+    color: '#fff',
+    cursor: 'pointer',
+  },
+  smartIconBtn: {
     width: 34,
     height: 34,
     flexShrink: 0,
@@ -2294,17 +2363,13 @@ const H: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     cursor: 'pointer',
   },
-  autoDjIconBtnActive: {
-    color: 'var(--accent)',
-    borderColor: 'color-mix(in srgb, var(--accent) 60%, var(--border))',
-    background: 'color-mix(in srgb, var(--accent) 12%, var(--bg))',
-  },
-  autoDjQuickGrid: {
+  smartQuickGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
     gap: 10,
   },
-  autoDjGenreCard: {
+  smartGenreCard: {
+    position: 'relative',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -2318,7 +2383,7 @@ const H: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     fontFamily: 'inherit',
   },
-  autoDjGenreCardIcon: {
+  smartGenreCardIcon: {
     width: 34,
     height: 34,
     borderRadius: 10,
@@ -2328,7 +2393,7 @@ const H: Record<string, React.CSSProperties> = {
     background: 'color-mix(in srgb, var(--accent) 16%, var(--bg))',
     color: 'var(--accent)',
   },
-  autoDjGenreCollage: {
+  smartGenreCollage: {
     width: 48,
     height: 48,
     borderRadius: 12,
@@ -2339,21 +2404,21 @@ const H: Record<string, React.CSSProperties> = {
     gap: 1,
     background: 'color-mix(in srgb, var(--border) 60%, transparent)',
   },
-  autoDjGenreCollageTile: {
+  smartGenreCollageTile: {
     minWidth: 0,
     minHeight: 0,
     background: 'color-mix(in srgb, var(--surface) 90%, var(--bg))',
   },
-  autoDjGenreCollageArt: {
+  smartGenreCollageArt: {
     width: '100%',
     height: '100%',
     objectFit: 'cover',
     display: 'block',
   },
-  autoDjGenreCollageFallback: {
+  smartGenreCollageFallback: {
     background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)) 0%, color-mix(in srgb, var(--text-muted) 16%, var(--bg)) 100%)',
   },
-  autoDjGenreCardName: {
+  smartGenreCardName: {
     fontSize: 13,
     fontWeight: 700,
     whiteSpace: 'nowrap',
@@ -2361,11 +2426,11 @@ const H: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     maxWidth: '100%',
   },
-  autoDjGenreCardCount: {
+  smartGenreCardCount: {
     fontSize: 11,
     color: 'var(--text-muted)',
   },
-  autoDjMoreCard: {
+  smartMoreCard: {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -2380,7 +2445,7 @@ const H: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     fontFamily: 'inherit',
   },
-  autoDjMoreCardIcon: {
+  smartMoreCardIcon: {
     width: 34,
     height: 34,
     borderRadius: 10,
@@ -2389,7 +2454,7 @@ const H: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     color: 'var(--text-muted)',
   },
-  autoDjBrowseToggle: {
+  smartBrowseToggle: {
     width: '100%',
     display: 'flex',
     alignItems: 'center',
@@ -2405,20 +2470,20 @@ const H: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     cursor: 'pointer',
   },
-  autoDjPickerBox: {
+  smartPickerBox: {
     borderRadius: 14,
     border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
     background: 'color-mix(in srgb, var(--surface) 60%, var(--bg))',
     padding: 12,
   },
-  autoDjPickerHead: {
+  smartPickerHead: {
     display: 'flex',
     alignItems: 'center',
     gap: 12,
     marginBottom: 10,
     flexWrap: 'wrap',
   },
-  autoDjSearchRow: {
+  smartSearchRow: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
@@ -2430,7 +2495,7 @@ const H: Record<string, React.CSSProperties> = {
     maxWidth: '100%',
     flexShrink: 0,
   },
-  autoDjSearchInput: {
+  smartSearchInput: {
     background: 'none',
     border: 'none',
     outline: 'none',
@@ -2439,12 +2504,12 @@ const H: Record<string, React.CSSProperties> = {
     width: '100%',
     fontFamily: 'inherit',
   },
-  autoDjPickerCount: {
+  smartPickerCount: {
     fontSize: 12,
     color: 'var(--text-muted)',
     flex: 1,
   },
-  autoDjStartIconBtn: {
+  smartStartIconBtn: {
     width: 40,
     height: 40,
     flexShrink: 0,
@@ -2459,14 +2524,14 @@ const H: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     boxShadow: '0 4px 12px color-mix(in srgb, var(--accent) 38%, transparent)',
   },
-  autoDjChipScroll: {
+  smartChipScroll: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 8,
     maxHeight: 220,
     overflowY: 'auto',
   },
-  autoDjPickChip: {
+  smartPickChip: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
@@ -2479,99 +2544,29 @@ const H: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     cursor: 'pointer',
   },
-  autoDjPickChipSelected: {
+  smartPickChipSelected: {
     borderColor: 'color-mix(in srgb, var(--accent) 65%, var(--border))',
     background: 'color-mix(in srgb, var(--accent) 18%, var(--bg))',
   },
-  autoDjPickChipIcon: {
+  smartPickChipIcon: {
     display: 'flex',
     color: 'var(--text-muted)',
   },
-  autoDjPickChipIconSelected: {
+  smartPickChipIconSelected: {
     color: 'var(--accent)',
   },
-  autoDjPickChipCount: {
+  smartPickChipCount: {
     color: 'var(--text-muted)',
   },
-  autoDjStatus: {
-    color: 'var(--text-muted)',
-    fontSize: 13,
-  },
-  autoDjOptionsPanel: {
+  smartStatus: {
     display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    padding: 10,
+    alignItems: 'center',
+    gap: 10,
+    padding: '8px 12px',
     borderRadius: 10,
-    background: 'color-mix(in srgb, var(--surface) 72%, var(--bg))',
-    border: '1px solid color-mix(in srgb, var(--border) 72%, transparent)',
-  },
-  autoDjModeRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    maxWidth: 420,
-  },
-  autoDjModeBtn: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 4,
-    padding: '10px 6px',
-    borderRadius: 12,
-    border: '1px solid color-mix(in srgb, var(--border) 76%, transparent)',
-    background: 'color-mix(in srgb, var(--surface) 78%, var(--bg))',
-    color: 'var(--text-muted)',
-    cursor: 'pointer',
-    fontSize: 11.5,
-    fontWeight: 600,
-    fontFamily: 'inherit',
-  },
-  autoDjModeBtnActive: {
-    color: 'var(--accent)',
-    borderColor: 'color-mix(in srgb, var(--accent) 60%, var(--border))',
-    background: 'color-mix(in srgb, var(--accent) 14%, var(--bg))',
-  },
-  autoDjDurationRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    maxWidth: 320,
-  },
-  autoDjDurationEdge: {
-    fontSize: 12,
-    color: 'var(--text-muted)',
-  },
-  autoDjDurationSlider: {
-    flex: 1,
-    accentColor: 'var(--accent)',
-  },
-  autoDjDurationValue: {
-    fontSize: 13,
+    background: 'color-mix(in srgb, var(--accent) 10%, var(--bg))',
     color: 'var(--text)',
-    minWidth: 22,
-    textAlign: 'right',
-  },
-  autoDjTransitionMeta: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    minHeight: 16,
-  },
-  autoDjTransitionHint: {
-    fontSize: 12,
-    color: 'var(--text-muted)',
-  },
-  autoDjResetBtn: {
-    backgroundColor: 'transparent',
-    color: 'var(--text-muted)',
-    border: '1px solid var(--border)',
-    borderRadius: 5,
-    padding: '2px 8px',
-    cursor: 'pointer',
-    fontSize: 12,
-    fontFamily: 'inherit',
+    fontSize: 13,
   },
   errorText: {
     color: '#ef4444',

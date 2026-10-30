@@ -78,6 +78,7 @@ pub fn playlist_router(state: SharedState) -> Router {
             get(get_smart_definition_handler).put(put_smart_definition_handler),
         )
         .route("/api/playlists/{id}/snapshot", get(snapshot_handler))
+        .route("/api/playlists/{id}/summary", get(summary_handler))
         .route("/api/playlists/{id}/refresh", post(refresh_handler))
         .route("/api/playlists/{id}/static-copy", post(static_copy_handler))
         .route("/api/albums/{id}/rating", patch(album_rating_handler))
@@ -353,6 +354,34 @@ async fn get_playlist_handler(
     let user_id = user.id;
     match tokio::task::spawn_blocking(move || {
         get_playlist(&db.lock().expect("db"), &playlist_id, &user_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(row))) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Playlist not found"),
+        _ => internal_error(),
+    }
+}
+
+/// One playlist's card row; a smart playlist is refreshed first when its inputs changed. The client asks for
+/// the smart cards on screen one at a time, so the list itself never re-evaluates every playlist.
+async fn summary_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let playlist_id = coerce_entity_id(&id);
+    let user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        let conn = db.lock().expect("db");
+        if let Err(e) = ensure_fresh(&conn, &playlist_id, &user_id, false) {
+            tracing::warn!("Smart playlist refresh failed before a card summary: {e:?}");
+        }
+        get_playlist(&conn, &playlist_id, &user_id)
     })
     .await
     {
@@ -1976,6 +2005,22 @@ mod tests {
                 params![ids[2]],
             )
             .unwrap();
+        // The list keeps the stored count; a card summary refreshes that one playlist.
+        let (_, body) = send(app.clone(), get_req("/api/playlists", &cookie)).await;
+        assert_eq!(json_body(&body)[0]["track_count"], 2);
+        let (status, body) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{id}/summary"), &cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["track_count"], 3);
+        let (status, _) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{id}/summary"), &other),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, body) = send(
             app.clone(),
             get_req(&format!("/api/playlists/{id}/snapshot"), &cookie),

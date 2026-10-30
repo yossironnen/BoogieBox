@@ -19,6 +19,8 @@ import CommandBar from './CommandBar';
 import { ImportIcons, PlaylistImportDialog, PlaylistImportToast, type ImportedPlaylist } from './PlaylistImport';
 import { PLAYLIST_FILE_ACCEPT } from '../playlistImport';
 import SmartPlaylistEditor, { SmartIcon } from './SmartPlaylistEditor';
+import { useSmartRecheck } from '../hooks/useSmartRecheck';
+import { useSmartCardSummaries, withSummary } from '../hooks/useSmartCardSummaries';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -929,6 +931,16 @@ function PlaylistDetail({
 
   useEffect(() => { loadTracks(); }, [loadTracks, reloadToken]);
 
+  // While open, picks up changes from scans, ratings, plays or other devices without "Updating…".
+  const recheck = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
+    try {
+      const snapshot = await api.playlists.snapshot(playlist.id);
+      if (seq === loadSeqRef.current) applySnapshot(snapshot);
+    } catch {}
+  }, [playlist.id, applySnapshot]);
+  useSmartRecheck(smart && !loading && !refreshing, recheck);
+
   const retryRefresh = async () => {
     const seq = ++loadSeqRef.current;
     setRefreshing(true);
@@ -1705,10 +1717,12 @@ function PlaylistsCountIcon() {
 }
 
 function PlaylistsGrid({
-  playlists, onOpen, onOptions, onCreate, onCreateSmart, onImport,
+  playlists, onOpen, onOptions, onCreate, onCreateSmart, onImport, onSummary,
 }: {
   playlists: Playlist[];
   onOpen: (p: Playlist) => void;
+  /** A smart card on screen got a fresh summary. */
+  onSummary: (p: Playlist) => void;
   onOptions: (p: Playlist) => void;
   onCreate: () => void;
   onCreateSmart: () => void;
@@ -1716,6 +1730,7 @@ function PlaylistsGrid({
 }) {
   const [search, setSearch] = useState('');
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const observeSmartCard = useSmartCardSummaries(onSummary);
   const query = search.trim().toLowerCase();
   const filtered = query ? playlists.filter(pl => pl.name.toLowerCase().includes(query)) : playlists;
   const countLabel = `${playlists.length.toLocaleString()} playlist${playlists.length !== 1 ? 's' : ''}`;
@@ -1795,7 +1810,8 @@ function PlaylistsGrid({
               ].filter(Boolean).join(' · ');
               const ariaMeta = smart ? metaText.replace(/^Smart/, 'Smart playlist') : metaText;
               return (
-                <div key={pl.id} style={PG.card} className="home-list-hover">
+                <div key={pl.id} style={PG.card} className="home-list-hover"
+                  data-smart-card={smart ? String(pl.id) : undefined} ref={smart ? observeSmartCard : undefined}>
                   <button
                     type="button"
                     style={PG.cardBtn}
@@ -1991,6 +2007,7 @@ export default function PlaylistsView({
           onCreate={() => { setCreateError(''); setShowCreate(true); }}
           onCreateSmart={() => setSmartEditor({ playlist: null })}
           onImport={setImportFile}
+          onSummary={row => setPlaylists(prev => withSummary(prev, row))}
         />
       )}
       {selected && (

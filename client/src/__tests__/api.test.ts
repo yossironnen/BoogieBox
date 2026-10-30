@@ -377,17 +377,17 @@ describe('api browse genre filters', () => {
   });
 });
 
-describe('api.autoDjTracks', () => {
+describe('api.libraryRadioTracks', () => {
   beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it('calls auto-dj endpoint with genres, library, and limit params', async () => {
+  it('calls the library radio endpoint with library and limit params', async () => {
     vi.mocked(fetch).mockReturnValue(okJson({ tracks: [] }));
-    await api.autoDjTracks({ genres: ['Rock', 'Jazz'], library_id: '7', limit: 120 });
+    await api.libraryRadioTracks({ library_id: '7', limit: 120 });
     const rawUrl = vi.mocked(fetch).mock.calls[0][0] as string;
     const url = new URL(rawUrl, window.location.href);
-    expect(url.pathname).toContain('/api/auto-dj/tracks');
-    expect(url.searchParams.get('genres')).toBe('Rock,Jazz');
+    expect(url.pathname).toContain('/api/library-radio/tracks');
+    expect(url.searchParams.get('genres')).toBeNull();
     expect(url.searchParams.get('library_id')).toBe('7');
     expect(url.searchParams.get('limit')).toBe('120');
   });

@@ -2551,7 +2551,7 @@ export default function Player({
   // ─── Fetch crossfade config when queue source changes ────────────────────
   useEffect(() => {
     if (isRemote) return;
-    if (queueSource && (queueSource.type === 'album' || queueSource.type === 'playlist' || queueSource.type === 'autodj')) {
+    if (queueSource && (queueSource.type === 'album' || queueSource.type === 'playlist')) {
       api.crossfade.config(queueSource.type, queueSource.id).then(setCrossfadeConfig).catch(() => {});
     } else {
       api.crossfade.config().then(setCrossfadeConfig).catch(() => {});

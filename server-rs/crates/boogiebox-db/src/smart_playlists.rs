@@ -1829,6 +1829,11 @@ mod tests {
     /// The §2a.1 fixture: owner `alice`, plus `bob` for per-user checks.
     fn fixture() -> Connection {
         let conn = db();
+        seed(&conn);
+        conn
+    }
+
+    fn seed(conn: &Connection) {
         conn.execute_batch(
             "INSERT INTO users(id, username) VALUES ('alice', 'alice'), ('bob', 'bob');
              INSERT INTO libraries(id, path, name) VALUES ('lib1', '/m1', 'Music'), ('lib2', '/m2', 'Vinyl');
@@ -1859,7 +1864,6 @@ mod tests {
             )
             .unwrap();
         }
-        conn
     }
 
     fn rule(field: &str, operator: &str, value: Option<Json>) -> Json {
@@ -2986,6 +2990,37 @@ mod tests {
             assert!(!selection.track_ids.is_empty(), "{name}");
             assert!(elapsed < Duration::from_secs(2), "{name} took {elapsed:?}");
         }
+
+        // A full 1,000-track playlist: first fill, a refresh after half the matches
+        // left, and an unchanged check. Each holds the database lock, so streaming waits this long at worst.
+        let mut capped_json = def("all", vec![rule("genre", "is", Some(json!("Rock")))]);
+        capped_json["limit"] = json!({ "maxTracks": MAX_TRACKS });
+        let capped = valid(capped_json);
+        let start = std::time::Instant::now();
+        let row = create_smart_playlist(&conn, "Capped", "", "alice", &capped).unwrap();
+        let created = start.elapsed();
+        assert_eq!(membership_ids(&conn, &row.id).unwrap().len(), 1000);
+        conn.execute(
+            "UPDATE tracks SET genre = 'Jazz' WHERE genre = 'Rock' AND id < 't30000'",
+            [],
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(
+            ensure_fresh(&conn, &row.id, "alice", false).unwrap(),
+            Some(true)
+        );
+        let changed = start.elapsed();
+        let start = std::time::Instant::now();
+        assert_eq!(
+            ensure_fresh(&conn, &row.id, "alice", false).unwrap(),
+            Some(false)
+        );
+        let unchanged = start.elapsed();
+        eprintln!("1000 tracks: create {created:?}, changed {changed:?}, unchanged {unchanged:?}");
+        for (name, elapsed) in [("create", created), ("refresh", changed)] {
+            assert!(elapsed < Duration::from_secs(2), "{name} took {elapsed:?}");
+        }
     }
 
     #[test]
@@ -3092,5 +3127,71 @@ mod tests {
             )
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn rules_tracks_and_mix_snapshots_survive_a_restart() {
+        use crate::boogiemix::{enqueue_mix_job, load_mix_job_inputs};
+        let dir = std::env::temp_dir().join(format!("bb-smart-restart-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("boogiebox.db");
+        let open = || {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            crate::initialize_schema(&conn).unwrap();
+            conn
+        };
+        let unc = r"\\nas\music\Bloom (live).flac";
+
+        let (playlist, job, definition) = {
+            let conn = open();
+            seed(&conn);
+            conn.execute("UPDATE tracks SET file_path = ?1 WHERE id = 't2'", [unc])
+                .unwrap();
+            let rules = valid(def(
+                "all",
+                vec![rule("genre", "is", Some(json!("Electronic")))],
+            ));
+            let row = create_smart_playlist(&conn, "Survivor", "", "alice", &rules).unwrap();
+            let job = enqueue_mix_job(
+                &conn,
+                &row.id,
+                &EntityId::Str("alice".into()),
+                8,
+                "club_blend",
+                "standard",
+                "playlist",
+                None,
+            )
+            .unwrap();
+            let view = smart_definition(&conn, &row.id, "alice").unwrap().unwrap();
+            (row.id, job, view.definition)
+        };
+
+        let conn = open();
+        let view = smart_definition(&conn, &playlist, "alice")
+            .unwrap()
+            .unwrap();
+        assert_eq!(view.definition, definition);
+        assert!(smart_definition(&conn, &playlist, "bob").unwrap().is_none());
+        assert_eq!(
+            ensure_fresh(&conn, &playlist, "alice", false).unwrap(),
+            Some(false),
+            "nothing changed while the server was down"
+        );
+        assert_eq!(member_titles(&conn, &playlist), ["Arc", "Bloom"]);
+        let inputs = load_mix_job_inputs(&conn, &job, &playlist)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            inputs
+                .iter()
+                .map(|t| t.file_path.as_str())
+                .collect::<Vec<_>>(),
+            ["/m1/1", unc],
+            "UNC paths come back exactly"
+        );
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

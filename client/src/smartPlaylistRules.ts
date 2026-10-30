@@ -493,6 +493,64 @@ function sortFromApi(sort: unknown): DraftSort | null {
   return { field: s.field as SmartSortField, direction: s.direction === 'desc' ? 'desc' : 'asc' };
 }
 
+// ─── Presets (Home) ───────────────────────────────────────────────────────────
+
+/** Rules and a name that open in the editor ready to save. */
+export interface SmartPreset { name: string; definition: SmartDefinition }
+
+/** One genre, or any of several, newest additions first. */
+export function genrePreset(genres: string[]): SmartPreset {
+  return {
+    name: genres.join(', '),
+    definition: {
+      schemaVersion: 1,
+      root: { mode: genres.length > 1 ? 'any' : 'all', children: genres.map(genre => ({ field: 'genre', operator: 'is', value: genre })) },
+      sort: [{ field: 'added_at', direction: 'desc' }],
+    },
+  };
+}
+
+export type SmartIdeaId = 'recently_added' | 'forgotten_favourites' | 'never_played' | 'most_played';
+
+export const SMART_IDEAS: { id: SmartIdeaId; description: string; preset: SmartPreset }[] = [
+  {
+    id: 'recently_added', description: 'Added in the last 30 days',
+    preset: { name: 'Recently added', definition: {
+      schemaVersion: 1,
+      root: { mode: 'all', children: [{ field: 'added_at', operator: 'in_last_days', value: 30 }] },
+      sort: [{ field: 'added_at', direction: 'desc' }],
+    } },
+  },
+  {
+    id: 'forgotten_favourites', description: 'Rated 4+, not played in 90 days',
+    preset: { name: 'Forgotten favourites', definition: {
+      schemaVersion: 1,
+      root: { mode: 'all', children: [
+        { field: 'rating', operator: 'gte', value: 4 },
+        { field: 'last_played_at', operator: 'not_in_last_days', value: 90 },
+      ] },
+      sort: [{ field: 'rating', direction: 'desc' }],
+    } },
+  },
+  {
+    id: 'never_played', description: "Tracks you haven't played yet",
+    preset: { name: 'Never played', definition: {
+      schemaVersion: 1,
+      root: { mode: 'all', children: [{ field: 'last_played_at', operator: 'is_missing' }] },
+      sort: [{ field: 'added_at', direction: 'desc' }],
+    } },
+  },
+  {
+    id: 'most_played', description: 'Your 50 most played tracks',
+    preset: { name: 'Most played', definition: {
+      schemaVersion: 1,
+      root: { mode: 'all', children: [{ field: 'play_count', operator: 'gte', value: 1 }] },
+      sort: [{ field: 'play_count', direction: 'desc' }],
+      limit: { maxTracks: 50 },
+    } },
+  },
+];
+
 /** The editor draft for stored rules; `null` when this build can't edit them. */
 export function definitionToDraft(definition: unknown, name: string): SmartDraft | null {
   const def = definition as Partial<SmartDefinition> | null;

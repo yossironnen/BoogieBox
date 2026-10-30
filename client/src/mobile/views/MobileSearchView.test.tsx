@@ -214,6 +214,7 @@ describe('MobileSearchView', () => {
     expect(screen.getByText('Arrival')).toBeInTheDocument();
   });
 
+  // ~4 s on its own; coverage instrumentation pushes it past the 5 s default.
   it('covers grouped results, rating, filters, sorting, pagination, and search errors', async () => {
     vi.useRealTimers();
     const onPlayTrack = vi.fn();
@@ -279,5 +280,5 @@ describe('MobileSearchView', () => {
     fireEvent.change(input, { target: { value: 'failure' } });
     expect(await screen.findByRole('alert')).toHaveTextContent('Search failed');
     expect(screen.getByText('No music matches.')).toBeInTheDocument();
-  });
+  }, 15_000);
 });

@@ -50,7 +50,7 @@ const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi
     userSettings: { get: vi.fn(), update: vi.fn() },
     genres: vi.fn(),
     search: vi.fn(),
-    autoDjTracks: vi.fn(),
+    libraryRadioTracks: vi.fn(),
     markTrackPlayed: vi.fn(),
     scrobbleTrack: vi.fn(),
     favourites: { ids: vi.fn() },
@@ -89,7 +89,9 @@ vi.mock('../components/HomeView', () => ({
       <button onClick={() => props.onOpenGenre('Rock')}>home-open-genre</button>
       <button onClick={() => props.onOpenPlaylist('42')}>home-open-playlist</button>
       <button onClick={() => props.onPlayTrack({ id: '1', file_path: 'x', file_name: 'x.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Track One', artist: 'Artist One', album: 'Album One', library_name: 'Main', track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01' })}>home-play-track</button>
-      <button onClick={() => props.onStartAutoDj(['Rock'])}>home-start-auto-dj</button>
+      <button onClick={() => props.onPlayPlaylist({ id: '42', name: 'Smart', remember_progress: false }, [{ id: '11', file_path: 'x', file_name: 'x.mp3', file_size: 1, format: 'MP3', duration: 120, bitrate: 320, sample_rate: 44100, channels: 2, title: 'Smart One', artist: 'Artist One', album: 'Album One', library_name: 'Main', track_number: 1, disc_number: 1, year: 2020, genre: 'Rock', composer: null, comment: null, bpm: null, scanned_at: '2026-01-01' }])}>home-play-playlist</button>
+      <button onClick={() => props.onPlayPlaylist({ id: '43', name: 'Empty' }, [])}>home-play-empty</button>
+      <button onClick={() => props.onOpenPlaylists()}>home-open-playlists</button>
       <button onClick={() => props.onBrowseMusic()}>home-browse-music</button>
       <button onClick={() => props.onOpenFavourites?.()}>home-open-favourites</button>
       <button onClick={() => props.onOpenGenre('   ')}>home-empty-genre</button>
@@ -203,7 +205,7 @@ describe('App component flows', () => {
       albums: [{ id: '10', title: 'Album One', artist: 'Artist One', album_artist: 'Artist One', year: 2020, genre: 'Rock', track_count: 2 }],
       top_results: [],
     });
-    apiMock.autoDjTracks.mockResolvedValue({
+    apiMock.libraryRadioTracks.mockResolvedValue({
       tracks: [
         {
           id: '11', file_path: 'D:\\Music\\dj-one.mp3', file_name: 'dj-one.mp3', file_size: 1,
@@ -342,7 +344,7 @@ describe('App component flows', () => {
     ]);
 
     await act(async () => props.callbacks.actions[0].onSelect());
-    expect(apiMock.autoDjTracks).toHaveBeenCalledWith({ genres: [], library_id: '1', limit: 200 });
+    expect(apiMock.libraryRadioTracks).toHaveBeenCalledWith({ library_id: '1', limit: 200 });
     await waitFor(() => expect(apiMock.markTrackPlayed).toHaveBeenCalledWith('11'));
 
     await act(async () => props.callbacks.actions[1].onSelect());
@@ -498,17 +500,15 @@ describe('App component flows', () => {
     expect(activeNavButtons[0]).toBe(settingsButton);
   });
 
-  it('starts Auto DJ from the Home Genres pane action', async () => {
+  it('plays a smart playlist from Home and opens Playlists from "See all"', async () => {
     render(<App />);
 
-    fireEvent.click(await screen.findByText('home-start-auto-dj', {}, { timeout: 5000 }));
-
-    await waitFor(() => expect(apiMock.autoDjTracks).toHaveBeenCalledWith({
-      genres: ['Rock'],
-      library_id: undefined,
-      limit: 200,
-    }));
+    fireEvent.click(await screen.findByText('home-play-empty', {}, { timeout: 5000 }));
+    fireEvent.click(screen.getByText('home-play-playlist'));
     await waitFor(() => expect(apiMock.markTrackPlayed).toHaveBeenCalledWith('11'));
+
+    fireEvent.click(screen.getByText('home-open-playlists'));
+    expect(await screen.findByTestId('playlists-view')).toBeInTheDocument();
   });
 
   it('executes Browse, Settings, and Player callback state flows', async () => {

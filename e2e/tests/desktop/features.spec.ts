@@ -93,11 +93,24 @@ test('Home widgets reflect the library', async ({ page }) => {
     await expect(main(page).getByRole('button', { name: `Play album ${album}`, exact: true })).toBeAttached()
   }
   await expect(main(page).getByRole('button', { name: 'Open genre Electronic' })).toBeVisible()
-  await expect(main(page).getByRole('button', { name: 'Start Home Auto DJ with Electronic' })).toBeVisible()
+  await expect(main(page).getByRole('button', { name: 'New smart playlist from Electronic' })).toBeVisible()
 })
 
-test('Home Auto DJ starts playback', async ({ page }) => {
+test('Home genre card creates and plays a smart playlist', async ({ page }) => {
+  const name = uniqueName('E2E Home Rock')
   await goTo(page, 'Home')
-  await main(page).getByRole('button', { name: 'Start Home Auto DJ with Rock' }).click()
-  await expectAudioPlaying(page)
+  await expect(main(page).getByText('Auto DJ')).toHaveCount(0)
+  await main(page).getByRole('button', { name: 'New smart playlist from Rock' }).click()
+  const dialog = page.getByRole('dialog', { name: 'New smart playlist' })
+  await expect(dialog.getByRole('combobox', { name: 'Genre' })).toHaveValue('Rock')
+  await dialog.getByLabel('Playlist name').fill(name)
+  try {
+    await dialog.getByRole('button', { name: 'Create and play' }).click()
+    await expect(main(page).getByRole('status').filter({ hasText: `Created “${name}” and started playing.` })).toBeVisible()
+    await expectAudioPlaying(page)
+    await expect(main(page).getByRole('button', { name: `Play ${name}` })).toBeVisible()
+  } finally {
+    const list: { id: string; name: string }[] = await (await page.request.get('/api/playlists')).json()
+    for (const playlist of list.filter(p => p.name === name)) await page.request.delete(`/api/playlists/${playlist.id}`)
+  }
 })

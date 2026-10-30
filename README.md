@@ -2,7 +2,7 @@
 
 BoogieBox is a self-hosted music library and player for Windows and Linux designed for collectors, audiophiles, and anyone with a large local music collection.
 
-Enjoy lightning-fast browsing, powerful search, playlists, lyrics, visualizations, Auto DJ, and personalized multi-user experiences. BoogieBox helps you rediscover your library instead of letting it sit untouched on a drive.
+Enjoy lightning-fast browsing, powerful search, playlists and smart playlists, lyrics, visualizations, and personalized multi-user experiences. BoogieBox helps you rediscover your library instead of letting it sit untouched on a drive.
 
 Its standout feature, BoogieMix, is an experimental AI-powered DJ system that turns ordinary playlists into seamless mixes by analyzing tracks and planning smooth transitions between songs.
 
@@ -25,10 +25,6 @@ Also includes waveform and BPM analysis, mobile-friendly access, Subsonic/OpenSu
 ### Artist Page
 
 ![Artist detail page](docs/Screenshots/artist_page.png)
-
-### Auto DJ
-
-![Auto DJ](docs/Screenshots/auto_dj.png)
 
 ### BoogieMix
 
@@ -126,7 +122,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 
 ### 🌌 Discover More Music
 
-- Auto DJ keeps the music flowing based on your library and listening habits
+- Smart playlists pick tracks by rules you set (genre, rating, plays, date added and more) and stay up to date on their own; start one from a genre or an idea on the home screen
 - Genre Galaxy visualizes relationships between your favorite genres and artists
 - Artist insights powered by Last.fm
 - Personalized home screen featuring listening trends, statistics, and recommendations
@@ -174,7 +170,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 | Playlists | ✅ |
 | Karaoke Lyrics | ✅ |
 | Waveform Navigation | ✅ |
-| Auto DJ | ✅ |
+| Smart Playlists | ✅ |
 | BoogieMix AI Mixing (experimental!) | ✅ |
 | Genre Galaxy | ✅ |
 | Mobile Interface | ✅ |

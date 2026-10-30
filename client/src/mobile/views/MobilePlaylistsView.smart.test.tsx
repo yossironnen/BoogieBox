@@ -19,6 +19,7 @@ const { apiMock } = vi.hoisted(() => ({
       get: vi.fn(),
       tracks: vi.fn(),
       snapshot: vi.fn(),
+      summary: vi.fn(),
       refresh: vi.fn(),
       exportM3uUrl: vi.fn(() => '#export'),
     },
@@ -76,6 +77,7 @@ describe('MobilePlaylistsView smart playlists', () => {
     vi.clearAllMocks();
     apiMock.playlists.list.mockResolvedValue([smart, manual]);
     apiMock.playlists.snapshot.mockResolvedValue(snapshot());
+    apiMock.playlists.summary.mockResolvedValue(smart);
     apiMock.boogiemix.listAllOutputs.mockResolvedValue([]);
     apiMock.search.mockResolvedValue({ tracks: [] });
   });
@@ -97,6 +99,14 @@ describe('MobilePlaylistsView smart playlists', () => {
     fireEvent.click(within(editor).getByRole('button', { name: 'Save stub' }));
     expect(await screen.findByRole('heading', { name: 'Fresh smart' })).toBeInTheDocument();
     expect(apiMock.playlists.snapshot).toHaveBeenCalledWith('s2');
+  });
+
+  it('updates smart cards on screen from their summaries', async () => {
+    apiMock.playlists.summary.mockResolvedValue({ ...smart, track_count: 4, total_duration: 1200 });
+    render(<Harness initial={{ playlist: null, tracks: [] }} />);
+    const card = await screen.findByRole('button', { name: 'Forgotten favourites — Smart playlist · 4 tracks · 20m' });
+    expect(within(card).getByText('Smart · 4 tracks · 20m')).toBeInTheDocument();
+    expect(apiMock.playlists.summary).toHaveBeenCalledWith('s1');
   });
 
   it('shows rule-picked tracks without add, delete or reorder', async () => {

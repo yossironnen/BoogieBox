@@ -16,6 +16,7 @@ const { apiMock } = vi.hoisted(() => ({
       create: vi.fn(),
       tracks: vi.fn(),
       snapshot: vi.fn(),
+      summary: vi.fn(),
       refresh: vi.fn(),
       smartDefinition: vi.fn(),
       smartPreview: vi.fn(),
@@ -56,12 +57,12 @@ const tracks = [
   { id: 't2', playlist_track_id: 'pt2', title: 'Glory Box', artist: 'Portishead', album: 'Dummy', album_id: null, duration: 301, file_name: 'b.mp3', position: 1 },
 ];
 
-function renderView() {
-  return render(<PlaylistsView playTrack={vi.fn()} addToQueue={vi.fn()} />);
+function renderView(playTrack = vi.fn()) {
+  return render(<PlaylistsView playTrack={playTrack} addToQueue={vi.fn()} />);
 }
 
-async function openSmart() {
-  renderView();
+async function openSmart(playTrack = vi.fn()) {
+  renderView(playTrack);
   fireEvent.click(await screen.findByRole('button', { name: 'Late night — Smart playlist · 2 tracks · 10m' }));
   return document.querySelector('[data-ui-region="playlist-detail"]') as HTMLElement;
 }
@@ -73,6 +74,7 @@ describe('PlaylistsView smart playlists', () => {
     HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
     apiMock.playlists.list.mockResolvedValue([smart, manual]);
     apiMock.playlists.snapshot.mockResolvedValue({ playlist: smart, tracks, membershipRevision: 1, refreshError: null });
+    apiMock.playlists.summary.mockResolvedValue(smart);
     apiMock.playlists.smartDefinition.mockResolvedValue({
       definition: { schemaVersion: 1, root: { mode: 'all', children: [{ field: 'artist', operator: 'is', value: 'Air' }] } },
       schemaVersion: 1, editRevision: 1, membershipRevision: 1, evaluatedAt: null, supported: true, missingLibraryIds: [],
@@ -101,6 +103,14 @@ describe('PlaylistsView smart playlists', () => {
     expect(screen.getByRole('dialog', { name: 'New smart playlist' })).toBeInTheDocument();
   });
 
+  it('updates smart cards on screen from their summaries', async () => {
+    apiMock.playlists.summary.mockResolvedValue({ ...smart, track_count: 5, total_duration: 1200 });
+    renderView();
+    expect(await screen.findByRole('button', { name: 'Late night — Smart playlist · 5 tracks · 20m' })).toBeInTheDocument();
+    expect(apiMock.playlists.summary).toHaveBeenCalledTimes(1);
+    expect(apiMock.playlists.summary).toHaveBeenCalledWith('s1');
+  });
+
   it('shows rule-picked tracks without manual editing', async () => {
     const detail = await openSmart();
     expect(await within(detail).findByText('Teardrop')).toBeVisible();
@@ -127,6 +137,40 @@ describe('PlaylistsView smart playlists', () => {
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(within(detail).queryByText('Glory Box')).toBeNull());
     expect(within(detail).queryByRole('alert')).toBeNull();
+  });
+
+  it('leaves the playing queue alone when a refresh changes the tracks', async () => {
+    const playTrack = vi.fn();
+    apiMock.playlists.snapshot.mockResolvedValue({ playlist: smart, tracks, membershipRevision: 1, refreshError: 'timed_out' });
+    apiMock.playlists.refresh.mockResolvedValue({ playlist: smart, tracks: [tracks[1]], membershipRevision: 2, refreshError: null });
+    const detail = await openSmart(playTrack);
+    await within(detail).findByText('Teardrop');
+    fireEvent.click(within(detail).getByRole('button', { name: 'Play All' }));
+    expect(playTrack).toHaveBeenCalledTimes(1);
+    const queued = playTrack.mock.calls[0][1];
+    const before = queued.map((t: { id: string }) => t.id);
+    expect(before).toEqual(['t1', 't2']);
+
+    fireEvent.click(within(await within(detail).findByRole('alert')).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(within(detail).queryByText('Teardrop')).toBeNull());
+    expect(playTrack).toHaveBeenCalledTimes(1);
+    expect(queued.map((t: { id: string }) => t.id)).toEqual(before);
+  });
+
+  it('re-checks an open smart playlist each minute without "Updating…"', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const detail = await openSmart();
+      await within(detail).findByText('Teardrop');
+      apiMock.playlists.snapshot.mockResolvedValue({ playlist: smart, tracks: [tracks[1]], membershipRevision: 2, refreshError: null });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(apiMock.playlists.snapshot).toHaveBeenCalledTimes(2);
+      await waitFor(() => expect(within(detail).queryByText('Teardrop')).toBeNull());
+      expect(within(detail).getByText('Glory Box')).toBeInTheDocument();
+      expect(within(detail).queryByText('Updating…')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('offers the rules when nothing matches', async () => {

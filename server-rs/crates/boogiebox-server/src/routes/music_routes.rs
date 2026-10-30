@@ -103,8 +103,9 @@ pub fn music_router(state: SharedState) -> Router {
         )
         .route("/api/tracks/{id}", get(get_track_handler))
         .route("/api/tracks/{id}/metadata", put(track_metadata_handler))
-        // Auto-DJ
-        .route("/api/auto-dj/tracks", get(auto_dj_handler))
+        // Library radio ("Play library radio"). `/api/auto-dj/tracks` is the pre-0.9.57 path, kept one release.
+        .route("/api/library-radio/tracks", get(library_radio_handler))
+        .route("/api/auto-dj/tracks", get(library_radio_handler))
         .layer(Extension(HomeQueryCache::default()))
         .with_state(state)
 }
@@ -234,7 +235,7 @@ struct ArtistAlbumsQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct AutoDjQuery {
+struct LibraryRadioQuery {
     genres: Option<String>,
     library_id: Option<String>,
     limit: Option<String>,
@@ -1443,12 +1444,12 @@ async fn track_sonic_fingerprint_handler(
     }
 }
 
-// -- Auto-DJ -------------------------------------------------------------------
+// -- Library radio -------------------------------------------------------------
 
-async fn auto_dj_handler(
+async fn library_radio_handler(
     State(state): State<SharedState>,
     _user: AuthenticatedUser,
-    Query(q): Query<AutoDjQuery>,
+    Query(q): Query<LibraryRadioQuery>,
 ) -> impl IntoResponse {
     let db = match get_db(&state) {
         Some(d) => d,
@@ -1463,7 +1464,7 @@ async fn auto_dj_handler(
         .filter(|id| !id.is_empty())
         .map(coerce_entity_id);
     if genres.is_empty() && library_id.is_none() {
-        return bad_request("At least one genre is required");
+        return bad_request("A library or at least one genre is required");
     }
 
     let limit = parse_limit(q.limit.as_deref(), 200, 500);
@@ -1936,21 +1937,24 @@ mod browse_route_tests {
         .await;
         assert_eq!(fingerprint_status, StatusCode::NOT_FOUND);
 
-        let (auto_dj_missing_genre_status, _) =
-            get("/api/auto-dj/tracks".into(), app.clone(), cookie.clone()).await;
-        assert_eq!(auto_dj_missing_genre_status, StatusCode::BAD_REQUEST);
-
-        let (auto_dj_status, auto_dj_body) = get(
-            "/api/auto-dj/tracks?genres=Rock".into(),
+        let (radio_missing_scope_status, _) = get(
+            "/api/library-radio/tracks".into(),
             app.clone(),
             cookie.clone(),
         )
         .await;
-        assert_eq!(auto_dj_status, StatusCode::OK);
-        assert_eq!(
-            json_body(&auto_dj_body)["tracks"].as_array().unwrap().len(),
-            1
-        );
+        assert_eq!(radio_missing_scope_status, StatusCode::BAD_REQUEST);
+
+        // The pre-0.9.57 path still answers for one release.
+        for path in ["/api/library-radio/tracks", "/api/auto-dj/tracks"] {
+            let (radio_status, radio_body) =
+                get(format!("{path}?genres=Rock"), app.clone(), cookie.clone()).await;
+            assert_eq!(radio_status, StatusCode::OK, "{path}");
+            assert_eq!(
+                json_body(&radio_body)["tracks"].as_array().unwrap().len(),
+                1
+            );
+        }
 
         // Track metadata edit requires the edit-metadata permission.
         let (metadata_forbidden_status, _) = send(

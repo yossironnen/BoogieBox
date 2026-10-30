@@ -71,7 +71,8 @@ function renderHome() {
       onBrowseMusic={() => {}}
       onOpenPlaylist={() => {}}
       onPlayTrack={() => {}}
-      onStartAutoDj={async () => 0}
+      onOpenPlaylists={() => {}}
+      onPlayPlaylist={() => {}}
     />,
   );
 }

@@ -22,6 +22,8 @@ import MobilePlaylistImportSheet from '../components/MobilePlaylistImportSheet';
 import { ImportIcons, PlaylistImportToast, type ImportedPlaylist } from '../../components/PlaylistImport';
 import { PLAYLIST_FILE_ACCEPT } from '../../playlistImport';
 import SmartPlaylistEditor, { SmartIcon } from '../../components/SmartPlaylistEditor';
+import { useSmartRecheck } from '../../hooks/useSmartRecheck';
+import { useSmartCardSummaries, withSummary } from '../../hooks/useSmartCardSummaries';
 
 type LoadedPlaylist = { playlist: Playlist; tracks: PlaylistTrack[]; refreshError: boolean };
 
@@ -319,9 +321,10 @@ export default function MobilePlaylistsView({
     }
   }, []);
 
-  const loadSelectedPlaylist = useCallback(async (playlistId: EntityId, smartHint = false, forceRefresh = false) => {
+  // `quiet` re-checks an open smart playlist without showing "Updating…".
+  const loadSelectedPlaylist = useCallback(async (playlistId: EntityId, smartHint = false, forceRefresh = false, quiet = false) => {
     const seq = ++loadSeqRef.current;
-    setDetailLoading(true);
+    if (!quiet) setDetailLoading(true);
     try {
       const loaded = await fetchPlaylist(playlistId, smartHint, forceRefresh);
       if (seq !== loadSeqRef.current) return;
@@ -329,7 +332,7 @@ export default function MobilePlaylistsView({
       onSelectionChange({ playlist: loaded.playlist, tracks: loaded.tracks });
       setPlaylists((prev) => prev.map((entry) => (entry.id === loaded.playlist.id ? loaded.playlist : entry)));
     } finally {
-      if (seq === loadSeqRef.current) setDetailLoading(false);
+      if (!quiet && seq === loadSeqRef.current) setDetailLoading(false);
     }
   }, [onSelectionChange]);
 
@@ -597,6 +600,13 @@ export default function MobilePlaylistsView({
     if (!selection.playlist) return;
     loadSelectedPlaylist(selection.playlist.id, true, true).catch(() => setRefreshError(true));
   }, [loadSelectedPlaylist, selection.playlist]);
+
+  const recheckSmart = useCallback(() => {
+    if (!selection.playlist) return;
+    loadSelectedPlaylist(selection.playlist.id, true, false, true).catch(() => {});
+  }, [loadSelectedPlaylist, selection.playlist]);
+  useSmartRecheck(selectedSmart && !detailLoading, recheckSmart);
+  const observeSmartCard = useSmartCardSummaries((row) => setPlaylists((prev) => withSummary(prev, row)));
 
   const handleSmartSaved = useCallback((saved: Playlist) => {
     const created = !smartEditor?.playlist;
@@ -1050,6 +1060,8 @@ export default function MobilePlaylistsView({
                   key={playlist.id}
                   type="button"
                   style={styles.card}
+                  data-smart-card={playlist.kind === 'smart' ? String(playlist.id) : undefined}
+                  ref={playlist.kind === 'smart' ? observeSmartCard : undefined}
                   aria-label={playlist.kind === 'smart'
                     ? `${playlist.name} — Smart playlist · ${playlist.track_count} tracks · ${fmtDuration(playlist.total_duration)}`
                     : undefined}

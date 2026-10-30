@@ -11,7 +11,8 @@ import {
   COPY, FIELDS, MAX_RULES, MAX_NODES, SORT_FIELDS,
   appendTo, canNestGroup, checkDraft, conditionSpec, countNodes, countRules, definitionToDraft, directionLabels,
   draftToDefinition, fieldSpec, newDraft, newGroup, newRule, replaceNode, withField, withOperator,
-  type DraftGroup, type DraftNode, type DraftRule, type DraftSort, type SmartDraft, type SmartField, type SmartSortField,
+  type DraftGroup, type DraftNode, type DraftRule, type DraftSort, type SmartDraft, type SmartField, type SmartPreset,
+  type SmartSortField,
 } from '../smartPlaylistRules';
 import { hybridControlStyles, hybridMediaStyles } from '../hybridPreview';
 import StarRating from './StarRating';
@@ -26,6 +27,14 @@ export function SmartIcon({ size = 16 }: { size?: number }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={SMART_ICON_PATH} />
+    </svg>
+  );
+}
+
+function PlayIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M7 4.5v15l13-7.5z" />
     </svg>
   );
 }
@@ -528,16 +537,24 @@ export interface SmartPlaylistEditorProps {
   onSaved: (playlist: Playlist) => void;
   /** `mobile`: a full-height sheet with stacked rules and the preview behind "Show tracks". */
   variant?: 'desktop' | 'mobile';
+  /** Create only: rules and a name to start from (Home genre cards and ideas). */
+  preset?: SmartPreset | null;
+  /** Create only: adds "Create and play"; called instead of `onSaved` when it is used. */
+  onCreateAndPlay?: (playlist: Playlist) => void;
 }
 
 type LoadState = 'loading' | 'ready' | 'unsupported' | 'failed';
 
-export default function SmartPlaylistEditor({ playlist, existingNames, onClose, onSaved, variant = 'desktop' }: SmartPlaylistEditorProps) {
+export default function SmartPlaylistEditor({
+  playlist, existingNames, onClose, onSaved, variant = 'desktop', preset = null, onCreateAndPlay,
+}: SmartPlaylistEditorProps) {
   const editing = !!playlist;
   const mobile = variant === 'mobile';
   const [showTracks, setShowTracks] = useState(false);
   const previewRef = useRef<HTMLElement>(null);
-  const [draft, setDraft] = useState<SmartDraft>(() => newDraft());
+  const [draft, setDraft] = useState<SmartDraft>(() => (
+    (!playlist && preset && definitionToDraft(preset.definition, preset.name)) || newDraft()
+  ));
   const [load, setLoad] = useState<LoadState>(editing ? 'loading' : 'ready');
   const [editRevision, setEditRevision] = useState(0);
   const [missingLibraryIds, setMissingLibraryIds] = useState<Set<string>>(new Set());
@@ -618,7 +635,7 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
     || check.maxTracksError || check.maxMinutesError;
   const canSave = load === 'ready' && check.valid && !!draft.name.trim() && !saving;
 
-  const save = async (revision = editRevision) => {
+  const save = async (revision = editRevision, play = false) => {
     if (!canSave) {
       setShowAllErrors(true);
       if (!draft.name.trim()) nameRef.current?.focus();
@@ -636,7 +653,8 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
     try {
       const definition = draftToDefinition(draft);
       if (!playlist) {
-        onSaved(await api.playlists.createSmart(name, definition));
+        const created = await api.playlists.createSmart(name, definition);
+        if (play && onCreateAndPlay) onCreateAndPlay(created); else onSaved(created);
         return;
       }
       const view = await api.playlists.updateSmartDefinition(playlist.id, definition, revision);
@@ -663,6 +681,7 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
   };
 
   const title = editing ? 'Edit rules' : 'New smart playlist';
+  const playable = !editing && !!onCreateAndPlay;
 
   return createPortal(
     <dialog ref={dialogRef} aria-labelledby="smart-editor-title"
@@ -860,9 +879,16 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
           )}
           {!mobile && <button type="button" style={S.cancelBtn} onClick={onClose}>Cancel</button>}
           {load !== 'unsupported' && (
-            <button type="button" aria-disabled={!canSave} style={{ ...st.saveBtn, ...(!canSave ? hybridControlStyles.disabled : {}) }}
+            <button type="button" aria-disabled={!canSave}
+              style={{ ...(playable ? S.secondaryBtn : st.saveBtn), ...(!canSave ? hybridControlStyles.disabled : {}) }}
               onClick={() => void save()}>
               <SmartIcon size={16} />{editing ? 'Save rules' : 'Create playlist'}
+            </button>
+          )}
+          {playable && (
+            <button type="button" aria-disabled={!canSave} style={{ ...st.saveBtn, ...(!canSave ? hybridControlStyles.disabled : {}) }}
+              onClick={() => void save(editRevision, true)}>
+              <PlayIcon />Create and play
             </button>
           )}
         </div>
@@ -956,6 +982,8 @@ const S: Record<string, React.CSSProperties> = {
   footer: { padding: '14px 24px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' },
   cancelBtn: { ...hybridControlStyles.secondaryButton },
   saveBtn: { ...hybridControlStyles.primaryButton },
+  /** "Create playlist" when "Create and play" is the main action. */
+  secondaryBtn: { ...hybridControlStyles.secondaryButton, borderColor: 'var(--accent)' },
 };
 
 // Phones: 44px targets and 16px text (iOS zooms smaller inputs). The mobile shell has no Hybrid tokens,

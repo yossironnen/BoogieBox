@@ -69,7 +69,7 @@ Every test also fails on uncaught page errors, app `console.error` output and an
 | Playlist create / add / rename / play / delete, M3U import (preview tiles, not-found download, file order), smart playlist API (preview, create, manual edits refused, export) | `tests/desktop/playlists.spec.ts` |
 | Search by title/artist/album, genre filter | `tests/desktop/search.spec.ts` |
 | PIN users, wrong PIN, non-admin UI, sign-out, delete | `tests/desktop/users.spec.ts` |
-| Favourites, radio stations, themes, Subsonic switch, Activity, Home, Auto DJ | `tests/desktop/features.spec.ts` |
+| Favourites, radio stations, themes, Subsonic switch, Activity, Home, Home smart playlists | `tests/desktop/features.spec.ts` |
 | Mobile shell, browse, search, Now Playing, OS media controls, Sleep tool, M3U import sheet | `tests/mobile/mobile.spec.ts` |
 | Backup: back up now (with an uploaded cover), schedule/keep, delete | `tests/desktop/backup.spec.ts` |
 | Restore (project `restore`, runs last because it signs everyone out): live restore, first-run restore on a second fresh server with a remapped music folder | `tests/restore/restore.spec.ts` |

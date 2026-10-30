@@ -53,7 +53,8 @@ function renderHome(vintage: boolean, style = VINTAGE_STYLES.recordshop) {
       onBrowseMusic={() => {}}
       onOpenPlaylist={() => {}}
       onPlayTrack={() => {}}
-      onStartAutoDj={async () => 0}
+      onOpenPlaylists={() => {}}
+      onPlayPlaylist={() => {}}
     />
   );
   return render(
