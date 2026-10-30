@@ -102,6 +102,48 @@ test('import an M3U from the Playlists tab', async ({ page }) => {
   expect((await page.request.delete(`/api/playlists/${created.id}`)).ok()).toBe(true)
 })
 
+test('build a smart playlist on the phone and open its rule-picked tracks', async ({ page }) => {
+  const name = uniqueName('E2E Mobile Smart')
+  const rockTitles = ['Cardboard Comet', 'Folded Orbit', 'Ink Sky']
+  await tabs(page).getByRole('button', { name: 'Playlists', exact: true }).click()
+  try {
+    await page.getByRole('main').getByRole('button', { name: 'New smart playlist' }).click()
+    const sheet = page.getByRole('dialog', { name: 'New smart playlist' })
+    await sheet.getByLabel('Playlist name').fill(name)
+    await sheet.getByRole('combobox', { name: 'Field' }).selectOption('genre')
+    await sheet.getByRole('combobox', { name: 'Genre' }).fill('Rock')
+    await sheet.getByRole('button', { name: 'Add rule' }).first().click()
+    await sheet.getByRole('combobox', { name: 'Field' }).nth(1).selectOption('artist')
+    await sheet.getByRole('combobox', { name: 'Condition' }).nth(1).selectOption('contains')
+    await sheet.getByRole('combobox', { name: 'Artist name' }).fill('velvet')
+    const summary = sheet.getByRole('button', { name: /Show tracks/ })
+    await expect(summary).toContainText('3 tracks')
+    await summary.click()
+    await expect(sheet.getByRole('list', { name: 'First tracks' }).getByRole('listitem')).toHaveCount(3)
+    await sheet.getByRole('button', { name: 'Create playlist' }).click()
+    await expect(sheet).toBeHidden()
+
+    await expect(page.getByRole('heading', { name })).toBeVisible()
+    await expect(page.getByText('Picked by rules. Edit the rules to change the tracks.')).toBeVisible()
+    for (const title of rockTitles) await expect(page.getByRole('button', { name: `Play ${title}` })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Reorder / })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Add', exact: true })).toHaveCount(0)
+
+    await page.getByRole('button', { name: 'Rules', exact: true }).click()
+    const editor = page.getByRole('dialog', { name: 'Edit rules' })
+    await expect(editor.getByRole('combobox', { name: 'Genre' })).toHaveValue('Rock')
+    await editor.getByRole('button', { name: 'Close rules' }).click()
+    await expect(editor).toBeHidden()
+
+    await page.getByRole('button', { name: 'Back' }).click()
+    const card = page.getByRole('button', { name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} — Smart playlist · 3 tracks · `) })
+    await expect(card.getByTestId('smart-badge')).toBeVisible()
+  } finally {
+    const list: { id: string; name: string }[] = await (await page.request.get('/api/playlists')).json()
+    for (const playlist of list.filter(p => p.name === name)) await page.request.delete(`/api/playlists/${playlist.id}`)
+  }
+})
+
 test('the Now Playing Sleep tool starts and cancels a timer', async ({ page }) => {
   await tabs(page).getByRole('button', { name: 'Browse', exact: true }).click()
   await page.getByLabel('Artists').getByRole('button', { name: /^The Velvet Owls/ }).click()

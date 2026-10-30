@@ -175,6 +175,33 @@ describe('SmartPlaylistEditor', () => {
     logged.mockRestore();
   });
 
+  it('on phones keeps the preview behind "Show tracks" and stacks each rule', async () => {
+    const onSaved = vi.fn();
+    render(<SmartPlaylistEditor variant="mobile" existingNames={[]} onClose={vi.fn()} onSaved={onSaved} />);
+    const dialog = screen.getByRole('dialog', { name: 'New smart playlist' });
+    expect(within(dialog).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(within(dialog).getByLabelText('Playlist name')).not.toHaveFocus();
+    expect(within(dialog).getByRole('combobox', { name: 'Field' }).style.minHeight).toBe('44px');
+
+    fireEvent.change(within(dialog).getByLabelText('Playlist name'), { target: { value: 'Trip hop' } });
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Artist name' }), { target: { value: 'Portishead' } });
+    const summary = await within(dialog).findByRole('button', { name: /2 tracks\s*· 10m\s*Show tracks/ });
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
+    expect(within(dialog).queryByRole('list', { name: 'First tracks' })).toBeNull();
+
+    fireEvent.click(summary);
+    expect(summary).toHaveAttribute('aria-expanded', 'true');
+    expect(within(dialog).getByRole('list', { name: 'First tracks' })).toHaveTextContent('Glory Box');
+
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Add group' })[0]);
+    expect(within(within(dialog).getByRole('group', { name: 'Rule group' })).getByRole('button', { name: 'Remove group' })).toBeVisible();
+
+    apiMock.playlists.createSmart.mockResolvedValue({ ...smartPlaylist, name: 'Trip hop' });
+    fireEvent.change(within(dialog).getAllByRole('combobox', { name: 'Artist name' })[1], { target: { value: 'Air' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create playlist' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
   it('offers a retry when the preview fails', async () => {
     apiMock.playlists.smartPreview.mockRejectedValueOnce(new ApiError('boom', 500, null, null));
     render(<SmartPlaylistEditor existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);

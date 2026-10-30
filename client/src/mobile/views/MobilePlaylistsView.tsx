@@ -21,6 +21,25 @@ import MobileMixesView from './MobileMixesView';
 import MobilePlaylistImportSheet from '../components/MobilePlaylistImportSheet';
 import { ImportIcons, PlaylistImportToast, type ImportedPlaylist } from '../../components/PlaylistImport';
 import { PLAYLIST_FILE_ACCEPT } from '../../playlistImport';
+import SmartPlaylistEditor, { SmartIcon } from '../../components/SmartPlaylistEditor';
+
+type LoadedPlaylist = { playlist: Playlist; tracks: PlaylistTrack[]; refreshError: boolean };
+
+/** One playlist with its tracks; smart playlists come from one snapshot read (refreshed on the server). */
+async function fetchPlaylist(playlistId: EntityId, smartHint: boolean, forceRefresh = false): Promise<LoadedPlaylist> {
+  if (smartHint) {
+    const snapshot = await (forceRefresh ? api.playlists.refresh(playlistId) : api.playlists.snapshot(playlistId));
+    return { playlist: snapshot.playlist, tracks: snapshot.tracks, refreshError: !!snapshot.refreshError };
+  }
+  const [playlist, tracks] = await Promise.all([api.playlists.get(playlistId), api.playlists.tracks(playlistId)]);
+  // Opened without knowing its kind (e.g. from Home): re-read a smart one as a snapshot.
+  if (playlist.kind === 'smart') return fetchPlaylist(playlistId, true);
+  return { playlist, tracks, refreshError: false };
+}
+
+function smartCardMeta(playlist: Playlist): string {
+  return `Smart · ${playlist.track_count} tracks · ${fmtDuration(playlist.total_duration)}`;
+}
 
 type LibraryTab = 'playlists' | 'mixes';
 
@@ -273,10 +292,19 @@ export default function MobilePlaylistsView({
   const [pendingRemoveTrack, setPendingRemoveTrack] = useState<PlaylistTrack | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [imported, setImported] = useState<ImportedPlaylist | null>(null);
+  const [smartEditor, setSmartEditor] = useState<{ playlist: Playlist | null } | null>(null);
+  // Smart detail: loading its tracks, or the last refresh failed and the previous result is shown.
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const pullStartYRef = useRef<number | null>(null);
   const suppressRowClickRef = useRef(false);
+  // Every load takes a number; leaving the detail or starting a newer load drops older answers.
+  const loadSeqRef = useRef(0);
   const selectedPlaylistId = selection.playlist?.id ?? initialPlaylistId ?? null;
+  const selectedSmart = selection.playlist?.kind === 'smart';
+  const selectedSmartRef = useRef(selectedSmart);
+  selectedSmartRef.current = selectedSmart;
 
   const loadPlaylists = useCallback(async () => {
     setLoading(true);
@@ -291,14 +319,30 @@ export default function MobilePlaylistsView({
     }
   }, []);
 
-  const loadSelectedPlaylist = useCallback(async (playlistId: EntityId) => {
-    const [playlist, tracks] = await Promise.all([
-      api.playlists.get(playlistId),
-      api.playlists.tracks(playlistId),
-    ]);
-    onSelectionChange({ playlist, tracks });
-    setPlaylists((prev) => prev.map((entry) => (entry.id === playlist.id ? playlist : entry)));
+  const loadSelectedPlaylist = useCallback(async (playlistId: EntityId, smartHint = false, forceRefresh = false) => {
+    const seq = ++loadSeqRef.current;
+    setDetailLoading(true);
+    try {
+      const loaded = await fetchPlaylist(playlistId, smartHint, forceRefresh);
+      if (seq !== loadSeqRef.current) return;
+      setRefreshError(loaded.refreshError);
+      onSelectionChange({ playlist: loaded.playlist, tracks: loaded.tracks });
+      setPlaylists((prev) => prev.map((entry) => (entry.id === loaded.playlist.id ? loaded.playlist : entry)));
+    } finally {
+      if (seq === loadSeqRef.current) setDetailLoading(false);
+    }
   }, [onSelectionChange]);
+
+  const leaveDetail = useCallback(() => {
+    loadSeqRef.current += 1;
+    setDetailLoading(false);
+    setRefreshError(false);
+    setError('');
+    onSelectionChange({ playlist: null, tracks: [] });
+  }, [onSelectionChange]);
+
+  // A load still running when the view closes must not reopen a playlist elsewhere.
+  useEffect(() => () => { loadSeqRef.current += 1; }, []);
 
   const handleImported = useCallback((result: ImportedPlaylist) => {
     setImportFile(null);
@@ -322,21 +366,16 @@ export default function MobilePlaylistsView({
 
   useEffect(() => {
     if (!selectedPlaylistId) return;
-    let cancelled = false;
-    Promise.all([
-      api.playlists.get(selectedPlaylistId),
-      api.playlists.tracks(selectedPlaylistId),
-    ]).then(([playlist, tracks]) => {
-      if (cancelled) return;
-      onSelectionChange({ playlist, tracks });
-      setPlaylists((prev) => prev.map((entry) => (entry.id === playlist.id ? playlist : entry)));
-    }).catch(() => {
-      if (!cancelled) setError('Could not load playlist.');
+    const seqBefore = loadSeqRef.current;
+    setRefreshError(false);
+    loadSelectedPlaylist(selectedPlaylistId, selectedSmartRef.current).catch(() => {
+      // Only the load this effect started (number seqBefore + 1) reports a failure.
+      if (loadSeqRef.current === seqBefore + 1) setError('Could not load playlist.');
     });
     return () => {
-      cancelled = true;
+      loadSeqRef.current += 1;
     };
-  }, [onSelectionChange, selectedPlaylistId]);
+  }, [loadSelectedPlaylist, selectedPlaylistId]);
 
   const playlistAlbumIds = useMemo(() => buildCollageAlbumIds(selection.tracks), [selection.tracks]);
   const playlistFallbackTiles = useMemo(() => createFallbackTiles(playlistAlbumIds.length), [playlistAlbumIds.length]);
@@ -554,6 +593,32 @@ export default function MobilePlaylistsView({
     await loadSelectedPlaylist(selection.playlist.id);
   }, [loadSelectedPlaylist, selection.playlist]);
 
+  const retrySmartRefresh = useCallback(() => {
+    if (!selection.playlist) return;
+    loadSelectedPlaylist(selection.playlist.id, true, true).catch(() => setRefreshError(true));
+  }, [loadSelectedPlaylist, selection.playlist]);
+
+  const handleSmartSaved = useCallback((saved: Playlist) => {
+    const created = !smartEditor?.playlist;
+    setSmartEditor(null);
+    void loadPlaylists();
+    if (created) {
+      onSelectionChange({ playlist: saved, tracks: [] });
+    } else {
+      loadSelectedPlaylist(saved.id, true).catch(() => setRefreshError(true));
+    }
+  }, [loadPlaylists, loadSelectedPlaylist, onSelectionChange, smartEditor]);
+
+  const smartEditorSheet = smartEditor ? (
+    <SmartPlaylistEditor
+      variant="mobile"
+      playlist={smartEditor.playlist}
+      existingNames={playlists.map((entry) => entry.name)}
+      onClose={() => setSmartEditor(null)}
+      onSaved={handleSmartSaved}
+    />
+  ) : null;
+
   const exportPlaylist = useCallback(() => {
     if (!selection.playlist) return;
     window.location.href = api.playlists.exportM3uUrl(selection.playlist.id);
@@ -583,7 +648,7 @@ export default function MobilePlaylistsView({
         } catch (error) {
           onSelectionChange({ playlist: previousPlaylist, tracks: selection.tracks });
           setPlaylists((prev) => prev.map((entry) => (entry.id === previousPlaylist.id ? previousPlaylist : entry)));
-          await loadSelectedPlaylist(previousPlaylist.id).catch(() => {});
+          await loadSelectedPlaylist(previousPlaylist.id, previousPlaylist.kind === 'smart').catch(() => {});
           throw error;
         }
       }
@@ -603,10 +668,7 @@ export default function MobilePlaylistsView({
             type="button"
             style={styles.backBtn}
             aria-label="Back"
-            onClick={() => {
-              setError('');
-              onSelectionChange({ playlist: null, tracks: [] });
-            }}
+            onClick={leaveDetail}
           >
             Back
           </button>
@@ -626,23 +688,39 @@ export default function MobilePlaylistsView({
               ))}
             </div>
             <div style={styles.heroTextBlock}>
+              {selectedSmart ? (
+                <span style={styles.smartChip} title={'Smart playlist\nIts tracks are picked by rules and update on their own'}>
+                  <SmartIcon size={12} />Smart playlist
+                </span>
+              ) : null}
               <h1 id="mobile-playlist-title" style={styles.heroTitle}>{selection.playlist.name}</h1>
               <div style={styles.heroSummary}>
                 {selection.playlist.track_count} tracks - {fmtDuration(playlistDuration)}
               </div>
+              {selectedSmart && detailLoading ? <div role="status" style={styles.smartStatus}>Updating…</div> : null}
               {selection.playlist.description ? (
                 <p style={styles.heroDescription}>{selection.playlist.description}</p>
               ) : null}
             </div>
           </div>
           <div style={styles.heroActions}>
-            <button
-              type="button"
-              style={styles.heroGhostAction}
-              onClick={() => setAddTracksOpen(true)}
-            >
-              Add
-            </button>
+            {selectedSmart ? (
+              <button
+                type="button"
+                style={{ ...styles.heroGhostAction, borderColor: 'var(--accent)' }}
+                onClick={() => setSmartEditor({ playlist: selection.playlist })}
+              >
+                Rules
+              </button>
+            ) : (
+              <button
+                type="button"
+                style={styles.heroGhostAction}
+                onClick={() => setAddTracksOpen(true)}
+              >
+                Add
+              </button>
+            )}
             <button
               type="button"
               style={{
@@ -683,6 +761,12 @@ export default function MobilePlaylistsView({
         />
 
         {error ? <div role="alert" style={styles.error}>{error}</div> : null}
+        {selectedSmart && refreshError ? (
+          <div role="alert" style={styles.error}>
+            Couldn’t update this playlist. Showing the last result.
+            <button type="button" style={styles.retryButton} disabled={detailLoading} onClick={retrySmartRefresh}>Try again</button>
+          </div>
+        ) : null}
 
         <div style={styles.trackListHeader}>
           <h2 style={styles.trackListHeading}>Tracks</h2>
@@ -701,7 +785,9 @@ export default function MobilePlaylistsView({
           spellCheck={false}
         />
         <div style={styles.trackListHint}>
-          {sortMode === 'manual' && !trackFilter.trim() ? 'Drag to reorder. Swipe left to delete.' : 'Sorted view. Swipe left to delete.'}
+          {selectedSmart
+            ? 'Picked by rules. Edit the rules to change the tracks.'
+            : sortMode === 'manual' && !trackFilter.trim() ? 'Drag to reorder. Swipe left to delete.' : 'Sorted view. Swipe left to delete.'}
         </div>
 
         <div style={styles.trackList}>
@@ -711,9 +797,16 @@ export default function MobilePlaylistsView({
             const isReordering = gesture?.mode === 'reorder' && gesture.trackId === trackGestureId;
             const isDropTarget = gesture?.mode === 'reorder' && gesture.targetIndex === index && gesture.rowIndex !== index;
             const canReorder = sortMode === 'manual' && !trackFilter.trim();
+            // Smart playlists pick their own tracks: no swipe-to-delete or drag reorder.
+            const rowGestures = selectedSmart ? {} : {
+              onPointerDown: (event: React.PointerEvent<HTMLElement>) => handlePointerDown(event, index, trackGestureId, 'row'),
+              onPointerMove: handlePointerMove,
+              onPointerUp: (event: React.PointerEvent<HTMLElement>) => void handlePointerEnd(event),
+              onPointerCancel: (event: React.PointerEvent<HTMLElement>) => void handlePointerEnd(event),
+            };
             return (
               <div key={trackGestureId} style={styles.trackShell}>
-                <div style={styles.deleteAction}>Delete</div>
+                {selectedSmart ? null : <div style={styles.deleteAction}>Delete</div>}
                 <div
                   style={{
                     ...styles.trackRow,
@@ -727,10 +820,7 @@ export default function MobilePlaylistsView({
                     type="button"
                     style={styles.trackButton}
                     aria-label={`Play ${track.title || track.file_name}`}
-                    onPointerDown={(event) => handlePointerDown(event, index, trackGestureId, 'row')}
-                    onPointerMove={handlePointerMove}
-                    onPointerUp={(event) => void handlePointerEnd(event)}
-                    onPointerCancel={(event) => void handlePointerEnd(event)}
+                    {...rowGestures}
                     onClick={() => handleRowClick(track)}
                   >
                     <div style={styles.trackThumbWrap}>
@@ -758,7 +848,7 @@ export default function MobilePlaylistsView({
                   >
                     ...
                   </button>
-                  <button
+                  {selectedSmart ? null : <button
                     type="button"
                     style={{
                       ...styles.dragHandle,
@@ -775,12 +865,21 @@ export default function MobilePlaylistsView({
                     <span style={styles.dragDots} />
                     <span style={styles.dragDots} />
                     <span style={styles.dragDots} />
-                  </button>
+                  </button>}
                 </div>
               </div>
             );
           })}
-          {!filteredTracks.length ? (
+          {!filteredTracks.length && selectedSmart && !selection.tracks.length ? (
+            detailLoading ? null : (
+              <div role="status" style={styles.emptyCreateState}>
+                <div style={styles.emptyCreateTitle}>No tracks match these rules.</div>
+                <button type="button" style={styles.emptyCreateButton} onClick={() => setSmartEditor({ playlist: selection.playlist })}>
+                  Edit rules
+                </button>
+              </div>
+            )
+          ) : !filteredTracks.length ? (
             <div role="status" style={styles.emptyState}>{selection.tracks.length ? 'No tracks match that search.' : 'This playlist is empty.'}</div>
           ) : null}
         </div>
@@ -829,6 +928,7 @@ export default function MobilePlaylistsView({
           }}
           onSubmit={handleEditorSubmit}
         />
+        {smartEditorSheet}
         <MobileConfirmationSheet
           open={pendingRemoveTrack !== null}
           title="Remove this track?"
@@ -899,6 +999,15 @@ export default function MobilePlaylistsView({
             >
               <ImportIcons.ImportFile size={18} />
             </button>
+            <button
+              type="button"
+              aria-label="New smart playlist"
+              title={'New smart playlist\nPicks tracks by rules you set'}
+              style={styles.importButton}
+              onClick={() => setSmartEditor({ playlist: null })}
+            >
+              <SmartIcon size={18} />
+            </button>
             <input
               ref={importInputRef}
               type="file"
@@ -941,9 +1050,12 @@ export default function MobilePlaylistsView({
                   key={playlist.id}
                   type="button"
                   style={styles.card}
+                  aria-label={playlist.kind === 'smart'
+                    ? `${playlist.name} — Smart playlist · ${playlist.track_count} tracks · ${fmtDuration(playlist.total_duration)}`
+                    : undefined}
                   onClick={() => onSelectionChange({ playlist, tracks: [] })}
                 >
-                  <span style={styles.cardArtwork}>
+                  <span style={{ ...styles.cardArtwork, position: 'relative' }}>
                     {playlist.art_album_ids?.[0] ? (
                       <ArtImage
                         src={api.albumArtUrl(playlist.art_album_ids[0], 300)}
@@ -953,10 +1065,17 @@ export default function MobilePlaylistsView({
                     ) : (
                       <span style={hybridMobileContentStyles.listArtworkFallback}>≡</span>
                     )}
+                    {playlist.kind === 'smart' ? (
+                      <span data-testid="smart-badge" style={styles.smartBadge}><SmartIcon size={13} /></span>
+                    ) : null}
                   </span>
                   <span style={styles.cardMeta}>
                     <span style={styles.cardTitle}>{playlist.name}</span>
-                    <span style={styles.cardSub}>{playlist.track_count} tracks - {fmtDuration(playlist.total_duration)}</span>
+                    <span style={styles.cardSub}>
+                      {playlist.kind === 'smart'
+                        ? smartCardMeta(playlist)
+                        : `${playlist.track_count} tracks - ${fmtDuration(playlist.total_duration)}`}
+                    </span>
                   </span>
                   <span style={hybridMobileContentStyles.listBadge}>Open</span>
                 </button>
@@ -977,6 +1096,7 @@ export default function MobilePlaylistsView({
         }}
         onSubmit={handleEditorSubmit}
       />
+      {smartEditorSheet}
       {importFile ? (
         <MobilePlaylistImportSheet file={importFile} onClose={() => setImportFile(null)} onImported={handleImported} />
       ) : null}
@@ -1330,4 +1450,34 @@ const styles: Record<string, React.CSSProperties> = {
   cardMeta: hybridMobileContentStyles.listMeta,
   cardTitle: hybridMobileContentStyles.listTitle,
   cardSub: hybridMobileContentStyles.listSubtitle,
+  smartChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 6,
+    padding: '2px 8px',
+    borderRadius: 999,
+    border: '1px solid color-mix(in srgb, var(--accent) 40%, var(--divider-subtle, var(--border)))',
+    background: 'var(--accent-soft)',
+    color: 'var(--accent)',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  smartStatus: {
+    marginTop: 4,
+    color: 'var(--text-muted)',
+    fontSize: 12,
+  },
+  smartBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    display: 'grid',
+    placeItems: 'center',
+    background: 'color-mix(in srgb, var(--bg) 82%, transparent)',
+    color: 'var(--accent)',
+  },
 };

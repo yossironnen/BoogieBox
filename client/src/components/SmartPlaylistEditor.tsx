@@ -158,6 +158,14 @@ interface TreeContext {
   canAddRule: boolean;
   canAddGroup: boolean;
   readOnly: boolean;
+  /** Phone layout: stacked rows, 44px touch targets. */
+  mobile: boolean;
+}
+
+/** Width for a value control; on phones wide controls fill the row. */
+function valueWidth(ctx: TreeContext, px: number): React.CSSProperties {
+  if (!ctx.mobile) return { width: px };
+  return px >= 160 ? { flex: 1, minWidth: 0, width: '100%' } : { width: px + 24 };
 }
 
 function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
@@ -171,7 +179,8 @@ function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
   const kind = conditionSpec(rule.field, rule.operator)?.kind ?? 'none';
   const suggestions = useNameSuggestions(rule.field, kind === 'text' ? rule.text : '');
   const listId = `smart-suggest-${rule.key}`;
-  const inputStyle = { ...S.value, ...(invalid ? S.invalid : {}) };
+  const st = ctx.mobile ? MS : S;
+  const inputStyle = { ...st.value, ...(invalid ? S.invalid : {}) };
   const set = (patch: Partial<DraftRule>) => onChange({ ...rule, ...patch });
 
   switch (kind) {
@@ -181,7 +190,7 @@ function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
       return (
         <>
           <input type="text" aria-label={spec.valueLabel} placeholder={spec.placeholder} value={rule.text}
-            aria-invalid={invalid || undefined} list={listId} maxLength={128} style={{ ...inputStyle, width: 200 }}
+            aria-invalid={invalid || undefined} list={listId} maxLength={128} style={{ ...inputStyle, ...valueWidth(ctx, 200) }}
             onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
           <datalist id={listId}>{suggestions.map(name => <option key={name} value={name} />)}</datalist>
         </>
@@ -190,7 +199,7 @@ function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
       return (
         <>
           <input type="search" aria-label={spec.valueLabel} placeholder={spec.placeholder} value={rule.text}
-            aria-invalid={invalid || undefined} list={listId} maxLength={128} style={{ ...inputStyle, width: 200 }}
+            aria-invalid={invalid || undefined} list={listId} maxLength={128} style={{ ...inputStyle, ...valueWidth(ctx, 200) }}
             onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
           <datalist id={listId}>{ctx.genres.map(g => <option key={g.genre} value={g.genre} />)}</datalist>
         </>
@@ -200,7 +209,7 @@ function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
       return (
         <>
           <input type="text" inputMode={rule.field === 'bpm' ? 'decimal' : 'numeric'} aria-label={spec.valueLabel}
-            value={rule.text} aria-invalid={invalid || undefined} style={{ ...inputStyle, width: 90 }}
+            value={rule.text} aria-invalid={invalid || undefined} style={{ ...inputStyle, ...valueWidth(ctx, 90) }}
             onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
           {spec.suffix && <span style={S.muted}>{spec.suffix}</span>}
         </>
@@ -209,34 +218,34 @@ function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
       return (
         <>
           <input type="text" inputMode={rule.field === 'bpm' ? 'decimal' : 'numeric'} aria-label={`From ${rangeNoun(rule.field)}`}
-            value={rule.text} aria-invalid={invalid || undefined} style={{ ...inputStyle, width: 76 }}
+            value={rule.text} aria-invalid={invalid || undefined} style={{ ...inputStyle, ...valueWidth(ctx, 76) }}
             onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
           <span style={S.muted}>and</span>
           <input type="text" inputMode={rule.field === 'bpm' ? 'decimal' : 'numeric'} aria-label={`To ${rangeNoun(rule.field)}`}
-            value={rule.text2} aria-invalid={invalid || undefined} style={{ ...inputStyle, width: 76 }}
+            value={rule.text2} aria-invalid={invalid || undefined} style={{ ...inputStyle, ...valueWidth(ctx, 76) }}
             onChange={e => set({ text2: e.target.value })} onBlur={onBlur} />
           {spec.suffix && <span style={S.muted}>{spec.suffix}</span>}
         </>
       );
     case 'rating':
       return (
-        <StarRating ariaLabel="Rating" value={rule.rating} size="regular"
+        <StarRating ariaLabel="Rating" value={rule.rating} size={ctx.mobile ? 'hero' : 'regular'}
           onChange={value => { set({ rating: value }); onBlur(); }} />
       );
     case 'rating_range':
       return (
         <>
-          <StarRating ariaLabel="From rating" value={rule.rating}
+          <StarRating ariaLabel="From rating" value={rule.rating} size={ctx.mobile ? 'hero' : undefined}
             onChange={value => { set({ rating: value }); onBlur(); }} />
           <span style={S.muted}>and</span>
-          <StarRating ariaLabel="To rating" value={rule.rating2}
+          <StarRating ariaLabel="To rating" value={rule.rating2} size={ctx.mobile ? 'hero' : undefined}
             onChange={value => { set({ rating2: value }); onBlur(); }} />
         </>
       );
     case 'date':
       return (
         <input type="date" aria-label="Date" value={rule.text} aria-invalid={invalid || undefined}
-          style={{ ...inputStyle, width: 160 }} onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
+          style={{ ...inputStyle, ...valueWidth(ctx, 160) }} onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
       );
     case 'libraries': {
       const known = new Set(ctx.libraries.map(l => String(l.id)));
@@ -251,12 +260,12 @@ function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
             const id = String(lib.id);
             const on = rule.libraries.includes(id);
             return (
-              <button key={id} type="button" aria-pressed={on} style={{ ...S.chip, ...(on ? S.chipOn : {}) }}
+              <button key={id} type="button" aria-pressed={on} style={{ ...st.chip, ...(on ? S.chipOn : {}) }}
                 onClick={() => toggle(id)}>{lib.name}</button>
             );
           })}
           {removed.map(id => (
-            <button key={id} type="button" aria-pressed="true" style={{ ...S.chip, ...S.chipRemoved }}
+            <button key={id} type="button" aria-pressed="true" style={{ ...st.chip, ...S.chipRemoved }}
               onClick={() => toggle(id)}>
               <PathIcon d={ICON.warn} size={13} />{COPY.removedLibrary}
             </button>
@@ -277,29 +286,51 @@ function RuleRow({ rule, canRemove, ctx }: { rule: DraftRule; canRemove: boolean
   if (rule.field === 'last_played_at' && rule.operator === 'not_in_last_days') hint = COPY.neverPlayedHint;
   if (rule.field === 'added_at') hint = COPY.addedAtHint;
   const change = (next: DraftRule) => ctx.update(rule.key, next);
+  const st = ctx.mobile ? MS : S;
+  const fieldSelect = (
+    <select aria-label="Field" value={rule.field} style={{ ...st.select, ...(ctx.mobile ? { flex: 1, minWidth: 0 } : { width: 150 }) }}
+      onChange={e => change(withField(rule, e.target.value as SmartField))}>
+      {FIELDS.map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
+    </select>
+  );
+  const conditionSelect = (
+    <select aria-label="Condition" value={rule.operator} style={{ ...st.select, ...(ctx.mobile ? { width: '100%' } : { width: 170 }) }}
+      onChange={e => { change(withOperator(rule, e.target.value)); ctx.touch(rule.key); }}>
+      {spec.conditions.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+    </select>
+  );
+  const value = <ValueEditor rule={rule} ctx={ctx} invalid={!!error} onChange={change} onBlur={() => ctx.touch(rule.key)} />;
+  const removeButton = (
+    <button type="button" aria-label="Remove rule" title="Remove rule" style={st.smallIconBtn}
+      disabled={!canRemove || ctx.readOnly} onClick={() => ctx.update(rule.key, null)}>
+      <PathIcon d={ICON.close} size={ctx.mobile ? 16 : 14} />
+    </button>
+  );
+  const frame = { ...st.ruleRow, ...(error ? S.ruleRowInvalid : hasRemovedLibrary ? S.ruleRowWarn : {}) };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ ...S.ruleRow, ...(error ? S.ruleRowInvalid : hasRemovedLibrary ? S.ruleRowWarn : {}) }}>
-        <PathIcon d={spec.icon} accent />
-        <select aria-label="Field" value={rule.field} style={{ ...S.select, width: 150 }}
-          onChange={e => change(withField(rule, e.target.value as SmartField))}>
-          {FIELDS.map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
-        </select>
-        <select aria-label="Condition" value={rule.operator} style={{ ...S.select, width: 170 }}
-          onChange={e => { change(withOperator(rule, e.target.value)); ctx.touch(rule.key); }}>
-          {spec.conditions.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
-        </select>
-        <div style={S.valueSlot}>
-          <ValueEditor rule={rule} ctx={ctx} invalid={!!error} onChange={change} onBlur={() => ctx.touch(rule.key)} />
+      {ctx.mobile ? (
+        <div style={frame}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <PathIcon d={spec.icon} accent />
+            {fieldSelect}
+            {removeButton}
+          </div>
+          {conditionSelect}
+          {(conditionSpec(rule.field, rule.operator)?.kind ?? 'none') !== 'none' && <div style={st.valueSlot}>{value}</div>}
         </div>
-        <button type="button" aria-label="Remove rule" title="Remove rule" style={S.smallIconBtn}
-          disabled={!canRemove || ctx.readOnly} onClick={() => ctx.update(rule.key, null)}>
-          <PathIcon d={ICON.close} size={14} />
-        </button>
-      </div>
+      ) : (
+        <div style={frame}>
+          <PathIcon d={spec.icon} accent />
+          {fieldSelect}
+          {conditionSelect}
+          <div style={S.valueSlot}>{value}</div>
+          {removeButton}
+        </div>
+      )}
       {error && <div style={S.errorLine}>{error}</div>}
       {!error && hasRemovedLibrary && <div style={S.warnLine}>{COPY.removedLibraryHint}</div>}
-      {!error && !hasRemovedLibrary && hint && <div style={S.hintLine}>{hint}</div>}
+      {!error && !hasRemovedLibrary && hint && <div style={st.hintLine}>{hint}</div>}
     </div>
   );
 }
@@ -307,14 +338,15 @@ function RuleRow({ rule, canRemove, ctx }: { rule: DraftRule; canRemove: boolean
 function AddButtons({ group, depth, ctx }: { group: DraftGroup; depth: number; ctx: TreeContext }) {
   const nestable = canNestGroup(depth);
   const groupBlocked = !ctx.canAddGroup || !nestable;
+  const st = ctx.mobile ? MS : S;
   return (
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-      <button type="button" style={{ ...S.addBtn, ...(!ctx.canAddRule ? hybridControlStyles.disabled : {}) }}
+    <div style={ctx.mobile ? MS.addRow : { display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <button type="button" style={{ ...st.addBtn, ...(!ctx.canAddRule ? hybridControlStyles.disabled : {}) }}
         disabled={!ctx.canAddRule || ctx.readOnly} title={!ctx.canAddRule ? COPY.ruleLimit : undefined}
         onClick={() => ctx.append(group.key, newRule())}>
         <PathIcon d={ICON.plus} size={14} />Add rule
       </button>
-      <button type="button" style={{ ...S.addBtn, ...(groupBlocked ? hybridControlStyles.disabled : {}) }}
+      <button type="button" style={{ ...st.addBtn, ...(groupBlocked ? hybridControlStyles.disabled : {}) }}
         disabled={groupBlocked || ctx.readOnly}
         title={!nestable ? COPY.depthLimit : !ctx.canAddGroup ? COPY.ruleLimit : undefined}
         onClick={() => ctx.append(group.key, newGroup())}>
@@ -339,18 +371,25 @@ function GroupChildren({ group, depth, ctx }: { group: DraftGroup; depth: number
 function GroupBox({ group, depth, ctx }: { group: DraftGroup; depth: number; ctx: TreeContext }) {
   return (
     <div role="group" aria-label="Rule group" style={S.group}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: ctx.mobile ? 15 : 14, flexWrap: ctx.mobile ? 'wrap' : undefined }}>
         <PathIcon d={ICON.groupHead} accent />
         <span>Match</span>
-        <select aria-label="Match all or any rule in this group" value={group.mode} style={S.modeSelect}
+        <select aria-label="Match all or any rule in this group" value={group.mode} style={ctx.mobile ? MS.modeSelect : S.modeSelect}
           onChange={e => ctx.update(group.key, { ...group, mode: e.target.value as 'all' | 'any' })}>
           <option value="all">all</option>
           <option value="any">any</option>
         </select>
         <span style={{ flex: 1 }}>of these</span>
-        <button type="button" style={S.removeGroupBtn} disabled={ctx.readOnly} onClick={() => ctx.update(group.key, null)}>
-          <PathIcon d={ICON.trash} size={13} />Remove group
-        </button>
+        {ctx.mobile ? (
+          <button type="button" aria-label="Remove group" title="Remove group" style={{ ...MS.smallIconBtn, marginLeft: 'auto' }}
+            disabled={ctx.readOnly} onClick={() => ctx.update(group.key, null)}>
+            <PathIcon d={ICON.trash} size={16} />
+          </button>
+        ) : (
+          <button type="button" style={S.removeGroupBtn} disabled={ctx.readOnly} onClick={() => ctx.update(group.key, null)}>
+            <PathIcon d={ICON.trash} size={13} />Remove group
+          </button>
+        )}
       </div>
       <GroupChildren group={group} depth={depth} ctx={ctx} />
       <AddButtons group={group} depth={depth} ctx={ctx} />
@@ -360,8 +399,9 @@ function GroupBox({ group, depth, ctx }: { group: DraftGroup; depth: number; ctx
 
 // ─── Order and limit ──────────────────────────────────────────────────────────
 
-function SortSelects({ sort, onChange, fieldLabel, directionLabel, exclude, fieldId }: {
+function SortSelects({ sort, onChange, fieldLabel, directionLabel, exclude, fieldId, mobile = false }: {
   sort: DraftSort;
+  mobile?: boolean;
   onChange: (next: DraftSort) => void;
   fieldLabel?: string;
   directionLabel: string;
@@ -371,11 +411,11 @@ function SortSelects({ sort, onChange, fieldLabel, directionLabel, exclude, fiel
   const [asc, desc] = directionLabels(sort.field);
   return (
     <>
-      <select id={fieldId} aria-label={fieldLabel} value={sort.field} style={{ ...S.select, width: 130 }}
+      <select id={fieldId} aria-label={fieldLabel} value={sort.field} style={mobile ? MS.select : { ...S.select, width: 130 }}
         onChange={e => onChange({ ...sort, field: e.target.value as SmartSortField })}>
         {SORT_FIELDS.filter(f => f.field !== exclude).map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
       </select>
-      <select aria-label={directionLabel} value={sort.direction} style={{ ...S.select, width: 128 }}
+      <select aria-label={directionLabel} value={sort.direction} style={mobile ? MS.select : { ...S.select, width: 128 }}
         onChange={e => onChange({ ...sort, direction: e.target.value as 'asc' | 'desc' })}>
         <option value="asc">{asc}</option>
         <option value="desc">{desc}</option>
@@ -386,10 +426,19 @@ function SortSelects({ sort, onChange, fieldLabel, directionLabel, exclude, fiel
 
 // ─── Preview ──────────────────────────────────────────────────────────────────
 
-function PreviewPanel({ state, onRetry }: { state: PreviewState; onRetry: () => void }) {
-  const preview = state.status === 'ready' ? state.preview : state.status === 'loading' ? state.last : null;
+function previewOf(state: PreviewState): SmartPlaylistPreview | null {
+  return state.status === 'ready' ? state.preview : state.status === 'loading' ? state.last : null;
+}
+
+function PreviewPanel({ state, onRetry, mobile = false, panelRef }: {
+  state: PreviewState;
+  onRetry: () => void;
+  mobile?: boolean;
+  panelRef?: React.Ref<HTMLElement>;
+}) {
+  const preview = previewOf(state);
   return (
-    <aside aria-labelledby="smart-preview-title" style={S.preview}>
+    <aside ref={panelRef} id="smart-preview" aria-labelledby="smart-preview-title" style={mobile ? MS.preview : S.preview}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div id="smart-preview-title" style={S.sectionTitle}>Preview</div>
         <div role="status" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
@@ -398,7 +447,7 @@ function PreviewPanel({ state, onRetry }: { state: PreviewState; onRetry: () => 
       </div>
       {state.status === 'error' && (
         <div role="alert" style={{ ...S.stateBox, ...S.stateBoxError }}>
-          <span style={{ color: 'var(--danger)' }}><PathIcon d={ICON.alert} size={28} /></span>
+          <span style={{ color: 'var(--danger, #d65c5c)' }}><PathIcon d={ICON.alert} size={28} /></span>
           <div style={{ fontSize: 14, fontWeight: 650 }}>Couldn&rsquo;t update the preview.</div>
           <button type="button" style={S.addBtn} onClick={onRetry}>Try again</button>
         </div>
@@ -448,6 +497,26 @@ function PreviewPanel({ state, onRetry }: { state: PreviewState; onRetry: () => 
   );
 }
 
+/** Phone footer: "N tracks · <duration>" that shows or hides the preview. */
+function PreviewSummary({ state, expanded, onToggle }: { state: PreviewState; expanded: boolean; onToggle: () => void }) {
+  const preview = previewOf(state);
+  if (!preview && state.status !== 'error') return null;
+  return (
+    <button type="button" aria-expanded={expanded} aria-controls="smart-preview" style={MS.summaryBtn} onClick={onToggle}>
+      <PathIcon d={ICON.tracks} accent />
+      <span style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+        {preview && state.status !== 'error' ? (
+          <>
+            <span style={{ fontWeight: 700 }}>{preview.trackCount.toLocaleString()} tracks</span>
+            <span style={{ color: 'var(--text-muted)' }}> · {lengthLabel(preview.totalDuration)}</span>
+          </>
+        ) : <span style={{ color: 'var(--danger, #d65c5c)' }}>Couldn&rsquo;t update the preview.</span>}
+      </span>
+      <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>Show tracks</span>
+    </button>
+  );
+}
+
 // ─── Editor ───────────────────────────────────────────────────────────────────
 
 export interface SmartPlaylistEditorProps {
@@ -457,12 +526,17 @@ export interface SmartPlaylistEditorProps {
   existingNames: string[];
   onClose: () => void;
   onSaved: (playlist: Playlist) => void;
+  /** `mobile`: a full-height sheet with stacked rules and the preview behind "Show tracks". */
+  variant?: 'desktop' | 'mobile';
 }
 
 type LoadState = 'loading' | 'ready' | 'unsupported' | 'failed';
 
-export default function SmartPlaylistEditor({ playlist, existingNames, onClose, onSaved }: SmartPlaylistEditorProps) {
+export default function SmartPlaylistEditor({ playlist, existingNames, onClose, onSaved, variant = 'desktop' }: SmartPlaylistEditorProps) {
   const editing = !!playlist;
+  const mobile = variant === 'mobile';
+  const [showTracks, setShowTracks] = useState(false);
+  const previewRef = useRef<HTMLElement>(null);
   const [draft, setDraft] = useState<SmartDraft>(() => newDraft());
   const [load, setLoad] = useState<LoadState>(editing ? 'loading' : 'ready');
   const [editRevision, setEditRevision] = useState(0);
@@ -511,7 +585,9 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
   }, [playlist]);
 
   useEffect(() => { void loadDefinition(); }, [loadDefinition]);
-  useEffect(() => { if (load === 'ready' && !editing) nameRef.current?.focus(); }, [load, editing]);
+  // On phones the keyboard would cover the sheet; the dialog focuses the close button instead.
+  useEffect(() => { if (load === 'ready' && !editing && !mobile) nameRef.current?.focus(); }, [load, editing, mobile]);
+  useEffect(() => { if (showTracks) previewRef.current?.scrollIntoView?.({ block: 'nearest' }); }, [showTracks]);
 
   const check = useMemo(() => checkDraft(draft), [draft]);
   const definitionJson = useMemo(
@@ -534,7 +610,9 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
     canAddRule: ruleCount < MAX_RULES && nodeCount < MAX_NODES,
     canAddGroup: ruleCount < MAX_RULES && nodeCount + 2 <= MAX_NODES,
     readOnly,
+    mobile,
   };
+  const st = mobile ? MS : S;
 
   const visibleErrors = (showAllErrors ? check.ruleErrors.size : [...check.ruleErrors.keys()].filter(k => touched.has(k)).length) > 0
     || check.maxTracksError || check.maxMinutesError;
@@ -590,26 +668,28 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
     <dialog ref={dialogRef} aria-labelledby="smart-editor-title"
       onCancel={e => { e.preventDefault(); onClose(); }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-      style={S.overlay}>
-      <div style={S.dialog}>
-        <div style={S.header}>
+      style={st.overlay}>
+      <div style={st.dialog}>
+        {mobile && <div aria-hidden="true" style={MS.handle} />}
+        <div style={st.header}>
           <div>
-            <div style={S.eyebrow}>Smart playlist</div>
+            {!mobile && <div style={S.eyebrow}>Smart playlist</div>}
             <div id="smart-editor-title" style={S.title}>{title}</div>
           </div>
-          <button type="button" aria-label="Close rules" title="Close rules" style={S.closeBtn} onClick={onClose}>
-            <PathIcon d={ICON.close} size={16} />
+          <button type="button" aria-label="Close rules" title="Close rules" style={st.closeBtn} onClick={onClose}>
+            <PathIcon d={ICON.close} size={mobile ? 18 : 16} />
           </button>
         </div>
+        <div style={mobile ? MS.scroll : undefined}>
 
         {load === 'loading' && <div style={S.loading}>Loading…</div>}
         {load === 'failed' && (
-          <div role="alert" style={{ ...S.loading, color: 'var(--danger)' }}>Could not load saved rules.</div>
+          <div role="alert" style={{ ...S.loading, color: 'var(--danger, #d65c5c)' }}>Could not load saved rules.</div>
         )}
 
         {(load === 'ready' || load === 'unsupported') && (
-          <div className="smart-editor-body">
-            <fieldset disabled={readOnly} style={S.main}>
+          <div className={mobile ? undefined : 'smart-editor-body'}>
+            <fieldset disabled={readOnly} style={st.main}>
               {load === 'unsupported' && (
                 <div role="alert" style={S.errorLine}>
                   These rules were made by a newer version of BoogieBox and can&rsquo;t be edited here.
@@ -618,7 +698,7 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label htmlFor="smart-name" style={S.label}>Playlist name</label>
                 <input id="smart-name" ref={nameRef} type="text" value={draft.name} maxLength={200}
-                  style={{ ...S.nameInput, ...(nameError ? S.invalid : {}) }}
+                  style={{ ...st.nameInput, ...(nameError ? S.invalid : {}) }}
                   aria-invalid={nameError ? true : undefined}
                   onChange={e => { setNameError(''); setDraft(d => ({ ...d, name: e.target.value })); }} />
                 {nameError && <div style={S.errorLine}>{nameError}</div>}
@@ -626,9 +706,9 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
 
               <section aria-labelledby="smart-rules-title" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div id="smart-rules-title" style={S.sectionTitle}>Rules</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: mobile ? 15 : 14, flexWrap: 'wrap' }}>
                   <span>Tracks that match</span>
-                  <select aria-label="Match all or any rule" value={draft.root.mode} style={S.modeSelect}
+                  <select aria-label="Match all or any rule" value={draft.root.mode} style={st.modeSelect}
                     onChange={e => setDraft(d => ({ ...d, root: { ...d.root, mode: e.target.value as 'all' | 'any' } }))}>
                     <option value="all">all</option>
                     <option value="any">any</option>
@@ -639,64 +719,125 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
                 <AddButtons group={draft.root} depth={1} ctx={ctx} />
               </section>
 
-              <section aria-labelledby="smart-order-title" style={S.orderSection}>
-                <div id="smart-order-title" style={S.sectionTitle}>Order and limit</div>
-                <div style={S.lineRow}>
-                  <PathIcon d={ICON.sort} accent />
-                  <label htmlFor="smart-sort" style={{ minWidth: 64 }}>Order by</label>
-                  <SortSelects fieldId="smart-sort" sort={draft.sort} directionLabel="Direction"
-                    onChange={sort => setDraft(d => ({ ...d, sort, thenBy: d.thenBy?.field === sort.field ? null : d.thenBy }))} />
-                  {draft.thenBy ? (
-                    <>
-                      <span style={S.muted}>then by</span>
-                      <SortSelects sort={draft.thenBy} fieldLabel="Then by" directionLabel="Then by direction"
-                        exclude={draft.sort.field} onChange={thenBy => setDraft(d => ({ ...d, thenBy }))} />
-                      <button type="button" aria-label="Remove second order" title="Remove second order" style={S.smallIconBtn}
-                        onClick={() => setDraft(d => ({ ...d, thenBy: null }))}>
-                        <PathIcon d={ICON.close} size={14} />
+              {mobile ? (
+                <details open style={MS.orderBox}>
+                  <summary style={MS.orderSummary}>
+                    <PathIcon d={ICON.sort} accent />Order and limit
+                  </summary>
+                  <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <label htmlFor="smart-sort" style={S.label}>Order by</label>
+                    <SortSelects mobile fieldId="smart-sort" sort={draft.sort} directionLabel="Direction"
+                      onChange={sort => setDraft(d => ({ ...d, sort, thenBy: d.thenBy?.field === sort.field ? null : d.thenBy }))} />
+                    {draft.thenBy ? (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                          <span style={S.label}>then by</span>
+                          <button type="button" aria-label="Remove second order" title="Remove second order" style={MS.smallIconBtn}
+                            onClick={() => setDraft(d => ({ ...d, thenBy: null }))}>
+                            <PathIcon d={ICON.close} size={16} />
+                          </button>
+                        </div>
+                        <SortSelects mobile sort={draft.thenBy} fieldLabel="Then by" directionLabel="Then by direction"
+                          exclude={draft.sort.field} onChange={thenBy => setDraft(d => ({ ...d, thenBy }))} />
+                      </>
+                    ) : (
+                      <button type="button" style={{ ...MS.addBtn, alignSelf: 'flex-start' }}
+                        onClick={() => setDraft(d => ({
+                          ...d,
+                          thenBy: { field: SORT_FIELDS.find(f => f.field !== d.sort.field)!.field, direction: 'asc' },
+                        }))}>
+                        <PathIcon d={ICON.plus} size={15} />Add a second order
                       </button>
-                    </>
-                  ) : (
-                    <button type="button" style={S.addBtn}
-                      onClick={() => setDraft(d => ({
-                        ...d,
-                        thenBy: { field: SORT_FIELDS.find(f => f.field !== d.sort.field)!.field, direction: 'asc' },
-                      }))}>
-                      <PathIcon d={ICON.plus} size={14} />Add a second order
-                    </button>
-                  )}
-                </div>
-                <div style={S.lineRow}>
-                  <PathIcon d={ICON.limit} accent />
-                  <label htmlFor="smart-max" style={{ minWidth: 64 }}>Up to</label>
-                  <input id="smart-max" type="text" inputMode="numeric" value={draft.maxTracks}
-                    aria-invalid={check.maxTracksError ? true : undefined}
-                    style={{ ...S.value, width: 90, ...(check.maxTracksError ? S.invalid : {}) }}
-                    onChange={e => setDraft(d => ({ ...d, maxTracks: e.target.value }))} />
-                  <span style={S.muted}>tracks</span>
-                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 12, minHeight: 36 }}>
-                    <input type="checkbox" checked={draft.limitLength} style={{ accentColor: 'var(--accent)', width: 16, height: 16 }}
-                      onChange={e => setDraft(d => ({ ...d, limitLength: e.target.checked }))} />
-                    Limit the total length to
-                  </label>
-                  <input type="text" inputMode="numeric" aria-label="Minutes" value={draft.maxMinutes} disabled={!draft.limitLength}
-                    aria-invalid={check.maxMinutesError ? true : undefined}
-                    style={{ ...S.value, width: 80, ...(check.maxMinutesError ? S.invalid : {}) }}
-                    onChange={e => setDraft(d => ({ ...d, maxMinutes: e.target.value }))} />
-                  <span style={S.muted}>minutes</span>
-                </div>
-                {check.maxTracksError && <div style={S.errorLine}>{check.maxTracksError}</div>}
-                {check.maxMinutesError && <div style={S.errorLine}>{check.maxMinutesError}</div>}
-              </section>
+                    )}
+                    <div style={MS.lineRow}>
+                      <PathIcon d={ICON.limit} accent />
+                      <label htmlFor="smart-max">Up to</label>
+                      <input id="smart-max" type="text" inputMode="numeric" value={draft.maxTracks}
+                        aria-invalid={check.maxTracksError ? true : undefined}
+                        style={{ ...MS.value, width: 96, ...(check.maxTracksError ? S.invalid : {}) }}
+                        onChange={e => setDraft(d => ({ ...d, maxTracks: e.target.value }))} />
+                      <span style={MS.muted}>tracks</span>
+                    </div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 44, fontSize: 15 }}>
+                      <input type="checkbox" checked={draft.limitLength} style={{ accentColor: 'var(--accent)', width: 20, height: 20 }}
+                        onChange={e => setDraft(d => ({ ...d, limitLength: e.target.checked }))} />
+                      Limit the total length to
+                    </label>
+                    {draft.limitLength && (
+                      <div style={MS.lineRow}>
+                        <input type="text" inputMode="numeric" aria-label="Minutes" value={draft.maxMinutes}
+                          aria-invalid={check.maxMinutesError ? true : undefined}
+                          style={{ ...MS.value, width: 96, ...(check.maxMinutesError ? S.invalid : {}) }}
+                          onChange={e => setDraft(d => ({ ...d, maxMinutes: e.target.value }))} />
+                        <span style={MS.muted}>minutes</span>
+                      </div>
+                    )}
+                    {check.maxTracksError && <div style={S.errorLine}>{check.maxTracksError}</div>}
+                    {check.maxMinutesError && <div style={S.errorLine}>{check.maxMinutesError}</div>}
+                  </div>
+                </details>
+              ) : (
+                <section aria-labelledby="smart-order-title" style={S.orderSection}>
+                  <div id="smart-order-title" style={S.sectionTitle}>Order and limit</div>
+                  <div style={S.lineRow}>
+                    <PathIcon d={ICON.sort} accent />
+                    <label htmlFor="smart-sort" style={{ minWidth: 64 }}>Order by</label>
+                    <SortSelects fieldId="smart-sort" sort={draft.sort} directionLabel="Direction"
+                      onChange={sort => setDraft(d => ({ ...d, sort, thenBy: d.thenBy?.field === sort.field ? null : d.thenBy }))} />
+                    {draft.thenBy ? (
+                      <>
+                        <span style={S.muted}>then by</span>
+                        <SortSelects sort={draft.thenBy} fieldLabel="Then by" directionLabel="Then by direction"
+                          exclude={draft.sort.field} onChange={thenBy => setDraft(d => ({ ...d, thenBy }))} />
+                        <button type="button" aria-label="Remove second order" title="Remove second order" style={S.smallIconBtn}
+                          onClick={() => setDraft(d => ({ ...d, thenBy: null }))}>
+                          <PathIcon d={ICON.close} size={14} />
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" style={S.addBtn}
+                        onClick={() => setDraft(d => ({
+                          ...d,
+                          thenBy: { field: SORT_FIELDS.find(f => f.field !== d.sort.field)!.field, direction: 'asc' },
+                        }))}>
+                        <PathIcon d={ICON.plus} size={14} />Add a second order
+                      </button>
+                    )}
+                  </div>
+                  <div style={S.lineRow}>
+                    <PathIcon d={ICON.limit} accent />
+                    <label htmlFor="smart-max" style={{ minWidth: 64 }}>Up to</label>
+                    <input id="smart-max" type="text" inputMode="numeric" value={draft.maxTracks}
+                      aria-invalid={check.maxTracksError ? true : undefined}
+                      style={{ ...S.value, width: 90, ...(check.maxTracksError ? S.invalid : {}) }}
+                      onChange={e => setDraft(d => ({ ...d, maxTracks: e.target.value }))} />
+                    <span style={S.muted}>tracks</span>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 12, minHeight: 36 }}>
+                      <input type="checkbox" checked={draft.limitLength} style={{ accentColor: 'var(--accent)', width: 16, height: 16 }}
+                        onChange={e => setDraft(d => ({ ...d, limitLength: e.target.checked }))} />
+                      Limit the total length to
+                    </label>
+                    <input type="text" inputMode="numeric" aria-label="Minutes" value={draft.maxMinutes} disabled={!draft.limitLength}
+                      aria-invalid={check.maxMinutesError ? true : undefined}
+                      style={{ ...S.value, width: 80, ...(check.maxMinutesError ? S.invalid : {}) }}
+                      onChange={e => setDraft(d => ({ ...d, maxMinutes: e.target.value }))} />
+                    <span style={S.muted}>minutes</span>
+                  </div>
+                  {check.maxTracksError && <div style={S.errorLine}>{check.maxTracksError}</div>}
+                  {check.maxMinutesError && <div style={S.errorLine}>{check.maxMinutesError}</div>}
+                </section>
+              )}
             </fieldset>
-            <PreviewPanel state={previewState} onRetry={retry} />
+            {(!mobile || showTracks) && (
+              <PreviewPanel state={previewState} onRetry={retry} mobile={mobile} panelRef={previewRef} />
+            )}
           </div>
         )}
 
         {conflictRevision !== null && (
-          <div style={S.conflict}>
+          <div style={st.conflict}>
             <div role="alert" style={S.conflictText}>
-              <span style={{ color: 'var(--warning)' }}><PathIcon d={ICON.sync} size={18} /></span>
+              <span style={{ color: 'var(--warning, #d49a45)' }}><PathIcon d={ICON.sync} size={18} /></span>
               These rules were changed on another device while you were editing.
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '12px 16px', flexWrap: 'wrap' }}>
@@ -707,14 +848,19 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
           </div>
         )}
 
-        <div style={S.footer}>
+        </div>
+
+        <div style={st.footer}>
           {load === 'ready' && visibleErrors && !check.valid && (
-            <span style={{ ...S.errorLine, marginRight: 'auto' }}>Fix the marked rules to save.</span>
+            <span style={{ ...S.errorLine, marginRight: mobile ? undefined : 'auto' }}>Fix the marked rules to save.</span>
           )}
-          {saveError && <span role="alert" style={{ ...S.errorLine, marginRight: 'auto' }}>{saveError}</span>}
-          <button type="button" style={S.cancelBtn} onClick={onClose}>Cancel</button>
+          {saveError && <span role="alert" style={{ ...S.errorLine, marginRight: mobile ? undefined : 'auto' }}>{saveError}</span>}
+          {mobile && load === 'ready' && (
+            <PreviewSummary state={previewState} expanded={showTracks} onToggle={() => setShowTracks(v => !v)} />
+          )}
+          {!mobile && <button type="button" style={S.cancelBtn} onClick={onClose}>Cancel</button>}
           {load !== 'unsupported' && (
-            <button type="button" aria-disabled={!canSave} style={{ ...S.saveBtn, ...(!canSave ? hybridControlStyles.disabled : {}) }}
+            <button type="button" aria-disabled={!canSave} style={{ ...st.saveBtn, ...(!canSave ? hybridControlStyles.disabled : {}) }}
               onClick={() => void save()}>
               <SmartIcon size={16} />{editing ? 'Save rules' : 'Create playlist'}
             </button>
@@ -728,8 +874,14 @@ export default function SmartPlaylistEditor({ playlist, existingNames, onClose, 
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
+// Borders that change colour (invalid values, chosen chips) use longhands: React drops a `border` shorthand
+// when a toggled `borderColor` is removed again, which left marked rows with a stray border.
+function edge(color: string, style: React.CSSProperties['borderStyle'] = 'solid'): React.CSSProperties {
+  return { borderWidth: 1, borderStyle: style, borderColor: color };
+}
+
 const control: React.CSSProperties = {
-  minHeight: 36, padding: '4px 10px', borderRadius: 8, border: '1px solid var(--border)',
+  minHeight: 36, padding: '4px 10px', borderRadius: 8, ...edge('var(--border)'),
   background: 'var(--surface)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 14, boxSizing: 'border-box',
 };
 
@@ -750,20 +902,20 @@ const S: Record<string, React.CSSProperties> = {
   loading: { padding: '32px 24px', color: 'var(--text-muted)', fontSize: 14 },
   main: { minWidth: 0, margin: 0, border: 0, padding: '14px 24px 22px', display: 'flex', flexDirection: 'column', gap: 20 },
   label: { fontSize: 13, fontWeight: 650, color: 'var(--text-muted)' },
-  nameInput: { ...hybridControlStyles.field, minHeight: 40 },
+  nameInput: { ...hybridControlStyles.field, border: undefined, ...edge('var(--border)'), minHeight: 40 },
   sectionTitle: { fontSize: 13, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8 },
   modeSelect: { ...control, fontWeight: 650 },
   select: { ...control, padding: '4px 8px' },
   value: { ...control },
-  invalid: { borderColor: 'var(--danger)' },
+  invalid: { borderColor: 'var(--danger, #d65c5c)' },
   muted: { color: 'var(--text-muted)', fontSize: 14 },
   valueSlot: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   ruleRow: {
     display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderRadius: 10, flexWrap: 'wrap',
-    background: 'var(--surface-subtle)', border: '1px solid var(--divider-subtle, var(--border))',
+    background: 'var(--surface-subtle)', ...edge('var(--divider-subtle, var(--border))'),
   },
-  ruleRowInvalid: { borderColor: 'var(--danger)' },
-  ruleRowWarn: { borderColor: 'var(--warning)' },
+  ruleRowInvalid: { borderColor: 'var(--danger, #d65c5c)' },
+  ruleRowWarn: { borderColor: 'var(--warning, #d49a45)' },
   group: {
     display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 12,
     border: '1px dashed color-mix(in srgb, var(--accent) 45%, var(--border))', background: 'color-mix(in srgb, var(--surface) 70%, var(--bg))',
@@ -772,13 +924,13 @@ const S: Record<string, React.CSSProperties> = {
   addBtn: { ...hybridControlStyles.secondaryButton, minHeight: 34, padding: '6px 12px', fontSize: 13 },
   smallIconBtn: { ...hybridControlStyles.iconButton, width: 34, minWidth: 34, height: 34, flexShrink: 0 },
   chip: {
-    minHeight: 32, padding: '4px 10px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface)',
+    minHeight: 32, padding: '4px 10px', borderRadius: 999, ...edge('var(--border)'), background: 'var(--surface)',
     color: 'var(--text-muted)', fontFamily: 'inherit', fontSize: 13, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
   },
   chipOn: { borderColor: 'var(--accent)', background: 'var(--accent-soft)', color: 'var(--text)' },
-  chipRemoved: { borderStyle: 'dashed', borderColor: 'var(--warning)', color: 'var(--warning)' },
-  errorLine: { fontSize: 12, color: 'var(--danger)', paddingLeft: 8 },
-  warnLine: { fontSize: 12, color: 'var(--warning)', paddingLeft: 8 },
+  chipRemoved: { borderStyle: 'dashed', borderColor: 'var(--warning, #d49a45)', color: 'var(--warning, #d49a45)' },
+  errorLine: { fontSize: 12, color: 'var(--danger, #d65c5c)', paddingLeft: 8 },
+  warnLine: { fontSize: 12, color: 'var(--warning, #d49a45)', paddingLeft: 8 },
   hintLine: { fontSize: 12, color: 'var(--text-muted)', paddingLeft: 36 },
   orderSection: { display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 16, borderTop: '1px solid var(--border)' },
   lineRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, flexWrap: 'wrap' },
@@ -795,13 +947,77 @@ const S: Record<string, React.CSSProperties> = {
     padding: '22px 16px', borderRadius: 12, border: '1px solid var(--border)', display: 'flex', flexDirection: 'column',
     alignItems: 'center', gap: 10, textAlign: 'center',
   },
-  stateBoxError: { borderColor: 'color-mix(in srgb, var(--danger) 45%, var(--border))' },
+  stateBoxError: { borderColor: 'color-mix(in srgb, var(--danger, #d65c5c) 45%, var(--border))' },
   conflict: { margin: '0 24px 8px', borderRadius: 12, border: '1px solid var(--border)', overflow: 'hidden' },
   conflictText: {
     padding: '14px 16px', display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 14, lineHeight: 1.5,
-    background: 'color-mix(in srgb, var(--warning) 10%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--warning) 40%, var(--border))',
+    background: 'color-mix(in srgb, var(--warning, #d49a45) 10%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--warning, #d49a45) 40%, var(--border))',
   },
   footer: { padding: '14px 24px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' },
   cancelBtn: { ...hybridControlStyles.secondaryButton },
   saveBtn: { ...hybridControlStyles.primaryButton },
+};
+
+// Phones: 44px targets and 16px text (iOS zooms smaller inputs). The mobile shell has no Hybrid tokens,
+// so surfaces fall back to base theme tokens like MobileBottomSheet does.
+const touch: React.CSSProperties = { ...control, minHeight: 44, padding: '4px 12px', borderRadius: 10, fontSize: 16 };
+
+const MS: Record<string, React.CSSProperties> = {
+  ...S,
+  overlay: {
+    background: 'var(--overlay, rgba(0,0,0,0.6))', width: '100%', maxWidth: '100%', height: '100%', maxHeight: '100%',
+    margin: 0, padding: 0, border: 0, boxSizing: 'border-box', color: 'var(--text)', display: 'flex',
+    alignItems: 'flex-end', justifyContent: 'center',
+  },
+  dialog: {
+    width: '100%', height: 'calc(100dvh - env(safe-area-inset-top, 0px) - 12px)', boxSizing: 'border-box',
+    display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRadius: '18px 18px 0 0',
+    borderTop: '1px solid var(--border-strong, var(--border))', background: 'var(--surface-raised, var(--surface))',
+    boxShadow: 'var(--shadow-raised, 0 -12px 40px rgba(0,0,0,0.45))',
+  },
+  handle: { alignSelf: 'center', width: 38, height: 4, borderRadius: 999, margin: '10px 0 4px', background: 'var(--border-strong, var(--border))' },
+  header: { padding: '6px 16px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  closeBtn: {
+    width: 44, minWidth: 44, height: 44, display: 'grid', placeItems: 'center', padding: 0, borderRadius: 12,
+    border: '1px solid var(--divider-subtle, var(--border))', background: 'var(--surface-subtle, var(--bg))', color: 'var(--text-muted)',
+  },
+  scroll: { flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehaviorY: 'contain' },
+  main: { minWidth: 0, margin: 0, border: 0, padding: '12px 16px 16px', display: 'flex', flexDirection: 'column', gap: 16 },
+  nameInput: { ...touch, width: '100%', padding: '8px 12px' },
+  modeSelect: { ...touch, fontWeight: 650 },
+  select: { ...touch, padding: '4px 10px', width: '100%' },
+  value: touch,
+  muted: { color: 'var(--text-muted)', fontSize: 15 },
+  valueSlot: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 15 },
+  ruleRow: {
+    display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 14,
+    background: 'var(--surface-subtle, var(--bg))', ...edge('var(--divider-subtle, var(--border))'),
+  },
+  hintLine: { fontSize: 12, color: 'var(--text-muted)', paddingLeft: 8 },
+  addRow: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 },
+  addBtn: {
+    minHeight: 48, padding: '0 12px', borderRadius: 12, border: '1px solid var(--divider-subtle, var(--border))',
+    background: 'var(--surface-subtle, var(--bg))', color: 'var(--text)', fontFamily: 'inherit', fontSize: 15, fontWeight: 650,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+  },
+  smallIconBtn: {
+    width: 44, minWidth: 44, height: 44, display: 'grid', placeItems: 'center', padding: 0, flexShrink: 0, borderRadius: 10,
+    border: '1px solid var(--divider-subtle, var(--border))', background: 'var(--surface-subtle, var(--bg))', color: 'var(--text-muted)',
+  },
+  chip: { ...S.chip, minHeight: 44, padding: '4px 14px', fontSize: 15 },
+  orderBox: { borderRadius: 14, border: '1px solid var(--divider-subtle, var(--border))', background: 'var(--surface-subtle, var(--bg))' },
+  orderSummary: { minHeight: 48, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 700, cursor: 'pointer' },
+  lineRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, flexWrap: 'wrap' },
+  preview: { minWidth: 0, padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
+  conflict: { ...S.conflict, margin: '0 16px 12px' },
+  footer: {
+    padding: '12px 16px calc(env(safe-area-inset-bottom, 0px) + 14px)', borderTop: '1px solid var(--border)',
+    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 10,
+  },
+  summaryBtn: {
+    minHeight: 44, padding: '0 14px', borderRadius: 12, border: '1px solid var(--divider-subtle, var(--border))',
+    background: 'var(--surface-subtle, var(--bg))', color: 'var(--text)', fontFamily: 'inherit', fontSize: 15,
+    display: 'flex', alignItems: 'center', gap: 10,
+  },
+  saveBtn: { ...hybridControlStyles.primaryButton, minHeight: 48, fontSize: 16 },
 };
