@@ -1365,6 +1365,45 @@ pub fn ensure_fresh(
     refresh(conn, playlist_id, owner, &def).map(Some)
 }
 
+/// For admin paths that act on any user's playlist: refreshes a smart playlist for its owner and returns its
+/// membership revision (`Ok(None)` for manual playlists). A refresh that fails keeps the last tracks.
+pub fn refresh_for_owner(
+    conn: &Connection,
+    playlist_id: &EntityId,
+) -> rusqlite::Result<Option<i64>> {
+    let Some(owner) = smart_owner(conn, playlist_id)? else {
+        return Ok(None);
+    };
+    match ensure_fresh(conn, playlist_id, &owner, false) {
+        Err(SmartError::Db(e)) => return Err(e),
+        Err(e) => tracing::warn!("Smart playlist refresh failed: {e:?}"),
+        Ok(_) => {}
+    }
+    membership_revision(conn, playlist_id)
+}
+
+/// The stored membership revision of a smart playlist (`None` for manual playlists).
+pub fn membership_revision(
+    conn: &Connection,
+    playlist_id: &EntityId,
+) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT membership_revision FROM smart_playlist_definitions WHERE playlist_id = ?1",
+        [playlist_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+fn smart_owner(conn: &Connection, playlist_id: &EntityId) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT user_id FROM playlists WHERE id = ?1 AND kind = 'smart'",
+        [playlist_id],
+        |r| r.get::<_, Value>(0).map(text_of),
+    )
+    .optional()
+}
+
 /// Creates a smart playlist, stores its definition and evaluates it, all or nothing.
 pub fn create_smart_playlist(
     conn: &Connection,
@@ -2947,5 +2986,111 @@ mod tests {
             assert!(!selection.track_ids.is_empty(), "{name}");
             assert!(elapsed < Duration::from_secs(2), "{name} took {elapsed:?}");
         }
+    }
+
+    #[test]
+    fn smart_mix_jobs_keep_the_tracks_picked_at_enqueue() {
+        use crate::boogiemix::{enqueue_mix_job, load_mix_job_inputs};
+        let conn = fixture();
+        let electronic = valid(def(
+            "all",
+            vec![rule("genre", "is", Some(json!("Electronic")))],
+        ));
+        let row = create_smart_playlist(&conn, "Mix me", "", "alice", &electronic).unwrap();
+        let alice = EntityId::Str("alice".into());
+        let enqueue = |conn: &Connection, playlist: &EntityId| {
+            enqueue_mix_job(
+                conn,
+                playlist,
+                &alice,
+                8,
+                "club_blend",
+                "standard",
+                "playlist",
+                None,
+            )
+        };
+        let job = enqueue(&conn, &row.id).unwrap();
+        let (snapshot, membership): (i64, i64) = conn
+            .query_row(
+                "SELECT input_snapshot, source_membership_revision FROM mix_jobs WHERE id = ?1",
+                [&job],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((snapshot, membership), (1, 1));
+        let inputs = |conn: &Connection, job: &EntityId| -> Option<Vec<String>> {
+            load_mix_job_inputs(conn, job, &row.id)
+                .unwrap()
+                .map(|tracks| {
+                    tracks
+                        .into_iter()
+                        .map(|t| t.title.unwrap_or_default())
+                        .collect()
+                })
+        };
+        assert_eq!(inputs(&conn, &job).unwrap(), ["Arc", "Bloom"]);
+
+        // A refresh that changes the playlist leaves the accepted job alone.
+        conn.execute("UPDATE tracks SET genre = 'Rock' WHERE id = 't1'", [])
+            .unwrap();
+        ensure_fresh(&conn, &row.id, "alice", false).unwrap();
+        assert_eq!(member_titles(&conn, &row.id), ["Bloom"]);
+        assert_eq!(inputs(&conn, &job).unwrap(), ["Arc", "Bloom"]);
+
+        // Too few tracks now: refused, and nothing is left behind.
+        assert!(matches!(
+            enqueue(&conn, &row.id),
+            Err(crate::jobs::JobError::EmptyFolders)
+        ));
+        let jobs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mix_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(jobs, 1);
+
+        // A snapshot track that moved fails the job instead of mixing something else.
+        conn.execute(
+            "UPDATE tracks SET file_path = '/m1/2-moved' WHERE id = 't2'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(inputs(&conn, &job), None);
+        conn.execute("DELETE FROM mix_job_tracks WHERE job_id = ?1", [&job])
+            .unwrap();
+        assert_eq!(
+            inputs(&conn, &job),
+            None,
+            "an empty snapshot never falls back"
+        );
+
+        // Manual playlists keep reading their current tracks; removing a job removes its snapshot.
+        let manual = playlists::create_playlist(&conn, "By hand", "", "alice").unwrap();
+        playlists::batch_add_tracks(
+            &conn,
+            &manual.id,
+            &[EntityId::Str("t4".into()), EntityId::Str("t5".into())],
+            "alice",
+        )
+        .unwrap();
+        let manual_job = enqueue(&conn, &manual.id).unwrap();
+        let manual_inputs = load_mix_job_inputs(&conn, &manual_job, &manual.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(manual_inputs.len(), 2);
+        let job2 = {
+            conn.execute("UPDATE tracks SET genre = 'Electronic' WHERE id = 't4'", [])
+                .unwrap();
+            enqueue(&conn, &row.id).unwrap()
+        };
+        conn.execute("DELETE FROM mix_jobs WHERE id = ?1", [&job2])
+            .unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mix_job_tracks WHERE job_id = ?1",
+                [&job2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 }

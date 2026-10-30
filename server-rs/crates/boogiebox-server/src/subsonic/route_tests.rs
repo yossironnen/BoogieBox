@@ -760,6 +760,72 @@ async fn playlists_can_be_created_edited_and_deleted() {
 }
 
 #[tokio::test]
+async fn smart_playlists_are_read_only_and_refresh_on_open() {
+    let fx = Fixture::new("subsonic-smart-playlist").await;
+    let id = {
+        let conn = fx.pool.lock().unwrap();
+        let rules = boogiebox_db::smart_playlists::parse_definition(
+            r#"{"schemaVersion":1,
+                "root":{"mode":"all","children":[{"field":"genre","operator":"is","value":"Pop"}]},
+                "sort":[{"field":"title","direction":"asc"}]}"#,
+        )
+        .unwrap();
+        boogiebox_db::smart_playlists::create_smart_playlist(&conn, "Pop", "", "u1", &rules)
+            .unwrap()
+            .id
+            .to_string()
+    };
+    let entries = |pl: &serde_json::Value| -> Vec<String> {
+        pl["entry"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|e| e["id"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let listed = fx.rest("getPlaylists", "").await;
+    let smart = listed["playlists"]["playlist"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(smart["readonly"], true);
+    let pl = fx.rest("getPlaylist", &format!("id={id}")).await["playlist"].clone();
+    assert_eq!(entries(&pl), ["t2"]);
+
+    for (method, query) in [
+        ("updatePlaylist", format!("playlistId={id}&songIdToAdd=t1")),
+        (
+            "updatePlaylist",
+            format!("playlistId={id}&songIndexToRemove=0"),
+        ),
+        ("createPlaylist", format!("playlistId={id}&songId=t1")),
+    ] {
+        let error = fx.rest(method, &query).await["error"].clone();
+        assert_eq!(error["code"], 50, "{method} {query}");
+        assert_eq!(error["message"], "Smart playlists are read-only");
+    }
+    assert_eq!(
+        fx.rest("updatePlaylist", &format!("playlistId={id}&name=Poppy"))
+            .await["status"],
+        "ok"
+    );
+
+    fx.pool
+        .lock()
+        .unwrap()
+        .execute("UPDATE tracks SET genre = 'Pop' WHERE id = 't1'", [])
+        .unwrap();
+    let pl = fx.rest("getPlaylist", &format!("id={id}")).await["playlist"].clone();
+    assert_eq!(pl["name"], "Poppy");
+    assert_eq!(entries(&pl), ["t2", "t1"], "Closing, Opening by title");
+}
+
+#[tokio::test]
 async fn boogiemix_playlist_lists_and_streams_own_mixes_only() {
     let fx = Fixture::new("subsonic-boogiemix").await;
     let mix_dir = data_folder(&fx.pool).join("mix-outputs");

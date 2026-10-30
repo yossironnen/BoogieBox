@@ -13,11 +13,11 @@ use boogiebox_db::{
         append_mix_job_log, claim_next_mix_job, collage_album_ids_for_tracks, complete_mix_job,
         count_deep_analysis_ready, create_mix_output, fail_mix_job, get_cached_mix_analysis,
         get_mix_output_dir_from_db, get_setting, is_mix_job_canceled, load_deep_track_features,
-        load_playlist_tracks_for_mix, load_track_album_info, persist_mix_output_tracks,
-        persist_mix_plan, persist_mix_transitions, queue_missing_deep_analysis_for_tracks,
-        set_mix_job_status, touch_deep_analysis_last_used, update_mix_job_plan_info,
-        update_mix_job_progress, upsert_mix_analysis, DeepTrackFeatures, MixOutputTrackRow,
-        MixTrackInput, MixTransitionRow, TrackMixAnalysis, TrackSection, TransitionWindow,
+        load_mix_job_inputs, load_track_album_info, persist_mix_output_tracks, persist_mix_plan,
+        persist_mix_transitions, queue_missing_deep_analysis_for_tracks, set_mix_job_status,
+        touch_deep_analysis_last_used, update_mix_job_plan_info, update_mix_job_progress,
+        upsert_mix_analysis, DeepTrackFeatures, MixOutputTrackRow, MixTrackInput, MixTransitionRow,
+        TrackMixAnalysis, TrackSection, TransitionWindow, MIX_SNAPSHOT_TRACK_MISSING,
     },
     music::{coerce_entity_id, EntityId},
     playback::{count_tracks_with_bpm, count_tracks_with_waveform, get_track_waveform_peaks},
@@ -247,7 +247,9 @@ async fn do_process_mix_job(state: &PostScanState, job_id: &EntityId) -> Result<
     // ── Load tracks ───────────────────────────────────────────────────────────
     let tracks = {
         let conn = lock_db(&state.db)?;
-        load_playlist_tracks_for_mix(&conn, &playlist_id).map_err(|e| e.to_string())?
+        load_mix_job_inputs(&conn, job_id, &playlist_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| MIX_SNAPSHOT_TRACK_MISSING.to_string())?
     };
     if tracks.len() < 2 {
         return Err("Playlist needs at least 2 tracks".into());

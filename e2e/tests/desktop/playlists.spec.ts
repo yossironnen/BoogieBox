@@ -115,7 +115,7 @@ test('import an M3U: preview counts, not-found list, then the playlist in file o
   expect((await page.request.delete(`/api/playlists/${created.id}`)).ok()).toBe(true)
 })
 
-test('smart playlist API: preview, create, refuse manual edits, export', async ({ page }) => {
+test('smart playlist API: preview, create, refuse manual edits, export, analysis progress', async ({ page }) => {
   const rules = {
     schemaVersion: 1,
     root: { mode: 'all', children: [
@@ -148,6 +148,10 @@ test('smart playlist API: preview, create, refuse manual edits, export', async (
     const m3u = await (await page.request.get(`/api/playlists/${playlist.id}/export.m3u`)).text()
     const exported = m3u.split(/\r?\n/).filter((line) => line.startsWith('#EXTINF')).map((line) => line.split(' - ').pop())
     expect(exported).toEqual(rockTitles)
+
+    const progress = await page.request.get(`/api/boogiemix/deep-analysis/playlists/${playlist.id}/progress`)
+    expect(progress.ok()).toBe(true)
+    expect(await progress.json()).toMatchObject({ total: 3, membershipRevision: 1 })
 
     const invalid = await page.request.post('/api/playlists/smart-preview', {
       data: { definition: { ...rules, root: { mode: 'all', children: [] } } },

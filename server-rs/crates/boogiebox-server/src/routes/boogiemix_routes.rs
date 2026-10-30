@@ -22,7 +22,7 @@ use boogiebox_db::{
     },
     jobs::JobError,
     music::coerce_entity_id,
-    upsert_setting,
+    smart_playlists, upsert_setting,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -981,14 +981,23 @@ async fn queue_playlist_deep_analysis_handler(
     };
     let playlist_id = coerce_entity_id(&playlist_id_raw);
     let result = match db.lock() {
-        Ok(conn) => match queue_playlist_deep_analysis(&conn, &playlist_id, true) {
-            Ok(queued) => (
-                StatusCode::OK,
-                Json(serde_json::json!({ "queued": queued })),
-            )
-                .into_response(),
-            Err(e) => internal_error(&e.to_string()),
-        },
+        Ok(conn) => {
+            // A smart playlist queues the tracks it picks now; `membershipRevision` names that selection.
+            let revision = match smart_playlists::refresh_for_owner(&conn, &playlist_id) {
+                Ok(revision) => revision,
+                Err(e) => return internal_error(&e.to_string()),
+            };
+            match queue_playlist_deep_analysis(&conn, &playlist_id, true) {
+                Ok(queued) => {
+                    let mut body = serde_json::json!({ "queued": queued });
+                    if let Some(revision) = revision {
+                        body["membershipRevision"] = revision.into();
+                    }
+                    (StatusCode::OK, Json(body)).into_response()
+                }
+                Err(e) => internal_error(&e.to_string()),
+            }
+        }
         Err(_) => internal_error("DB lock failed"),
     };
     result
@@ -1033,8 +1042,18 @@ async fn playlist_deep_analysis_progress_handler(
     };
     let playlist_id = coerce_entity_id(&playlist_id_raw);
     let result = match db.lock() {
+        // Progress counts the smart playlist's stored tracks without refreshing them, so the total only moves
+        // when the playlist itself refreshes; `membershipRevision` then changes too.
         Ok(conn) => match get_playlist_deep_analysis_progress(&conn, &playlist_id) {
-            Ok(progress) => (StatusCode::OK, Json(progress)).into_response(),
+            Ok(progress) => {
+                let mut body = serde_json::to_value(progress).unwrap_or_default();
+                match smart_playlists::membership_revision(&conn, &playlist_id) {
+                    Ok(Some(revision)) => body["membershipRevision"] = revision.into(),
+                    Ok(None) => {}
+                    Err(e) => return internal_error(&e.to_string()),
+                }
+                (StatusCode::OK, Json(body)).into_response()
+            }
             Err(e) => internal_error(&e.to_string()),
         },
         Err(_) => internal_error("DB lock failed"),
@@ -2539,6 +2558,83 @@ mod route_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(json_body(&body)["runtime"].is_object());
+    }
+
+    #[tokio::test]
+    async fn smart_playlists_mix_and_analyse_a_fixed_selection() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-smart");
+        let user_cookie = seed_user_session(&pool, "u1");
+        let admin_cookie = seed_admin_session(&pool, "admin1");
+        seed_playlist_with_two_tracks(&pool, "u1");
+        let smart_id = {
+            let conn = pool.lock().unwrap();
+            let rules = boogiebox_db::smart_playlists::parse_definition(
+                r#"{"schemaVersion":1,"root":{"mode":"all","children":[
+                    {"field":"artist","operator":"is","value":"Artist"}]}}"#,
+            )
+            .unwrap();
+            boogiebox_db::smart_playlists::create_smart_playlist(&conn, "Smart", "", "u1", &rules)
+                .unwrap()
+                .id
+                .to_string()
+        };
+        let request = |method: &str, uri: String, cookie: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap()
+        };
+
+        let (status, body) = send(
+            app.clone(),
+            request(
+                "POST",
+                format!("/api/playlists/{smart_id}/boogiemix/jobs"),
+                &user_cookie,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let job_id = json_body(&body)["jobId"].as_str().unwrap().to_owned();
+        let saved: i64 = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM mix_job_tracks WHERE job_id = ?1",
+                [&job_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, 2);
+
+        let (status, body) = send(
+            app.clone(),
+            request(
+                "POST",
+                format!("/api/boogiemix/deep-analysis/playlists/{smart_id}/queue"),
+                &admin_cookie,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["membershipRevision"], 1);
+
+        let (status, body) = send(
+            app,
+            request(
+                "GET",
+                format!("/api/boogiemix/deep-analysis/playlists/{smart_id}/progress"),
+                &admin_cookie,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let progress = json_body(&body);
+        assert_eq!(progress["membershipRevision"], 1);
+        assert_eq!(progress["total"], 2);
     }
 
     #[tokio::test]

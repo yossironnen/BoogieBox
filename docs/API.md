@@ -187,14 +187,14 @@ passes the same threshold as the web player.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/boogiemix/create` | Create a BoogieMix job (generic). |
-| `POST` | `/api/playlists/{id}/boogiemix/jobs` | Create a BoogieMix job for a specific playlist. |
+| `POST` | `/api/playlists/{id}/boogiemix/jobs` | Create a BoogieMix job for a specific playlist. A smart playlist's job keeps the tracks picked at request time; if one of them later leaves the library or moves, the job fails instead of mixing something else. |
 | `GET` | `/api/boogiemix/jobs/{jobId}` | Fetch BoogieMix job status, transitions, and logs. |
 | `POST` | `/api/boogiemix/jobs/{jobId}/cancel` | Cancel a running or pending BoogieMix job. |
 | `GET` | `/api/playlists/{id}/boogiemix/outputs` | List rendered mix outputs for a playlist. |
 | `GET` | `/api/boogiemix/outputs/{outputId}/file` | Download a rendered mix file. |
 | `GET` | `/api/boogiemix/deep-analysis/status` | Report deep-analysis runtime health, queue, and cache state. |
-| `POST` | `/api/boogiemix/deep-analysis/playlists/{playlistId}/queue` | Queue deep analysis for all tracks in a playlist. |
-| `GET` | `/api/boogiemix/deep-analysis/playlists/{playlistId}/progress` | Fetch deep-analysis progress for a playlist. |
+| `POST` | `/api/boogiemix/deep-analysis/playlists/{playlistId}/queue` | Queue deep analysis for all tracks in a playlist. A smart playlist is refreshed first; the response adds `membershipRevision` for the selection queued. |
+| `GET` | `/api/boogiemix/deep-analysis/playlists/{playlistId}/progress` | Fetch deep-analysis progress for a playlist. A smart playlist is counted as stored (not refreshed) and the response adds `membershipRevision`. |
 | `POST` | `/api/boogiemix/deep-analysis/libraries/{libraryId}/queue` | Queue deep analysis for all tracks in a library. |
 | `POST` | `/api/boogiemix/deep-analysis/pause` | Pause background deep-analysis jobs. |
 | `POST` | `/api/boogiemix/deep-analysis/resume` | Resume paused background deep-analysis jobs. |
@@ -251,8 +251,8 @@ username; error 0 when signed in another way), `getUser` (`jukeboxRole` is true 
 `byYear`, `byGenre`; `frequent` and `recent` use the user's own plays), `getRandomSongs`, `getSongsByGenre`, `getStarred`/`getStarred2`, `star`/`unstar`
 (`id` resolves song → album → artist; `albumId`, `artistId`), `setRating` (whole stars 1–5, 0 clears),
 `search2`/`search3` (an empty query pages through everything, which is how apps sync), `getPlaylists`,
-`getPlaylist`, `createPlaylist` (a taken name gets " (2)"; with `playlistId` it replaces the entries; returns the
-playlist), `updatePlaylist` (`name`, `comment`, `songIndexToRemove…` then `songIdToAdd…`; `public` ignored),
+`getPlaylist` (a smart playlist is refreshed first; smart playlists are listed `readonly`), `createPlaylist` (a taken name gets " (2)"; with `playlistId` it replaces the entries; returns the
+playlist), `updatePlaylist` (`name`, `comment`, `songIndexToRemove…` then `songIdToAdd…`; `public` ignored; entry edits of a smart playlist, here or via `createPlaylist`, answer error 50),
 `deletePlaylist`, `getLyrics` (cache only), `getLyricsBySongId` (cache, then LRCLIB/lyrics.ovh within 5 s;
 synced lines in ms), `getArtistInfo`/`getArtistInfo2` (local bio, else the cached Last.fm summary; similar
 artists in the library), `getAlbumInfo`/`getAlbumInfo2`, `getSimilarSongs`/`getSimilarSongs2` (an Artist Radio

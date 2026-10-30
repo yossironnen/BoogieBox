@@ -4,6 +4,7 @@
 use boogiebox_db::{
     music::coerce_entity_id,
     playlists::{self as pdb, PlaylistRow, UpdatePlaylistError},
+    smart_playlists as smart,
     subsonic::{self as sdb, SubsonicMix},
 };
 
@@ -30,6 +31,7 @@ fn playlist_node(row: &PlaylistRow, owner: &str) -> Node {
         )
         .attr("owner", owner)
         .attr("public", false)
+        .opt("readonly", (row.kind == "smart").then_some(true))
         .attr("songCount", row.track_count)
         .attr(
             "duration",
@@ -97,6 +99,10 @@ fn read_only_error() -> SubsonicError {
     SubsonicError::new(50, "The BoogieMix playlist is read-only")
 }
 
+fn smart_read_only_error() -> SubsonicError {
+    SubsonicError::new(50, "Smart playlists are read-only")
+}
+
 fn bounded_ids(values: Vec<&str>) -> Result<Vec<String>, SubsonicError> {
     if values.len() > MAX_PLAYLIST_IDS {
         return Err(SubsonicError::generic("Too many songs in one request"));
@@ -161,6 +167,12 @@ async fn load_playlist(ctx: &Ctx, id: String) -> Result<Node, SubsonicError> {
     }
     let (row, songs, ann) = ctx
         .db(move |conn| {
+            // A refresh that fails keeps the last tracks.
+            match smart::ensure_fresh(conn, &coerce_entity_id(&id), &user, false) {
+                Err(smart::SmartError::Db(e)) => return Err(db_err(e)),
+                Err(e) => tracing::warn!("Smart playlist refresh failed: {e:?}"),
+                Ok(_) => {}
+            }
             let row = pdb::get_playlist(conn, &coerce_entity_id(&id), &user)
                 .map_err(db_err)?
                 .ok_or_else(|| SubsonicError::not_found("Playlist"))?;
@@ -194,6 +206,11 @@ pub async fn create_playlist(ctx: &Ctx) -> Result<Node, SubsonicError> {
             let target = id.clone();
             let replaced = ctx
                 .db(move |conn| {
+                    let owned = pdb::get_playlist(conn, &coerce_entity_id(&target), &user)
+                        .map_err(db_err)?;
+                    if owned.is_some_and(|row| row.kind == "smart") {
+                        return Err(smart_read_only_error());
+                    }
                     sdb::set_playlist_tracks(conn, &target, &user, &song_ids).map_err(db_err)
                 })
                 .await?;
@@ -260,6 +277,10 @@ pub async fn update_playlist(ctx: &Ctx) -> Result<Node, SubsonicError> {
         let row = pdb::get_playlist(conn, &entity, &user)
             .map_err(db_err)?
             .ok_or_else(|| SubsonicError::not_found("Playlist"))?;
+        // Renaming a smart playlist is fine; its entries come from the rules.
+        if row.kind == "smart" && (!remove.is_empty() || !add.is_empty()) {
+            return Err(smart_read_only_error());
+        }
         if name.is_some() || comment.is_some() {
             let new_name = name.unwrap_or_else(|| row.name.clone());
             let new_comment =

@@ -533,15 +533,27 @@ pub fn enqueue_mix_job(
     order_mode: &str,
     requested_name: Option<&str>,
 ) -> Result<EntityId, JobError> {
-    let playlist = conn
+    let kind = conn
         .query_row(
-            "SELECT id FROM playlists WHERE id=?1 AND user_id=?2",
+            "SELECT kind FROM playlists WHERE id=?1 AND user_id=?2",
             params![playlist_id, user_id],
             |r| r.get::<_, String>(0),
         )
         .optional()?;
-    if playlist.is_none() {
+    let Some(kind) = kind else {
         return Err(JobError::LibraryNotFound); // reuse for "playlist not found"
+    };
+    if kind == "smart" {
+        return enqueue_smart_mix_job(
+            conn,
+            playlist_id,
+            user_id,
+            crossfade_sec,
+            mix_style,
+            mix_quality,
+            order_mode,
+            requested_name,
+        );
     }
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id=?1",
@@ -551,6 +563,100 @@ pub fn enqueue_mix_job(
     if count < 2 {
         return Err(JobError::EmptyFolders); // reuse for "needs at least 2 tracks"
     }
+    insert_mix_job(
+        conn,
+        playlist_id,
+        user_id,
+        crossfade_sec,
+        mix_style,
+        mix_quality,
+        order_mode,
+        requested_name,
+    )
+}
+
+/// A smart playlist's mix works from the tracks picked when it was requested: they are evaluated and copied
+/// into `mix_job_tracks` with the job, so a later refresh (or a removed track) cannot change it.
+#[allow(clippy::too_many_arguments)]
+fn enqueue_smart_mix_job(
+    conn: &Connection,
+    playlist_id: &EntityId,
+    user_id: &EntityId,
+    crossfade_sec: i64,
+    mix_style: &str,
+    mix_quality: &str,
+    order_mode: &str,
+    requested_name: Option<&str>,
+) -> Result<EntityId, JobError> {
+    let tx = conn.unchecked_transaction()?;
+    let owner = user_id.to_string();
+    // Rules that can't be evaluated right now (timed out, stored by a newer build) mix the last result.
+    if let Err(crate::smart_playlists::SmartError::Db(e)) =
+        crate::smart_playlists::ensure_fresh(conn, playlist_id, &owner, false)
+    {
+        return Err(JobError::Db(e));
+    }
+    let tracks = load_playlist_tracks_for_mix(conn, playlist_id)?;
+    if tracks.len() < 2 {
+        return Err(JobError::EmptyFolders);
+    }
+    let (definition_revision, membership_revision) = conn.query_row(
+        "SELECT edit_revision, membership_revision FROM smart_playlist_definitions WHERE playlist_id=?1",
+        params![playlist_id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    )?;
+    let job_id = insert_mix_job(
+        conn,
+        playlist_id,
+        user_id,
+        crossfade_sec,
+        mix_style,
+        mix_quality,
+        order_mode,
+        requested_name,
+    )?;
+    conn.execute(
+        "UPDATE mix_jobs SET input_snapshot=1, source_definition_revision=?2,
+                source_membership_revision=?3
+         WHERE id=?1",
+        params![job_id, definition_revision, membership_revision],
+    )?;
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO mix_job_tracks(job_id, position, track_id, file_path, title, artist, duration,
+                                    bpm, bpm_detected, file_size, scanned_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+    )?;
+    for t in &tracks {
+        insert.execute(params![
+            job_id,
+            t.position,
+            t.track_id,
+            t.file_path,
+            t.title,
+            t.artist,
+            t.duration,
+            t.bpm,
+            t.bpm_detected,
+            t.file_size,
+            t.scanned_at,
+        ])?;
+    }
+    drop(insert);
+    tx.commit()?;
+    Ok(job_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_mix_job(
+    conn: &Connection,
+    playlist_id: &EntityId,
+    user_id: &EntityId,
+    crossfade_sec: i64,
+    mix_style: &str,
+    mix_quality: &str,
+    order_mode: &str,
+    requested_name: Option<&str>,
+) -> Result<EntityId, JobError> {
     let job_id = new_id();
     // Must match the route-handler and renderer clamps (4-60s) so UI options up
     // to the 45s "long build" blend aren't silently truncated before storage.
@@ -1648,6 +1754,63 @@ pub fn load_playlist_tracks_for_mix(
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Shown when a mix's saved track list no longer matches the library.
+pub const MIX_SNAPSHOT_TRACK_MISSING: &str =
+    "A track in this mix is no longer in your library. Start a new mix.";
+
+/// A job's input tracks: its saved snapshot when it has one (smart playlists), else the playlist's current
+/// tracks. `None` when the snapshot is empty or one of its tracks left the library or moved; such a job
+/// fails rather than fall back to whatever the playlist holds now.
+pub fn load_mix_job_inputs(
+    conn: &Connection,
+    job_id: &EntityId,
+    playlist_id: &EntityId,
+) -> Result<Option<Vec<MixTrackInput>>, JobError> {
+    let snapshot: i64 = conn.query_row(
+        "SELECT input_snapshot FROM mix_jobs WHERE id=?1",
+        params![job_id],
+        |r| r.get(0),
+    )?;
+    if snapshot == 0 {
+        return load_playlist_tracks_for_mix(conn, playlist_id).map(Some);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT m.track_id, m.file_path, m.title, m.artist, m.duration, m.bpm, m.bpm_detected,
+                m.file_size, m.scanned_at, m.position, t.file_path
+         FROM mix_job_tracks m
+         LEFT JOIN tracks t ON t.id=m.track_id
+         WHERE m.job_id=?1
+         ORDER BY m.position ASC",
+    )?;
+    let rows = stmt.query_map(params![job_id], |r| {
+        let current_path: Option<String> = r.get(10)?;
+        Ok((
+            MixTrackInput {
+                track_id: coerce_entity_id(&r.get::<_, String>(0)?),
+                file_path: r.get(1)?,
+                title: r.get(2)?,
+                artist: r.get(3)?,
+                duration: r.get(4)?,
+                bpm: r.get(5)?,
+                bpm_detected: r.get(6)?,
+                file_size: r.get(7)?,
+                scanned_at: r.get(8)?,
+                position: r.get(9)?,
+            },
+            current_path,
+        ))
+    })?;
+    let mut tracks = Vec::new();
+    for row in rows {
+        let (track, current_path) = row?;
+        if current_path.as_deref() != Some(track.file_path.as_str()) {
+            return Ok(None);
+        }
+        tracks.push(track);
+    }
+    Ok((!tracks.is_empty()).then_some(tracks))
 }
 
 // ── Track Mix Analysis ────────────────────────────────────────────────────────
@@ -3411,6 +3574,7 @@ mod tests {
         conn.execute_batch(
             r#"
             ALTER TABLE playlists ADD COLUMN user_id TEXT;
+            ALTER TABLE playlists ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual';
             UPDATE playlists SET user_id = 'user-1';
             INSERT INTO playlist_tracks(id, playlist_id, track_id, position)
             VALUES('pt2', 'playlist-1', 't2', 1);
