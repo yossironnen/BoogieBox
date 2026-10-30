@@ -488,6 +488,27 @@ export interface Playlist {
   total_duration: number | null;
   art_album_ids?: ClientEntityId[];
   remember_progress?: number;
+  /** `smart` playlists pick their own tracks from rules. */
+  kind?: 'manual' | 'smart';
+}
+
+/** `GET /api/playlists/{id}/snapshot`: a playlist and its tracks from one read. */
+export interface PlaylistSnapshot {
+  playlist: Playlist;
+  tracks: PlaylistTrack[];
+  /** Smart playlists only. */
+  membershipRevision: number | null;
+  /** Set when a smart playlist couldn't be refreshed and the last result is shown. */
+  refreshError: string | null;
+}
+
+/** `POST /api/playlists/smart-preview`. */
+export interface SmartPlaylistPreview {
+  trackCount: number;
+  totalDuration: number;
+  /** The first 20 tracks. */
+  tracks: PlaylistTrack[];
+  missingLibraryIds: string[];
 }
 
 /** Playlist Track is part of this module's public API. */

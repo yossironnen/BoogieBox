@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
-import type { Playlist, PlaylistTrack, Track, CrossfadeMode, BoogieMixDeepAnalysisStatus, BoogieMixJob, BoogieMixOutput, ClientEntityId, PlaylistDeepAnalysisProgress } from '../types';
+import type { Playlist, PlaylistSnapshot, PlaylistTrack, Track, CrossfadeMode, BoogieMixDeepAnalysisStatus, BoogieMixJob, BoogieMixOutput, ClientEntityId, PlaylistDeepAnalysisProgress } from '../types';
 import type { EntityId } from '../entityId';
 import { parseServerDate } from '../utils';
 import { phase2 } from '../uiPhase2';
@@ -18,6 +18,7 @@ import ArtImage from './ArtImage';
 import CommandBar from './CommandBar';
 import { ImportIcons, PlaylistImportDialog, PlaylistImportToast, type ImportedPlaylist } from './PlaylistImport';
 import { PLAYLIST_FILE_ACCEPT } from '../playlistImport';
+import SmartPlaylistEditor, { SmartIcon } from './SmartPlaylistEditor';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,7 @@ const AlertIcon      = () => <svg width="12" height="12" viewBox="0 0 24 24" fil
 // Playlist detail stat icons (track count reuses QueueIcon's note glyph).
 const ClockIcon      = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>;
 const SparkleIcon    = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg>;
+const CopyIcon       = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>;
 const CalendarIcon   = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>;
 
 /** Job statuses where a BoogieMix render is still actively working. */
@@ -178,7 +180,7 @@ function PlaylistPopup({ title, onClose, children }: {
 /** Icon-only Play/Shuffle/Queue/Add Tracks row — matches the album/artist
  * header treatment (transparent .icon-action-btn + hover/focus tooltip). */
 function PlaylistToolbar({
-  disabled, onPlay, onShuffle, onQueue, addTracksOpen, onToggleAddTracks, mixReady,
+  disabled, onPlay, onShuffle, onQueue, addTracksOpen, onToggleAddTracks, mixReady, onEditRules,
 }: {
   disabled: boolean;
   onPlay: () => void;
@@ -188,6 +190,8 @@ function PlaylistToolbar({
   onToggleAddTracks: () => void;
   /** Set when a finished BoogieMix exists — shows the "mix ready" badge beside Play. */
   mixReady?: { name?: string; onOpen: () => void } | null;
+  /** Set for smart playlists: "Edit rules" replaces Add Tracks. */
+  onEditRules?: () => void;
 }) {
   const mixReadyLabel = mixReady
     ? `BoogieMix ready${mixReady.name ? ` — ${mixReady.name}` : ''} · Open in Mixes`
@@ -213,10 +217,17 @@ function PlaylistToolbar({
         disabled={disabled} onClick={onQueue}>
         <QueueIcon size={17} />
       </button>
-      <button type="button" className={addTracksOpen ? 'icon-action-btn icon-action-btn--primary' : 'icon-action-btn'}
-        data-tip="Add Tracks" aria-label="Add tracks" onClick={onToggleAddTracks}>
-        <PlusIcon size={17} />
-      </button>
+      {onEditRules ? (
+        <button type="button" className="icon-action-btn" data-tip="Edit rules" aria-label="Edit rules"
+          aria-haspopup="dialog" onClick={onEditRules}>
+          <SmartIcon size={17} />
+        </button>
+      ) : (
+        <button type="button" className={addTracksOpen ? 'icon-action-btn icon-action-btn--primary' : 'icon-action-btn'}
+          data-tip="Add Tracks" aria-label="Add tracks" onClick={onToggleAddTracks}>
+          <PlusIcon size={17} />
+        </button>
+      )}
     </div>
   );
 }
@@ -346,6 +357,56 @@ function DeletePlaylistDialog({
   );
 }
 
+/** Saves a smart playlist's current tracks as a playlist edited by hand. */
+function SaveAsOrdinaryDialog({ playlist, existingNames, onSaved, onCancel }: {
+  playlist: Playlist;
+  existingNames: string[];
+  onSaved: (copy: Playlist) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(`${playlist.name} (copy)`);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select(); }, []);
+  const count = playlist.track_count;
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed || saving) return;
+    if (existingNames.some(existing => normalizePlaylistName(existing) === normalizePlaylistName(trimmed))) {
+      setError('A playlist with this name already exists');
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await api.playlists.saveAsOrdinary(playlist.id, trimmed);
+      onSaved(result.playlist);
+    } catch (e: any) {
+      setError(e?.message || 'Could not create playlist');
+      setSaving(false);
+    }
+  };
+  return (
+    <PlaylistPopup title="Save as ordinary playlist" onClose={onCancel}>
+      <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+        Saves these {count === 1 ? '1 track' : `${count.toLocaleString()} tracks`} as a playlist you can edit by hand. It won&rsquo;t change when the rules match other tracks.
+      </div>
+      <label htmlFor="smart-copy-name" style={{ fontSize: 13, fontWeight: 650, color: 'var(--text-muted)' }}>Playlist name</label>
+      <input id="smart-copy-name" ref={inputRef} style={D.input} value={name}
+        onChange={e => { setError(''); setName(e.target.value); }}
+        onKeyDown={e => { if (e.key === 'Enter') void submit(); }} />
+      {error && <div role="alert" style={D.errorText}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button type="button" style={D.cancelBtn} onClick={onCancel}>Cancel</button>
+        <button type="button" style={{ ...D.saveBtn, ...(!name.trim() || saving ? hybridControlStyles.disabled : {}) }}
+          disabled={!name.trim() || saving} onClick={() => void submit()}>
+          <CopyIcon /> Save copy
+        </button>
+      </div>
+    </PlaylistPopup>
+  );
+}
+
 const D: Record<string, React.CSSProperties> = {
   overlay: { position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, ...hybridMediaStyles.overlay },
   dialog: { padding: 24, width: 400, display: 'flex', flexDirection: 'column', gap: 12, ...hybridMediaStyles.dialog },
@@ -468,7 +529,7 @@ function DraggableTrackRow({
   track, index, total,
   onPlay, onRemove, onDragStart, onDragEnter, onDragEnd,
   isDragOver, isHovered, onHoverChange,
-  onOpenAlbum, onOpenAlbumArtist,
+  onOpenAlbum, onOpenAlbumArtist, fixed = false,
 }: {
   track: PlaylistTrack; index: number; total: number;
   onPlay: () => void; onRemove: () => void;
@@ -480,6 +541,8 @@ function DraggableTrackRow({
   onHoverChange: (hovered: boolean) => void;
   onOpenAlbum: (albumId: ClientEntityId) => void;
   onOpenAlbumArtist: (artistId: ClientEntityId) => void;
+  /** Smart playlist rows: no dragging and no remove button. */
+  fixed?: boolean;
 }) {
   // A separate "album artist" link is only worth adding when it actually
   // differs from the track's own artist already shown — e.g. a compilation
@@ -495,16 +558,17 @@ function DraggableTrackRow({
   );
   return (
     <div
-      draggable
-      onDragStart={() => onDragStart(index)}
-      onDragEnter={() => onDragEnter(index)}
-      onDragEnd={onDragEnd}
-      onDragOver={e => e.preventDefault()}
+      draggable={!fixed}
+      onDragStart={fixed ? undefined : () => onDragStart(index)}
+      onDragEnter={fixed ? undefined : () => onDragEnter(index)}
+      onDragEnd={fixed ? undefined : onDragEnd}
+      onDragOver={fixed ? undefined : e => e.preventDefault()}
       onClick={onPlay}
       onMouseEnter={() => onHoverChange(true)}
       onMouseLeave={() => onHoverChange(false)}
       style={{
         ...T.row,
+        ...(fixed ? { cursor: 'default' } : {}),
         backgroundColor: isDragOver
           ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
           : isHovered
@@ -513,7 +577,7 @@ function DraggableTrackRow({
         borderTop: isDragOver ? '2px solid var(--accent)' : '2px solid transparent',
       }}
     >
-      <div style={T.grip} title="Drag to reorder"><GripIcon /></div>
+      {!fixed && <div style={T.grip} title="Drag to reorder"><GripIcon /></div>}
       <div style={T.num}>{index + 1}</div>
       <button type="button" aria-label={`Play ${track.title || track.file_name}`} style={T.playBtn} onClick={(e) => { e.stopPropagation(); onPlay(); }} title="Play"><PlayIcon /></button>
       <div style={T.art}>
@@ -567,7 +631,7 @@ function DraggableTrackRow({
         <span style={{ fontSize: 12, color: 'var(--accent)', opacity: 0.55, flexShrink: 0 }} title="Sonic Fingerprint available — AI stem analysis complete">✦</span>
       )}
       <div style={T.dur}>{fmtTrackDur(track.duration)}</div>
-      <button type="button" aria-label={`Remove ${track.title || track.file_name} from playlist`} style={T.removeBtn} onClick={(e) => { e.stopPropagation(); onRemove(); }} title="Remove from playlist"><TrashIcon /></button>
+      {!fixed && <button type="button" aria-label={`Remove ${track.title || track.file_name} from playlist`} style={T.removeBtn} onClick={(e) => { e.stopPropagation(); onRemove(); }} title="Remove from playlist"><TrashIcon /></button>}
     </div>
   );
 }
@@ -590,8 +654,10 @@ const T: Record<string, React.CSSProperties> = {
 // ─── Playlist Detail Panel ────────────────────────────────────────────────────
 
 
-function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
+function PlaylistOptions({ playlist, onUpdate, onDelete, onClose, onEditRules, onSaveCopy }: {
   playlist: Playlist; onUpdate: () => void; onDelete: (id: EntityId) => void; onClose: () => void;
+  /** Smart playlists: open the rule editor / the "Save as ordinary playlist" dialog. */
+  onEditRules?: () => void; onSaveCopy?: () => void;
 }) {
   // Keep the original row/toolbar trigger across the nested editor and confirmation views.
   useEffect(() => {
@@ -658,6 +724,12 @@ function PlaylistOptions({ playlist, onUpdate, onDelete, onClose }: {
     onConfirm={handleDelete} onCancel={() => { setDeleteError(''); setShowDeleteConfirm(false); }} error={deleteError} />;
   return (
     <PlaylistPopup title={playlist.name} onClose={onClose}>
+      {playlist.kind === 'smart' && onEditRules && (
+        <button type="button" style={PD.menuItem} onClick={onEditRules}><SmartIcon size={12} /> Edit rules</button>
+      )}
+      {playlist.kind === 'smart' && onSaveCopy && (
+        <button type="button" style={PD.menuItem} onClick={onSaveCopy}><CopyIcon /> Save as ordinary playlist</button>
+      )}
       <button type="button" title="Rename" style={PD.menuItem} onClick={() => { setEditError(''); setShowEdit(true); }}><EditIcon /> Rename</button>
       <button type="button" role="switch" aria-checked={rememberProgress} aria-label="Remember track position"
         disabled={rememberSaving} title={rememberProgress ? 'Remember track position: On' : 'Remember track position: Off'}
@@ -759,7 +831,7 @@ function defaultMixName(): string {
 
 function PlaylistDetail({
   playlist, onUpdate, onOptions, onBack,
-  playTrack, addToQueue, onOpenAlbum, onOpenArtist, onOpenMixes,
+  playTrack, addToQueue, onOpenAlbum, onOpenArtist, onOpenMixes, onEditRules, reloadToken = 0,
 }: {
   playlist: Playlist;
   onUpdate: () => void;
@@ -770,8 +842,18 @@ function PlaylistDetail({
   onOpenAlbum: (album: import('../types').Album) => void;
   onOpenArtist: (artist: import('../types').Artist) => void;
   onOpenMixes: (playlistName: string) => void;
+  /** Smart playlists: opens the rule editor. */
+  onEditRules?: () => void;
+  /** Bumped after the rules change so the tracks load again. */
+  reloadToken?: number;
 }) {
+  const smart = playlist.kind === 'smart';
   const [tracks, setTracks]       = useState<PlaylistTrack[]>([]);
+  // Smart playlists: the last refresh failed and the previous result is shown.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const loadedRef = useRef(false);
+  const loadSeqRef = useRef(0);
   const [loading, setLoading]     = useState(true);
   const [loadError, setLoadError] = useState('');
   const [showAdd, setShowAdd]     = useState(false);
@@ -811,21 +893,56 @@ function PlaylistDetail({
   // changed, instead of on every 2s tick.
   const deepCompletedRef = useRef(0);
 
+  const applySnapshot = useCallback((snapshot: PlaylistSnapshot) => {
+    setTracks(snapshot.tracks);
+    setRefreshError(!!snapshot.refreshError);
+  }, []);
+
   const loadTracks = useCallback(async () => {
-    setLoading(true);
+    const seq = ++loadSeqRef.current;
+    // A smart playlist that is already showing tracks updates in place.
+    const inPlace = smart && loadedRef.current;
+    if (inPlace) setRefreshing(true); else setLoading(true);
     setLoadError('');
     try {
-      const t = await api.playlists.tracks(playlist.id);
-      setTracks(t);
+      if (smart) {
+        const snapshot = await api.playlists.snapshot(playlist.id);
+        if (seq !== loadSeqRef.current) return;
+        applySnapshot(snapshot);
+      } else {
+        const t = await api.playlists.tracks(playlist.id);
+        if (seq !== loadSeqRef.current) return;
+        setTracks(t);
+      }
+      loadedRef.current = true;
     } catch (e: any) {
-      setTracks([]);
-      setLoadError(e?.message || 'Could not load playlist tracks');
+      if (seq !== loadSeqRef.current) return;
+      if (inPlace) setRefreshError(true);
+      else {
+        setTracks([]);
+        setLoadError(e?.message || 'Could not load playlist tracks');
+      }
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) { setLoading(false); setRefreshing(false); }
     }
-  }, [playlist.id]);
+  }, [playlist.id, smart, applySnapshot]);
 
-  useEffect(() => { loadTracks(); }, [loadTracks]);
+  useEffect(() => { loadTracks(); }, [loadTracks, reloadToken]);
+
+  const retryRefresh = async () => {
+    const seq = ++loadSeqRef.current;
+    setRefreshing(true);
+    try {
+      const snapshot = await api.playlists.refresh(playlist.id);
+      if (seq !== loadSeqRef.current) return;
+      applySnapshot(snapshot);
+      onUpdate();
+    } catch {
+      if (seq === loadSeqRef.current) setRefreshError(true);
+    } finally {
+      if (seq === loadSeqRef.current) setRefreshing(false);
+    }
+  };
   useEffect(() => {
     if (!api.boogiemix?.deepAnalysisStatus) {
       setDeepStatus(null);
@@ -1090,6 +1207,7 @@ function PlaylistDetail({
           onQueue={queueAll}
           addTracksOpen={showAdd}
           onToggleAddTracks={() => setShowAdd(value => !value)}
+          onEditRules={smart ? onEditRules : undefined}
         />
       </CommandBar>
       {showMix && showAnalyzeWarning && (
@@ -1258,6 +1376,11 @@ function PlaylistDetail({
         {/* Track list */}
         <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 0 }}>
           <div data-testid="playlist-details" style={PD.details}>
+            {smart && (
+              <span style={PD.smartChip} title={'Smart playlist\nIts tracks are picked by rules and update on their own'}>
+                <SmartIcon size={13} />Smart playlist
+              </span>
+            )}
             {!loading && (
               <>
                 <span style={PD.detailChip}><span style={PD.detailIcon}><QueueIcon size={14} /></span>{tracks.length === 1 ? '1 track' : `${tracks.length} tracks`}</span>
@@ -1269,6 +1392,9 @@ function PlaylistDetail({
                 )}
                 {updatedDate && <span style={PD.detailChip}><span style={PD.detailIcon}><CalendarIcon /></span>Updated {updatedDate.toLocaleDateString()}</span>}
               </>
+            )}
+            {refreshing && (
+              <span role="status" style={{ ...PD.detailChip, color: 'var(--text-muted)' }}><SpinnerIcon />Updating…</span>
             )}
             {statusLine && !loading && <span style={PD.detailDivider} aria-hidden="true" />}
             {statusLine && (
@@ -1344,6 +1470,14 @@ function PlaylistDetail({
             </div>
             )}
           </div>
+          {smart && refreshError && !loading && (
+            <div role="alert" style={PD.refreshAlert}>
+              <AlertIcon />
+              <span style={{ flex: 1 }}>Couldn&rsquo;t update this playlist. Showing the last result.</span>
+              <button type="button" style={{ ...PD.btnSecondary, minHeight: 34, padding: '6px 14px', fontSize: 13 }}
+                disabled={refreshing} onClick={() => void retryRefresh()}>Try again</button>
+            </div>
+          )}
           {loading && <div style={PD.empty}>Loading…</div>}
           {!loading && loadError && (
             <div style={PD.empty}>
@@ -1352,7 +1486,18 @@ function PlaylistDetail({
               <div style={{ marginTop: 6, fontSize: 14, color: 'var(--text-muted)' }}>{loadError}</div>
             </div>
           )}
-          {!loading && !loadError && tracks.length === 0 && (
+          {smart && !loading && !loadError && tracks.length === 0 && (
+            <div role="status" style={PD.empty}>
+              <SmartIcon size={22} />
+              <div style={{ marginTop: 12, fontSize: 16, fontWeight: 500, color: 'var(--text)' }}>No tracks match these rules.</div>
+              {onEditRules && (
+                <button type="button" style={{ ...PD.btnPrimary, marginTop: 14 }} onClick={onEditRules}>
+                  <SmartIcon size={15} /> Edit rules
+                </button>
+              )}
+            </div>
+          )}
+          {!smart && !loading && !loadError && tracks.length === 0 && (
             <div style={PD.empty}>
               <ListIcon />
               <div style={{ marginTop: 12, fontSize: 16, fontWeight: 500, color: 'var(--text)' }}>It’s Oh So Quiet</div>
@@ -1375,12 +1520,13 @@ function PlaylistDetail({
               onHoverChange={(hovered) => setHoveredTrackId(hovered ? track.id : null)}
               onOpenAlbum={handleOpenAlbum}
               onOpenAlbumArtist={handleOpenAlbumArtist}
+              fixed={smart}
             />
           ))}
         </div>
 
         {/* Add tracks slide-in panel */}
-        {showAdd && (
+        {showAdd && !smart && (
           <AddTracksPanel
             playlistId={playlist.id}
             existingTrackIds={new Set(tracks.map(t => t.id))}
@@ -1420,6 +1566,16 @@ const PD: Record<string, React.CSSProperties> = {
   detailChip: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' },
   detailIcon: { display: 'inline-flex', color: 'var(--accent)', opacity: 0.85 },
   detailDivider: { width: 1, height: 16, background: 'var(--divider-subtle)' },
+  smartChip: {
+    display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 999, whiteSpace: 'nowrap',
+    background: 'var(--accent-soft)', border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)',
+    color: 'var(--accent)', fontSize: 12, fontWeight: 700,
+  },
+  refreshAlert: {
+    display: 'flex', alignItems: 'center', gap: 10, margin: '0 16px 10px', padding: '10px 14px', borderRadius: 10, fontSize: 14,
+    border: '1px solid color-mix(in srgb, var(--danger) 45%, var(--border))', background: 'color-mix(in srgb, var(--danger) 8%, transparent)',
+    color: 'var(--text)',
+  },
   empty: { ...phase2.desktopMediaRow, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 24, padding: '72px 20px', color: 'var(--text-muted)', fontSize: 15, ...hybridMediaStyles.emptyState },
   menuItem: { ...hybridControlStyles.secondaryButton, width: '100%', justifyContent: 'flex-start', minHeight: 44, border: 'none', borderRadius: 6, background: 'transparent', textAlign: 'left' },
   btnPrimary: { ...hybridControlStyles.primaryButton },
@@ -1549,12 +1705,13 @@ function PlaylistsCountIcon() {
 }
 
 function PlaylistsGrid({
-  playlists, onOpen, onOptions, onCreate, onImport,
+  playlists, onOpen, onOptions, onCreate, onCreateSmart, onImport,
 }: {
   playlists: Playlist[];
   onOpen: (p: Playlist) => void;
   onOptions: (p: Playlist) => void;
   onCreate: () => void;
+  onCreateSmart: () => void;
   onImport: (file: File) => void;
 }) {
   const [search, setSearch] = useState('');
@@ -1591,6 +1748,10 @@ function PlaylistsGrid({
                 if (file) onImport(file);
               }}
             />
+            <button type="button" aria-label="New smart playlist" aria-haspopup="dialog" style={PG.importBtn}
+              onClick={onCreateSmart} title={'New smart playlist\nPicks tracks by rules you set'}>
+              <SmartIcon size={17} />
+            </button>
             <button type="button" aria-label="New playlist" style={PG.newBtn} onClick={onCreate} title="New playlist">
               <PlusIcon size={16} />
             </button>
@@ -1626,20 +1787,26 @@ function PlaylistsGrid({
         {playlists.length > 0 && (
           <div style={PG.grid}>
             {filtered.map(pl => {
+              const smart = pl.kind === 'smart';
               const metaText = [
+                smart ? 'Smart' : '',
                 `${pl.track_count} track${pl.track_count !== 1 ? 's' : ''}`,
                 pl.total_duration ? fmtDur(pl.total_duration) : '',
               ].filter(Boolean).join(' · ');
+              const ariaMeta = smart ? metaText.replace(/^Smart/, 'Smart playlist') : metaText;
               return (
                 <div key={pl.id} style={PG.card} className="home-list-hover">
                   <button
                     type="button"
                     style={PG.cardBtn}
                     onClick={() => onOpen(pl)}
-                    aria-label={`${pl.name} — ${metaText}`}
+                    aria-label={`${pl.name} — ${ariaMeta}`}
                     title={`Open ${pl.name}`}
                   >
-                    <span aria-hidden="true" style={PG.art}><PlaylistArtwork albumIds={pl.art_album_ids ?? []} responsive /></span>
+                    <span aria-hidden="true" style={{ ...PG.art, position: 'relative' }}>
+                      <PlaylistArtwork albumIds={pl.art_album_ids ?? []} responsive />
+                      {smart && <span data-testid="smart-badge" style={PG.smartBadge}><SmartIcon size={15} /></span>}
+                    </span>
                     <span style={PG.cardTitle}>{pl.name}</span>
                     <span style={PG.cardMeta}>{metaText}</span>
                   </button>
@@ -1690,6 +1857,10 @@ const PG: Record<string, React.CSSProperties> = {
   art: { display: 'block', width: '100%' },
   cardTitle: { marginTop: 8, fontSize: 14, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   cardMeta: { marginTop: 2, fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  smartBadge: {
+    position: 'absolute', top: 8, left: 8, width: 28, height: 28, borderRadius: 8, color: 'var(--accent)',
+    background: 'color-mix(in srgb, black 55%, transparent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  },
   cardKebabWrap: {
     position: 'absolute', top: 16, right: 16, borderRadius: 8,
     background: 'color-mix(in srgb, black 45%, transparent)',
@@ -1724,6 +1895,10 @@ export default function PlaylistsView({
   const [createError, setCreateError] = useState('');
   const [optionsPlaylist, setOptionsPlaylist] = useState<Playlist | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
+  // The rule editor: `null` playlist creates a smart playlist.
+  const [smartEditor, setSmartEditor] = useState<{ playlist: Playlist | null } | null>(null);
+  const [saveCopyOf, setSaveCopyOf] = useState<Playlist | null>(null);
+  const [detailReload, setDetailReload] = useState(0);
   const [imported, setImported] = useState<ImportedPlaylist | null>(null);
   const dismissImported = useCallback(() => setImported(null), []);
 
@@ -1783,6 +1958,20 @@ export default function PlaylistsView({
     setSelected(result.playlist);
   };
 
+  const handleSmartSaved = async (saved: Playlist) => {
+    const created = !smartEditor?.playlist;
+    setSmartEditor(null);
+    await loadPlaylists();
+    if (created) setSelected(saved);
+    else setDetailReload(n => n + 1);
+  };
+
+  const handleCopySaved = async (copy: Playlist) => {
+    setSaveCopyOf(null);
+    await loadPlaylists();
+    setSelected(copy);
+  };
+
   const handleDeleted = async (id: EntityId) => {
     setOptionsPlaylist(null);
     setSelected(current => current?.id === id ? null : current);
@@ -1800,6 +1989,7 @@ export default function PlaylistsView({
           onOpen={pl => setSelected(pl)}
           onOptions={setOptionsPlaylist}
           onCreate={() => { setCreateError(''); setShowCreate(true); }}
+          onCreateSmart={() => setSmartEditor({ playlist: null })}
           onImport={setImportFile}
         />
       )}
@@ -1815,6 +2005,8 @@ export default function PlaylistsView({
           onOpenAlbum={onOpenAlbum}
           onOpenArtist={onOpenArtist}
           onOpenMixes={onOpenMixes}
+          onEditRules={() => setSmartEditor({ playlist: selected })}
+          reloadToken={detailReload}
         />
       )}
 
@@ -1822,7 +2014,26 @@ export default function PlaylistsView({
           a shared key remounted the detail on every App render and left the old copy in the DOM. */}
       {optionsPlaylist && (
         <PlaylistOptions key={`options-${optionsPlaylist.id}`} playlist={optionsPlaylist} onUpdate={loadPlaylists}
-          onDelete={handleDeleted} onClose={() => setOptionsPlaylist(null)} />
+          onDelete={handleDeleted} onClose={() => setOptionsPlaylist(null)}
+          onEditRules={() => { setOptionsPlaylist(null); setSmartEditor({ playlist: optionsPlaylist }); }}
+          onSaveCopy={() => { setOptionsPlaylist(null); setSaveCopyOf(optionsPlaylist); }} />
+      )}
+      {smartEditor && (
+        <SmartPlaylistEditor
+          key={`smart-${smartEditor.playlist?.id ?? 'new'}`}
+          playlist={smartEditor.playlist}
+          existingNames={playlists.map(p => p.name)}
+          onClose={() => setSmartEditor(null)}
+          onSaved={saved => void handleSmartSaved(saved)}
+        />
+      )}
+      {saveCopyOf && (
+        <SaveAsOrdinaryDialog
+          playlist={saveCopyOf}
+          existingNames={playlists.map(p => p.name)}
+          onCancel={() => setSaveCopyOf(null)}
+          onSaved={copy => void handleCopySaved(copy)}
+        />
       )}
       {showCreate && (
         <PlaylistDialog

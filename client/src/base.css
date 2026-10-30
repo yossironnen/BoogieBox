@@ -279,6 +279,22 @@ select option { background-color: var(--surface); color: var(--text); }
   }
 }
 
+/* Smart playlist editor: rules beside the preview, stacked when narrow. */
+.smart-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .smart-editor-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .smart-editor-body > aside {
+    border-left: none !important;
+    border-top: 1px solid var(--border);
+  }
+}
+
 /* Icon-only action buttons (album header: Play/Queue/Vinyl/Edit/Refresh) —
    transparent until hover/focus, with a tooltip standing in for the label. */
 .icon-action-btn {

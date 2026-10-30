@@ -163,6 +163,55 @@ test('smart playlist API: preview, create, refuse manual edits, export, analysis
   }
 })
 
+test('smart playlist UI: build rules with a preview, rule-picked detail, save a copy', async ({ page }) => {
+  const name = uniqueName('E2E Smart UI')
+  const copyName = `${name} (copy)`
+  const rockTitles = ['Cardboard Comet', 'Folded Orbit', 'Ink Sky']
+  await goTo(page, 'Playlists')
+  try {
+    await test.step('build the rules', async () => {
+      await main(page).getByRole('button', { name: 'New smart playlist' }).click()
+      const dialog = page.getByRole('dialog', { name: 'New smart playlist' })
+      await dialog.getByLabel('Playlist name').fill(name)
+      await dialog.getByRole('combobox', { name: 'Field' }).selectOption('genre')
+      await dialog.getByRole('combobox', { name: 'Genre' }).fill('Rock')
+      await dialog.getByRole('button', { name: 'Add rule' }).click()
+      await dialog.getByRole('combobox', { name: 'Field' }).nth(1).selectOption('artist')
+      await dialog.getByRole('combobox', { name: 'Condition' }).nth(1).selectOption('contains')
+      await dialog.getByRole('combobox', { name: 'Artist name' }).fill('velvet')
+      const sample = dialog.getByRole('list', { name: 'First tracks' })
+      await expect(sample.getByRole('listitem')).toHaveCount(3)
+      await expect(sample).toContainText(rockTitles[0])
+      await dialog.getByRole('button', { name: 'Create playlist' }).click()
+      await expect(dialog).toBeHidden()
+    })
+
+    await test.step('rule-picked detail', async () => {
+      await expect(main(page).getByText(name, { exact: true })).toBeVisible()
+      await expect(main(page).getByText('Smart playlist', { exact: true })).toBeVisible()
+      for (const title of rockTitles) await expect(main(page).getByText(title, { exact: true })).toBeVisible()
+      await expect(main(page).getByRole('button', { name: 'Add tracks' })).toHaveCount(0)
+      await expect(main(page).getByRole('button', { name: /from playlist$/ })).toHaveCount(0)
+    })
+
+    await test.step('save as ordinary playlist', async () => {
+      await main(page).getByRole('button', { name: 'More actions' }).first().click()
+      await page.getByRole('button', { name: 'Save as ordinary playlist' }).click()
+      const dialog = page.getByRole('dialog', { name: 'Save as ordinary playlist' })
+      await expect(dialog.getByLabel('Playlist name')).toHaveValue(copyName)
+      await dialog.getByRole('button', { name: 'Save copy' }).click()
+      await expect(main(page).getByText(copyName, { exact: true })).toBeVisible()
+      await expect(main(page).getByRole('button', { name: 'Add tracks' })).toBeVisible()
+      for (const title of rockTitles) await expect(main(page).getByText(title, { exact: true })).toBeVisible()
+    })
+  } finally {
+    const list: { id: string; name: string }[] = await (await page.request.get('/api/playlists')).json()
+    for (const playlist of list.filter(p => p.name === name || p.name === copyName)) {
+      await page.request.delete(`/api/playlists/${playlist.id}`)
+    }
+  }
+})
+
 test('duplicate playlist names are rejected', async ({ page }) => {
   const name = uniqueName('E2E Dup')
   await goTo(page, 'Playlists')

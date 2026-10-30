@@ -105,6 +105,27 @@ describe('ContextMenuRoot', () => {
     expect(await screen.findByRole('button', { name: /Road Trip/i })).toBeInTheDocument();
   });
 
+  it('never offers smart playlists as targets but keeps their names taken', async () => {
+    apiMock.playlists.list.mockResolvedValue([
+      { id: '1', name: 'Road Trip', kind: 'manual' },
+      { id: '5', name: 'Late night', kind: 'smart' },
+    ]);
+    render(<ContextMenuRoot />);
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('boogiebox:contextmenu', {
+        detail: { x: 20, y: 20, target: { kind: 'track', trackId: '9', title: 'Song' }, callbacks: { onPlay: vi.fn() } },
+      }));
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Add to playlist/i }));
+    expect(await screen.findByRole('button', { name: /Road Trip/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Late night/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /\+ New playlist/i }));
+    fireEvent.change(screen.getByPlaceholderText(/Playlist name/i), { target: { value: 'late night' } });
+    fireEvent.keyDown(screen.getByPlaceholderText(/Playlist name/i), { key: 'Enter' });
+    expect(await screen.findByText('A playlist with this name already exists')).toBeInTheDocument();
+    expect(apiMock.playlists.create).not.toHaveBeenCalled();
+  });
+
   it('runs track, artist, and playlist callbacks and dismisses the menu', async () => {
     render(<ContextMenuRoot />);
     const callbacks = {

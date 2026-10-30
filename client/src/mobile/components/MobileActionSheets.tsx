@@ -368,7 +368,7 @@ export function useMobileTrackActions<TTrack extends TrackLike>({
     pickerSheet: (
       <MobilePlaylistPickerSheet
         open={pickerOpen}
-        playlists={playlists}
+        playlists={playlists.filter(playlist => playlist.kind !== 'smart')}
         track={activeTrack}
         error={pickerError}
         busyPlaylistId={busyPlaylistId}

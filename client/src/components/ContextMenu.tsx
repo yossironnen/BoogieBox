@@ -230,12 +230,19 @@ function PlaylistSubmenu({ target, onDone }: {
   onDone: () => void;
 }) {
   const [playlists, setPlaylists] = useState<{ id: EntityId; name: string }[]>([]);
+  // Every name, smart playlists included, for the duplicate-name check.
+  const [takenNames, setTakenNames] = useState<string[]>([]);
   const [feedback, setFeedback]   = useState<Record<EntityId, 'adding' | 'done'>>({});
   const [showNew, setShowNew]     = useState(false);
   const [loading, setLoading]     = useState(true);
 
   useEffect(() => {
-    api.playlists.list().then(list => { setPlaylists(list); setLoading(false); });
+    // Smart playlists pick their own tracks, so they are never add targets.
+    api.playlists.list().then(list => {
+      setPlaylists(list.filter(p => p.kind !== 'smart'));
+      setTakenNames(list.map(p => p.name));
+      setLoading(false);
+    });
   }, []);
 
   const addToPlaylist = async (playlistId: EntityId) => {
@@ -258,6 +265,7 @@ function PlaylistSubmenu({ target, onDone }: {
   const handleCreated = async (id: EntityId, name: string) => {
     setShowNew(false);
     setPlaylists(prev => [{ id, name }, ...prev]);
+    setTakenNames(prev => [name, ...prev]);
     await addToPlaylist(id);
   };
 
@@ -297,7 +305,7 @@ function PlaylistSubmenu({ target, onDone }: {
       {showNew
         ? (
           <NewPlaylistInline
-            existingNames={playlists.map((playlist) => playlist.name)}
+            existingNames={takenNames}
             onCreated={handleCreated}
             onCancel={() => setShowNew(false)}
           />

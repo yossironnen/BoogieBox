@@ -49,7 +49,9 @@ import type {
   HistoryEntry,
   LastFmInfo,
   Playlist,
+  PlaylistSnapshot,
   PlaylistTrack,
+  SmartPlaylistPreview,
   BoogieMixJob,
   BoogieMixOutput,
   BoogieMixDeepAnalysisStatus,
@@ -66,6 +68,7 @@ import type { SubsonicCredentials } from './subsonic';
 import type { FavouriteIds, FavouriteKind, Favourites } from './favourites';
 import type { RadioStation, RadioStationInput } from './radioStations';
 import type { ScrobbleAccountsResponse } from './scrobbling';
+import type { SmartDefinition, SmartDefinitionView } from './smartPlaylistRules';
 import { invalidateHomeData } from './homeCache';
 import { notifyServerRestoring } from './restoreState';
 import type {
@@ -328,6 +331,37 @@ async function remoteRequest<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', pat
 }
 
 const remoteUdn = (udn: string) => encodeURIComponent(udn);
+
+/** Smart playlist request failure with the HTTP status and the server's `code` (`edit_conflict`, `busy`, …). */
+export class SmartPlaylistApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string | null, readonly body: unknown) {
+    super(message);
+    this.name = 'SmartPlaylistApiError';
+  }
+}
+
+async function smartRequest<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api${path}`, {
+      ...FETCH_OPTS,
+      method,
+      signal,
+      ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new SmartPlaylistApiError(describeNetworkError(error), 0, null, null);
+  }
+  if (!res.ok) {
+    if (res.status === 401) invalidateHomeData(true);
+    const data = await res.json().catch(() => null) as { error?: string; code?: string } | null;
+    throw new SmartPlaylistApiError(data?.error || `Server error ${res.status}`, res.status, data?.code ?? null, data);
+  }
+  const result = await readJson<T>(res);
+  if (method !== 'GET' && !path.endsWith('/smart-preview')) homeMutation(path);
+  return result;
+}
 
 /** Encode Genres Param is part of this module's public API. */
 export function encodeGenresParam(genres?: string[]): string | undefined {
@@ -674,6 +708,20 @@ export const api = {
     saveTrackProgress: (playlistId: EntityId, trackId: ApiEntityId, seconds: number) =>
                    patch<{ ok: boolean }>(`/playlists/${playlistId}/tracks/${trackId}/progress`, { seconds }),
     exportM3uUrl: (id: EntityId) => `${BASE}/api/playlists/${id}/export.m3u`,
+    /** A playlist and its tracks from one read (smart playlists refresh first). */
+    snapshot:    (id: EntityId) => smartRequest<PlaylistSnapshot>('GET', `/playlists/${id}/snapshot`),
+    /** Re-evaluates a smart playlist now. */
+    refresh:     (id: EntityId) => smartRequest<PlaylistSnapshot>('POST', `/playlists/${id}/refresh`),
+    createSmart: (name: string, definition: SmartDefinition) =>
+                   smartRequest<Playlist>('POST', '/playlists', { name, kind: 'smart', definition }),
+    smartPreview: (definition: SmartDefinition, signal?: AbortSignal) =>
+                   smartRequest<SmartPlaylistPreview>('POST', '/playlists/smart-preview', { definition }, signal),
+    smartDefinition: (id: EntityId) => smartRequest<SmartDefinitionView>('GET', `/playlists/${id}/smart-definition`),
+    updateSmartDefinition: (id: EntityId, definition: SmartDefinition, expectedEditRevision: number) =>
+                   smartRequest<SmartDefinitionView>('PUT', `/playlists/${id}/smart-definition`, { definition, expectedEditRevision }),
+    /** Saves a smart playlist's current tracks as a new ordinary playlist. */
+    saveAsOrdinary: (id: EntityId, name: string) =>
+                   smartRequest<{ playlist: Playlist; added: number }>('POST', `/playlists/${id}/static-copy`, { name }),
     importPreview: (contentBase64: string, remaps: PathRemap[] = []) => postPlaylistImportPreview(contentBase64, remaps),
     importCommit: (name: string, trackIds: string[], description?: string) =>
                    post<{ playlist: Playlist; added: number }>('/playlists/import/commit', { name, description, trackIds }),

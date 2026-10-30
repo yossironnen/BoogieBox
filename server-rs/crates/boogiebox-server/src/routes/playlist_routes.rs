@@ -929,7 +929,14 @@ async fn get_smart_definition_handler(
     {
         Ok(Ok(Some(view))) => (StatusCode::OK, Json(view)).into_response(),
         Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Smart playlist not found"),
-        _ => internal_error(),
+        Ok(Err(e)) => {
+            tracing::warn!("Could not load smart playlist rules: {e}");
+            internal_error()
+        }
+        Err(e) => {
+            tracing::warn!("Could not load smart playlist rules: {e}");
+            internal_error()
+        }
     }
 }
 
