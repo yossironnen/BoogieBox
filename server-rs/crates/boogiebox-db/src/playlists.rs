@@ -30,6 +30,8 @@ pub struct PlaylistRow {
     pub total_duration: Option<f64>,
     /// Documents the Art Album Ids public API surface.
     pub art_album_ids: Vec<String>,
+    /// `manual` or `smart` (tracks picked by rules; see `smart_playlists`).
+    pub kind: String,
 }
 
 /// Public Playlist Track Row data shape used by BoogieBox.
@@ -167,6 +169,55 @@ fn find_owned_playlist(conn: &Connection, id: &EntityId, user_id: &str) -> rusql
     Ok(exists.is_some())
 }
 
+/// The owned playlist's kind (`manual` / `smart`), or `None` when it isn't this user's.
+fn owned_playlist_kind(
+    conn: &Connection,
+    id: &EntityId,
+    user_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT kind FROM playlists WHERE id=? AND user_id=?",
+        rusqlite::params![id, user_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Whether `id` is a smart playlist (any owner).
+pub fn is_smart_playlist(conn: &Connection, id: &EntityId) -> rusqlite::Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM playlists WHERE id=? AND kind='smart'",
+            rusqlite::params![id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Why a manual track edit (add, remove, reorder) was refused.
+#[derive(Debug)]
+pub enum EditError {
+    /// Smart playlists pick their own tracks.
+    SmartPlaylist,
+    Db(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for EditError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Db(e)
+    }
+}
+
+/// `Ok(false)` when the playlist isn't the user's; `SmartPlaylist` when its tracks come from rules.
+fn editable_playlist(conn: &Connection, id: &EntityId, user_id: &str) -> Result<bool, EditError> {
+    match owned_playlist_kind(conn, id, user_id)?.as_deref() {
+        None => Ok(false),
+        Some("smart") => Err(EditError::SmartPlaylist),
+        Some(_) => Ok(true),
+    }
+}
+
 fn is_playlist_name_taken(
     conn: &Connection,
     name: &str,
@@ -208,6 +259,7 @@ fn map_playlist_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistRow> {
         track_count: row.get(6)?,
         total_duration: row.get(7)?,
         art_album_ids,
+        kind: row.get(9)?,
     })
 }
 
@@ -225,14 +277,18 @@ fn art_album_ids_expr(has_album_id: bool) -> &'static str {
     }
 }
 
-fn get_playlist_by_id(conn: &Connection, id: &EntityId) -> rusqlite::Result<Option<PlaylistRow>> {
+pub(crate) fn get_playlist_by_id(
+    conn: &Connection,
+    id: &EntityId,
+) -> rusqlite::Result<Option<PlaylistRow>> {
     let has_album_id = column_exists(conn, "tracks", "album_id");
     let art_expr = art_album_ids_expr(has_album_id);
     let sql = format!(
         "SELECT p.id, p.name, p.description, p.created_at, p.updated_at, p.remember_progress,
                 COUNT(pt.track_id) AS track_count,
                 ROUND(SUM(t.duration), 0) AS total_duration,
-                {art_expr}
+                {art_expr},
+                p.kind
          FROM playlists p
          LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
          LEFT JOIN tracks t ON t.id = pt.track_id
@@ -253,7 +309,8 @@ pub fn list_playlists(conn: &Connection, user_id: &str) -> rusqlite::Result<Vec<
         "SELECT p.id, p.name, p.description, p.created_at, p.updated_at, p.remember_progress,
                 COUNT(pt.track_id) AS track_count,
                 ROUND(SUM(t.duration), 0) AS total_duration,
-                {art_expr}
+                {art_expr},
+                p.kind
          FROM playlists p
          LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
          LEFT JOIN tracks t ON t.id = pt.track_id
@@ -344,7 +401,8 @@ pub fn get_playlist(
         "SELECT p.id, p.name, p.description, p.created_at, p.updated_at, p.remember_progress,
                 COUNT(pt.track_id) AS track_count,
                 ROUND(SUM(t.duration), 0) AS total_duration,
-                {art_expr}
+                {art_expr},
+                p.kind
          FROM playlists p
          LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
          LEFT JOIN tracks t ON t.id = pt.track_id
@@ -398,62 +456,102 @@ pub fn list_playlist_tracks(
     if !find_owned_playlist(conn, playlist_id, user_id)? {
         return Ok(None);
     }
+    let sql = format!(
+        "SELECT {TRACK_ROW_COLUMNS},
+                pt.position, pt.id AS playlist_track_id, pt.progress_seconds
+         FROM playlist_tracks pt
+         JOIN tracks t ON t.id = pt.track_id
+         {TRACK_ROW_JOINS}
+         WHERE pt.playlist_id=?
+         ORDER BY pt.position ASC, pt.id ASC"
+    );
     let rows = conn
-        .prepare(
-            "SELECT t.id, t.file_name, t.file_size, t.format,
-                    t.duration, t.bitrate, t.sample_rate, t.channels,
-                    t.title, t.track_number, t.disc_number, t.year, t.genre,
-                    t.composer, t.comment, t.bpm, t.bpm_detected, t.bpm_source, t.bpm_confidence, t.scanned_at,
-                    t.album_id, ar.name AS artist, al.title AS album, l.name AS library_name,
-                    (EXISTS (SELECT 1 FROM track_deep_analysis da
-                             WHERE da.track_id=t.id AND da.confidence>0.25)) AS has_deep_analysis,
-                    pt.position, pt.id AS playlist_track_id, pt.progress_seconds,
-                    al.artist_id AS album_artist_id, alar.name AS album_artist_name
-             FROM playlist_tracks pt
-             JOIN tracks t ON t.id = pt.track_id
-             LEFT JOIN artists ar ON ar.id = t.artist_id
-             LEFT JOIN albums al ON al.id = t.album_id
-             LEFT JOIN artists alar ON alar.id = al.artist_id
-             LEFT JOIN libraries l ON l.id = t.library_id
-             WHERE pt.playlist_id=?
-             ORDER BY pt.position ASC, pt.id ASC",
-        )?
-        .query_map(rusqlite::params![playlist_id], |row| {
-            Ok(PlaylistTrackRow {
-                id: row.get(0)?,
-                file_name: row.get(1)?,
-                file_size: row.get(2)?,
-                format: row.get(3)?,
-                duration: row.get(4)?,
-                bitrate: row.get(5)?,
-                sample_rate: row.get(6)?,
-                channels: row.get(7)?,
-                title: row.get(8)?,
-                track_number: row.get(9)?,
-                disc_number: row.get(10)?,
-                year: row.get(11)?,
-                genre: row.get(12)?,
-                composer: row.get(13)?,
-                comment: row.get(14)?,
-                bpm: row.get(15)?,
-                bpm_detected: row.get(16)?,
-                bpm_source: row.get(17)?,
-                bpm_confidence: row.get(18)?,
-                scanned_at: row.get(19)?,
-                album_id: row.get(20)?,
-                artist: row.get(21)?,
-                album: row.get(22)?,
-                library_name: row.get(23)?,
-                has_deep_analysis: row.get(24)?,
-                position: row.get(25)?,
-                playlist_track_id: row.get(26)?,
-                progress_seconds: row.get(27)?,
-                album_artist_id: row.get(28)?,
-                album_artist_name: row.get(29)?,
-            })
-        })?
+        .prepare(&sql)?
+        .query_map(rusqlite::params![playlist_id], map_track_row)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(Some(rows))
+}
+
+const TRACK_ROW_COLUMNS: &str = "t.id, t.file_name, t.file_size, t.format,
+     t.duration, t.bitrate, t.sample_rate, t.channels,
+     t.title, t.track_number, t.disc_number, t.year, t.genre,
+     t.composer, t.comment, t.bpm, t.bpm_detected, t.bpm_source, t.bpm_confidence, t.scanned_at,
+     t.album_id, ar.name AS artist, al.title AS album, l.name AS library_name,
+     (EXISTS (SELECT 1 FROM track_deep_analysis da
+              WHERE da.track_id=t.id AND da.confidence>0.25)) AS has_deep_analysis,
+     al.artist_id AS album_artist_id, alar.name AS album_artist_name";
+
+const TRACK_ROW_JOINS: &str = "LEFT JOIN artists ar ON ar.id = t.artist_id
+     LEFT JOIN albums al ON al.id = t.album_id
+     LEFT JOIN artists alar ON alar.id = al.artist_id
+     LEFT JOIN libraries l ON l.id = t.library_id";
+
+/// Maps `TRACK_ROW_COLUMNS` followed by position, playlist-track id and progress.
+fn map_track_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistTrackRow> {
+    Ok(PlaylistTrackRow {
+        id: row.get(0)?,
+        file_name: row.get(1)?,
+        file_size: row.get(2)?,
+        format: row.get(3)?,
+        duration: row.get(4)?,
+        bitrate: row.get(5)?,
+        sample_rate: row.get(6)?,
+        channels: row.get(7)?,
+        title: row.get(8)?,
+        track_number: row.get(9)?,
+        disc_number: row.get(10)?,
+        year: row.get(11)?,
+        genre: row.get(12)?,
+        composer: row.get(13)?,
+        comment: row.get(14)?,
+        bpm: row.get(15)?,
+        bpm_detected: row.get(16)?,
+        bpm_source: row.get(17)?,
+        bpm_confidence: row.get(18)?,
+        scanned_at: row.get(19)?,
+        album_id: row.get(20)?,
+        artist: row.get(21)?,
+        album: row.get(22)?,
+        library_name: row.get(23)?,
+        has_deep_analysis: row.get(24)?,
+        album_artist_id: row.get(25)?,
+        album_artist_name: row.get(26)?,
+        position: row.get(27)?,
+        playlist_track_id: row.get(28)?,
+        progress_seconds: row.get(29)?,
+    })
+}
+
+/// Track rows for `track_ids`, in that order (unknown ids skipped); position is the index, with no
+/// playlist-track id or progress. Used for smart-playlist previews.
+pub fn track_rows_by_ids(
+    conn: &Connection,
+    track_ids: &[String],
+) -> rusqlite::Result<Vec<PlaylistTrackRow>> {
+    if track_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slots = vec!["?"; track_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT {TRACK_ROW_COLUMNS}, 0, NULL, NULL
+         FROM tracks t
+         {TRACK_ROW_JOINS}
+         WHERE t.id IN ({slots})"
+    );
+    let mut by_id: std::collections::HashMap<String, PlaylistTrackRow> = conn
+        .prepare(&sql)?
+        .query_map(params_from_iter(track_ids), map_track_row)?
+        .map(|row| row.map(|r| (r.id.to_string(), r)))
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(track_ids
+        .iter()
+        .filter_map(|id| by_id.remove(id))
+        .enumerate()
+        .map(|(position, mut row)| {
+            row.position = position as i64;
+            row
+        })
+        .collect())
 }
 
 /// Public Add Track Error data shape used by BoogieBox.
@@ -461,6 +559,7 @@ pub fn list_playlist_tracks(
 pub enum AddTrackError {
     PlaylistNotFound,
     TrackAlreadyInPlaylist,
+    SmartPlaylist,
     Db(rusqlite::Error),
 }
 
@@ -482,8 +581,11 @@ pub fn add_track_to_playlist(
     track_id: &EntityId,
     user_id: &str,
 ) -> Result<i64, AddTrackError> {
-    if !find_owned_playlist(conn, playlist_id, user_id)? {
-        return Err(AddTrackError::PlaylistNotFound);
+    match editable_playlist(conn, playlist_id, user_id) {
+        Ok(true) => {}
+        Ok(false) => return Err(AddTrackError::PlaylistNotFound),
+        Err(EditError::SmartPlaylist) => return Err(AddTrackError::SmartPlaylist),
+        Err(EditError::Db(e)) => return Err(AddTrackError::Db(e)),
     }
     let max_pos: i64 = conn.query_row(
         "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id=?",
@@ -508,8 +610,8 @@ pub fn batch_add_tracks(
     playlist_id: &EntityId,
     track_ids: &[EntityId],
     user_id: &str,
-) -> rusqlite::Result<Option<i64>> {
-    if !find_owned_playlist(conn, playlist_id, user_id)? {
+) -> Result<Option<i64>, EditError> {
+    if !editable_playlist(conn, playlist_id, user_id)? {
         return Ok(None);
     }
     let max_pos: i64 = conn.query_row(
@@ -572,8 +674,8 @@ pub fn remove_track_from_playlist(
     playlist_id: &EntityId,
     track_id: &EntityId,
     user_id: &str,
-) -> rusqlite::Result<bool> {
-    if !find_owned_playlist(conn, playlist_id, user_id)? {
+) -> Result<bool, EditError> {
+    if !editable_playlist(conn, playlist_id, user_id)? {
         return Ok(false);
     }
     conn.execute(
@@ -593,8 +695,8 @@ pub fn reorder_playlist_tracks(
     playlist_id: &EntityId,
     track_ids: &[EntityId],
     user_id: &str,
-) -> rusqlite::Result<bool> {
-    if !find_owned_playlist(conn, playlist_id, user_id)? {
+) -> Result<bool, EditError> {
+    if !editable_playlist(conn, playlist_id, user_id)? {
         return Ok(false);
     }
     for (pos, tid) in track_ids.iter().enumerate() {
@@ -1158,7 +1260,8 @@ mod tests {
               description TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now')),
               updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-              remember_progress INTEGER NOT NULL DEFAULT 0
+              remember_progress INTEGER NOT NULL DEFAULT 0,
+              kind TEXT NOT NULL DEFAULT 'manual'
             );
             CREATE TABLE playlist_tracks (
               id TEXT PRIMARY KEY,

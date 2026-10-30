@@ -21,7 +21,12 @@ use boogiebox_db::{
         list_playlists, remove_track_from_playlist, reorder_playlist_tracks, set_album_rating,
         set_artist_rating, set_track_rating, update_album_metadata, update_artist_metadata,
         update_playlist, update_track_progress, AddTrackError, AlbumMetadataUpdate,
-        ArtistMetadataUpdate, CreatePlaylistError, UpdatePlaylistError,
+        ArtistMetadataUpdate, CreatePlaylistError, EditError, UpdatePlaylistError,
+    },
+    smart_playlists::{
+        self as smart, create_smart_playlist, ensure_fresh, parse_definition, playlist_snapshot,
+        save_as_ordinary, smart_definition, update_smart_definition, RuleError, SmartError,
+        ValidDefinition,
     },
 };
 use serde::Deserialize;
@@ -67,6 +72,14 @@ pub fn playlist_router(state: SharedState) -> Router {
             post(import_preview_handler),
         )
         .route("/api/playlists/import/commit", post(import_commit_handler))
+        .route("/api/playlists/smart-preview", post(smart_preview_handler))
+        .route(
+            "/api/playlists/{id}/smart-definition",
+            get(get_smart_definition_handler).put(put_smart_definition_handler),
+        )
+        .route("/api/playlists/{id}/snapshot", get(snapshot_handler))
+        .route("/api/playlists/{id}/refresh", post(refresh_handler))
+        .route("/api/playlists/{id}/static-copy", post(static_copy_handler))
         .route("/api/albums/{id}/rating", patch(album_rating_handler))
         .route("/api/artists/{id}/rating", patch(artist_rating_handler))
         .route("/api/tracks/{id}/rating", patch(track_rating_handler))
@@ -80,6 +93,23 @@ struct PlaylistPayload {
     name: Option<String>,
     description: Option<String>,
     remember_progress: Option<i64>,
+    /// `manual` (default) or `smart`; only read on create.
+    kind: Option<String>,
+    /// The rules, required when `kind` is `smart`.
+    definition: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmartDefinitionPayload {
+    definition: Option<serde_json::Value>,
+    expected_edit_revision: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StaticCopyPayload {
+    name: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,6 +307,25 @@ async fn create_playlist_handler(
     };
     let description = payload.description.unwrap_or_default().trim().to_owned();
     let user_id = user.id;
+    match payload.kind.as_deref() {
+        None | Some("manual") => {}
+        Some("smart") => {
+            let def = match rules_from(payload.definition) {
+                Ok(def) => def,
+                Err(response) => return *response,
+            };
+            return match tokio::task::spawn_blocking(move || {
+                create_smart_playlist(&db.lock().expect("db"), &name, &description, &user_id, &def)
+            })
+            .await
+            {
+                Ok(Ok(row)) => (StatusCode::CREATED, Json(row)).into_response(),
+                Ok(Err(e)) => smart_error(e),
+                Err(_) => internal_error(),
+            };
+        }
+        Some(_) => return error(StatusCode::BAD_REQUEST, "kind must be manual or smart"),
+    }
     match tokio::task::spawn_blocking(move || {
         create_playlist(&db.lock().expect("db"), &name, &description, &user_id)
     })
@@ -388,7 +437,12 @@ async fn list_tracks_handler(
     let playlist_id = coerce_entity_id(&id);
     let user_id = user.id;
     match tokio::task::spawn_blocking(move || {
-        list_playlist_tracks(&db.lock().expect("db"), &playlist_id, &user_id)
+        let conn = db.lock().expect("db");
+        // A read: when the refresh fails, the last result is still served.
+        if let Err(e) = ensure_fresh(&conn, &playlist_id, &user_id, false) {
+            tracing::warn!("Smart playlist refresh failed before listing tracks: {e:?}");
+        }
+        list_playlist_tracks(&conn, &playlist_id, &user_id)
     })
     .await
     {
@@ -433,6 +487,7 @@ async fn add_track_handler(
         Ok(Err(AddTrackError::TrackAlreadyInPlaylist)) => {
             error(StatusCode::CONFLICT, "Track already in playlist")
         }
+        Ok(Err(AddTrackError::SmartPlaylist)) => smart_playlist_refusal(),
         _ => internal_error(),
     }
 }
@@ -470,6 +525,7 @@ async fn batch_add_tracks_handler(
         )
             .into_response(),
         Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Playlist not found"),
+        Ok(Err(EditError::SmartPlaylist)) => smart_playlist_refusal(),
         _ => internal_error(),
     }
 }
@@ -493,6 +549,7 @@ async fn remove_track_handler(
     {
         Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
         Ok(Ok(false)) => error(StatusCode::NOT_FOUND, "Playlist not found"),
+        Ok(Err(EditError::SmartPlaylist)) => smart_playlist_refusal(),
         _ => internal_error(),
     }
 }
@@ -526,6 +583,7 @@ async fn reorder_tracks_handler(
     {
         Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
         Ok(Ok(false)) => error(StatusCode::NOT_FOUND, "Playlist not found"),
+        Ok(Err(EditError::SmartPlaylist)) => smart_playlist_refusal(),
         _ => internal_error(),
     }
 }
@@ -581,10 +639,13 @@ async fn export_m3u_handler(
     let playlist_id = coerce_entity_id(&id);
     let user_id = user.id;
     match tokio::task::spawn_blocking(move || {
-        get_playlist_export_tracks(&db.lock().expect("db"), &playlist_id, &user_id)
+        let conn = db.lock().expect("db");
+        ensure_fresh(&conn, &playlist_id, &user_id, false)?;
+        Ok::<_, SmartError>(get_playlist_export_tracks(&conn, &playlist_id, &user_id)?)
     })
     .await
     {
+        Ok(Err(e)) => smart_error(e),
         Ok(Ok(Some((name, tracks)))) => {
             let mut lines = vec!["#EXTM3U".to_owned()];
             for track in tracks {
@@ -731,6 +792,262 @@ async fn import_commit_handler(
             "A playlist with this name already exists",
         ),
         _ => internal_error(),
+    }
+}
+
+// ── Smart playlists ───────────────────────────────────────────────────────────
+
+/// The refusal a manual track edit gets on a smart playlist (approved copy).
+const SMART_PLAYLIST_REFUSAL: &str =
+    "Smart playlists pick their own tracks. Edit the rules instead.";
+
+/// Previews waiting for the database at once; more get 429 `busy` (the editor previews again on its next
+/// change) instead of queueing without bound.
+const MAX_PENDING_PREVIEWS: usize = 4;
+
+fn preview_permits() -> std::sync::Arc<tokio::sync::Semaphore> {
+    static PERMITS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    PERMITS
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_PREVIEWS)))
+        .clone()
+}
+
+fn smart_playlist_refusal() -> Response {
+    import_error(
+        StatusCode::CONFLICT,
+        "smart_playlist",
+        SMART_PLAYLIST_REFUSAL,
+    )
+}
+
+fn invalid_rules(errors: Vec<RuleError>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": "These rules are not valid",
+            "code": "invalid_rules",
+            "errors": errors,
+        })),
+    )
+        .into_response()
+}
+
+/// The validated rules, or the response refusing them (boxed: a `Response` is large).
+fn rules_from(value: Option<serde_json::Value>) -> Result<ValidDefinition, Box<Response>> {
+    let Some(value) = value else {
+        return Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "definition is required",
+        )));
+    };
+    parse_definition(&value.to_string()).map_err(|errors| Box::new(invalid_rules(errors)))
+}
+
+fn smart_error(e: SmartError) -> Response {
+    match e {
+        SmartError::NotFound => error(StatusCode::NOT_FOUND, "Playlist not found"),
+        SmartError::NameTaken => error(
+            StatusCode::CONFLICT,
+            "A playlist with this name already exists",
+        ),
+        SmartError::Invalid(errors) => invalid_rules(errors),
+        SmartError::Conflict { edit_revision } => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "The rules changed since they were loaded",
+                "code": "edit_conflict",
+                "editRevision": edit_revision,
+            })),
+        )
+            .into_response(),
+        SmartError::Unsupported => import_error(
+            StatusCode::CONFLICT,
+            "unsupported",
+            "These rules were made by a newer version of BoogieBox",
+        ),
+        SmartError::TimedOut => import_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "timed_out",
+            "The rules took too long to evaluate",
+        ),
+        SmartError::Db(e) => {
+            tracing::warn!("Smart playlist database error: {e}");
+            internal_error()
+        }
+    }
+}
+
+async fn smart_preview_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Json(payload): Json<SmartDefinitionPayload>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let def = match rules_from(payload.definition) {
+        Ok(def) => def,
+        Err(response) => return *response,
+    };
+    let Ok(permit) = preview_permits().try_acquire_owned() else {
+        return import_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "busy",
+            "Too many previews at once",
+        );
+    };
+    let user_id = user.id;
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        smart::preview(&db.lock().expect("db"), &user_id, &def)
+    })
+    .await;
+    match result {
+        Ok(Ok(preview)) => (StatusCode::OK, Json(preview)).into_response(),
+        Ok(Err(e)) => smart_error(e),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn get_smart_definition_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let playlist_id = coerce_entity_id(&id);
+    let user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        smart_definition(&db.lock().expect("db"), &playlist_id, &user_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(view))) => (StatusCode::OK, Json(view)).into_response(),
+        Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Smart playlist not found"),
+        _ => internal_error(),
+    }
+}
+
+async fn put_smart_definition_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(payload): Json<SmartDefinitionPayload>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let Some(expected) = payload.expected_edit_revision else {
+        return error(StatusCode::BAD_REQUEST, "expectedEditRevision is required");
+    };
+    let def = match rules_from(payload.definition) {
+        Ok(def) => def,
+        Err(response) => return *response,
+    };
+    let playlist_id = coerce_entity_id(&id);
+    let user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        update_smart_definition(
+            &db.lock().expect("db"),
+            &playlist_id,
+            &user_id,
+            &def,
+            expected,
+        )
+    })
+    .await
+    {
+        Ok(Ok(view)) => (StatusCode::OK, Json(view)).into_response(),
+        Ok(Err(e)) => smart_error(e),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn snapshot_response(
+    state: SharedState,
+    user: AuthenticatedUser,
+    id: String,
+    force: bool,
+) -> Response {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let playlist_id = coerce_entity_id(&id);
+    let user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        playlist_snapshot(&db.lock().expect("db"), &playlist_id, &user_id, force)
+    })
+    .await
+    {
+        Ok(Ok(Some(snapshot))) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "Playlist not found"),
+        _ => internal_error(),
+    }
+}
+
+/// A playlist and its tracks from one read; smart playlists are brought up to date first.
+async fn snapshot_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    snapshot_response(state, user, id, false).await
+}
+
+/// Re-evaluates a smart playlist now and returns its snapshot.
+async fn refresh_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    snapshot_response(state, user, id, true).await
+}
+
+async fn static_copy_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(payload): Json<StaticCopyPayload>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let Some(name) = payload
+        .name
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    else {
+        return error(StatusCode::BAD_REQUEST, "Name is required");
+    };
+    let description = payload.description.unwrap_or_default().trim().to_owned();
+    let playlist_id = coerce_entity_id(&id);
+    let user_id = user.id;
+    match tokio::task::spawn_blocking(move || {
+        save_as_ordinary(
+            &db.lock().expect("db"),
+            &playlist_id,
+            &user_id,
+            &name,
+            &description,
+        )
+    })
+    .await
+    {
+        Ok(Ok((playlist, added))) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "playlist": playlist, "added": added })),
+        )
+            .into_response(),
+        Ok(Err(e)) => smart_error(e),
+        Err(_) => internal_error(),
     }
 }
 
@@ -1484,5 +1801,327 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    fn get_req(uri: &str, cookie: &str) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn put_json(uri: &str, cookie: &str, body: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
+            .uri(uri)
+            .header("cookie", cookie)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn genre_rules(genre: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "root": { "mode": "all", "children": [
+                { "field": "genre", "operator": "is", "value": genre }
+            ]}
+        })
+    }
+
+    /// Seeds two Rock tracks and one Jazz track; returns their ids in title order (A, B, C).
+    fn seed_genres(pool: &DbPool) -> Vec<String> {
+        let (artist_id, album_id, first) = seed_music(pool);
+        let conn = pool.lock().unwrap();
+        conn.execute(
+            "UPDATE tracks SET title = 'A Rock', genre = 'Rock' WHERE id = ?",
+            params![first],
+        )
+        .unwrap();
+        let mut ids = vec![first.clone()];
+        for (title, genre) in [("B Rock", "Rock"), ("C Jazz", "Jazz")] {
+            let id = Uuid::now_v7().to_string();
+            conn.execute(
+                "INSERT INTO tracks(id, library_id, artist_id, album_id, title, genre, file_path, duration) \
+                 SELECT ?, library_id, ?, ?, ?, ?, ?, 200 FROM tracks WHERE id = ?",
+                params![
+                    id,
+                    artist_id,
+                    album_id,
+                    title,
+                    genre,
+                    format!("/music/{id}.mp3"),
+                    first
+                ],
+            )
+            .unwrap();
+            ids.push(id);
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn smart_playlist_lifecycle_over_the_api() {
+        let (app, pool) = new_test_app_with_pool("smart-playlists");
+        let cookie = seed_user_session(&pool, "u1");
+        let other = seed_user_session(&pool, "u2");
+        let ids = seed_genres(&pool);
+
+        // Invalid rules are refused with their problems.
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists",
+                &cookie,
+                serde_json::json!({ "name": "Bad", "kind": "smart", "definition": {
+                    "schemaVersion": 1, "root": { "mode": "all", "children": [] } } }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let bad = json_body(&body);
+        assert_eq!(bad["code"], "invalid_rules");
+        assert_eq!(bad["errors"][0]["code"], "empty_group");
+
+        // Preview stores nothing.
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists/smart-preview",
+                &cookie,
+                serde_json::json!({ "definition": genre_rules("Rock") }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let preview = json_body(&body);
+        assert_eq!(preview["trackCount"], 2);
+        assert_eq!(preview["tracks"][0]["title"], "A Rock");
+
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists",
+                &cookie,
+                serde_json::json!({ "name": "Rock", "kind": "smart", "definition": genre_rules("Rock") }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let created = json_body(&body);
+        assert_eq!(created["kind"], "smart");
+        assert_eq!(created["track_count"], 2);
+        let id = created["id"].as_str().unwrap().to_owned();
+
+        let (_, body) = send(app.clone(), get_req("/api/playlists", &cookie)).await;
+        assert_eq!(json_body(&body)[0]["kind"], "smart");
+
+        // Manual edits are refused.
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                &format!("/api/playlists/{id}/tracks"),
+                &cookie,
+                serde_json::json!({ "track_id": ids[2] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json_body(&body)["code"], "smart_playlist");
+        let (status, _) = send(
+            app.clone(),
+            post_json(
+                &format!("/api/playlists/{id}/tracks/batch"),
+                &cookie,
+                serde_json::json!({ "track_ids": [ids[2]] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = send(
+            app.clone(),
+            put_json(
+                &format!("/api/playlists/{id}/tracks/order"),
+                &cookie,
+                serde_json::json!({ "track_ids": [ids[1], ids[0]] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = send(
+            app.clone(),
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/playlists/{id}/tracks/{}", ids[0]))
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // A library change shows on the next read.
+        pool.lock()
+            .unwrap()
+            .execute(
+                "UPDATE tracks SET genre = 'Rock' WHERE id = ?",
+                params![ids[2]],
+            )
+            .unwrap();
+        let (status, body) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{id}/snapshot"), &cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let snapshot = json_body(&body);
+        assert_eq!(snapshot["tracks"].as_array().unwrap().len(), 3);
+        assert_eq!(snapshot["membershipRevision"], 2);
+        assert!(snapshot["refreshError"].is_null());
+        let (status, _) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{id}/snapshot"), &other),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "other users can't read it");
+
+        // Rules edit: revision checked.
+        let (_, body) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{id}/smart-definition"), &cookie),
+        )
+        .await;
+        let view = json_body(&body);
+        assert_eq!(view["editRevision"], 1);
+        assert_eq!(view["supported"], true);
+        let (status, body) = send(
+            app.clone(),
+            put_json(
+                &format!("/api/playlists/{id}/smart-definition"),
+                &cookie,
+                serde_json::json!({ "definition": genre_rules("Jazz"), "expectedEditRevision": 1 }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["editRevision"], 2);
+        let (status, body) = send(
+            app.clone(),
+            put_json(
+                &format!("/api/playlists/{id}/smart-definition"),
+                &cookie,
+                serde_json::json!({ "definition": genre_rules("Rock"), "expectedEditRevision": 1 }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let conflict = json_body(&body);
+        assert_eq!(conflict["code"], "edit_conflict");
+        assert_eq!(conflict["editRevision"], 2);
+        let (status, _) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{id}/smart-definition"), &other),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Refresh, export, ordinary copy.
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                &format!("/api/playlists/{id}/refresh"),
+                &cookie,
+                serde_json::json!({}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json_body(&body)["tracks"].as_array().unwrap().len(),
+            0,
+            "the only Jazz track became Rock"
+        );
+        pool.lock()
+            .unwrap()
+            .execute(
+                "UPDATE tracks SET genre = 'Jazz' WHERE id = ?",
+                params![ids[2]],
+            )
+            .unwrap();
+        let (status, body) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{id}/export.m3u"), &cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(String::from_utf8(body)
+            .unwrap()
+            .contains(&format!("/music/{}.mp3", ids[2])));
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                &format!("/api/playlists/{id}/static-copy"),
+                &cookie,
+                serde_json::json!({ "name": "Jazz (copy)" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let copy = json_body(&body);
+        assert_eq!(copy["playlist"]["kind"], "manual");
+        assert_eq!(copy["added"], 1);
+        let copy_id = copy["playlist"]["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            app.clone(),
+            post_json(
+                &format!("/api/playlists/{copy_id}/tracks"),
+                &cookie,
+                serde_json::json!({ "track_id": ids[0] }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "the copy is an ordinary playlist"
+        );
+        let (status, _) = send(
+            app.clone(),
+            post_json(
+                &format!("/api/playlists/{copy_id}/static-copy"),
+                &cookie,
+                serde_json::json!({ "name": "Nope" }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "only smart playlists are copied"
+        );
+
+        // Kind is checked on create and stays fixed on rename.
+        let (status, _) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists",
+                &cookie,
+                serde_json::json!({ "name": "X", "kind": "magic" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) = send(
+            app,
+            put_json(
+                &format!("/api/playlists/{id}"),
+                &cookie,
+                serde_json::json!({ "name": "Jazz" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["kind"], "smart");
     }
 }

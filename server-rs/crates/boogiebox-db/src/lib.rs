@@ -14,6 +14,7 @@ pub mod radio;
 pub mod radio_stations;
 pub mod remote;
 pub mod scrobble;
+pub mod smart_playlists;
 pub mod subsonic;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -309,6 +310,7 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           bpm_confidence REAL,
           bpm_analyzed_at TEXT,
           scanned_at TEXT NOT NULL DEFAULT (datetime('now')),
+          added_at TEXT,
           last_played_at TEXT,
           play_count INTEGER NOT NULL DEFAULT 0
         );
@@ -333,7 +335,8 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           description TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
           updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-          remember_progress INTEGER NOT NULL DEFAULT 0
+          remember_progress INTEGER NOT NULL DEFAULT 0,
+          kind TEXT NOT NULL DEFAULT 'manual' CHECK(kind IN ('manual','smart'))
         );
         CREATE INDEX IF NOT EXISTS idx_playlists_name_lower
           ON playlists(user_id, LOWER(TRIM(name)));
@@ -830,6 +833,10 @@ fn tracked_migrations() -> Vec<Migration> {
         Migration {
             id: "2026-10-27-library-missing-kept",
             apply: ensure_library_missing_kept_columns,
+        },
+        Migration {
+            id: "2026-10-29-smart-playlists",
+            apply: smart_playlists::ensure_smart_playlists_schema,
         },
     ]
 }

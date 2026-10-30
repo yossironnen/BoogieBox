@@ -1172,7 +1172,7 @@ pub fn genre_raw_labels(conn: &Connection, label: &str) -> rusqlite::Result<Vec<
 }
 
 /// The stored `tracks.genre` strings carrying the tag `label` (for an indexed `t.genre IN (…)` filter).
-fn genre_values(conn: &Connection, label: &str) -> rusqlite::Result<Vec<String>> {
+pub(crate) fn genre_values(conn: &Connection, label: &str) -> rusqlite::Result<Vec<String>> {
     let mut values: Vec<String> = Vec::new();
     for_genre_tags(conn, label, |genre, _| {
         if values.last().map(String::as_str) != Some(genre) {

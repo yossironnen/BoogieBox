@@ -135,15 +135,22 @@ passes the same threshold as the web player.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/playlists` | List playlists. |
-| `POST` | `/api/playlists` | Create a playlist. |
+| `POST` | `/api/playlists` | Create a playlist. With `kind: "smart"` and a `definition` (rules, sort, limit), creates and evaluates a smart playlist in one step; invalid rules answer `400` `code: "invalid_rules"` with `errors[]` (`path`, `code`). Playlist rows carry `kind` (`manual` / `smart`). |
 | `GET` | `/api/playlists/{id}` | Fetch playlist detail and tracks. |
 | `PUT` | `/api/playlists/{id}` | Update playlist metadata. |
 | `DELETE` | `/api/playlists/{id}` | Delete a playlist. |
 | `POST` | `/api/playlists/{id}/tracks` | Add tracks to a playlist. |
 | `PUT` | `/api/playlists/{id}/tracks/order` | Reorder playlist tracks. |
-| `GET` | `/api/playlists/{id}/export.m3u` | Download a playlist as M3U. |
+| | | Adding, removing or reordering tracks of a smart playlist answers `409` `code: "smart_playlist"`. |
+| `GET` | `/api/playlists/{id}/export.m3u` | Download a playlist as M3U (smart playlists are brought up to date first; `503` `timed_out` if that fails). |
 | `POST` | `/api/playlists/import/preview` | Match an M3U/M3U8 file (`{ contentBase64, remaps? }`, ≤ 2 MB, ≤ 10,000 entries) against library tracks. Returns each entry's status (`matched` / `ambiguous` / `unmatched` / `remote` / `duplicate`), candidates for ambiguous lines, totals, and up to 3 suggested folder swaps. File problems answer `413`/`422` with `code` `too_big` / `too_long` / `empty`. Nothing is written. |
 | `POST` | `/api/playlists/import/commit` | Create a playlist from `{ name, description?, trackIds }` in that order, in one transaction (unknown ids and repeats skipped). Returns `{ playlist, added }`; `409` when the name is taken. |
+| `POST` | `/api/playlists/smart-preview` | Evaluate unsaved rules `{ definition }` for the signed-in user: `{ trackCount, totalDuration, tracks (first 20), missingLibraryIds }`. Nothing is written. `429` `busy` when too many previews are waiting. |
+| `GET` | `/api/playlists/{id}/smart-definition` | The owner's rules with `schemaVersion`, `editRevision`, `membershipRevision`, `evaluatedAt`, `supported` (false when a newer version stored them) and `missingLibraryIds`. |
+| `PUT` | `/api/playlists/{id}/smart-definition` | Replace the rules `{ definition, expectedEditRevision }` and re-evaluate, all or nothing. `409` `edit_conflict` (with the current `editRevision`) when they changed meanwhile; `409` `unsupported` for rules from a newer version. |
+| `GET` | `/api/playlists/{id}/snapshot` | Playlist and tracks from one read, smart playlists refreshed first: `{ playlist, tracks, membershipRevision, refreshError }`. `refreshError` (`timed_out` / `unsupported` / `failed`) means the last result is shown. |
+| `POST` | `/api/playlists/{id}/refresh` | Re-evaluate a smart playlist now; returns the snapshot. |
+| `POST` | `/api/playlists/{id}/static-copy` | Save a smart playlist's current tracks as a new ordinary playlist `{ name, description? }`; returns `{ playlist, added }`. |
 
 ## Ratings And Metadata
 

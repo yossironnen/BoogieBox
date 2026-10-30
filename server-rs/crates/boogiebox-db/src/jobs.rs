@@ -744,8 +744,8 @@ pub fn upsert_scanned_track(
             id, library_id, artist_id, album_id, title, file_name, album_artist,
             genre, composer, duration, bitrate, sample_rate, channels,
             file_path, file_size, format,
-            track_number, disc_number, year, comment, bpm, scanned_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,datetime('now'))
+            track_number, disc_number, year, comment, bpm, scanned_at, added_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,datetime('now'),datetime('now'))
          ON CONFLICT(file_path) DO UPDATE SET
             library_id=excluded.library_id,
             artist_id=excluded.artist_id,
@@ -2051,6 +2051,26 @@ mod tests {
             })
             .unwrap();
         assert_eq!(title, "Song One (Remastered)");
+
+        // Rescans keep the date the track was first added, even when the file changed.
+        f.conn
+            .execute(
+                "UPDATE tracks SET added_at = '2020-01-01 00:00:00' WHERE id=?1",
+                [&track_id],
+            )
+            .unwrap();
+        let mut changed_file = scanned_track(&f.library_id, path, "Song One (Remastered)");
+        changed_file.file_size = 2000;
+        upsert_scanned_track(&f.conn, &changed_file).unwrap();
+        let added_at: String = f
+            .conn
+            .query_row(
+                "SELECT added_at FROM tracks WHERE id=?1",
+                [&track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(added_at, "2020-01-01 00:00:00");
 
         let count: i64 = f
             .conn

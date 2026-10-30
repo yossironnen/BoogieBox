@@ -115,6 +115,50 @@ test('import an M3U: preview counts, not-found list, then the playlist in file o
   expect((await page.request.delete(`/api/playlists/${created.id}`)).ok()).toBe(true)
 })
 
+test('smart playlist API: preview, create, refuse manual edits, export', async ({ page }) => {
+  const rules = {
+    schemaVersion: 1,
+    root: { mode: 'all', children: [
+      { field: 'genre', operator: 'is', value: 'Rock' },
+      { field: 'artist', operator: 'contains', value: 'velvet' },
+    ] },
+    sort: [{ field: 'title', direction: 'asc' }],
+  }
+  const rockTitles = ['Cardboard Comet', 'Folded Orbit', 'Ink Sky']
+
+  const preview = await (await page.request.post('/api/playlists/smart-preview', { data: { definition: rules } })).json()
+  expect(preview.trackCount).toBe(3)
+  expect(preview.tracks.map((t: { title: string }) => t.title)).toEqual(rockTitles)
+
+  const name = uniqueName('E2E Smart')
+  const created = await page.request.post('/api/playlists', { data: { name, kind: 'smart', definition: rules } })
+  expect(created.status()).toBe(201)
+  const playlist: { id: string; kind: string; track_count: number } = await created.json()
+  expect(playlist).toMatchObject({ kind: 'smart', track_count: 3 })
+
+  try {
+    const snapshot = await (await page.request.get(`/api/playlists/${playlist.id}/snapshot`)).json()
+    expect(snapshot.tracks.map((t: { title: string }) => t.title)).toEqual(rockTitles)
+    expect(snapshot.refreshError).toBeNull()
+
+    const add = await page.request.post(`/api/playlists/${playlist.id}/tracks`, { data: { track_id: snapshot.tracks[0].id } })
+    expect(add.status()).toBe(409)
+    expect((await add.json()).code).toBe('smart_playlist')
+
+    const m3u = await (await page.request.get(`/api/playlists/${playlist.id}/export.m3u`)).text()
+    const exported = m3u.split(/\r?\n/).filter((line) => line.startsWith('#EXTINF')).map((line) => line.split(' - ').pop())
+    expect(exported).toEqual(rockTitles)
+
+    const invalid = await page.request.post('/api/playlists/smart-preview', {
+      data: { definition: { ...rules, root: { mode: 'all', children: [] } } },
+    })
+    expect(invalid.status()).toBe(400)
+    expect((await invalid.json()).errors[0].code).toBe('empty_group')
+  } finally {
+    expect((await page.request.delete(`/api/playlists/${playlist.id}`)).ok()).toBe(true)
+  }
+})
+
 test('duplicate playlist names are rejected', async ({ page }) => {
   const name = uniqueName('E2E Dup')
   await goTo(page, 'Playlists')
