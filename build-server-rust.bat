@@ -106,6 +106,7 @@ set FFMPEG_CACHE_DIR=tools\ffmpeg
 set FFMPEG_RELEASE_DIR=%DIST_DIR%\resources\ffmpeg
 set WINSW_CACHE_EXE=tools\winsw\boogiebox-service.exe
 set RUST_EXE=server-rs\target\release\boogiebox-server.exe
+set RUST_TRAY_EXE=server-rs\target\release\boogiebox.exe
 
 if not exist "%RUST_EXE%" (
   echo [ERROR] Rust build did not produce %RUST_EXE%
@@ -145,6 +146,8 @@ echo.
 echo  [6/8] Copying Rust server EXE...
 copy /y "%RUST_EXE%" "%DIST_DIR%\boogiebox-server.exe" >nul
 IF ERRORLEVEL 1 (echo [ERROR] Failed to copy Rust server EXE & exit /b 1)
+copy /y "%RUST_TRAY_EXE%" "%DIST_DIR%\boogiebox.exe" >nul
+IF ERRORLEVEL 1 (echo [ERROR] Failed to copy tray launcher EXE & exit /b 1)
 
 echo  [7/8] Copying sidecars and assets...
 xcopy /e /q "client\build" "%DIST_DIR%\client\build\" >nul
@@ -207,7 +210,7 @@ echo  [8/8] Writing release metadata files...
   echo.
   echo ## Start
   echo.
-  echo 1. Run **start.bat** or **boogiebox-server.exe**
+  echo 1. Run **boogiebox.exe** ^(notification-area icon, no console window^), or **start.bat** / **boogiebox-server.exe** for a console
   echo 2. Open **http://localhost:3001** in your browser
   echo 3. On first launch, follow the setup wizard to choose the database folder and libraries
   echo.

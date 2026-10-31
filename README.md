@@ -223,7 +223,7 @@ Method-level details are in [`docs/API.md`](docs/API.md#subsonic-apps-opensubson
 
 1. Download the latest release.
 2. Run the installer.
-3. Launch BoogieBox.
+3. Launch BoogieBox. It runs in the notification area (no console window); click its icon and choose **Open BoogieBox** to open `http://localhost:3001`, or **Exit** to stop the server.
 4. Follow the first-run setup wizard.
 5. Start enjoying your music.
 

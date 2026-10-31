@@ -58,6 +58,7 @@ pub mod scanner;
 pub mod scrobbling;
 pub mod server_config;
 pub mod settings;
+pub mod shutdown_event;
 pub mod similar_artists;
 pub mod story_image;
 pub mod subsonic;
@@ -67,7 +68,8 @@ pub mod test_support;
 pub mod upnp;
 pub mod waveform_map;
 
-pub(crate) const DEFAULT_PORT: u16 = 3001;
+/// TCP port the server binds when `PORT` is unset.
+pub const DEFAULT_PORT: u16 = 3001;
 
 /// Shared SQLite connection wrapper used by route handlers and background workers.
 pub type DbPool = Arc<Mutex<rusqlite::Connection>>;
@@ -1031,7 +1033,10 @@ async fn api_fallback_handler(State(state): State<SharedState>) -> impl IntoResp
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = shutdown_event::requested() => {}
+    }
     tracing::info!("Shutdown signal received");
 }
 

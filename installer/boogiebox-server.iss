@@ -36,13 +36,14 @@ MinVersion=10.0
 PrivilegesRequired=admin
 DisableProgramGroupPage=yes
 UninstallDisplayName=BoogieBox Server {#AppVersion}
-UninstallDisplayIcon={app}\boogiebox-server.exe
+UninstallDisplayIcon={app}\boogiebox.exe
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+Name: "startatlogin"; Description: "Start BoogieBox when I sign in"; GroupDescription: "Server startup:"
 Name: "serviceinstall"; Description: "Install as a Windows &service"; GroupDescription: "Server startup:"; Flags: unchecked
 Name: "boogiemix"; Description: "[HIGHLY EXPERIMENTAL - still in progress] Install BoogieMix &deep analysis (AI stem separation - requires internet, large download, 2-5 GB installed, 10-30 min)"; GroupDescription: "Optional features:"; Flags: unchecked
 
@@ -51,6 +52,7 @@ Name: "{commonappdata}\BoogieBox\logs"; Permissions: users-modify
 
 [Files]
 Source: "{#ReleaseDir}\boogiebox-server.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\boogiebox.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\boogiebox-service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\boogiebox-service.xml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\start.bat"; DestDir: "{app}"; Flags: ignoreversion
@@ -66,12 +68,14 @@ Type: filesandordirs; Name: "{app}\client\build"
 Type: filesandordirs; Name: "{app}\node_modules"
 
 [Icons]
-Name: "{group}\BoogieBox Server"; Filename: "{app}\boogiebox-server.exe"; WorkingDir: "{app}"; Comment: "Start the BoogieBox media server"
+; boogiebox.exe runs the server without a console window and shows a notification-area icon.
+Name: "{group}\BoogieBox Server"; Filename: "{app}\boogiebox.exe"; WorkingDir: "{app}"; Comment: "Start the BoogieBox media server"
 Name: "{group}\Uninstall BoogieBox Server"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\BoogieBox Server"; Filename: "{app}\boogiebox-server.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{commondesktop}\BoogieBox Server"; Filename: "{app}\boogiebox.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{commonstartup}\BoogieBox Server"; Filename: "{app}\boogiebox.exe"; WorkingDir: "{app}"; Tasks: startatlogin and not serviceinstall
 
 [Run]
-Filename: "{app}\boogiebox-server.exe"; Description: "Start BoogieBox Server now (open http://localhost:3001 in your browser)"; Flags: nowait postinstall skipifsilent; WorkingDir: "{app}"; Tasks: not serviceinstall
+Filename: "{app}\boogiebox.exe"; Description: "Start BoogieBox Server now"; Flags: nowait postinstall skipifsilent runasoriginaluser; WorkingDir: "{app}"; Tasks: not serviceinstall
 
 [Code]
 var
@@ -267,6 +271,21 @@ procedure RemoveBoogieBoxService();
 begin
   RunServiceCommand('stop');
   RunServiceCommand('uninstall');
+end;
+
+// Stops the tray launcher (and the server it runs) in this session so its files can be replaced or removed.
+procedure StopTrayLauncher();
+var
+  ResultCode: Integer;
+begin
+  if FileExists(ExpandConstant('{app}\boogiebox.exe')) then
+    Exec(ExpandConstant('{app}\boogiebox.exe'), '--exit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopTrayLauncher();
+  Result := '';
 end;
 
 procedure InitializeWizard();
@@ -486,6 +505,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
+    StopTrayLauncher();
     RemoveBoogieBoxService();
     RemoveFirewallRule();
   end;
