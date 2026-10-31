@@ -403,7 +403,7 @@ describe('SmartPlaylistEditor', () => {
     expect(within(dialog).getByLabelText('Playlist name')).toHaveValue('Rock');
     expect(within(dialog).getByRole('combobox', { name: 'Field' })).toHaveValue('genre');
     expect(within(dialog).getByRole('combobox', { name: 'Genre' })).toHaveValue('Rock');
-    expect(within(dialog).getByLabelText('Order by')).toHaveValue('added_at');
+    expect(within(dialog).getByLabelText('Order by')).toHaveValue('shuffle');
     expect(within(dialog).getByRole('button', { name: /Create playlist/ })).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole('button', { name: /Create and play/ }));
@@ -411,8 +411,47 @@ describe('SmartPlaylistEditor', () => {
     expect(onSaved).not.toHaveBeenCalled();
     expect(apiMock.playlists.createSmart).toHaveBeenCalledWith('Rock', expect.objectContaining({
       root: { mode: 'all', children: [{ field: 'genre', operator: 'is', value: 'Rock' }] },
-      sort: [{ field: 'added_at', direction: 'desc' }],
+      sort: [{ field: 'shuffle', seed: expect.any(Number) }],
     }));
+  });
+
+  it('starts new playlists shuffled with a fixed order until the order changes', async () => {
+    render(<SmartPlaylistEditor existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'New smart playlist' });
+    const orderBy = within(dialog).getByLabelText('Order by');
+    expect(orderBy).toHaveValue('shuffle');
+    expect(within(orderBy).getByRole('option', { name: 'Shuffled' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('combobox', { name: 'Direction' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Add a second order' })).toBeNull();
+
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Artist name' }), { target: { value: 'Air' } });
+    await waitFor(() => expect(apiMock.playlists.smartPreview).toHaveBeenCalled());
+    const seed = apiMock.playlists.smartPreview.mock.lastCall![0].sort[0].seed;
+    expect(apiMock.playlists.smartPreview.mock.lastCall![0].sort).toEqual([{ field: 'shuffle', seed }]);
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Artist name' }), { target: { value: 'Moby' } });
+    await waitFor(() => expect(apiMock.playlists.smartPreview).toHaveBeenCalledTimes(2));
+    expect(apiMock.playlists.smartPreview.mock.lastCall![0].sort[0].seed).toBe(seed);
+
+    fireEvent.change(orderBy, { target: { value: 'title' } });
+    expect(within(dialog).getByRole('combobox', { name: 'Direction' })).toHaveValue('asc');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add a second order' }));
+    const thenBy = within(dialog).getByRole('combobox', { name: 'Then by' });
+    expect(within(thenBy).queryByRole('option', { name: 'Shuffled' })).toBeNull();
+    fireEvent.change(orderBy, { target: { value: 'shuffle' } });
+    expect(within(dialog).queryByRole('combobox', { name: 'Then by' })).toBeNull();
+    await waitFor(() => expect(apiMock.playlists.smartPreview.mock.lastCall![0].sort).toEqual([{ field: 'shuffle', seed: expect.any(Number) }]));
+  });
+
+  it('keeps the seed of a saved shuffle when editing', async () => {
+    apiMock.playlists.smartDefinition.mockResolvedValue({ ...stored, definition: { ...stored.definition, sort: [{ field: 'shuffle', seed: 4242 }] } });
+    apiMock.playlists.updateSmartDefinition.mockResolvedValue({ ...stored, editRevision: 4 });
+    render(<SmartPlaylistEditor playlist={smartPlaylist} existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Edit rules' });
+    expect(await within(dialog).findByLabelText('Order by')).toHaveValue('shuffle');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save rules' }));
+    await waitFor(() => expect(apiMock.playlists.updateSmartDefinition).toHaveBeenCalledWith(
+      'p1', expect.objectContaining({ sort: [{ field: 'shuffle', seed: 4242 }] }), 3,
+    ));
   });
 
   it('opens every idea preset as valid rules', () => {

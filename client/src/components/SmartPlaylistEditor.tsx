@@ -10,7 +10,7 @@ import type { Genre, Library, Playlist, SmartPlaylistPreview } from '../types';
 import {
   COPY, FIELDS, MAX_RULES, MAX_NODES, SORT_FIELDS,
   appendTo, canNestGroup, checkDraft, conditionSpec, countNodes, countRules, definitionToDraft, directionLabels,
-  draftToDefinition, fieldSpec, newDraft, newGroup, newRule, replaceNode, withField, withOperator,
+  draftToDefinition, fieldSpec, newDraft, newGroup, newRule, replaceNode, shuffleSort, withField, withOperator,
   type DraftGroup, type DraftNode, type DraftRule, type DraftSort, type SmartDraft, type SmartField, type SmartPreset,
   type SmartSortField,
 } from '../smartPlaylistRules';
@@ -418,17 +418,24 @@ function SortSelects({ sort, onChange, fieldLabel, directionLabel, exclude, fiel
   fieldId?: string;
 }) {
   const [asc, desc] = directionLabels(sort.field);
+  // A second order never shuffles; a shuffle has no direction.
+  const fields = SORT_FIELDS.filter(f => f.field !== exclude && (!fieldLabel || f.field !== 'shuffle'));
   return (
     <>
       <select id={fieldId} aria-label={fieldLabel} value={sort.field} style={mobile ? MS.select : { ...S.select, width: 130 }}
-        onChange={e => onChange({ ...sort, field: e.target.value as SmartSortField })}>
-        {SORT_FIELDS.filter(f => f.field !== exclude).map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
+        onChange={e => {
+          const field = e.target.value as SmartSortField;
+          onChange(field === 'shuffle' ? shuffleSort() : { field, direction: sort.direction });
+        }}>
+        {fields.map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
       </select>
-      <select aria-label={directionLabel} value={sort.direction} style={mobile ? MS.select : { ...S.select, width: 128 }}
-        onChange={e => onChange({ ...sort, direction: e.target.value as 'asc' | 'desc' })}>
-        <option value="asc">{asc}</option>
-        <option value="desc">{desc}</option>
-      </select>
+      {sort.field !== 'shuffle' && (
+        <select aria-label={directionLabel} value={sort.direction} style={mobile ? MS.select : { ...S.select, width: 128 }}
+          onChange={e => onChange({ ...sort, direction: e.target.value as 'asc' | 'desc' })}>
+          <option value="asc">{asc}</option>
+          <option value="desc">{desc}</option>
+        </select>
+      )}
     </>
   );
 }
@@ -746,8 +753,8 @@ export default function SmartPlaylistEditor({
                   <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <label htmlFor="smart-sort" style={S.label}>Order by</label>
                     <SortSelects mobile fieldId="smart-sort" sort={draft.sort} directionLabel="Direction"
-                      onChange={sort => setDraft(d => ({ ...d, sort, thenBy: d.thenBy?.field === sort.field ? null : d.thenBy }))} />
-                    {draft.thenBy ? (
+                      onChange={sort => setDraft(d => ({ ...d, sort, thenBy: sort.field === 'shuffle' || d.thenBy?.field === sort.field ? null : d.thenBy }))} />
+                    {draft.sort.field === 'shuffle' ? null : draft.thenBy ? (
                       <>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                           <span style={S.label}>then by</span>
@@ -763,7 +770,7 @@ export default function SmartPlaylistEditor({
                       <button type="button" style={{ ...MS.addBtn, alignSelf: 'flex-start' }}
                         onClick={() => setDraft(d => ({
                           ...d,
-                          thenBy: { field: SORT_FIELDS.find(f => f.field !== d.sort.field)!.field, direction: 'asc' },
+                          thenBy: { field: SORT_FIELDS.find(f => f.field !== d.sort.field && f.field !== 'shuffle')!.field, direction: 'asc' },
                         }))}>
                         <PathIcon d={ICON.plus} size={15} />Add a second order
                       </button>
@@ -802,8 +809,8 @@ export default function SmartPlaylistEditor({
                     <PathIcon d={ICON.sort} accent />
                     <label htmlFor="smart-sort" style={{ minWidth: 64 }}>Order by</label>
                     <SortSelects fieldId="smart-sort" sort={draft.sort} directionLabel="Direction"
-                      onChange={sort => setDraft(d => ({ ...d, sort, thenBy: d.thenBy?.field === sort.field ? null : d.thenBy }))} />
-                    {draft.thenBy ? (
+                      onChange={sort => setDraft(d => ({ ...d, sort, thenBy: sort.field === 'shuffle' || d.thenBy?.field === sort.field ? null : d.thenBy }))} />
+                    {draft.sort.field === 'shuffle' ? null : draft.thenBy ? (
                       <>
                         <span style={S.muted}>then by</span>
                         <SortSelects sort={draft.thenBy} fieldLabel="Then by" directionLabel="Then by direction"
@@ -817,7 +824,7 @@ export default function SmartPlaylistEditor({
                       <button type="button" style={S.addBtn}
                         onClick={() => setDraft(d => ({
                           ...d,
-                          thenBy: { field: SORT_FIELDS.find(f => f.field !== d.sort.field)!.field, direction: 'asc' },
+                          thenBy: { field: SORT_FIELDS.find(f => f.field !== d.sort.field && f.field !== 'shuffle')!.field, direction: 'asc' },
                         }))}>
                         <PathIcon d={ICON.plus} size={14} />Add a second order
                       </button>

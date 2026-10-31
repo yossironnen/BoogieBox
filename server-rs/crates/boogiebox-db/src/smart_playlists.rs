@@ -89,12 +89,18 @@ pub struct Rule {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SortKey {
     pub field: String,
+    /// Ignored for `shuffle`.
+    #[serde(default)]
     pub direction: Direction,
+    /// `shuffle` only: fixes the order, so preview, saved result and later refreshes agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
+    #[default]
     Asc,
     Desc,
 }
@@ -259,6 +265,8 @@ pub struct ValidDefinition {
     canonical: Definition,
     root: CGroup,
     sort: Vec<(SortField, Direction)>,
+    /// `Some(seed)` when the order is shuffled (`sort` is then empty).
+    shuffle_seed: Option<u32>,
     max_tracks: u32,
     max_duration_seconds: Option<u32>,
 }
@@ -323,12 +331,21 @@ pub fn validate(mut def: Definition) -> Result<ValidDefinition, Vec<RuleError>> 
     }
 
     let mut sort = Vec::new();
+    let mut shuffle_seed = None;
     if def.sort.len() > MAX_SORT_KEYS {
         errors.push(err("sort", RuleErrorCode::BadSort));
     }
     for (i, key) in def.sort.iter().enumerate() {
+        if key.field == SHUFFLE {
+            // A shuffle is the whole order: one key, with its seed.
+            match key.seed {
+                Some(seed) if def.sort.len() == 1 => shuffle_seed = Some(seed),
+                _ => errors.push(err(format!("sort[{i}]"), RuleErrorCode::BadSort)),
+            }
+            continue;
+        }
         match sort_field(&key.field) {
-            Some(field) if !sort.iter().any(|(f, _)| *f == field) => {
+            Some(field) if key.seed.is_none() && !sort.iter().any(|(f, _)| *f == field) => {
                 sort.push((field, key.direction))
             }
             _ => errors.push(err(format!("sort[{i}]"), RuleErrorCode::BadSort)),
@@ -347,10 +364,11 @@ pub fn validate(mut def: Definition) -> Result<ValidDefinition, Vec<RuleError>> 
     if !errors.is_empty() {
         return Err(errors);
     }
-    if sort.is_empty() {
+    if sort.is_empty() && shuffle_seed.is_none() {
         sort.push((SortField::Title, Direction::Asc));
     }
     Ok(ValidDefinition {
+        shuffle_seed,
         max_tracks: def.limit.max_tracks,
         max_duration_seconds: def.limit.max_duration_seconds,
         root,
@@ -657,6 +675,9 @@ fn is_calendar_date(s: &str) -> bool {
     year >= 1 && (1..=days_in_month).contains(&day)
 }
 
+/// The sort field name for a shuffled order.
+const SHUFFLE: &str = "shuffle";
+
 fn sort_field(name: &str) -> Option<SortField> {
     Some(match name {
         "title" => SortField::Title,
@@ -915,6 +936,16 @@ fn build_query(ctx: &Context, def: &ValidDefinition) -> rusqlite::Result<(String
     if def.max_duration_seconds.is_some() {
         predicate.push_str(" AND t.duration > 0");
     }
+    if def.shuffle_seed.is_some() {
+        // Every match, with album and artist keys; the order and both limits are applied in Rust.
+        let joins = joins_sql(&mut c, ctx);
+        let sql = format!(
+            "SELECT t.id, t.duration, COALESCE(CAST(t.album_id AS TEXT), ''), \
+             COALESCE(CAST(t.artist_id AS TEXT), NULLIF(TRIM(t.album_artist), ''), '') \
+             FROM tracks t{joins} WHERE {predicate}"
+        );
+        return Ok((sql, c.params));
+    }
     let mut order = Vec::new();
     for (field, direction) in &def.sort {
         let (expr, nocase) = sort_sql(&mut c, *field);
@@ -927,6 +958,17 @@ fn build_query(ctx: &Context, def: &ValidDefinition) -> rusqlite::Result<(String
     }
     order.push("t.id ASC".to_owned());
 
+    let joins = joins_sql(&mut c, ctx);
+    let limit = c.bind(i64::from(def.max_tracks));
+    let sql = format!(
+        "SELECT t.id, t.duration FROM tracks t{joins} WHERE {predicate} ORDER BY {} LIMIT {limit}",
+        order.join(", ")
+    );
+    Ok((sql, c.params))
+}
+
+/// The joins the compiled rules and sort keys asked for.
+fn joins_sql(c: &mut Compiler, ctx: &Context) -> String {
     let mut joins = String::new();
     if c.artists {
         joins.push_str(" LEFT JOIN artists ar ON ar.id = t.artist_id");
@@ -946,12 +988,7 @@ fn build_query(ctx: &Context, def: &ValidDefinition) -> rusqlite::Result<(String
             " LEFT JOIN user_track_stats s ON s.user_id = {owner} AND s.track_id = t.id"
         ));
     }
-    let limit = c.bind(i64::from(def.max_tracks));
-    let sql = format!(
-        "SELECT t.id, t.duration FROM tracks t{joins} WHERE {predicate} ORDER BY {} LIMIT {limit}",
-        order.join(", ")
-    );
-    Ok((sql, c.params))
+    joins
 }
 
 // ── Evaluation ─────────────────────────────────────────────────────────────────
@@ -999,7 +1036,8 @@ pub fn evaluate_with_budget(
         owner: owner_id,
         now,
     };
-    let rows = with_query_budget(conn, budget, || {
+    let shuffled = def.shuffle_seed.is_some();
+    let mut rows = with_query_budget(conn, budget, || {
         let (sql, params) = build_query(&ctx, def)?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
@@ -1008,23 +1046,112 @@ pub fn evaluate_with_budget(
                 Value::Text(s) => s,
                 _ => String::new(),
             };
-            Ok((id, row.get::<_, Option<f64>>(1)?.unwrap_or(0.0)))
+            let (album, artist) = if shuffled {
+                (row.get(2)?, row.get(3)?)
+            } else {
+                (String::new(), String::new())
+            };
+            Ok(Candidate {
+                id,
+                duration: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                album,
+                artist,
+            })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
     })?;
+    if let Some(seed) = def.shuffle_seed {
+        rows.sort_by_cached_key(|c| (shuffle_key(seed, &c.id), c.id.clone()));
+    }
 
     let budget_seconds = def.max_duration_seconds.map(f64::from);
-    let mut selection = Selection::default();
-    for (id, duration) in rows {
+    let mut total_duration = 0.0;
+    let mut picked = Vec::new();
+    for candidate in rows {
+        if picked.len() >= def.max_tracks as usize {
+            break;
+        }
         if let Some(limit) = budget_seconds {
-            if selection.total_duration + duration > limit {
+            if total_duration + candidate.duration > limit {
                 break;
             }
         }
-        selection.total_duration += duration.max(0.0);
-        selection.track_ids.push(id);
+        total_duration += candidate.duration.max(0.0);
+        picked.push(candidate);
     }
-    Ok(selection)
+    if shuffled {
+        picked = spread(picked);
+    }
+    Ok(Selection {
+        track_ids: picked.into_iter().map(|c| c.id).collect(),
+        total_duration,
+    })
+}
+
+/// One matching track while a selection is built; album and artist keys are read only for a shuffle.
+struct Candidate {
+    id: String,
+    duration: f64,
+    album: String,
+    artist: String,
+}
+
+/// A fixed pseudo-random position for `id` under `seed` (FNV-1a, then a SplitMix64 finish so nearby ids
+/// scatter). Defined here rather than std's hasher so the order never changes between builds.
+fn shuffle_key(seed: u32, id: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in seed.to_le_bytes().iter().chain(id.as_bytes()) {
+        h ^= u64::from(*byte);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^ (h >> 31)
+}
+
+/// Reorders a shuffled selection so tracks from the same album, then by the same artist, are not next to
+/// each other where the selection allows it. Unknown albums or artists never count as a repeat. Otherwise
+/// the shuffled order wins: the next track is the first one that doesn't repeat the previous album/artist,
+/// unless one album is so large that it has to go now for the rest to stay apart.
+fn spread(mut rest: Vec<Candidate>) -> Vec<Candidate> {
+    let same = |a: &str, b: &str| !a.is_empty() && a == b;
+    let mut left: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for c in rest.iter().filter(|c| !c.album.is_empty()) {
+        *left.entry(c.album.clone()).or_default() += 1;
+    }
+    let mut out: Vec<Candidate> = Vec::with_capacity(rest.len());
+    while !rest.is_empty() {
+        let prev_album = out
+            .last()
+            .map(|c: &Candidate| c.album.as_str())
+            .unwrap_or("");
+        let prev_artist = out
+            .last()
+            .map(|c: &Candidate| c.artist.as_str())
+            .unwrap_or("");
+        // An album holding more than half of what is left must take every other slot from here on.
+        let urgent = left
+            .iter()
+            .filter(|(album, n)| !same(album, prev_album) && 2 * **n > rest.len())
+            .map(|(album, _)| album.clone())
+            .next();
+        let pick = match urgent {
+            Some(album) => rest.iter().position(|c| c.album == album),
+            None => rest
+                .iter()
+                .position(|c| !same(&c.album, prev_album) && !same(&c.artist, prev_artist))
+                .or_else(|| rest.iter().position(|c| !same(&c.album, prev_album))),
+        }
+        .unwrap_or(0);
+        let chosen = rest.remove(pick);
+        if let Some(n) = left.get_mut(&chosen.album) {
+            *n -= 1;
+        }
+        out.push(chosen);
+    }
+    out
 }
 
 /// Runs `work`, interrupting the connection if it is still running after `budget`. The watchdog thread is
@@ -2330,7 +2457,23 @@ mod tests {
             { "field": "year", "direction": "asc" },
             { "field": "bpm", "direction": "asc" }
         ]);
-        assert_eq!(codes(sorted), [BadSort]);
+        assert_eq!(codes(sorted.clone()), [BadSort]);
+        sorted["sort"] = json!([{ "field": "shuffle", "seed": 7 }]);
+        assert!(
+            parse_definition(&sorted.to_string()).is_ok(),
+            "a seeded shuffle is valid"
+        );
+        sorted["sort"] = json!([{ "field": "shuffle" }]);
+        assert_eq!(codes(sorted.clone()), [BadSort], "a shuffle needs its seed");
+        sorted["sort"] =
+            json!([{ "field": "shuffle", "seed": 7 }, { "field": "title", "direction": "asc" }]);
+        assert_eq!(
+            codes(sorted.clone()),
+            [BadSort],
+            "a shuffle is the whole order"
+        );
+        sorted["sort"] = json!([{ "field": "title", "direction": "asc", "seed": 7 }]);
+        assert_eq!(codes(sorted), [BadSort], "only a shuffle takes a seed");
         for limit in [
             json!({ "maxTracks": 0 }),
             json!({ "maxTracks": 1001 }),
@@ -2978,7 +3121,17 @@ mod tests {
         personal_json["limit"] = json!({ "maxTracks": 1000 });
         let personal = parse_definition(&personal_json.to_string()).unwrap();
 
-        for (name, definition) in [("simple", &simple), ("personal", &personal)] {
+        // A shuffle reads every match (here 48,000 tracks) and orders them in Rust.
+        let mut shuffled_json = def("all", vec![rule("genre", "is_not", Some(json!("Jazz")))]);
+        shuffled_json["sort"] = json!([{ "field": "shuffle", "seed": 42 }]);
+        shuffled_json["limit"] = json!({ "maxTracks": 1000 });
+        let shuffled = parse_definition(&shuffled_json.to_string()).unwrap();
+
+        for (name, definition) in [
+            ("simple", &simple),
+            ("personal", &personal),
+            ("shuffled", &shuffled),
+        ] {
             evaluate(&conn, "alice", definition, NOW).unwrap();
             let start = std::time::Instant::now();
             let selection = evaluate(&conn, "alice", definition, NOW).unwrap();
@@ -3127,6 +3280,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn shuffle_is_fixed_by_its_seed_and_keeps_albums_apart() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO users(id, username) VALUES ('alice', 'alice');
+             INSERT INTO libraries(id, path, name) VALUES ('lib1', '/m1', 'Music');
+             INSERT INTO artists(id, name) VALUES ('a1', 'One'), ('a2', 'Two'), ('a3', 'Three');
+             INSERT INTO albums(id, title) VALUES ('al1', 'First'), ('al2', 'Second'), ('al3', 'Third');",
+        )
+        .unwrap();
+        // Three albums of four tracks, scanned one album after another.
+        for i in 0..12 {
+            let n = i / 4 + 1;
+            conn.execute(
+                "INSERT INTO tracks(id, library_id, artist_id, album_id, title, file_path, genre, duration)
+                 VALUES (?1, 'lib1', ?2, ?3, ?4, ?5, 'Rock', 200)",
+                rusqlite::params![
+                    format!("t{i:02}"),
+                    format!("a{n}"),
+                    format!("al{n}"),
+                    format!("Song {i:02}"),
+                    format!("/m1/{i}")
+                ],
+            )
+            .unwrap();
+        }
+        let shuffled = |seed: u32, max_tracks: u32| {
+            let mut d = def("all", vec![rule("genre", "is", Some(json!("Rock")))]);
+            d["sort"] = json!([{ "field": "shuffle", "seed": seed }]);
+            d["limit"] = json!({ "maxTracks": max_tracks });
+            evaluate(&conn, "alice", &valid(d), NOW).unwrap().track_ids
+        };
+        let album = |id: &str| id[1..].parse::<usize>().unwrap() / 4;
+
+        let first = shuffled(7, 100);
+        assert_eq!(first.len(), 12);
+        assert_eq!(
+            first,
+            shuffled(7, 100),
+            "the same seed gives the same order"
+        );
+        assert_ne!(first, shuffled(8, 100), "another seed gives another order");
+        let mut titles_order = first.clone();
+        titles_order.sort();
+        assert_ne!(first, titles_order, "not the scan order");
+        for pair in first.windows(2) {
+            assert_ne!(album(&pair[0]), album(&pair[1]), "{first:?}");
+        }
+
+        // A limit takes a fixed random sample, still kept apart.
+        let sample = shuffled(7, 5);
+        assert_eq!(sample.len(), 5);
+        assert_eq!(sample, shuffled(7, 5));
+        for pair in sample.windows(2) {
+            assert_ne!(album(&pair[0]), album(&pair[1]), "{sample:?}");
+        }
+
+        // One album too big to keep apart: still everything, in a valid order.
+        conn.execute(
+            "UPDATE tracks SET album_id = 'al1', artist_id = 'a1' WHERE id < 't10'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(shuffled(7, 100).len(), 12);
     }
 
     #[test]

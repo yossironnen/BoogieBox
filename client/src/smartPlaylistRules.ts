@@ -10,7 +10,7 @@ export type SmartField =
   | 'added_at' | 'last_played_at' | 'play_count' | 'bpm' | 'favourite';
 
 export type SmartSortField =
-  | 'title' | 'artist' | 'album' | 'year' | 'rating' | 'added_at' | 'last_played_at' | 'play_count' | 'bpm';
+  | 'shuffle' | 'title' | 'artist' | 'album' | 'year' | 'rating' | 'added_at' | 'last_played_at' | 'play_count' | 'bpm';
 
 export type SmartMode = 'all' | 'any';
 export type SmartDirection = 'asc' | 'desc';
@@ -18,7 +18,8 @@ export type SmartDirection = 'asc' | 'desc';
 export interface SmartRule { field: string; operator: string; value?: unknown }
 export interface SmartGroup { mode: SmartMode; children: SmartNode[] }
 export type SmartNode = SmartRule | SmartGroup;
-export interface SmartSortKey { field: SmartSortField; direction: SmartDirection }
+/** `shuffle` is the whole order (no direction, no second key); its `seed` fixes the order. */
+export interface SmartSortKey { field: SmartSortField; direction?: SmartDirection; seed?: number }
 export interface SmartLimit { maxTracks?: number; maxDurationSeconds?: number }
 
 export interface SmartDefinition {
@@ -180,6 +181,8 @@ export function conditionSpec(field: string, operator: string): ConditionSpec | 
 }
 
 export const SORT_FIELDS: { field: SmartSortField; label: string; directions: [string, string] }[] = [
+  // Tracks from the same album or artist are kept apart; no direction and no second order.
+  { field: 'shuffle', label: 'Shuffled', directions: ['', ''] },
   { field: 'title', label: 'Title', directions: ['A to Z', 'Z to A'] },
   { field: 'artist', label: 'Artist', directions: ['A to Z', 'Z to A'] },
   { field: 'album', label: 'Album', directions: ['A to Z', 'Z to A'] },
@@ -226,7 +229,17 @@ export interface DraftRule {
 export interface DraftGroup { kind: 'group'; key: string; mode: SmartMode; children: DraftNode[] }
 export type DraftNode = DraftRule | DraftGroup;
 
-export interface DraftSort { field: SmartSortField; direction: SmartDirection }
+export interface DraftSort { field: SmartSortField; direction: SmartDirection; seed?: number }
+
+/** A new shuffle order (31-bit, like the server's `u32` but always positive in JSON). */
+export function newShuffleSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff);
+}
+
+/** A shuffled order with a fresh seed. */
+export function shuffleSort(): DraftSort {
+  return { field: 'shuffle', direction: 'asc', seed: newShuffleSeed() };
+}
 
 export interface SmartDraft {
   name: string;
@@ -260,7 +273,7 @@ export function newDraft(name = ''): SmartDraft {
   return {
     name,
     root: { kind: 'group', key: key(), mode: 'all', children: [newRule()] },
-    sort: { field: 'title', direction: 'asc' },
+    sort: shuffleSort(),
     thenBy: null,
     maxTracks: String(DEFAULT_MAX_TRACKS),
     limitLength: false,
@@ -434,8 +447,13 @@ function groupToApi(group: DraftGroup): SmartGroup {
 
 /** The definition a valid draft describes (check it with {@link checkDraft} first). */
 export function draftToDefinition(draft: SmartDraft): SmartDefinition {
-  const sort: SmartSortKey[] = [{ ...draft.sort }];
-  if (draft.thenBy && draft.thenBy.field !== draft.sort.field) sort.push({ ...draft.thenBy });
+  const shuffled = draft.sort.field === 'shuffle';
+  const sort: SmartSortKey[] = shuffled
+    ? [{ field: 'shuffle', seed: draft.sort.seed ?? newShuffleSeed() }]
+    : [{ field: draft.sort.field, direction: draft.sort.direction }];
+  if (!shuffled && draft.thenBy && draft.thenBy.field !== draft.sort.field && draft.thenBy.field !== 'shuffle') {
+    sort.push({ field: draft.thenBy.field, direction: draft.thenBy.direction });
+  }
   const limit: SmartLimit = { maxTracks: Number(draft.maxTracks.trim()) };
   if (draft.limitLength) limit.maxDurationSeconds = Number(draft.maxMinutes.trim()) * 60;
   return { schemaVersion: 1, root: groupToApi(draft.root), sort, limit };
@@ -490,6 +508,8 @@ const SORT_NAMES = new Set(SORT_FIELDS.map(s => s.field));
 function sortFromApi(sort: unknown): DraftSort | null {
   const s = sort as Partial<SmartSortKey> | undefined;
   if (!s || !SORT_NAMES.has(s.field as SmartSortField)) return null;
+  // A preset may leave the seed out: each new playlist gets its own shuffle.
+  if (s.field === 'shuffle') return { field: 'shuffle', direction: 'asc', seed: typeof s.seed === 'number' ? s.seed : newShuffleSeed() };
   return { field: s.field as SmartSortField, direction: s.direction === 'desc' ? 'desc' : 'asc' };
 }
 
@@ -498,14 +518,14 @@ function sortFromApi(sort: unknown): DraftSort | null {
 /** Rules and a name that open in the editor ready to save. */
 export interface SmartPreset { name: string; definition: SmartDefinition }
 
-/** One genre, or any of several, newest additions first. */
+/** One genre, or any of several, shuffled. */
 export function genrePreset(genres: string[]): SmartPreset {
   return {
     name: genres.join(', '),
     definition: {
       schemaVersion: 1,
       root: { mode: genres.length > 1 ? 'any' : 'all', children: genres.map(genre => ({ field: 'genre', operator: 'is', value: genre })) },
-      sort: [{ field: 'added_at', direction: 'desc' }],
+      sort: [{ field: 'shuffle' }],
     },
   };
 }
@@ -529,7 +549,7 @@ export const SMART_IDEAS: { id: SmartIdeaId; description: string; preset: SmartP
         { field: 'rating', operator: 'gte', value: 4 },
         { field: 'last_played_at', operator: 'not_in_last_days', value: 90 },
       ] },
-      sort: [{ field: 'rating', direction: 'desc' }],
+      sort: [{ field: 'shuffle' }],
     } },
   },
   {
@@ -537,7 +557,7 @@ export const SMART_IDEAS: { id: SmartIdeaId; description: string; preset: SmartP
     preset: { name: 'Never played', definition: {
       schemaVersion: 1,
       root: { mode: 'all', children: [{ field: 'last_played_at', operator: 'is_missing' }] },
-      sort: [{ field: 'added_at', direction: 'desc' }],
+      sort: [{ field: 'shuffle' }],
     } },
   },
   {
