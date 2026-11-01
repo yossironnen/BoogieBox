@@ -20,25 +20,21 @@ use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Registry;
 
+/// Debug log files are `<prefix><YYYY-MM-DD>.log` (daily rotation by `tracing_appender`).
+pub const SCAN_DEBUG_PREFIX: &str = "boogiebox-scan-debug.";
+pub const DEEP_DEBUG_PREFIX: &str = "boogiebox-deepmix-debug.";
+
 /// Server log gets truncated (rotated to `.1`) once it exceeds this size.
 const SERVER_LOG_MAX_BYTES: u64 = 20 * 1024 * 1024; // 20 MB
 /// Debug logs rotate daily via `tracing_appender` and keep this many files
 /// (≈14 days of history), which also bounds their total size on disk.
 const DEBUG_LOG_MAX_FILES: usize = 14;
 
-type ScanFilteredLayer = tracing_subscriber::filter::Filtered<
-    Box<dyn Layer<Registry> + Send + Sync + 'static>,
-    Targets,
-    Registry,
->;
-type DeepFilteredLayer = tracing_subscriber::filter::Filtered<
-    Box<dyn Layer<Registry> + Send + Sync + 'static>,
-    Targets,
-    Registry,
->;
-
-static SCAN_RELOAD: OnceLock<reload::Handle<ScanFilteredLayer, Registry>> = OnceLock::new();
-static DEEP_RELOAD: OnceLock<reload::Handle<DeepFilteredLayer, Registry>> = OnceLock::new();
+// Only the debug layers' *filters* are reloadable. Wrapping a whole filtered layer in `reload::Layer` hides its
+// per-layer filter from the registry, so the layer's OFF level became the global maximum and every event was
+// dropped — server.log included (no events reached it from 2026-09 to 0.9.59).
+static SCAN_RELOAD: OnceLock<reload::Handle<Targets, Registry>> = OnceLock::new();
+static DEEP_RELOAD: OnceLock<reload::Handle<Targets, Registry>> = OnceLock::new();
 
 /// Module-path prefixes routed to `scan-debug.log`.
 const SCAN_MODULES: &[&str] = &[
@@ -139,22 +135,16 @@ pub fn append_log_marker(path: &Path, message: &str) {
 
 // -- Init -----------------------------------------------------------------
 
-/// Resolved paths for the three log files, derived from the existing
-/// `resolve_log_file()` locator's parent directory.
+/// The server log and the folder the dated debug logs go in (its parent, from `resolve_log_file()`).
 pub struct LogPaths {
     pub dir: PathBuf,
     pub server_log: PathBuf,
-    pub scan_debug_log: PathBuf,
-    pub deep_debug_log: PathBuf,
 }
 
 pub fn resolve_log_paths(server_log: &Path) -> Option<LogPaths> {
-    let dir = server_log.parent()?.to_path_buf();
     Some(LogPaths {
+        dir: server_log.parent()?.to_path_buf(),
         server_log: server_log.to_path_buf(),
-        scan_debug_log: dir.join("boogiebox-scan-debug.log"),
-        deep_debug_log: dir.join("boogiebox-deepmix-debug.log"),
-        dir,
     })
 }
 
@@ -182,7 +172,7 @@ pub fn init(paths: &LogPaths, scan_enabled: bool, deep_enabled: bool) {
 
     let scan_appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_prefix("boogiebox-scan-debug")
+        .filename_prefix(SCAN_DEBUG_PREFIX.trim_end_matches('.'))
         .filename_suffix("log")
         .max_log_files(DEBUG_LOG_MAX_FILES)
         .build(&paths.dir)
@@ -199,13 +189,13 @@ pub fn init(paths: &LogPaths, scan_enabled: bool, deep_enabled: bool) {
                 .with_writer(io::sink),
         ),
     };
-    let (scan_layer, scan_handle) =
-        reload::Layer::new(scan_fmt_layer.with_filter(scan_targets(scan_enabled)));
+    let (scan_filter, scan_handle) = reload::Layer::new(scan_targets(scan_enabled));
+    let scan_layer = scan_fmt_layer.with_filter(scan_filter);
     let _ = SCAN_RELOAD.set(scan_handle);
 
     let deep_appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_prefix("boogiebox-deepmix-debug")
+        .filename_prefix(DEEP_DEBUG_PREFIX.trim_end_matches('.'))
         .filename_suffix("log")
         .max_log_files(DEBUG_LOG_MAX_FILES)
         .build(&paths.dir)
@@ -222,17 +212,16 @@ pub fn init(paths: &LogPaths, scan_enabled: bool, deep_enabled: bool) {
                 .with_writer(io::sink),
         ),
     };
-    let (deep_layer, deep_handle) =
-        reload::Layer::new(deep_fmt_layer.with_filter(deep_targets(deep_enabled)));
+    let (deep_filter, deep_handle) = reload::Layer::new(deep_targets(deep_enabled));
+    let deep_layer = deep_fmt_layer.with_filter(deep_filter);
     let _ = DEEP_RELOAD.set(deep_handle);
 
-    // `.with()`-chaining requires each layer to implement `Layer<S>` for the
-    // progressively-accumulated subscriber type. Since these three layers are
-    // independent (none needs to see the others' spans), combine them into a
-    // single `Layer<Registry>` via `and_then` first, then apply that combined
-    // layer to `Registry` in one `.with()` call.
-    let combined = server_layer.and_then(scan_layer).and_then(deep_layer);
-    let _ = tracing_subscriber::registry().with(combined).try_init();
+    // A `Vec` of layers, not `and_then`: `and_then` of per-layer-filtered layers took the *last* layer's level
+    // hint, so the debug layers' OFF became the global maximum and every event was dropped — server.log got
+    // no events from 2026-09 to 0.9.59. A `Vec` combines the hints correctly (the most verbose wins).
+    let layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> =
+        vec![server_layer.boxed(), scan_layer.boxed(), deep_layer.boxed()];
+    let _ = tracing_subscriber::registry().with(layers).try_init();
 }
 
 /// Reconciles the live debug-log filters with the DB-backed settings once the
@@ -246,7 +235,7 @@ pub fn sync_debug_toggles(scan_enabled: bool, deep_enabled: bool) {
 /// from the settings PUT route right after `scanDebugLoggingEnabled` is saved.
 pub fn set_scan_debug_enabled(enabled: bool) {
     if let Some(handle) = SCAN_RELOAD.get() {
-        let _ = handle.modify(|filtered| *filtered.filter_mut() = scan_targets(enabled));
+        let _ = handle.reload(scan_targets(enabled));
     }
 }
 
@@ -255,7 +244,7 @@ pub fn set_scan_debug_enabled(enabled: bool) {
 /// is saved.
 pub fn set_deep_debug_enabled(enabled: bool) {
     if let Some(handle) = DEEP_RELOAD.get() {
-        let _ = handle.modify(|filtered| *filtered.filter_mut() = deep_targets(enabled));
+        let _ = handle.reload(deep_targets(enabled));
     }
 }
 
@@ -281,11 +270,6 @@ mod tests {
         let paths = resolve_log_paths(&server_log).expect("should resolve");
         assert_eq!(paths.dir, dir);
         assert_eq!(paths.server_log, server_log);
-        assert_eq!(paths.scan_debug_log, dir.join("boogiebox-scan-debug.log"));
-        assert_eq!(
-            paths.deep_debug_log,
-            dir.join("boogiebox-deepmix-debug.log")
-        );
     }
 
     #[test]

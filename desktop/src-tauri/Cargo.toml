@@ -1,6 +1,6 @@
 [package]
 name = "boogiebox-desktop"
-version = "0.9.59"
+version = "0.9.62"
 edition = "2021"
 
 [lib]

@@ -1083,3 +1083,52 @@ export interface RestoreResult {
   pending?: boolean;
   error?: string;
 }
+
+// ─── Admin Logs view ─────────────────────────────────────────────────────────
+
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+export type LogSourceId = 'server' | 'scan' | 'deep';
+
+export interface LogFileInfo {
+  key: string;
+  name: string;
+  size: number;
+  modifiedMs: number | null;
+  /** The file being written now. */
+  current: boolean;
+}
+
+export interface LogSource {
+  id: LogSourceId;
+  /** Debug logs: whether their toggle is on. */
+  enabled: boolean;
+  /** Newest first. */
+  files: LogFileInfo[];
+}
+
+export interface LogList {
+  folder: string | null;
+  sources: LogSource[];
+}
+
+export interface LogLine {
+  offset: number;
+  ts?: string;
+  level?: LogLevel;
+  target?: string;
+  /** Secrets masked by the server. */
+  text: string;
+}
+
+export interface LogLinesPage {
+  lines: LogLine[];
+  /** The next older page's `before`. */
+  start: number;
+  /** Where following starts. */
+  end: number;
+  size: number;
+  more: boolean;
+  /** Reading stopped at the server's limit before a full page was found. */
+  truncated: boolean;
+}
+

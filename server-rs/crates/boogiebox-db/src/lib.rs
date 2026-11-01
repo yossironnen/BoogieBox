@@ -2881,9 +2881,10 @@ pub fn upsert_user_setting(
 pub fn force_hide_compilation_only_artists_for_all_users(
     conn: &Connection,
 ) -> Result<usize, rusqlite::Error> {
+    // `WHERE true` is required: without it SQLite parses `ON CONFLICT` as a join constraint.
     conn.execute(
         r#"INSERT INTO user_settings(user_id, key, value, updated_at)
-           SELECT id, 'hideCompilationOnlyArtists', 'true', datetime('now') FROM users
+           SELECT id, 'hideCompilationOnlyArtists', 'true', datetime('now') FROM users WHERE true
            ON CONFLICT(user_id, key) DO UPDATE SET value = 'true', updated_at = excluded.updated_at
            WHERE user_settings.value != 'true'"#,
         [],
@@ -3700,6 +3701,38 @@ mod tests {
         assert_eq!(left, ["playlist"]);
         remove_auto_dj_crossfade_overrides(&Connection::open_in_memory().unwrap())
             .expect("no table is fine");
+    }
+
+    #[test]
+    fn hide_compilation_only_artists_is_forced_on_for_every_user() {
+        let connection = Connection::open_in_memory().expect("db");
+        connection
+            .execute_batch(
+                "CREATE TABLE users (id TEXT PRIMARY KEY);
+                 CREATE TABLE user_settings (user_id TEXT, key TEXT, value TEXT, updated_at TEXT,
+                   PRIMARY KEY (user_id, key));
+                 INSERT INTO users VALUES ('a'), ('b'), ('c');
+                 INSERT INTO user_settings VALUES ('a', 'hideCompilationOnlyArtists', 'false', 'x'),
+                   ('b', 'hideCompilationOnlyArtists', 'true', 'x');",
+            )
+            .expect("seed");
+        assert_eq!(
+            force_hide_compilation_only_artists_for_all_users(&connection).expect("force"),
+            2
+        );
+        let values: Vec<(String, String)> = connection
+            .prepare("SELECT user_id, value FROM user_settings ORDER BY user_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let expected = ["a", "b", "c"].map(|id| (id.to_string(), "true".to_string()));
+        assert_eq!(values, expected);
+        assert_eq!(
+            force_hide_compilation_only_artists_for_all_users(&connection).expect("again"),
+            0
+        );
     }
 
     #[test]

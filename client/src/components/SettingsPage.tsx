@@ -18,6 +18,7 @@ import VintageStylePicker from './VintageStylePicker';
 import { formatBytes, parseServerDate } from '../utils';
 import LibrarySettingsTab from './LibrarySettingsTab';
 import UserManagement from './UserManagement';
+import LogsView from './LogsView';
 import FolderPickerModal from './FolderPickerModal';
 import BackupSettingsSection from './BackupSettingsSection';
 import ConfirmModal from './ConfirmModal';
@@ -822,7 +823,7 @@ export function isValidDlnaPort(rawPort: string): boolean {
 // ─── Settings tab icons ───────────────────────────────────────────────────────
 // Neutral chrome: inherit the tab's text colour so active/inactive is automatic.
 
-export type SettingsTabKey = 'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users';
+export type SettingsTabKey = 'theme' | 'libraries' | 'about' | 'schedules' | 'integrations' | 'advanced' | 'users' | 'logs';
 
 /** Ask SettingsPage to show a tab and scroll to an element id; `token` makes repeated requests distinct. */
 export interface SettingsSectionRequest {
@@ -840,6 +841,7 @@ function SettingsTabIcon({ tab }: { tab: SettingsTabKey }) {
     advanced: <><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></>,
     users: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6" /></>,
     about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5h.01" /></>,
+    logs: <><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6M8 13h8M8 17h5" /></>,
   };
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
@@ -1000,7 +1002,7 @@ export default function SettingsPage({
   } | null>(null);
   const showGeniusIntegration = false;
   const [currentDbFolder, setCurrentDbFolder] = useState<string>('');
-  const [logFilePaths, setLogFilePaths] = useState<{ server?: string; scan?: string; deep?: string }>({});
+  const [logFolder, setLogFolder] = useState<string | null>(null);
   const [switchDbFolder, setSwitchDbFolder] = useState<string>('');
   const [switchDbSaving, setSwitchDbSaving] = useState(false);
   const [switchDbResult, setSwitchDbResult] = useState<string | null>(null);
@@ -1191,8 +1193,8 @@ export default function SettingsPage({
       loadBoogieMixDeepStatus(true);
       api.systemStatus().then(s => {
         if (s.dbFolder) setCurrentDbFolder(s.dbFolder);
-        setLogFilePaths({ server: s.logFile, scan: s.scanDebugLogFile, deep: s.deepDebugLogFile });
       }).catch(() => {});
+      if (isAdmin) api.admin.logs.list().then(l => setLogFolder(l.folder)).catch(() => {});
     }
   }, [activeTab, isAdmin, canManageLibraries, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
 
@@ -1507,6 +1509,7 @@ export default function SettingsPage({
               ...(isAdmin ? [
                 ['advanced',     'Advanced'],
                 ['users',        'Users'],
+                ['logs',         'Logs'],
               ] : []),
               ['about',        'About'],
             ] as [SettingsTabKey, string][]).map(([t, label]) => (
@@ -2929,16 +2932,14 @@ export default function SettingsPage({
             </div>
             <InlineStatus busy={deepmixDebugSaving} busyText="Saving…" result={deepmixDebugResult} />
 
-            {(logFilePaths.server || logFilePaths.scan || logFilePaths.deep) && (
+            {logFolder && (
               <>
                 <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '16px 0' }} />
                 <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
-                  Log files
+                  Log folder
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.9, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                  {logFilePaths.server && <div>server.log — {logFilePaths.server}</div>}
-                  {logFilePaths.scan && <div>scan-debug.log — {logFilePaths.scan}</div>}
-                  {logFilePaths.deep && <div>deep-analysis-debug.log — {logFilePaths.deep}</div>}
+                  {logFolder}
                 </div>
               </>
             )}
@@ -3391,6 +3392,12 @@ export default function SettingsPage({
       {activeTab === 'users' && isAdmin && (
         <div style={P.section}>
           <UserManagement currentUser={currentUser} />
+        </div>
+      )}
+
+      {activeTab === 'logs' && isAdmin && (
+        <div style={P.section}>
+          <LogsView onOpenDiagnostics={() => goToSection('advanced', 'advanced-debug')} />
         </div>
       )}
 

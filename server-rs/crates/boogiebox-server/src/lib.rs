@@ -45,6 +45,7 @@ pub mod ffmpeg;
 pub mod home_cache;
 pub mod image_thumb;
 pub mod logging;
+pub mod logs;
 pub mod media_serve;
 pub mod mix_priority_gate;
 pub mod mix_worker;
@@ -121,12 +122,8 @@ pub struct AppState {
     pub ffmpeg_available: bool,
     /// Resolved FFmpeg executable path used by transcoding and analysis jobs.
     pub ffmpeg_path: PathBuf,
-    /// Optional durable log file path reported by system status.
+    /// The server log; its folder also holds the dated debug logs (admin Logs view, [`logs`]).
     pub log_file: Option<PathBuf>,
-    /// Scan/post-scan debug log path (populated when `scanDebugLoggingEnabled` is on).
-    pub scan_debug_log_file: Option<PathBuf>,
-    /// BoogieMix deep-analysis debug log path (populated when `deepmixDebugLoggingEnabled` is on).
-    pub deep_debug_log_file: Option<PathBuf>,
     /// Suggested local database folder shown during first-run setup.
     pub suggested_db_folder: PathBuf,
     /// Writable locator path for the persisted database-folder config.
@@ -187,15 +184,12 @@ impl Default for AppState {
 
         let ffmpeg_path = ffmpeg::resolve_ffmpeg();
         let log_file = resolve_log_file();
-        let log_paths = log_file.as_deref().and_then(logging::resolve_log_paths);
 
         Self {
             setup_required,
             ffmpeg_available: ffmpeg::ffmpeg_available(),
             ffmpeg_path,
             log_file,
-            scan_debug_log_file: log_paths.as_ref().map(|p| p.scan_debug_log.clone()),
-            deep_debug_log_file: log_paths.as_ref().map(|p| p.deep_debug_log.clone()),
             suggested_db_folder: suggested_db_folder(),
             db_config_path: server_config::get_writable_db_locator_path(),
             folder_picker: FolderPicker::System,
@@ -231,9 +225,6 @@ struct StatusResponse {
     ffmpeg_available: bool,
     ffmpeg_path: String,
     ffprobe_available: bool,
-    log_file: Option<String>,
-    scan_debug_log_file: Option<String>,
-    deep_debug_log_file: Option<String>,
     setup_required: bool,
     suggested_db_folder: String,
     db_folder: Option<String>,
@@ -637,6 +628,7 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
         .merge(routes::activity_routes::activity_router(
             shared_state.clone(),
         ))
+        .merge(routes::log_routes::log_router(shared_state.clone()))
         .merge(routes::dlna_routes::dlna_router(shared_state.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer)
@@ -809,18 +801,6 @@ async fn status_handler(State(state): State<SharedState>) -> impl IntoResponse {
             ffmpeg_available: state.ffmpeg_available,
             ffmpeg_path: state.ffmpeg_path.to_string_lossy().into_owned(),
             ffprobe_available: ffmpeg::ffprobe_available(),
-            log_file: state
-                .log_file
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned()),
-            scan_debug_log_file: state
-                .scan_debug_log_file
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned()),
-            deep_debug_log_file: state
-                .deep_debug_log_file
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned()),
             setup_required: state.setup_required,
             suggested_db_folder: state.suggested_db_folder.to_string_lossy().into_owned(),
             db_folder: state
@@ -1456,7 +1436,8 @@ mod tests {
         assert_eq!(json["setupRequired"], true);
         assert!(json["ffmpegPath"].as_str().unwrap().contains("ffmpeg"));
         assert!(json.get("ffprobeAvailable").is_some());
-        assert!(json.get("logFile").is_some());
+        // Log paths moved to the admin-only `/api/admin/logs`; this route needs no sign-in.
+        assert!(json.get("logFile").is_none());
         assert!(json["suggestedDbFolder"]
             .as_str()
             .unwrap()

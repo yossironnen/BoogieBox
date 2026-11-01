@@ -48,8 +48,6 @@ pub fn build_test_state(db_path: &std::path::Path) -> AppState {
         ffmpeg_available: false,
         ffmpeg_path: PathBuf::from("ffmpeg"),
         log_file: None,
-        scan_debug_log_file: None,
-        deep_debug_log_file: None,
         suggested_db_folder: PathBuf::from("C:\\BoogieBox"),
         db_config_path: PathBuf::from("boogiebox-config.json"),
         folder_picker: FolderPicker::Fixed(None),

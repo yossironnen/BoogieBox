@@ -10,6 +10,7 @@ pub mod crossfade_routes;
 pub mod dlna_routes;
 pub mod favourites_routes;
 pub mod library_routes;
+pub mod log_routes;
 pub mod music_routes;
 pub mod playback_routes;
 pub mod playlist_routes;

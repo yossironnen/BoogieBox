@@ -14,7 +14,7 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     debugTestPath: vi.fn(),
     scanJobs: { active: vi.fn(), get: vi.fn() },
     schedules: { list: vi.fn(), upsert: vi.fn(), remove: vi.fn() },
-    admin: { queues: vi.fn(), providerUsage: vi.fn(), cancelScanJob: vi.fn(), cancelPostScanJob: vi.fn(), failPostScanJob: vi.fn(), retryPostScanJob: vi.fn(), enqueuePostScanJob: vi.fn() },
+    admin: { logs: { list: vi.fn(), lines: vi.fn(), followUrl: vi.fn(), downloadUrl: vi.fn() }, queues: vi.fn(), providerUsage: vi.fn(), cancelScanJob: vi.fn(), cancelPostScanJob: vi.fn(), failPostScanJob: vi.fn(), retryPostScanJob: vi.fn(), enqueuePostScanJob: vi.fn() },
     settings: { get: vi.fn(), update: vi.fn() },
     waveforms: { status: vi.fn(), runMap: vi.fn() },
     integrations: { spotifyTest: vi.fn(), geniusTest: vi.fn() },
@@ -65,6 +65,8 @@ describe('SettingsPage component flows', () => {
     apiMock.radioMetadataStatus.mockResolvedValue({ mode: 'full', lastfmConfigured: true, keylessEnabled: true, tracksChecked: 0, tracksTotal: 0, artistsTagged: 0, artistsTotal: 0 });
     apiMock.systemStatus.mockResolvedValue({ setupRequired: false, ffmpegAvailable: true, dbFolder: 'D:\\BoogieData' });
     apiMock.systemSwitchDb.mockResolvedValue({ ok: true });
+    apiMock.admin.logs.list.mockResolvedValue({ folder: 'C:\\ProgramData\\BoogieBox\\logs', sources: [] });
+    apiMock.admin.logs.lines.mockResolvedValue({ lines: [], start: 0, end: 0, size: 0, more: false, truncated: false });
     apiMock.libraries.list.mockResolvedValue([{ id: '1', name: 'Main Library', path: 'D:\\Music', primary_path: 'D:\\Music', folder_count: 2, folders: [{ id: 'f1', library_id: '1', path: 'D:\\Music', position: 0 }, { id: 'f2', library_id: '1', path: 'D:\\More Music', position: 1 }], library_type: 'music', added_at: '2026-01-01', last_scan: null, track_count: 12 }]);
     apiMock.libraries.add.mockResolvedValue({ ok: true });
     apiMock.libraries.rename.mockResolvedValue({ id: '1', name: 'Renamed Library', path: 'D:\\Music', primary_path: 'D:\\Music', folder_count: 2, folders: [{ id: 'f1', library_id: '1', path: 'D:\\Music', position: 0 }, { id: 'f2', library_id: '1', path: 'D:\\More Music', position: 1 }], library_type: 'music', added_at: '2026-01-01', last_scan: null, track_count: 12 });
@@ -344,9 +346,13 @@ describe('SettingsPage component flows', () => {
       'Integrations',
       'Advanced',
       'Users',
+      'Logs',
       'About',
     ]);
     expect(screen.getByRole('tab', { name: 'User Settings' })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Logs' }));
+    expect(screen.getByRole('region', { name: 'Logs' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: 'About' }));
 

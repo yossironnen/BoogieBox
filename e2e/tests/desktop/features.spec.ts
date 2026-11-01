@@ -114,3 +114,27 @@ test('Home genre card creates and plays a smart playlist', async ({ page }) => {
     for (const playlist of list.filter(p => p.name === name)) await page.request.delete(`/api/playlists/${playlist.id}`)
   }
 })
+
+test('admin reads the server log in Settings → Logs', async ({ page, browser }) => {
+  await openSettingsTab(page, 'Logs')
+  const logs = page.getByRole('region', { name: 'Logs' })
+  const lines = logs.getByTestId('log-lines')
+  await expect(lines.getByText(/BoogieBox Rust server listening on/).first()).toBeVisible()
+  await expect(logs.getByText(/^Showing \d+ lines · /)).toBeVisible()
+  await expect(logs.getByRole('link', { name: 'Download' })).toHaveAttribute('href', /\/api\/admin\/logs\/server\/download$/)
+
+  await logs.getByRole('button', { name: 'Errors' }).click()
+  await expect(lines.getByText(/BoogieBox Rust server listening on/)).toHaveCount(0)
+  await logs.getByRole('button', { name: 'All' }).click()
+  await logs.getByRole('searchbox', { name: 'Search logs' }).fill('listening on')
+  await expect(lines.getByText(/BoogieBox Rust server listening on/).first()).toBeVisible()
+
+  const download = await page.request.get('/api/admin/logs/server/download')
+  expect(download.status()).toBe(200)
+  expect(await download.text()).toContain('listening on')
+
+  // Signed out: no access.
+  const anonymous = await browser.newContext({ storageState: { cookies: [], origins: [] } })
+  expect((await anonymous.request.get(new URL('/api/admin/logs', page.url()).toString())).status()).toBe(401)
+  await anonymous.close()
+})

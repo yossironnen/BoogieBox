@@ -5,6 +5,9 @@
 
 import type {
   BackupHealth,
+  LogLevel,
+  LogLinesPage,
+  LogList,
   BackupSettings,
   BackupSummary,
   BackupsOverview,
@@ -605,7 +608,7 @@ export const api = {
   fsMkdir: (parent: string, name: string) =>
     post<{ path: string }>('/admin/fs/mkdir', { parent, name }),
   debugTestPath: (path: string) => post<any>('/debug/test-path', { path }),
-  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string; dbFolder?: string; version?: string; logFile?: string; scanDebugLogFile?: string; deepDebugLogFile?: string; restoring?: boolean; restoreStep?: string }>('/system/status'),
+  systemStatus: () => get<{ ffmpegAvailable: boolean; setupRequired: boolean; suggestedDbFolder?: string; dbFolder?: string; version?: string; restoring?: boolean; restoreStep?: string }>('/system/status'),
   backups: {
     overview: () => get<BackupsOverview>('/admin/backups'),
     saveSettings: (settings: BackupSettings) => put<BackupsOverview>('/admin/backups/settings', settings),
@@ -893,6 +896,15 @@ export const api = {
       ),
   },
   admin: {
+    /** Admin Logs view: files by source, pages of lines, follow (SSE) and masked downloads. */
+    logs: {
+      list:        () => get<LogList>('/admin/logs'),
+      lines:       (key: string, params: { before?: number; limit?: number; level?: LogLevel; q?: string } = {}) =>
+                     get<LogLinesPage>(`/admin/logs/${encodeURIComponent(key)}/lines`, params),
+      /** SSE `lines` ({ lines, end }) and `rotated` ({ key }) events after byte offset `from`. */
+      followUrl:   (key: string, from: number) => `${BASE}/api/admin/logs/${encodeURIComponent(key)}/follow?from=${from}`,
+      downloadUrl: (key: string) => `${BASE}/api/admin/logs/${encodeURIComponent(key)}/download`,
+    },
     queues:             ()                                                                                   => get<AdminQueueSnapshot>('/admin/queues'),
     providerUsage:      ()                                                                                   => get<ProviderUsageSnapshot>('/admin/provider-usage'),
     cancelScanJob:      (id: ApiEntityId)                                                                    => post<{ ok: boolean; id: ApiEntityId; status: string }>(`/admin/queues/scan/${id}/cancel`),
