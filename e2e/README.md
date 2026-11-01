@@ -46,8 +46,9 @@ Playwright and its Chromium browser are installed and prints the install command
    release folder and prints a warning. Set `BOOGIEBOX_E2E_STRICT_VERSION=1` to fail instead (use this for real
    release checks).
 2. Wipes `tmp/e2e-run/` and copies in a fixture library of 10 short sine-tone tracks: MP3, FLAC and M4A, 3 artists,
-   4 albums, `folder.jpg` covers and one album with only embedded covers. The audio is generated with FFmpeg once
-   and cached in `tmp/e2e-fixtures/`.
+   4 albums, `folder.jpg` covers and one album with only embedded covers. "Harbor Lights" (MP3) and "Antenna Bloom"
+   (FLAC) carry ReplayGain tags; "Folded Orbit" is an untagged loud track for the loudness lane to measure. The audio
+   is generated with FFmpeg once and cached in `tmp/e2e-fixtures/`.
 3. Starts the server on port 3917. Every place it could read a config locator or data folder from
    (`BOOGIEBOX_CONFIG_PATH`, `PROGRAMDATA`, `LOCALAPPDATA`, `HOME`, the working directory) points into `tmp/e2e-run/`,
    so a run never touches a real database. It refuses to start if a `boogiebox-config.json` sits next to the exe.
@@ -64,7 +65,7 @@ Every test also fails on uncaught page errors, app `console.error` output and an
 | First-run setup, library add + scan | `tests/first-run.setup.ts` |
 | Every view and Settings tab renders, version, sidebar | `tests/desktop/shell.spec.ts` |
 | Browse artists/albums, drill-down, per-format tags, artwork, genres, ratings, scan safety (offline folder, mass-removal brake, Remove missing tracks) | `tests/desktop/library.spec.ts` |
-| Real audio playback per format, transport, queue, seek, auto-advance, OS media controls (MediaSession), sleep timer (minutes fade/pause with `page.clock`, end of track, cancel) | `tests/desktop/playback.spec.ts` |
+| Real audio playback per format, transport, queue, seek, auto-advance, OS media controls (MediaSession), sleep timer (minutes fade/pause with `page.clock`, end of track, cancel), loudness levelling (ReplayGain tags, measured tracks, player gain, the Volume levelling and Server levelling settings cards) | `tests/desktop/playback.spec.ts` |
 | Keyboard shortcuts (transport, volume, mute, `/` search, `?` help) and when they stay quiet | `tests/desktop/shortcuts.spec.ts` |
 | Playlist create / add / rename / play / delete, M3U import (preview tiles, not-found download, file order), smart playlist API (preview, create, manual edits refused, export) | `tests/desktop/playlists.spec.ts` |
 | Search by title/artist/album, genre filter | `tests/desktop/search.spec.ts` |

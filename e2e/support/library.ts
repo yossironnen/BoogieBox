@@ -8,7 +8,14 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
-export type FixtureTrack = { title: string; frequency: number }
+export type FixtureTrack = {
+  title: string
+  frequency: number
+  /** Extra tags (ReplayGain fixtures). */
+  tags?: Record<string, string>
+  /** Makes the tone louder or quieter than the default sine level (an untagged loud master). */
+  volumeDb?: number
+}
 export type FixtureAlbum = {
   artist: string
   album: string
@@ -33,7 +40,7 @@ export const ALBUMS: FixtureAlbum[] = [
     coverColor: '0x2a6fdb',
     art: 'folder',
     tracks: [
-      { title: 'Harbor Lights', frequency: 220 },
+      { title: 'Harbor Lights', frequency: 220, tags: { REPLAYGAIN_TRACK_GAIN: '-6.50 dB', REPLAYGAIN_TRACK_PEAK: '0.500000' } },
       { title: 'Glass Current', frequency: 262 },
       { title: 'Low Tide Radio', frequency: 294 },
     ],
@@ -47,7 +54,7 @@ export const ALBUMS: FixtureAlbum[] = [
     coverColor: '0x7b2adb',
     art: 'folder',
     tracks: [
-      { title: 'Antenna Bloom', frequency: 330 },
+      { title: 'Antenna Bloom', frequency: 330, tags: { REPLAYGAIN_TRACK_GAIN: '+2.25 dB', REPLAYGAIN_ALBUM_GAIN: '-1.00 dB' } },
       { title: 'Static Lullaby', frequency: 349 },
     ],
   },
@@ -62,7 +69,7 @@ export const ALBUMS: FixtureAlbum[] = [
     tracks: [
       { title: 'Cardboard Comet', frequency: 392 },
       { title: 'Ink Sky', frequency: 440 },
-      { title: 'Folded Orbit', frequency: 494 },
+      { title: 'Folded Orbit', frequency: 494, volumeDb: 12 },
     ],
   },
   {
@@ -94,7 +101,7 @@ function safeName(value: string): string {
 }
 
 function manifestHash(): string {
-  return crypto.createHash('sha256').update(JSON.stringify({ ALBUMS, TRACK_SECONDS, v: 2 })).digest('hex')
+  return crypto.createHash('sha256').update(JSON.stringify({ ALBUMS, TRACK_SECONDS, v: 3 })).digest('hex')
 }
 
 function generate(ffmpeg: string, outDir: string): void {
@@ -117,6 +124,8 @@ function generate(ffmpeg: string, outDir: string): void {
         '-hide_banner', '-loglevel', 'error', '-y',
         '-f', 'lavfi', '-i', `sine=frequency=${track.frequency}:duration=${TRACK_SECONDS}`,
         ...coverArgs,
+        ...(track.volumeDb ? ['-af', `volume=${track.volumeDb}dB`] : []),
+        ...Object.entries(track.tags ?? {}).flatMap(([key, value]) => ['-metadata', `${key}=${value}`]),
         '-metadata', `title=${track.title}`,
         '-metadata', `artist=${album.artist}`,
         '-metadata', `album_artist=${album.artist}`,

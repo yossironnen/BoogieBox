@@ -2,6 +2,7 @@
  * Defines App behavior for BoogieBox.
  */
 
+import { DEFAULT_LOUDNESS_PREFS, parseLoudnessMode, parseLoudnessPreamp, type LoudnessPrefs } from './audio/loudness';
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { api, getStreamDirect } from './api';
 import type {
@@ -1105,6 +1106,21 @@ export default function App() {
   const [vinylNeedleDrop, setVinylNeedleDrop] = useState<boolean>(() => DEFAULT_VINYL_PREFS.needleDrop);
   const [vinylAnalogFxDisabled, setVinylAnalogFxDisabled] = useState<boolean>(() => DEFAULT_VINYL_PREFS.analogFxDisabled);
   const [vinylNeedleDropIntensity, setVinylNeedleDropIntensity] = useState<number>(() => DEFAULT_VINYL_PREFS.needleDropIntensity);
+  const [loudness, setLoudness] = useState<LoudnessPrefs>(DEFAULT_LOUDNESS_PREFS);
+  // Loudness levelling is per-user and saved on the server; a pre-amp drag is saved once it settles.
+  const loudnessSaveRef = useRef<{ updates: Record<string, string>; timer?: ReturnType<typeof setTimeout> }>({ updates: {} });
+  const changeLoudness = useCallback((change: Partial<LoudnessPrefs>) => {
+    setLoudness(prev => ({ ...prev, ...change }));
+    const pending = loudnessSaveRef.current;
+    if (change.mode != null) pending.updates.loudnessMode = change.mode;
+    if (change.preampDb != null) pending.updates.loudnessPreampDb = String(change.preampDb);
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => {
+      const updates = pending.updates;
+      pending.updates = {};
+      api.userSettings.update(updates).catch(() => {});
+    }, change.mode != null ? 0 : 400);
+  }, []);
   const [playerState, setPlayerState] = useState<PlayerState>({ queue: [], currentIndex: 0, isPlaying: false, playToken: 0 });
   const [settings, setSettings] = useState<AppSettings>(() => ({ ...DEFAULT_SETTINGS }));
   const [browseOpenAlbumRequest, setBrowseOpenAlbumRequest] =
@@ -1347,6 +1363,10 @@ export default function App() {
       if (userSettings.hideCompilationOnlyArtists !== undefined) {
         setHideCompilationOnlyArtists(userSettings.hideCompilationOnlyArtists !== 'false');
       }
+      setLoudness({
+        mode: parseLoudnessMode(userSettings.loudnessMode),
+        preampDb: parseLoudnessPreamp(userSettings.loudnessPreampDb),
+      });
       const serverHybridThemeMode = parseHybridThemeMode(userSettings.uiThemeMode);
       if (serverHybridThemeMode) {
         setHybridThemeMode(serverHybridThemeMode);
@@ -1626,6 +1646,8 @@ export default function App() {
         vinylNeedleDrop={vinylNeedleDrop}
         vinylAnalogFxDisabled={vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={vinylNeedleDropIntensity}
+        loudness={loudness}
+        onLoudnessChange={changeLoudness}
         playerState={playOn.playerState}
         playbackSnapshot={playbackSnapshot}
         openPlaylistId={openPlaylistRequest?.playlistId ?? null}
@@ -2009,6 +2031,8 @@ export default function App() {
               onLibrariesRefresh={refresh}
               onSettingsChange={setSettings}
               onStreamDirectChange={setStreamDirect}
+              loudness={loudness}
+              onLoudnessChange={changeLoudness}
               adaptiveAccentEnabled={adaptiveAccentEnabled}
               onAdaptiveAccentEnabledChange={setAdaptiveAccentEnabled}
               hybridThemeMode={hybridThemeMode}
@@ -2040,6 +2064,8 @@ export default function App() {
         vinylNeedleDrop={vinylNeedleDrop}
         vinylAnalogFxDisabled={vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={vinylNeedleDropIntensity}
+        loudnessMode={loudness.mode}
+        loudnessPreampDb={loudness.preampDb}
         onPlaybackSnapshotChange={handlePlaybackSnapshot}
         onTransportControlsChange={setTransportControls}
         hybridPreview={hybridDesignActive}

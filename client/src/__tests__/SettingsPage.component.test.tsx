@@ -45,6 +45,11 @@ vi.mock('../api', () => ({
 
 // Covered by PlayOnSettings.test.tsx.
 vi.mock('../components/PlayOnSettings', () => ({ default: () => <div data-testid="play-on-settings" /> }));
+// Covered by LoudnessSettings.test.tsx.
+vi.mock('../components/LoudnessSettings', () => ({
+  VolumeLevellingCard: () => <div data-testid="volume-levelling" />,
+  ServerLevellingCard: () => <div data-testid="server-levelling" />,
+}));
 
 function okJson(data: unknown, contentType = 'application/json') {
   return Promise.resolve({

@@ -9,7 +9,6 @@ describe('MobileSettingsView', () => {
     vi.restoreAllMocks();
     setStreamDirect(false);
     vi.spyOn(api.settings, 'get').mockResolvedValue({
-      replayGainEnabled: 'true',
       crossfadeMode: 'auto',
       transcodeQuality: 'high',
     });
@@ -31,12 +30,10 @@ describe('MobileSettingsView', () => {
     expect(screen.getByText('listener')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('switch', { name: 'Stream Direct' }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Replay Gain' }));
     fireEvent.click(screen.getByRole('switch', { name: 'Crossfade' }));
     fireEvent.change(screen.getByRole('combobox', { name: 'Transcode quality' }), { target: { value: 'lossless' } });
 
     await waitFor(() => {
-      expect(api.settings.update).toHaveBeenCalledWith({ replayGainEnabled: 'false' });
       expect(api.settings.update).toHaveBeenCalledWith({ crossfadeMode: 'off' });
       expect(api.settings.update).toHaveBeenCalledWith({ transcodeQuality: 'lossless' });
     });
@@ -87,7 +84,6 @@ describe('MobileSettingsView', () => {
 
   it('enables initially disabled preferences and renders stopped DLNA without a port', async () => {
     vi.mocked(api.settings.get).mockResolvedValue({
-      replayGainEnabled: 'false',
       crossfadeMode: 'off',
       transcodeQuality: '',
     });
@@ -101,12 +97,46 @@ describe('MobileSettingsView', () => {
     );
     expect(await screen.findByText('Stopped')).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Transcode quality' })).toHaveValue('low');
-    fireEvent.click(screen.getByRole('switch', { name: 'Replay Gain' }));
     fireEvent.click(screen.getByRole('switch', { name: 'Crossfade' }));
     await waitFor(() => {
-      expect(api.settings.update).toHaveBeenCalledWith({ replayGainEnabled: 'true' });
       expect(api.settings.update).toHaveBeenCalledWith({ crossfadeMode: 'auto' });
     });
+  });
+
+  it('changes volume levelling mode and steps the pre-amp within its range', async () => {
+    const onLoudnessChange = vi.fn();
+    const { rerender } = render(
+      <MobileSettingsView
+        currentUser={{ id: 'user-1', username: 'listener', role: 'user' } as any}
+        onClose={vi.fn()}
+        loudness={{ mode: 'auto', preampDb: 1.5 }}
+        onLoudnessChange={onLoudnessChange}
+      />,
+    );
+    await screen.findByText('Running on 8200');
+    expect(screen.queryByRole('switch', { name: 'Replay Gain' })).not.toBeInTheDocument();
+    const modes = screen.getByRole('group', { name: 'Volume levelling mode' });
+    expect(modes.querySelector('[aria-pressed="true"]')).toHaveTextContent('Auto');
+    expect(screen.getByText('Album levels when you play an album in order, track levels when you shuffle.')).toBeInTheDocument();
+    expect(screen.getByText('+1.5 dB')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Track' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Raise pre-amp' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Lower pre-amp' }));
+    expect(onLoudnessChange).toHaveBeenCalledWith({ mode: 'track' });
+    expect(onLoudnessChange).toHaveBeenCalledWith({ preampDb: 2 });
+    expect(onLoudnessChange).toHaveBeenCalledWith({ preampDb: 1 });
+
+    rerender(
+      <MobileSettingsView
+        currentUser={{ id: 'user-1', username: 'listener', role: 'user' } as any}
+        onClose={vi.fn()}
+        loudness={{ mode: 'off', preampDb: 6 }}
+        onLoudnessChange={onLoudnessChange}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Raise pre-amp' })).toBeDisabled();
+    expect(screen.getByText('Tracks play at their own volume.')).toBeInTheDocument();
   });
 
   it('shows server operations only to administrators', async () => {

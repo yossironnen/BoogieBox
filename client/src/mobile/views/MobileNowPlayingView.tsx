@@ -16,6 +16,7 @@ import {
 } from '../../hybridPreview';
 import { phase2 } from '../../uiPhase2';
 import MobileSettingsView from './MobileSettingsView';
+import type { LoudnessPrefs } from '../../audio/loudness';
 import {
   MobileEqualizerSheet,
   MobilePlayOnSheet,
@@ -80,6 +81,8 @@ export default function MobileNowPlayingView({
   onHybridThemeModeChange,
   adaptiveAccentEnabled,
   onAdaptiveAccentEnabledChange,
+  loudness,
+  onLoudnessChange,
   eqControls,
   transportControls = null,
   sleepControls = null,
@@ -104,6 +107,8 @@ export default function MobileNowPlayingView({
   onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
   adaptiveAccentEnabled?: boolean;
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
+  loudness?: LoudnessPrefs;
+  onLoudnessChange?: (change: Partial<LoudnessPrefs>) => void;
   eqControls?: PlayerEqControls | null;
   transportControls?: PlayerTransportControls | null;
   sleepControls?: SleepTimerControls | null;
@@ -680,6 +685,8 @@ export default function MobileNowPlayingView({
           onHybridThemeModeChange={onHybridThemeModeChange}
           adaptiveAccentEnabled={adaptiveAccentEnabled}
           onAdaptiveAccentEnabledChange={onAdaptiveAccentEnabledChange}
+          loudness={loudness}
+          onLoudnessChange={onLoudnessChange}
         />
       ) : null}
       {playbackTool === 'output' && playOn ? (

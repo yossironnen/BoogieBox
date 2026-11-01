@@ -54,6 +54,10 @@ pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     "transcodeQuality",
     "replayGainEnabled",
     "vinylMode",
+    // Loudness levelling (wip/loudness-levelling-plan.md)
+    "loudnessAnalysisEnabled",
+    "loudnessPlayOnMode",
+    "loudnessSubsonicTranscodeMode",
     // Waveform
     "waveformGenerateOnMissing",
     "waveformBackgroundEnabled",
@@ -97,7 +101,17 @@ pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
     "vinylNeedleDrop",
     "vinylAnalogFxDisabled",
     "vinylNeedleDropIntensity",
+    "loudnessMode",
+    "loudnessPreampDb",
 ];
+
+/// Levelling modes for the web player and Play On: off, track gain, album gain, or album gain when
+/// the neighbouring queue items share the album.
+pub const LOUDNESS_MODES: &[&str] = &["off", "track", "album", "auto"];
+/// Levelling modes for Subsonic transcodes (no queue to look at, so no `auto`).
+pub const LOUDNESS_TRANSCODE_MODES: &[&str] = &["off", "track", "album"];
+/// Pre-amp range in dB, in 0.5 dB steps.
+pub const LOUDNESS_PREAMP_RANGE: std::ops::RangeInclusive<f64> = -6.0..=6.0;
 
 /// Theme modes accepted for the `uiThemeMode` user setting.
 pub const UI_THEME_MODES: &[&str] = &["light", "dark", "custom", "vintage"];
@@ -131,6 +145,22 @@ pub fn validate_user_setting_value(key: &str, value: &str) -> Result<(), String>
     {
         return Err(format!("Setting '{key}' must be 'true' or 'false'"));
     }
+    if key == "loudnessMode" && !LOUDNESS_MODES.contains(&value) {
+        return Err(
+            "Setting 'loudnessMode' must be 'off', 'track', 'album', or 'auto'".to_string(),
+        );
+    }
+    if key == "loudnessPreampDb" {
+        let n: f64 = value
+            .trim()
+            .parse()
+            .map_err(|_| "Setting 'loudnessPreampDb' must be a number".to_string())?;
+        if !LOUDNESS_PREAMP_RANGE.contains(&n) || (n * 2.0).fract() != 0.0 {
+            return Err(
+                "Setting 'loudnessPreampDb' must be between -6 and 6 in steps of 0.5".to_string(),
+            );
+        }
+    }
     if key == "vinylNeedleDropIntensity" {
         let n: f64 = value
             .trim()
@@ -149,6 +179,7 @@ pub const PLAYBACK_SETTINGS_KEYS: &[&str] = &[
     "replayGainEnabled",
     "vinylMode",
     "lastfmKey",
+    "loudnessPlayOnMode",
 ];
 
 // ── Settings validation / normalization ───────────────────────────────────────
@@ -186,6 +217,7 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         | "scanDebugLoggingEnabled"
         | "deepmixDebugLoggingEnabled"
         | "replayGainEnabled"
+        | "loudnessAnalysisEnabled"
         | "boogiemixDeepAnalysisEnabled"
         | "boogiemixDeepAnalysisPreferGpu"
         | "boogiemixDeepAnalysisCleanupTemp"
@@ -193,6 +225,23 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
         | "boogiemixDebugCandidates" => {
             if value != "true" && value != "false" {
                 return Err(format!("Setting '{key}' must be 'true' or 'false'"));
+            }
+            Ok(value.to_string())
+        }
+
+        "loudnessPlayOnMode" => {
+            if !LOUDNESS_MODES.contains(&value) {
+                return Err(format!(
+                    "Setting '{key}' must be 'off', 'track', 'album', or 'auto'"
+                ));
+            }
+            Ok(value.to_string())
+        }
+        "loudnessSubsonicTranscodeMode" => {
+            if !LOUDNESS_TRANSCODE_MODES.contains(&value) {
+                return Err(format!(
+                    "Setting '{key}' must be 'off', 'track', or 'album'"
+                ));
             }
             Ok(value.to_string())
         }
@@ -565,6 +614,35 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(key.to_string(), value.to_string());
         normalize_settings_payload(&map).map(|out| out.get(key).cloned().unwrap())
+    }
+
+    #[test]
+    fn validates_loudness_settings() {
+        for mode in ["off", "track", "album", "auto"] {
+            assert!(validate_user_setting_value("loudnessMode", mode).is_ok());
+            assert_eq!(
+                normalize_one("loudnessPlayOnMode", mode).as_deref(),
+                Ok(mode)
+            );
+        }
+        assert!(validate_user_setting_value("loudnessMode", "loud").is_err());
+        for ok in ["-6", "0", "1.5", "6"] {
+            assert!(
+                validate_user_setting_value("loudnessPreampDb", ok).is_ok(),
+                "{ok}"
+            );
+        }
+        for bad in ["-6.5", "0.3", "x", "7"] {
+            assert!(
+                validate_user_setting_value("loudnessPreampDb", bad).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(normalize_one("loudnessSubsonicTranscodeMode", "album").is_ok());
+        assert!(normalize_one("loudnessSubsonicTranscodeMode", "auto").is_err());
+        assert!(normalize_one("loudnessPlayOnMode", "loud").is_err());
+        assert!(normalize_one("loudnessAnalysisEnabled", "false").is_ok());
+        assert!(normalize_one("loudnessAnalysisEnabled", "no").is_err());
     }
 
     #[test]

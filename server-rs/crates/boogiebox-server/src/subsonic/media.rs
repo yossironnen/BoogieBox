@@ -164,7 +164,7 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
     if let Some(mix_id) = model::mix_id(&id) {
         return stream_mix(ctx, mix_id.to_owned(), download).await;
     }
-    let (song, roots, quality, replay_gain) = ctx
+    let (song, roots, quality, loudness) = ctx
         .db(move |conn| {
             let song = boogiebox_db::subsonic::get_song(conn, &id)
                 .map_err(db_err)?
@@ -175,8 +175,20 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
             };
             let get = |key: &str| boogiebox_db::artwork::get_setting(conn, key);
             let quality = get("transcodeQuality").unwrap_or_else(|| "low".into());
-            let replay_gain = get("replayGainEnabled").as_deref() == Some("true");
-            Ok((song, roots, quality, replay_gain))
+            // Server-side levelling of Subsonic transcodes is off unless the admin turns it on: apps
+            // that read the `replayGain` values would otherwise level the stream twice (plan D6).
+            let mode = get("loudnessSubsonicTranscodeMode").unwrap_or_else(|| "off".into());
+            let gain = if mode == "off" {
+                0.0
+            } else {
+                let found = boogiebox_db::loudness::loudness_for_tracks(
+                    conn,
+                    std::slice::from_ref(&song.id),
+                )
+                .map_err(db_err)?;
+                boogiebox_db::loudness::applied_gain_db(&mode, found.get(&song.id), mode == "album")
+            };
+            Ok((song, roots, quality, ffmpeg::LoudnessFilter::from_db(gain)))
         })
         .await?;
 
@@ -270,7 +282,7 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
                     codec,
                     bitrate_kbps: kbps,
                     start_seconds,
-                    replay_gain,
+                    loudness,
                     head_only: ctx.head,
                     log_id: &song.id,
                     log_ext: &ext,
@@ -288,7 +300,7 @@ pub async fn stream(ctx: &Ctx, download: bool) -> Result<Response, SubsonicError
                     range: range.as_deref(),
                     bitrate_kbps: kbps,
                     start_seconds,
-                    replay_gain,
+                    loudness,
                     head_only: ctx.head,
                     log_id: &song.id,
                     log_ext: &ext,

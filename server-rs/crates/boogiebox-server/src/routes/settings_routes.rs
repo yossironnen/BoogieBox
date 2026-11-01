@@ -184,6 +184,13 @@ async fn playback_settings_handler(State(state): State<SharedState>) -> impl Int
                     .cloned()
                     .unwrap_or_else(|| "false".into()),
             );
+            // Lets every user see whether Play On speakers are levelled (an admin choice).
+            public.insert(
+                "loudnessPlayOnMode".to_string(),
+                map.get("loudnessPlayOnMode")
+                    .cloned()
+                    .unwrap_or_else(|| "off".into()),
+            );
             public.insert(
                 "vinylMode".to_string(),
                 map.get("vinylMode")
@@ -423,6 +430,7 @@ mod tests {
         let json = json_body(&body);
         assert_eq!(json["transcodeQuality"], "low");
         assert_eq!(json["lastfmConfigured"], "false");
+        assert_eq!(json["loudnessPlayOnMode"], "off");
     }
 
     #[tokio::test]

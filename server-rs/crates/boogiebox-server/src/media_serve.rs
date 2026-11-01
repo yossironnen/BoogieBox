@@ -244,8 +244,8 @@ pub struct Mp3Transcode<'a> {
     /// Start the output this far into the track (Subsonic `timeOffset`). When > 0 the output is a new
     /// stream from that point: its length covers the rest of the track and `Range` is ignored.
     pub start_seconds: f64,
-    /// Apply loudness normalization.
-    pub replay_gain: bool,
+    /// Levelling gain.
+    pub loudness: ffmpeg::LoudnessFilter,
     /// Answer a `HEAD` request (headers only, no encoder spawned).
     pub head_only: bool,
     /// Track id for logs.
@@ -363,7 +363,7 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
         track_id = %id,
         ext = %track_ext,
         bitrate_kbps = kbps,
-        replay_gain = req.replay_gain,
+        loudness = ?req.loudness,
         seek_seconds,
         duration = req.duration.unwrap_or(0.0),
         estimated_total_bytes = total_bytes.unwrap_or(0),
@@ -375,7 +375,7 @@ pub async fn serve_mp3_transcode(req: Mp3Transcode<'_>) -> Response {
         req.file_path,
         seek_seconds,
         kbps,
-        req.replay_gain,
+        req.loudness,
     ) {
         Ok(c) => c,
         Err(error) => {
@@ -415,8 +415,8 @@ pub struct StreamEncode<'a> {
     pub bitrate_kbps: u32,
     /// Start the output this far into the track (Subsonic `timeOffset`).
     pub start_seconds: f64,
-    /// Apply loudness normalization.
-    pub replay_gain: bool,
+    /// Levelling gain.
+    pub loudness: ffmpeg::LoudnessFilter,
     /// Answer a `HEAD` request (headers only, no encoder spawned).
     pub head_only: bool,
     /// Track id for logs.
@@ -444,7 +444,7 @@ pub async fn serve_stream_encode(req: StreamEncode<'_>) -> Response {
         req.file_path,
         req.codec,
         req.bitrate_kbps,
-        req.replay_gain,
+        req.loudness,
         req.start_seconds,
     ) {
         Ok(c) => c,
@@ -570,6 +570,8 @@ pub struct WavTranscode<'a> {
     pub layout: WavLayout,
     /// Raw `Range` header.
     pub range: Option<&'a str>,
+    /// Levelling gain.
+    pub loudness: ffmpeg::LoudnessFilter,
     /// Answer a `HEAD` request.
     pub head_only: bool,
     /// Id for logs.
@@ -618,6 +620,7 @@ pub async fn serve_wav_transcode(req: WavTranscode<'_>) -> Response {
         layout.sample_rate,
         layout.channels,
         layout.bits,
+        req.loudness,
     ) {
         Ok(c) => c,
         Err(error) => {
@@ -804,7 +807,7 @@ mod tests {
             range: Some("bytes=0-"),
             bitrate_kbps: 320,
             start_seconds: 0.0,
-            replay_gain: false,
+            loudness: ffmpeg::LoudnessFilter::None,
             head_only: true,
             log_id: "t1",
             log_ext: "aiff",
@@ -822,7 +825,7 @@ mod tests {
             range: Some("bytes=0-"),
             bitrate_kbps: 320,
             start_seconds: 4.0,
-            replay_gain: false,
+            loudness: ffmpeg::LoudnessFilter::None,
             head_only: true,
             log_id: "t1",
             log_ext: "aiff",
@@ -840,7 +843,7 @@ mod tests {
             range: None,
             bitrate_kbps: 192,
             start_seconds: 0.0,
-            replay_gain: false,
+            loudness: ffmpeg::LoudnessFilter::None,
             head_only: true,
             log_id: "t1",
             log_ext: "aiff",
@@ -856,7 +859,7 @@ mod tests {
             range: Some("bytes=999999-"),
             bitrate_kbps: 320,
             start_seconds: 0.0,
-            replay_gain: false,
+            loudness: ffmpeg::LoudnessFilter::None,
             head_only: false,
             log_id: "t1",
             log_ext: "aiff",
@@ -868,6 +871,7 @@ mod tests {
         let layout = WavLayout::new(1.0, 44_100, 2, 16);
         let wav = serve_wav_transcode(WavTranscode {
             file_path: &p,
+            loudness: ffmpeg::LoudnessFilter::None,
             layout,
             range: Some("bytes=100-199"),
             head_only: true,
@@ -883,6 +887,7 @@ mod tests {
         );
         let wav_bad = serve_wav_transcode(WavTranscode {
             file_path: &p,
+            loudness: ffmpeg::LoudnessFilter::None,
             layout,
             range: Some("bytes=999999999-"),
             head_only: false,
@@ -928,6 +933,7 @@ mod tests {
         let layout = WavLayout::new(1.0, 44_100, 2, 16);
         let full = serve_wav_transcode(WavTranscode {
             file_path: &src,
+            loudness: ffmpeg::LoudnessFilter::None,
             layout,
             range: None,
             head_only: false,
@@ -941,6 +947,7 @@ mod tests {
 
         let tail = serve_wav_transcode(WavTranscode {
             file_path: &src,
+            loudness: ffmpeg::LoudnessFilter::None,
             layout,
             range: Some("bytes=10-"),
             head_only: false,

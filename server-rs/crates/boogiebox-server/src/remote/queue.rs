@@ -244,6 +244,27 @@ impl Queue {
         self.repeat
     }
 
+    /// True when entry `qid` sits next to another track of the same album in play order (auto levelling).
+    pub fn album_context(&self, qid: u64) -> bool {
+        let album = |e: &QueueEntry| match &e.item {
+            QueueItem::Track {
+                album_id: Some(a), ..
+            } if !a.is_empty() => Some(a.clone()),
+            _ => None,
+        };
+        let Some(i) = self.index_of(qid) else {
+            return false;
+        };
+        let Some(own) = album(&self.entries[i]) else {
+            return false;
+        };
+        [i.checked_sub(1), Some(i + 1)]
+            .into_iter()
+            .flatten()
+            .filter_map(|j| self.entries.get(j))
+            .any(|e| album(e).as_deref() == Some(own.as_str()))
+    }
+
     fn index_of(&self, qid: u64) -> Option<usize> {
         self.entries.iter().position(|e| e.qid == qid)
     }
@@ -408,6 +429,47 @@ pub(crate) mod tests {
             duration: Some(10.0),
             radio_reason: None,
         }
+    }
+
+    #[test]
+    fn album_context_looks_at_the_neighbours_in_play_order() {
+        let on = |id: &str, album: Option<&str>| match track(id) {
+            QueueItem::Track {
+                id,
+                title,
+                artist,
+                album: a,
+                duration,
+                radio_reason,
+                ..
+            } => QueueItem::Track {
+                id,
+                title,
+                artist,
+                album: a,
+                album_id: album.map(str::to_owned),
+                duration,
+                radio_reason,
+            },
+            other => other,
+        };
+        let mut q = Queue::default();
+        q.load(
+            vec![
+                on("a", Some("x")),
+                on("b", Some("x")),
+                on("c", Some("y")),
+                on("d", None),
+            ],
+            0,
+            false,
+        );
+        let qid = |i: usize| q.entries()[i].qid;
+        assert!(q.album_context(qid(0)));
+        assert!(q.album_context(qid(1)));
+        assert!(!q.album_context(qid(2)));
+        assert!(!q.album_context(qid(3)));
+        assert!(!q.album_context(9999));
     }
 
     fn ids(q: &Queue) -> Vec<String> {

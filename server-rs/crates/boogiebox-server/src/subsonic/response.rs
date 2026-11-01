@@ -129,6 +129,13 @@ impl Node {
         self
     }
 
+    pub fn opt_object(self, child: Option<Node>) -> Self {
+        match child {
+            Some(child) => self.object(child),
+            None => self,
+        }
+    }
+
     /// Adds a list; items are renamed to `name` so XML and JSON agree.
     pub fn list(mut self, name: &'static str, items: Vec<Node>) -> Self {
         let items = items

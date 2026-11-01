@@ -2,6 +2,7 @@
  * Defines mobile Mobile Shell behavior for the BoogieBox React client.
  */
 
+import type { LoudnessPrefs } from '../audio/loudness';
 import type { RadioStation } from '../radioStations';
 import type { AppSettings, Artist, Album, AuthUser, ClientEntityId, Library, Playlist, PlaylistTrack, QueueSource, Track } from '../types';
 import type { PlaybackSnapshot, PlayerState } from '../components/Player';
@@ -32,6 +33,9 @@ export interface MobileSharedProps {
   vinylNeedleDrop: boolean;
   vinylAnalogFxDisabled: boolean;
   vinylNeedleDropIntensity: number;
+  /** Loudness levelling for this browser (per-user). */
+  loudness?: LoudnessPrefs;
+  onLoudnessChange?: (change: Partial<LoudnessPrefs>) => void;
   playerState: PlayerState;
   playbackSnapshot: PlaybackSnapshot | null;
   openPlaylistId: EntityId | null;

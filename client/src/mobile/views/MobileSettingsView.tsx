@@ -10,6 +10,18 @@ import {
   type HybridThemeMode,
 } from '../../hybridPreview';
 import type { AppSettings, AuthUser } from '../../types';
+import { DEFAULT_LOUDNESS_PREFS, LOUDNESS_MODES, type LoudnessPrefs } from '../../audio/loudness';
+import {
+  formatPreamp,
+  LevellingIcon,
+  LOUDNESS_MODE_HINTS,
+  LOUDNESS_MODE_LABELS,
+  LoudnessModeIcon,
+  PREAMP_MAX_DB,
+  PREAMP_MIN_DB,
+  PREAMP_NOTE,
+  PREAMP_STEP_DB,
+} from '../../components/LoudnessSettings';
 import { APP_VERSION } from '../../version';
 import MobileBottomSheet from '../components/MobileBottomSheet';
 import MobileAdminSettingsPanel from './MobileAdminSettingsPanel';
@@ -67,6 +79,68 @@ function MobileSwitch({
   );
 }
 
+function MobileVolumeLevelling({ prefs, onChange }: {
+  prefs: LoudnessPrefs;
+  onChange: (change: Partial<LoudnessPrefs>) => void;
+}) {
+  const step = (direction: 1 | -1) => {
+    const next = Math.round((prefs.preampDb + direction * PREAMP_STEP_DB) * 2) / 2;
+    onChange({ preampDb: Math.min(PREAMP_MAX_DB, Math.max(PREAMP_MIN_DB, next)) });
+  };
+  return (
+    <div role="group" aria-labelledby="mobile-volume-levelling" style={styles.levelling}>
+      <div style={styles.levellingTitleRow}>
+        <LevellingIcon size={18} />
+        <div id="mobile-volume-levelling" style={styles.settingLabel}>Volume levelling</div>
+      </div>
+      <div style={styles.settingDescription}>Plays tracks at a similar volume without changing how they sound.</div>
+      <div role="group" aria-label="Volume levelling mode" style={styles.levellingGrid}>
+        {LOUDNESS_MODES.map((mode) => {
+          const active = prefs.mode === mode;
+          return (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={active}
+              style={{ ...styles.levellingChip, ...(active ? styles.levellingChipActive : null) }}
+              onClick={() => onChange({ mode })}
+            >
+              <LoudnessModeIcon mode={mode} />
+              {LOUDNESS_MODE_LABELS[mode]}
+            </button>
+          );
+        })}
+      </div>
+      <div style={styles.settingDescription}>{LOUDNESS_MODE_HINTS[prefs.mode]}</div>
+      <div style={styles.preampRow}>
+        <div style={styles.settingLabel}>Pre-amp</div>
+        <div style={styles.stepper}>
+          <button
+            type="button"
+            aria-label="Lower pre-amp"
+            disabled={prefs.preampDb <= PREAMP_MIN_DB}
+            style={styles.stepperButton}
+            onClick={() => step(-1)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14" /></svg>
+          </button>
+          <output aria-live="polite" style={styles.stepperValue}>{formatPreamp(prefs.preampDb)}</output>
+          <button
+            type="button"
+            aria-label="Raise pre-amp"
+            disabled={prefs.preampDb >= PREAMP_MAX_DB}
+            style={styles.stepperButton}
+            onClick={() => step(1)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+        </div>
+      </div>
+      <div style={styles.settingDescription}>{PREAMP_NOTE}</div>
+    </div>
+  );
+}
+
 /** Mobile Settings View is part of this module's public API. */
 export default function MobileSettingsView({
   currentUser,
@@ -78,6 +152,8 @@ export default function MobileSettingsView({
   onHybridThemeModeChange,
   adaptiveAccentEnabled = true,
   onAdaptiveAccentEnabledChange,
+  loudness = DEFAULT_LOUDNESS_PREFS,
+  onLoudnessChange,
 }: {
   currentUser: AuthUser;
   /** Open with the admin tools expanded at this section. */
@@ -89,6 +165,8 @@ export default function MobileSettingsView({
   onHybridThemeModeChange?: (mode: HybridThemeMode) => void;
   adaptiveAccentEnabled?: boolean;
   onAdaptiveAccentEnabledChange?: (enabled: boolean) => void;
+  loudness?: LoudnessPrefs;
+  onLoudnessChange?: (change: Partial<LoudnessPrefs>) => void;
 }) {
   const [settings, setSettings] = useState<SettingsState>({});
   const [streamDirect, setStreamDirectState] = useState(getStreamDirect());
@@ -230,12 +308,7 @@ export default function MobileSettingsView({
               setStreamDirectState(enabled);
             }}
           />
-          <MobileSwitch
-            label="Replay Gain"
-            description="Normalize perceived loudness between tracks."
-            checked={settings.replayGainEnabled === 'true'}
-            onChange={(enabled) => void updateSetting('replayGainEnabled', String(enabled))}
-          />
+          <MobileVolumeLevelling prefs={loudness} onChange={(change) => onLoudnessChange?.(change)} />
           <MobileSwitch
             label="Crossfade"
             description="Blend track transitions automatically."
@@ -564,6 +637,66 @@ const styles: Record<string, React.CSSProperties> = {
     borderTop: '1px solid var(--divider-subtle)',
     color: 'var(--text-muted)',
     fontSize: 12,
+  },
+  levelling: {
+    display: 'grid',
+    gap: 10,
+    paddingTop: 8,
+    borderTop: '1px solid var(--divider-subtle)',
+  },
+  levellingTitleRow: { display: 'flex', alignItems: 'center', gap: 8 },
+  levellingGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 8,
+  },
+  levellingChip: {
+    minWidth: 0,
+    minHeight: 44,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 10,
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    fontWeight: 650,
+  },
+  levellingChipActive: {
+    borderColor: 'var(--accent)',
+    background: 'var(--accent-soft)',
+    color: 'var(--accent)',
+    fontWeight: 750,
+  },
+  preampRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingTop: 10,
+    borderTop: '1px solid var(--divider-subtle)',
+  },
+  stepper: { display: 'flex', alignItems: 'center', gap: 6 },
+  stepperButton: {
+    width: 44,
+    height: 44,
+    display: 'grid',
+    placeItems: 'center',
+    padding: 0,
+    border: '1px solid var(--divider-subtle)',
+    borderRadius: 22,
+    background: 'transparent',
+    color: 'var(--text)',
+  },
+  stepperValue: {
+    minWidth: 64,
+    textAlign: 'center',
+    color: 'var(--text)',
+    fontSize: 14,
+    fontVariantNumeric: 'tabular-nums',
   },
   logoutButton: {
     minHeight: 44,

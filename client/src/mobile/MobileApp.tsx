@@ -134,6 +134,8 @@ export default function MobileApp(props: MobileSharedProps) {
           onHybridThemeModeChange={props.onHybridThemeModeChange}
           adaptiveAccentEnabled={props.adaptiveAccentEnabled}
           onAdaptiveAccentEnabledChange={props.onAdaptiveAccentEnabledChange}
+          loudness={props.loudness}
+          onLoudnessChange={props.onLoudnessChange}
           eqControls={eqControls}
           transportControls={transportControls}
           sleepControls={sleepControls}
@@ -159,6 +161,8 @@ export default function MobileApp(props: MobileSharedProps) {
         vinylNeedleDrop={props.vinylNeedleDrop}
         vinylAnalogFxDisabled={props.vinylAnalogFxDisabled}
         vinylNeedleDropIntensity={props.vinylNeedleDropIntensity}
+        loudnessMode={props.loudness?.mode}
+        loudnessPreampDb={props.loudness?.preampDb}
         headless
         onPlaybackSnapshotChange={handlePlaybackSnapshot}
         onEqControlsChange={setEqControls}

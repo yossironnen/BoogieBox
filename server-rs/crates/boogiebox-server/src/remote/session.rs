@@ -414,14 +414,20 @@ impl SessionEnv {
         udn: &str,
         item: &QueueItem,
         owner: &str,
+        album_context: bool,
     ) -> Result<PreparedItem, PrepareError> {
         match self {
             SessionEnv::Real { manager, db } => match item {
-                QueueItem::Track { id, .. } => manager.prepare_track(db, udn, id).await,
+                QueueItem::Track { id, .. } => {
+                    manager.prepare_track(db, udn, id, album_context).await
+                }
                 QueueItem::Mix { id, .. } => manager.prepare_mix(db, udn, id, owner).await,
             },
             #[cfg(test)]
-            SessionEnv::Test(t) => t.prepare(item),
+            SessionEnv::Test(t) => {
+                let _ = album_context;
+                t.prepare(item)
+            }
         }
     }
 
@@ -1321,7 +1327,12 @@ impl Actor {
                 self.stop_at_end().await;
                 return Ok(());
             };
-            let prepared = match self.env.prepare(&self.cfg.udn, &entry.item, &owner).await {
+            let album_context = self.queue.album_context(entry.qid);
+            let prepared = match self
+                .env
+                .prepare(&self.cfg.udn, &entry.item, &owner, album_context)
+                .await
+            {
                 Ok(p) => p,
                 Err(PrepareError::NotFound | PrepareError::FileMissing) => {
                     self.skip_unplayable(&entry, "file is missing").await;
@@ -1416,7 +1427,16 @@ impl Actor {
         let owner = self.state.owner_user_id.clone().unwrap_or_default();
         let next = self.queue.peek_next().cloned();
         match next {
-            Some(entry) => match self.env.prepare(&self.cfg.udn, &entry.item, &owner).await {
+            Some(entry) => match self
+                .env
+                .prepare(
+                    &self.cfg.udn,
+                    &entry.item,
+                    &owner,
+                    self.queue.album_context(entry.qid),
+                )
+                .await
+            {
                 Ok(p) => {
                     if self.link.set_next(&p.url, &p.didl).await.is_ok() {
                         self.next_url = Some(p.url);

@@ -294,6 +294,8 @@ pub struct ScannedTrackInput {
     pub sample_rate: Option<i64>,
     /// Documents the Channels public API surface.
     pub channels: Option<i64>,
+    /// ReplayGain values from the file's tags, if it has any.
+    pub loudness: Option<crate::loudness::LoudnessTags>,
 }
 
 /// Documents the Create Library public API surface.
@@ -795,6 +797,12 @@ pub fn upsert_scanned_track(
         ],
     )?;
     refresh_track_fts(conn, &track_id, input, &artist_id, &album_id)?;
+    crate::loudness::record_scanned_tags(
+        conn,
+        &track_id,
+        input.file_size,
+        input.loudness.as_ref(),
+    )?;
     Ok(track_id)
 }
 
@@ -1914,6 +1922,7 @@ mod tests {
             bitrate: Some(320),
             sample_rate: Some(44100),
             channels: Some(2),
+            loudness: None,
         }
     }
 

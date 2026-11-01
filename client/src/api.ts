@@ -3,8 +3,10 @@
  * artwork URL helpers, streaming preferences, and response normalization.
  */
 
+import type { TrackLoudness } from './audio/loudness';
 import type {
   BackupHealth,
+  LoudnessStatus,
   LogLevel,
   LogLinesPage,
   LogList,
@@ -597,6 +599,8 @@ export const api = {
     }
   },
   generateTrackWaveform: (id: ApiEntityId) => post<TrackWaveformLookupResponse>(`/tracks/${id}/waveform/generate`),
+  /** Levelling gains for up to 200 tracks or `boogiemix:` mixes; ids without data are left out. */
+  trackLoudness: (ids: string[]) => post<Record<string, TrackLoudness>>('/tracks/loudness', { ids }),
   trackStreamUrl: (id: ApiEntityId) => {
     const base = `${BASE}/api/tracks/${id}/stream`;
     return getStreamDirect() ? `${base}?noTranscode=1` : base;
@@ -627,7 +631,7 @@ export const api = {
   systemSelectFolder: (initialDir?: string) => post<{ folder: string | null }>('/system/select-folder', { initialDir }),
   systemSetup: (dbFolder: string) => post<{ ok: boolean }>('/system/setup', { dbFolder }),
   systemSwitchDb: (dbFolder: string) => post<{ ok: boolean }>('/system/switch-db', { dbFolder }),
-  playbackSettings: () => get<{ transcodeQuality: string; replayGainEnabled: string; vinylMode: string; lastfmConfigured: string }>('/playback-settings'),
+  playbackSettings: () => get<{ transcodeQuality: string; replayGainEnabled: string; vinylMode: string; lastfmConfigured: string; loudnessPlayOnMode?: string }>('/playback-settings'),
   settings: {
     get: () => get<Record<string, string>>('/settings'),
     update: (updates: Record<string, string>) => put<{ ok: boolean }>('/settings', updates),
@@ -896,6 +900,8 @@ export const api = {
       ),
   },
   admin: {
+    /** How much of the library has loudness values, and the measuring lane's state. */
+    loudnessStatus: () => get<LoudnessStatus>('/admin/loudness/status'),
     /** Admin Logs view: files by source, pages of lines, follow (SSE) and masked downloads. */
     logs: {
       list:        () => get<LogList>('/admin/logs'),

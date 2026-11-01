@@ -88,6 +88,39 @@ pub fn choose_delivery(
     }
 }
 
+/// Play On levelling setting (`off`, `track`, `album`, `auto`).
+pub const LOUDNESS_MODE_KEY: &str = "loudnessPlayOnMode";
+
+/// A levelled item cannot be sent as the original file, so a direct delivery becomes a transcode:
+/// WAV for lossless sources (when the renderer takes WAV and the duration is known), MP3 320
+/// otherwise. A renderer set to "direct only" keeps its originals and is not levelled.
+pub fn levelled_delivery(
+    delivery: Delivery,
+    policy: FormatPolicy,
+    src_mime: &str,
+    gain_db: f64,
+    sink: &SinkCaps,
+    duration_known: bool,
+) -> (Delivery, f64) {
+    if policy == FormatPolicy::Direct
+        || crate::ffmpeg::LoudnessFilter::from_db(gain_db) == crate::ffmpeg::LoudnessFilter::None
+    {
+        return (delivery, 0.0);
+    }
+    if delivery != Delivery::Direct {
+        return (delivery, gain_db);
+    }
+    let lossless = matches!(
+        src_mime,
+        "audio/flac" | "audio/x-flac" | "audio/wav" | "audio/x-wav" | "audio/aiff" | "audio/x-aiff"
+    );
+    if lossless && duration_known && sink.accepts("audio/wav") {
+        (Delivery::Wav, gain_db)
+    } else {
+        (Delivery::Mp3, gain_db)
+    }
+}
+
 /// MIME advertised for a delivery: the renderer's own spelling for direct files, fixed for transcodes.
 pub fn delivery_mime(delivery: Delivery, file_mime: &str, sink: &SinkCaps) -> String {
     match delivery {
@@ -157,6 +190,8 @@ pub struct MediaRef {
     pub owner: String,
     /// Expiry.
     pub expires_at: Instant,
+    /// Levelling gain applied by the transcode (0 for none).
+    pub gain_db: f64,
 }
 
 /// An audio token saved with its session, so the renderer's stream URL keeps working after a server restart.
@@ -181,6 +216,9 @@ pub struct PersistedToken {
     pub mime: String,
     /// Expiry (ms since epoch).
     pub expires_at_ms: u64,
+    /// Levelling gain (saved by 0.9.67 and later).
+    #[serde(default)]
+    pub gain_db: f64,
 }
 
 fn epoch_ms() -> u64 {
@@ -221,6 +259,19 @@ impl MediaTokens {
         owner: &str,
         ttl: Duration,
     ) -> String {
+        self.issue_levelled(target, delivery, mime, owner, ttl, 0.0)
+    }
+
+    /// Issues a token whose transcode applies `gain_db` of levelling.
+    pub fn issue_levelled(
+        &self,
+        target: MediaTarget,
+        delivery: Delivery,
+        mime: String,
+        owner: &str,
+        ttl: Duration,
+        gain_db: f64,
+    ) -> String {
         let token = new_token();
         self.map().insert(
             token.clone(),
@@ -230,6 +281,7 @@ impl MediaTokens {
                 mime,
                 owner: owner.to_string(),
                 expires_at: Instant::now() + ttl,
+                gain_db,
             },
         );
         token
@@ -268,6 +320,7 @@ impl MediaTokens {
             delivery: r.delivery,
             mime: r.mime,
             expires_at_ms: epoch_ms() + remaining.as_millis() as u64,
+            gain_db: r.gain_db,
         })
     }
 
@@ -291,6 +344,7 @@ impl MediaTokens {
                 mime: saved.mime.clone(),
                 owner: owner.to_string(),
                 expires_at: Instant::now() + Duration::from_millis(saved.expires_at_ms - now),
+                gain_db: saved.gain_db,
             },
         );
         true
@@ -504,7 +558,7 @@ pub async fn media_handler(
                         range,
                         bitrate_kbps: 320,
                         start_seconds: 0.0,
-                        replay_gain: false,
+                        loudness: crate::ffmpeg::LoudnessFilter::from_db(media.gain_db),
                         head_only,
                         log_id,
                         log_ext: "renderer",
@@ -524,6 +578,7 @@ pub async fn media_handler(
                         file_path,
                         layout,
                         range,
+                        loudness: crate::ffmpeg::LoudnessFilter::from_db(media.gain_db),
                         head_only,
                         log_id,
                         extra: &extra,
@@ -646,20 +701,34 @@ impl crate::remote::RemoteManager {
         Some(media_url(ctx.base_ip, self.http_port(), &token))
     }
 
-    /// Prepares a library track for renderer `udn`: format decision, media + art tokens, DIDL.
+    /// Prepares a library track for renderer `udn`: format decision, levelling, media + art tokens, DIDL.
+    /// `album_context` is true when a neighbouring queue item is from the same album (auto levelling).
     pub async fn prepare_track(
         &self,
         db: &crate::DbPool,
         udn: &str,
         track_id: &str,
+        album_context: bool,
     ) -> Result<PreparedItem, PrepareError> {
         let ctx = self.renderer_context(db, udn).await?;
-        let meta = {
+        let (meta, gain_db) = {
             let db = db.clone();
             let id = track_id.to_string();
             tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                boogiebox_db::remote::get_track_media_meta(&conn, &id)
+                let meta = boogiebox_db::remote::get_track_media_meta(&conn, &id)?;
+                let mode = boogiebox_db::boogiemix::get_setting(&conn, LOUDNESS_MODE_KEY)
+                    .unwrap_or_else(|| "off".into());
+                let gain = if mode == "off" {
+                    0.0
+                } else {
+                    let found = boogiebox_db::loudness::loudness_for_tracks(
+                        &conn,
+                        std::slice::from_ref(&id),
+                    )?;
+                    boogiebox_db::loudness::applied_gain_db(&mode, found.get(&id), album_context)
+                };
+                Ok::<_, rusqlite::Error>(meta.map(|m| (m, gain)))
             })
             .await
             .map_err(|_| PrepareError::Db)?
@@ -672,10 +741,17 @@ impl crate::remote::RemoteManager {
         }
         let duration = meta.duration.filter(|d| *d > 0.0);
         let src_mime = file_mime(&file_path);
-        let delivery = choose_delivery(src_mime, ctx.policy, &ctx.sink, duration.is_some());
+        let (delivery, gain_db) = levelled_delivery(
+            choose_delivery(src_mime, ctx.policy, &ctx.sink, duration.is_some()),
+            ctx.policy,
+            src_mime,
+            gain_db,
+            &ctx.sink,
+            duration.is_some(),
+        );
         let mime = delivery_mime(delivery, src_mime, &ctx.sink);
         let ttl = token_ttl(duration);
-        let token = self.media().issue(
+        let token = self.media().issue_levelled(
             MediaTarget::Audio {
                 log_id: meta.id.clone(),
                 file_path,
@@ -687,6 +763,7 @@ impl crate::remote::RemoteManager {
             mime.clone(),
             udn,
             ttl,
+            gain_db,
         );
         let url = media_url(ctx.base_ip, self.http_port(), &token);
         let art_url = self.art_url(&ctx, udn, meta.album_id.as_deref(), ttl);
@@ -725,15 +802,27 @@ impl crate::remote::RemoteManager {
         user_id: &str,
     ) -> Result<PreparedItem, PrepareError> {
         let ctx = self.renderer_context(db, udn).await?;
-        let (row, file_path) = {
+        let (row, file_path, gain_db) = {
             let db = db.clone();
             let output = boogiebox_db::music::coerce_entity_id(output_id);
             let user = boogiebox_db::music::coerce_entity_id(user_id);
+            let mix_key = output_id.to_string();
             tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
                 let row = boogiebox_db::boogiemix::get_mix_output(&conn, &output, &user)?;
                 let file = boogiebox_db::boogiemix::get_mix_output_file(&conn, &output, &user)?;
-                Ok::<_, boogiebox_db::jobs::JobError>(row.zip(file.map(|(p, _)| p)))
+                let mode = boogiebox_db::boogiemix::get_setting(&conn, LOUDNESS_MODE_KEY)
+                    .unwrap_or_else(|| "off".into());
+                let gain = if mode == "off" {
+                    0.0
+                } else {
+                    let levels =
+                        boogiebox_db::loudness::mix_loudness(&conn, &mix_key).unwrap_or(None);
+                    boogiebox_db::loudness::applied_gain_db(&mode, levels.as_ref(), false)
+                };
+                Ok::<_, boogiebox_db::jobs::JobError>(
+                    row.zip(file.map(|(p, _)| p)).map(|(r, f)| (r, f, gain)),
+                )
             })
             .await
             .map_err(|_| PrepareError::Db)?
@@ -746,10 +835,17 @@ impl crate::remote::RemoteManager {
         }
         let duration = Some(row.duration_sec).filter(|d| *d > 0.0);
         let src_mime = file_mime(&file_path);
-        let delivery = choose_delivery(src_mime, ctx.policy, &ctx.sink, duration.is_some());
+        let (delivery, gain_db) = levelled_delivery(
+            choose_delivery(src_mime, ctx.policy, &ctx.sink, duration.is_some()),
+            ctx.policy,
+            src_mime,
+            gain_db,
+            &ctx.sink,
+            duration.is_some(),
+        );
         let mime = delivery_mime(delivery, src_mime, &ctx.sink);
         let ttl = token_ttl(duration);
-        let token = self.media().issue(
+        let token = self.media().issue_levelled(
             MediaTarget::Audio {
                 log_id: format!("mix:{output_id}"),
                 file_path,
@@ -761,6 +857,7 @@ impl crate::remote::RemoteManager {
             mime.clone(),
             udn,
             ttl,
+            gain_db,
         );
         let url = media_url(ctx.base_ip, self.http_port(), &token);
         let art_url = self.art_url(
@@ -1008,6 +1105,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn levelled_items_are_transcoded_unless_the_renderer_is_direct_only() {
+        let both = SinkCaps::parse(
+            "http-get:*:audio/flac:*,http-get:*:audio/wav:*,http-get:*:audio/mpeg:*",
+        );
+        let no_wav = SinkCaps::parse("http-get:*:audio/flac:*,http-get:*:audio/mpeg:*");
+        let auto = FormatPolicy::Auto;
+        assert_eq!(
+            levelled_delivery(Delivery::Direct, auto, "audio/flac", 0.0, &both, true),
+            (Delivery::Direct, 0.0)
+        );
+        assert_eq!(
+            levelled_delivery(Delivery::Direct, auto, "audio/flac", -4.0, &both, true),
+            (Delivery::Wav, -4.0)
+        );
+        assert_eq!(
+            levelled_delivery(Delivery::Direct, auto, "audio/flac", -4.0, &both, false),
+            (Delivery::Mp3, -4.0)
+        );
+        assert_eq!(
+            levelled_delivery(Delivery::Direct, auto, "audio/flac", -4.0, &no_wav, true),
+            (Delivery::Mp3, -4.0)
+        );
+        assert_eq!(
+            levelled_delivery(Delivery::Direct, auto, "audio/mpeg", 2.0, &both, true),
+            (Delivery::Mp3, 2.0)
+        );
+        assert_eq!(
+            levelled_delivery(Delivery::Wav, auto, "audio/aiff", -1.0, &both, true),
+            (Delivery::Wav, -1.0)
+        );
+        assert_eq!(
+            levelled_delivery(
+                Delivery::Direct,
+                FormatPolicy::Direct,
+                "audio/flac",
+                -4.0,
+                &both,
+                true
+            ),
+            (Delivery::Direct, 0.0)
+        );
+    }
+
+    #[test]
+    fn saved_tokens_keep_their_gain_and_old_ones_load_without_it() {
+        let t = MediaTokens::default();
+        let token = t.issue_levelled(
+            MediaTarget::Audio {
+                log_id: "t1".into(),
+                file_path: PathBuf::from("D:/Music/a.flac"),
+                duration: Some(200.0),
+                sample_rate: None,
+                channels: None,
+            },
+            Delivery::Wav,
+            "audio/wav".into(),
+            "wiim",
+            Duration::from_secs(600),
+            -3.5,
+        );
+        let saved = t.export(&token).unwrap();
+        assert_eq!(saved.gain_db, -3.5);
+        let other = MediaTokens::default();
+        assert!(other.restore("wiim", &saved));
+        assert_eq!(other.get(&token).unwrap().gain_db, -3.5);
+
+        let mut json = serde_json::to_value(&saved).unwrap();
+        json.as_object_mut().unwrap().remove("gainDb");
+        let old: PersistedToken = serde_json::from_value(json).unwrap();
+        assert_eq!(old.gain_db, 0.0);
+    }
+
     fn token_of(url: &str) -> String {
         url.rsplit('/').next().unwrap().to_string()
     }
@@ -1087,7 +1257,7 @@ mod tests {
         );
         remote.set_http_port(3999);
 
-        let item = remote.prepare_track(&db, "r1", "t1").await.unwrap();
+        let item = remote.prepare_track(&db, "r1", "t1", false).await.unwrap();
         assert_eq!(item.delivery, Delivery::Direct);
         assert!(item.url.starts_with("http://127.0.0.1:3999/media/r/"));
         assert!(item.didl.contains("<dc:title>Angel</dc:title>"));
@@ -1106,7 +1276,7 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
 
-        let wav = remote.prepare_track(&db, "r1", "t2").await.unwrap();
+        let wav = remote.prepare_track(&db, "r1", "t2", false).await.unwrap();
         assert_eq!(wav.delivery, Delivery::Wav);
         assert!(wav
             .didl
@@ -1114,12 +1284,51 @@ mod tests {
         assert!(!wav.didl.contains("size="), "no size for transcodes");
         assert_eq!(
             remote
-                .prepare_track(&db, "r1", "t3")
+                .prepare_track(&db, "r1", "t3", false)
                 .await
                 .unwrap()
                 .delivery,
             Delivery::Mp3
         );
+
+        // Levelling on: a tagged FLAC goes as WAV carrying its gain; an untagged track stays as it was.
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES('loudnessPlayOnMode', 'track')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO track_loudness(track_id, track_gain_db, track_peak, source, file_size, analyzed_at)
+                 VALUES('t1', -6.5, 0.9, 'tag', 4, 'x')",
+                [],
+            )
+            .unwrap();
+        }
+        let levelled = remote.prepare_track(&db, "r1", "t1", false).await.unwrap();
+        assert_eq!(levelled.delivery, Delivery::Wav);
+        assert_eq!(
+            remote
+                .media()
+                .get(&token_of(&levelled.url))
+                .unwrap()
+                .gain_db,
+            -6.5
+        );
+        let untagged = remote.prepare_track(&db, "r1", "t2", false).await.unwrap();
+        assert_eq!(
+            remote
+                .media()
+                .get(&token_of(&untagged.url))
+                .unwrap()
+                .gain_db,
+            0.0
+        );
+        db.lock()
+            .unwrap()
+            .execute("DELETE FROM settings WHERE key = 'loudnessPlayOnMode'", [])
+            .unwrap();
 
         boogiebox_db::remote::update_renderer_prefs(
             &db.lock().unwrap(),
@@ -1132,7 +1341,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             remote
-                .prepare_track(&db, "r1", "t1")
+                .prepare_track(&db, "r1", "t1", false)
                 .await
                 .unwrap()
                 .delivery,
@@ -1140,15 +1349,15 @@ mod tests {
         );
 
         assert_eq!(
-            remote.prepare_track(&db, "nobody", "t1").await,
+            remote.prepare_track(&db, "nobody", "t1", false).await,
             Err(PrepareError::UnknownRenderer)
         );
         assert_eq!(
-            remote.prepare_track(&db, "r1", "missing").await,
+            remote.prepare_track(&db, "r1", "missing", false).await,
             Err(PrepareError::NotFound)
         );
         assert_eq!(
-            remote.prepare_track(&db, "r1", "t4").await,
+            remote.prepare_track(&db, "r1", "t4", false).await,
             Err(PrepareError::FileMissing)
         );
         assert_eq!(
@@ -1167,7 +1376,7 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(
-            remote.prepare_track(&db, "r2", "t1").await,
+            remote.prepare_track(&db, "r2", "t1", false).await,
             Err(PrepareError::NoRoute)
         );
     }

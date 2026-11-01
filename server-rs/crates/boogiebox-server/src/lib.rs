@@ -46,6 +46,7 @@ pub mod home_cache;
 pub mod image_thumb;
 pub mod logging;
 pub mod logs;
+pub mod loudness_analysis;
 pub mod media_serve;
 pub mod mix_priority_gate;
 pub mod mix_worker;
@@ -63,6 +64,7 @@ pub mod shutdown_event;
 pub mod similar_artists;
 pub mod story_image;
 pub mod subsonic;
+pub mod tag_bag;
 pub mod tag_taxonomy;
 #[cfg(test)]
 pub mod test_support;
@@ -490,6 +492,7 @@ pub fn activate_db(s: &mut AppState, db_pool: DbPool, db_folder: PathBuf) {
     post_scan::start_post_scan_scheduler(ps_state.clone());
     waveform_map::start_waveform_map_scheduler(db_pool.clone(), cancel.clone());
     bpm_analysis::start_bpm_analysis_scheduler(db_pool.clone(), cancel.clone());
+    loudness_analysis::start_loudness_scheduler(db_pool.clone(), cancel.clone());
     radio_metadata::start_radio_metadata_scheduler(
         db_pool.clone(),
         s.http_client.clone(),
@@ -629,6 +632,9 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
             shared_state.clone(),
         ))
         .merge(routes::log_routes::log_router(shared_state.clone()))
+        .merge(routes::loudness_routes::loudness_router(
+            shared_state.clone(),
+        ))
         .merge(routes::dlna_routes::dlna_router(shared_state.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer)

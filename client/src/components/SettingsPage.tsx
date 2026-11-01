@@ -30,6 +30,8 @@ import ConnectedAppsPanel from './ConnectedAppsPanel';
 import ScrobblingPanel, { AccountRow, ScrobbleIcon, useScrobbleAccounts } from './ScrobblingPanel';
 import { plausibleListenBrainzToken } from '../scrobbling';
 import { InlineStatus, ToggleRow } from './settingsControls';
+import { ServerLevellingCard, VolumeLevellingCard } from './LoudnessSettings';
+import { DEFAULT_LOUDNESS_PREFS, type LoudnessPrefs } from '../audio/loudness';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -806,6 +808,8 @@ interface Props {
   vinylNeedleDropIntensity?: number;
   onVinylNeedleDropIntensityChange?: (value: number) => void;
   sectionRequest?: SettingsSectionRequest | null;
+  loudness?: LoudnessPrefs;
+  onLoudnessChange?: (change: Partial<LoudnessPrefs>) => void;
 }
 
 /** Has Spotify Credentials is part of this module's public API. */
@@ -873,6 +877,8 @@ export default function SettingsPage({
   vinylNeedleDropIntensity = 0.65,
   onVinylNeedleDropIntensityChange,
   sectionRequest = null,
+  loudness = DEFAULT_LOUDNESS_PREFS,
+  onLoudnessChange,
 }: Props) {
   const isAdmin = currentUser.role === 'admin';
   const canManageLibraries = isAdmin || currentUser.canManageLibraries;
@@ -939,7 +945,6 @@ export default function SettingsPage({
   const [transcodeQuality, setTranscodeQuality] = useState<'low' | 'high'>(settings.transcodeQuality === 'high' ? 'high' : 'low');
   const [transcodeQualitySaving, setTranscodeQualitySaving] = useState(false);
   const [transcodeQualityResult, setTranscodeQualityResult] = useState<string | null>(null);
-  const [replayGainEnabled, setReplayGainEnabled] = useState(settings.replayGainEnabled === 'true');
 
   // DLNA
   const [dlnaEnabled, setDlnaEnabled] = useState(settings.dlnaEnabled === 'true');
@@ -1013,7 +1018,6 @@ export default function SettingsPage({
     setCfMode(settings.crossfadeMode || 'off');
     setCfDuration(Number(settings.crossfadeDuration) || 2);
     setTranscodeQuality(settings.transcodeQuality === 'high' ? 'high' : 'low');
-    setReplayGainEnabled(settings.replayGainEnabled === 'true');
     setWaveformGenerateOnMissing(settings.waveformGenerateOnMissing !== 'false');
     setWaveformBackgroundEnabled(settings.waveformBackgroundEnabled === 'true');
     setWaveformFrequencyHours(Number(settings.waveformBackgroundFrequencyHours) || 24);
@@ -1168,7 +1172,6 @@ export default function SettingsPage({
         setDlnaFriendlyName(s.dlnaFriendlyName || 'BoogieBox');
         setDlnaPort(s.dlnaPort || '8200');
         setTranscodeQuality((s.transcodeQuality ?? 'low') === 'high' ? 'high' : 'low');
-        setReplayGainEnabled((s.replayGainEnabled ?? 'false') === 'true');
         setWaveformGenerateOnMissing((s.waveformGenerateOnMissing ?? 'true') === 'true');
         setWaveformBackgroundEnabled((s.waveformBackgroundEnabled ?? 'false') === 'true');
         setWaveformFrequencyHours(Number(s.waveformBackgroundFrequencyHours ?? '24') || 24);
@@ -1688,6 +1691,8 @@ export default function SettingsPage({
             </div>
           </SettingsPanel>
 
+          <VolumeLevellingCard prefs={loudness} onChange={change => onLoudnessChange?.(change)} />
+
           <SettingsPanel
             title="Vinyl Mode"
             description="Turn vinyl mode on/off from the player. These preferences apply whenever it's active."
@@ -2118,19 +2123,10 @@ export default function SettingsPage({
               </button>
               <InlineStatus busy={false} busyText="" result={transcodeQualityResult} />
             </div>
-            <div style={{ marginTop: 14 }}>
-              <ToggleRow
-                title="ReplayGain normalization"
-                ariaLabel="ReplayGain normalization"
-                checked={replayGainEnabled}
-                onChange={async () => {
-                  const next = !replayGainEnabled;
-                  setReplayGainEnabled(next);
-                  await api.settings.update({ replayGainEnabled: String(next) });
-                }}
-                description="Normalize loudness across all tracks using EBU R128. Applies during server-side transcoding only."
-              />
-            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <ServerLevellingCard />
           </div>
 
           {/* ── Track Transitions ──────────────────────────────────────── */}

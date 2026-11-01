@@ -11,6 +11,7 @@ import SonicFingerprintPanel from './SonicFingerprintPanel';
 import VinylTurntable from './VinylTurntable';
 import { PlaylistArtwork } from './PlaylistsView';
 import { playNeedleDrop, preloadVinylFx } from '../audio/VinylFxEngine';
+import { dbToLinear, pickGainDb, sameAlbum, type LoudnessMode, type TrackLoudness } from '../audio/loudness';
 import {
   isBuiltinEqProfileName, parseStoredEqProfiles, parseStoredEqGains,
   type BuiltinEqProfileName,
@@ -113,6 +114,9 @@ interface PlayerProps {
   vinylNeedleDrop?: boolean;
   vinylAnalogFxDisabled?: boolean;
   vinylNeedleDropIntensity?: number;
+  /** Loudness levelling for this browser's playback (per-user setting). */
+  loudnessMode?: LoudnessMode;
+  loudnessPreampDb?: number;
   headless?: boolean;
   onPlaybackSnapshotChange?: (snapshot: PlaybackSnapshot) => void;
   onEqControlsChange?: (controls: PlayerEqControls | null) => void;
@@ -1996,6 +2000,8 @@ export default function Player({
   vinylNeedleDrop = false,
   vinylAnalogFxDisabled = false,
   vinylNeedleDropIntensity = 0.65,
+  loudnessMode = 'off',
+  loudnessPreampDb = 0,
   headless = false,
   onPlaybackSnapshotChange,
   onEqControlsChange,
@@ -2094,6 +2100,19 @@ export default function Player({
   // permanently stuck on its synthetic fallback animation).
   const eqAnalyserARef = useRef<AnalyserNode | null>(null);
   const eqAnalyserBRef = useRef<AnalyserNode | null>(null);
+  // Loudness levelling: one GainNode per slot, between the source and the EQ, set for the track
+  // loaded into that slot (wip/loudness-levelling-plan.md §7).
+  const loudnessGainARef = useRef<GainNode | null>(null);
+  const loudnessGainBRef = useRef<GainNode | null>(null);
+  const loudnessCacheRef = useRef(new Map<string, { data: TrackLoudness | null; at: number }>());
+  const slotLoudnessRef = useRef<Record<'A' | 'B', { track: Track | null; albumContext: boolean }>>({
+    A: { track: null, albumContext: false },
+    B: { track: null, albumContext: false },
+  });
+  const slotGainDbRef = useRef<Record<'A' | 'B', number>>({ A: 0, B: 0 });
+  const [slotGainDb, setSlotGainDb] = useState<Record<'A' | 'B', number>>({ A: 0, B: 0 });
+  const loudnessPrefsRef = useRef({ mode: loudnessMode, preampDb: loudnessPreampDb });
+  loudnessPrefsRef.current = { mode: loudnessMode, preampDb: loudnessPreampDb };
   const [analyserForVu, setAnalyserForVu] = useState<AnalyserNode | null>(null);
   const autoEqLoadedRef = useRef(false);
 
@@ -2128,7 +2147,60 @@ export default function Player({
     activeSlotRef.current === 'A' ? audioBRef.current : audioRef.current,
   []);
 
+  /** Sets a slot's levelling gain from its track's cached loudness and the user's mode. */
+  const applySlotGain = useCallback((slot: 'A' | 'B') => {
+    const { track, albumContext } = slotLoudnessRef.current[slot];
+    const data = track ? loudnessCacheRef.current.get(String(track.id))?.data ?? null : null;
+    const { mode, preampDb } = loudnessPrefsRef.current;
+    const db = pickGainDb(mode, preampDb, data, albumContext);
+    slotGainDbRef.current[slot] = db;
+    const node = slot === 'A' ? loudnessGainARef.current : loudnessGainBRef.current;
+    const ctx = slot === 'A' ? eqCtxARef.current : eqCtxBRef.current;
+    // A 50 ms time constant moves to the new gain without a click.
+    if (node && ctx) node.gain.setTargetAtTime(dbToLinear(db), ctx.currentTime, 0.05);
+    setSlotGainDb(prev => (prev[slot] === db ? prev : { ...prev, [slot]: db }));
+  }, []);
+
+  /** Records which queue item a slot is about to play and levels it (fetching its values once). */
+  const assignSlotTrack = useCallback((slot: 'A' | 'B', items: Track[], index: number) => {
+    const track = items[index] ?? null;
+    const albumContext = !!track && (sameAlbum(track, items[index - 1]) || sameAlbum(track, items[index + 1]));
+    slotLoudnessRef.current[slot] = { track, albumContext };
+    applySlotGain(slot);
+    if (!track || loudnessPrefsRef.current.mode === 'off') return;
+    const now = Date.now();
+    const wanted = [index, index + 1, index + 2]
+      .map(i => items[i])
+      .filter((t): t is Track => !!t && (isLibraryTrackId(t.id) || isBoogieMixSyntheticTrackId(t.id)))
+      .map(t => String(t.id))
+      .filter(id => {
+        const cached = loudnessCacheRef.current.get(id);
+        // Tracks without values yet are asked again after 5 minutes (the lane may have measured them).
+        return !cached || (cached.data == null && now - cached.at > 5 * 60_000);
+      });
+    if (wanted.length === 0) return;
+    for (const id of wanted) loudnessCacheRef.current.set(id, { data: null, at: now });
+    api.trackLoudness(wanted).then(found => {
+      for (const id of wanted) loudnessCacheRef.current.set(id, { data: found?.[id] ?? null, at: Date.now() });
+      if (slotLoudnessRef.current[slot].track === track) applySlotGain(slot);
+    }).catch(() => {
+      for (const id of wanted) loudnessCacheRef.current.delete(id);
+    });
+  }, [applySlotGain]);
+
   const { queue, currentIndex, isPlaying, playToken, queueSource } = state;
+
+  useEffect(() => {
+    for (const slot of ['A', 'B'] as const) {
+      const { track } = slotLoudnessRef.current[slot];
+      const index = track ? queue.findIndex(t => t.id === track.id) : -1;
+      if (index >= 0) assignSlotTrack(slot, queue, index);
+      else applySlotGain(slot);
+    }
+  // Only the user's levelling choice re-levels; queue edits are picked up on the next load.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loudnessMode, loudnessPreampDb]);
+
   // Play On: while a renderer is the target the <audio> elements stay silent and controls drive the session.
   const playOn = usePlayOnContext();
   const isRemote = playOn?.target.kind === 'renderer';
@@ -2439,28 +2511,33 @@ export default function Player({
       return filter;
     });
 
-    // source -> parametric[0..6] -> destination
-    source.connect(parametricFilters[0]);
+    // source -> loudness gain -> parametric[0..6] -> destination
+    const loudnessGain = ctx.createGain();
+    loudnessGain.gain.value = dbToLinear(slotGainDbRef.current[slot]);
+    source.connect(loudnessGain);
+    loudnessGain.connect(parametricFilters[0]);
     for (let i = 0; i < parametricFilters.length - 1; i += 1) parametricFilters[i].connect(parametricFilters[i + 1]);
     parametricFilters[parametricFilters.length - 1].connect(ctx.destination);
 
-    // VU meter tap — parallel branch off the raw source, silent (not
+    // VU meter tap — parallel branch after the levelling gain, silent (not
     // connected onward), so it doesn't affect the audible EQ chain above.
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.4;
-    source.connect(analyser);
+    loudnessGain.connect(analyser);
 
     if (slot === 'A') {
       eqCtxARef.current = ctx;
       eqSourceARef.current = source;
       eqParametricFiltersARef.current = parametricFilters;
       eqAnalyserARef.current = analyser;
+      loudnessGainARef.current = loudnessGain;
     } else {
       eqCtxBRef.current = ctx;
       eqSourceBRef.current = source;
       eqParametricFiltersBRef.current = parametricFilters;
       eqAnalyserBRef.current = analyser;
+      loudnessGainBRef.current = loudnessGain;
     }
 
     if (activeSlotRef.current === slot) setAnalyserForVu(analyser);
@@ -2504,6 +2581,8 @@ export default function Player({
       try {
         eqSourceARef.current?.disconnect();
         eqSourceBRef.current?.disconnect();
+        loudnessGainARef.current?.disconnect();
+        loudnessGainBRef.current?.disconnect();
         eqParametricFiltersARef.current?.forEach((node) => node.disconnect());
         eqParametricFiltersBRef.current?.forEach((node) => node.disconnect());
       } catch {}
@@ -2675,6 +2754,7 @@ export default function Player({
     crossfadeActiveRef.current = true;
 
     // Load next track into standby
+    assignSlotTrack(activeSlotRef.current === 'A' ? 'B' : 'A', queue, nextIndex);
     const url = getPreferredTrackStreamUrl(nextTrack);
     standby.src = url;
     standby.load();
@@ -2718,7 +2798,7 @@ export default function Player({
     };
 
     standby.addEventListener('canplay', startPlaying, { once: true });
-  }, [getActiveAudio, getStandbyAudio, queue, crossfadeConfig.duration, volume, muted, state, onStateChange, selectVuElement]);
+  }, [getActiveAudio, getStandbyAudio, queue, crossfadeConfig.duration, volume, muted, state, onStateChange, selectVuElement, assignSlotTrack]);
 
   // ─── Zero-gap preload + immediate swap ──────────────────────────────────
   const beginZeroGap = useCallback((nextIndex: number) => {
@@ -2730,13 +2810,14 @@ export default function Player({
 
     crossfadeActiveRef.current = true;
 
+    assignSlotTrack(activeSlotRef.current === 'A' ? 'B' : 'A', queue, nextIndex);
     const url = getPreferredTrackStreamUrl(nextTrack);
     standby.src = url;
     standby.load();
     standby.volume = muted ? 0 : volume;
 
     // We'll start the standby when the active track ends (see onEnded handler)
-  }, [getStandbyAudio, queue, volume, muted]);
+  }, [getStandbyAudio, queue, volume, muted, assignSlotTrack]);
 
   const finalizeZeroGap = useCallback((nextIndex: number) => {
     const active = getActiveAudio();
@@ -2793,6 +2874,7 @@ export default function Player({
       ...buildPlaybackDebugInfo(currentTrack, url),
     });
     loadedUrlRef.current = url;
+    assignSlotTrack(activeSlotRef.current, queue, currentIndex);
     audio.src = url;
     // Set pending seek for remember-progress playlists
     const resumeAt = state.resumeAt;
@@ -3240,6 +3322,7 @@ export default function Player({
 
       {/* Audio A */}
       <audio
+        data-loudness-gain={slotGainDb.A}
         ref={(el) => {
           audioRef.current = el;
           if (activeSlotRef.current === 'A') selectVuElement(el);
@@ -3365,6 +3448,7 @@ export default function Player({
 
       {/* Audio B (standby for crossfade/zerogap) */}
       <audio
+        data-loudness-gain={slotGainDb.B}
         ref={audioBRef}
         onTimeUpdate={e => {
           if (activeSlotRef.current !== 'B') return;

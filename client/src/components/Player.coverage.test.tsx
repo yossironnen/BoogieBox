@@ -75,6 +75,7 @@ function canvasContext() {
 
 function installAudioContext() {
   const analysers: any[] = [];
+  const gains: any[] = [];
   const context: any = {
     state: 'suspended',
     destination: {},
@@ -103,11 +104,17 @@ function installAudioContext() {
       return analyser;
     }),
     createChannelMerger: vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() })),
+    currentTime: 0,
+    createGain: vi.fn(() => {
+      const node: any = { gain: { value: 1, setTargetAtTime: vi.fn() }, connect: vi.fn(), disconnect: vi.fn() };
+      gains.push(node);
+      return node;
+    }),
   };
   (window as any).AudioContext = class {
     constructor() { return context; }
   };
-  return { context, analysers };
+  return { context, analysers, gains };
 }
 
 function setMediaState(media: HTMLMediaElement, values: { currentTime?: number; duration?: number; error?: any }) {
@@ -682,4 +689,65 @@ describe('Player comprehensive behavior', () => {
     unmount();
     expect(onEqControlsChange).toHaveBeenLastCalledWith(null);
   });
+
+  describe('loudness levelling', () => {
+    const levelled = (container: HTMLElement) => container.querySelectorAll('audio')[0].getAttribute('data-loudness-gain');
+
+    it('levels the playing track with its track gain through the slot gain node', async () => {
+      const { gains } = installAudioContext();
+      const loudness = vi.spyOn(api, 'trackLoudness').mockResolvedValue({ 1: { trackGainDb: -6, trackPeak: 0.9 } });
+      const state: PlayerState = { queue: [track('1'), track('2', { album_id: 'album-2' })], currentIndex: 0, isPlaying: true, playToken: 1 };
+      const { container } = render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable loudnessMode="track" />);
+
+      await waitFor(() => expect(levelled(container)).toBe('-6'));
+      expect(loudness).toHaveBeenCalledWith(['1', '2']);
+      expect(gains.length).toBeGreaterThanOrEqual(1);
+      const calls = gains.flatMap(g => g.gain.setTargetAtTime.mock.calls);
+      expect(calls.some(([value]: [number]) => Math.abs(value - 10 ** (-6 / 20)) < 1e-6)).toBe(true);
+    });
+
+    it('uses album gain in auto mode when the next track is from the same album, and re-levels on a mode change', async () => {
+      installAudioContext();
+      vi.spyOn(api, 'trackLoudness').mockResolvedValue({
+        1: { trackGainDb: -6, trackPeak: 0.5, albumGainDb: -4, albumPeak: 0.5 },
+      });
+      const state: PlayerState = { queue: [track('1'), track('2')], currentIndex: 0, isPlaying: true, playToken: 1 };
+      const { container, rerender } = render(
+        <Player state={state} onStateChange={vi.fn()} ffmpegAvailable loudnessMode="auto" loudnessPreampDb={1} />,
+      );
+      await waitFor(() => expect(levelled(container)).toBe('-3'));
+
+      rerender(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable loudnessMode="track" loudnessPreampDb={1} />);
+      await waitFor(() => expect(levelled(container)).toBe('-5'));
+      rerender(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable loudnessMode="off" loudnessPreampDb={1} />);
+      await waitFor(() => expect(levelled(container)).toBe('0'));
+    });
+
+    it('asks nothing while levelling is off, and skips radio streams', async () => {
+      installAudioContext();
+      const loudness = vi.spyOn(api, 'trackLoudness').mockResolvedValue({});
+      const state: PlayerState = { queue: [track('1')], currentIndex: 0, isPlaying: true, playToken: 1 };
+      const { container, rerender } = render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable />);
+      await waitFor(() => expect(levelled(container)).toBe('0'));
+      expect(loudness).not.toHaveBeenCalled();
+
+      const radio: PlayerState = {
+        queue: [track('radio:abc', { stream_url_override: 'http://radio.example/stream' } as Partial<Track>)],
+        currentIndex: 0, isPlaying: true, playToken: 2,
+      };
+      rerender(<Player state={radio} onStateChange={vi.fn()} ffmpegAvailable loudnessMode="track" />);
+      await waitFor(() => expect(levelled(container)).toBe('0'));
+      expect(loudness).not.toHaveBeenCalled();
+    });
+
+    it('plays at unity when the values cannot be fetched', async () => {
+      installAudioContext();
+      const loudness = vi.spyOn(api, 'trackLoudness').mockRejectedValue(new Error('offline'));
+      const state: PlayerState = { queue: [track('1')], currentIndex: 0, isPlaying: true, playToken: 1 };
+      const { container } = render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable loudnessMode="track" />);
+      await waitFor(() => expect(loudness).toHaveBeenCalled());
+      expect(levelled(container)).toBe('0');
+    });
+  });
+
 });

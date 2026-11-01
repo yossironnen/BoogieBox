@@ -5,7 +5,7 @@
 import { ALBUMS } from '../../support/library.ts'
 import {
   audioState, captureMediaSession, dock, expect, expectAudioPlaying, main, mediaSession, openAlbum, openApp,
-  pressMediaKey, test, trackRow,
+  openSettingsTab, pressMediaKey, test, trackRow,
 } from '../../support/test.ts'
 
 test.beforeEach(async ({ page }) => openApp(page))
@@ -183,4 +183,83 @@ test.describe('sleep timer', () => {
     await expect(player).not.toContainText(album.tracks[1].title)
     await expect(player.getByRole('button', { name: 'Sleep timer', exact: true })).toBeVisible()
   })
+})
+
+test('loudness levelling: tag values, measured tracks and the player gain', async ({ page }) => {
+  const idOf = async (title: string) => {
+    const result = await (await page.request.get('/api/search', { params: { q: title, limit: 5 } })).json()
+    const track = (result.tracks as Array<{ id: string; title: string }>).find(t => t.title === title)
+    expect(track, `track ${title}`).toBeTruthy()
+    return String(track!.id)
+  }
+  const loudness = async (ids: string[]) =>
+    (await (await page.request.post('/api/tracks/loudness', { data: { ids } })).json()) as Record<string, { trackGainDb: number; albumGainDb?: number | null }>
+  const [harbor, antenna, folded] = [await idOf('Harbor Lights'), await idOf('Antenna Bloom'), await idOf('Folded Orbit')]
+
+  await test.step('ReplayGain tags from MP3 (TXXX) and FLAC (Vorbis)', async () => {
+    const values = await loudness([harbor, antenna])
+    expect(values[harbor].trackGainDb).toBe(-6.5)
+    expect(values[antenna].trackGainDb).toBe(2.25)
+    expect(values[antenna].albumGainDb).toBe(-1)
+  })
+
+  await test.step('the background lane measures an untagged loud track', async () => {
+    await expect.poll(async () => (await loudness([folded]))[folded]?.trackGainDb ?? null, { timeout: 120_000, intervals: [2_000] })
+      .toBeLessThan(-5)
+  })
+
+  await test.step('the player applies the track gain, and none when levelling is off', async () => {
+    const setMode = (mode: string) => page.request.put('/api/user/settings', { data: { loudnessMode: mode } })
+    expect((await setMode('track')).ok()).toBe(true)
+    try {
+      await openApp(page)
+      const album = ALBUMS[0]
+      await openAlbum(page, album.artist, album.album)
+      await trackRow(page, 'Harbor Lights').getByRole('button', { name: 'Play', exact: true }).click()
+      await expectAudioPlaying(page, 0)
+      const gain = () => page.evaluate(() => {
+        const playing = Array.from(document.querySelectorAll('audio')).find(a => !a.paused)
+        return playing?.getAttribute('data-loudness-gain') ?? null
+      })
+      // Peak 0.5 allows up to +6 dB, so the tag's −6.5 dB is applied as is.
+      await expect.poll(gain).toBe('-6.5')
+
+      expect((await setMode('off')).ok()).toBe(true)
+      await openApp(page)
+      await openAlbum(page, album.artist, album.album)
+      await trackRow(page, 'Harbor Lights').getByRole('button', { name: 'Play', exact: true }).click()
+      await expectAudioPlaying(page, 0)
+      await expect.poll(gain).toBe('0')
+    } finally {
+      await setMode('off')
+    }
+  })
+})
+
+test('volume levelling settings: mode chips, pre-amp and the admin server card save', async ({ page }) => {
+  const userSettings = async () => (await (await page.request.get('/api/user/settings')).json()) as Record<string, string>
+  try {
+    await openSettingsTab(page, 'User Settings')
+    const card = page.getByRole('region', { name: 'Volume levelling' })
+    const modes = card.getByRole('group', { name: 'Volume levelling mode' })
+    await modes.getByRole('button', { name: 'Album', exact: true }).click()
+    await expect(modes.getByRole('button', { name: 'Album', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect(card).toContainText('Albums keep their own quiet and loud tracks.')
+    await expect.poll(async () => (await userSettings()).loudnessMode).toBe('album')
+
+    await card.getByLabel('Pre-amp').fill('2.5')
+    await expect(card).toContainText('+2.5 dB')
+    await expect.poll(async () => (await userSettings()).loudnessPreampDb).toBe('2.5')
+
+    await openSettingsTab(page, 'Advanced')
+    const server = page.getByRole('region', { name: 'Server levelling' })
+    await server.getByLabel('Play On speakers').selectOption('track')
+    await expect(server).toContainText('Saved')
+    const shared = await (await page.request.get('/api/playback-settings')).json()
+    expect(shared.loudnessPlayOnMode).toBe('track')
+    await expect(server.getByLabel(/^From tags: \d+/)).toBeVisible()
+  } finally {
+    await page.request.put('/api/user/settings', { data: { loudnessMode: 'off', loudnessPreampDb: '0' } })
+    await page.request.put('/api/settings', { data: { loudnessPlayOnMode: 'off' } })
+  }
 })

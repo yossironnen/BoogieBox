@@ -1,6 +1,6 @@
 //! Defines Rust server support logic for Scanner.
 
-use crate::DbPool;
+use crate::{tag_bag::TagBag, DbPool};
 use boogiebox_db::{
     jobs::{ClaimedScanJob, JobError, ScannedTrackInput},
     music::EntityId,
@@ -61,6 +61,8 @@ struct AudioTags {
     year: Option<i64>,
     comment: Option<String>,
     bpm: Option<i64>,
+    /// Every text tag the file carries; the fields above are derived from the same frames.
+    raw: TagBag,
 }
 
 /// Documents the Run One Pending Scan public API surface.
@@ -513,6 +515,7 @@ fn build_track_input(
         bitrate: technical.bitrate,
         sample_rate: technical.sample_rate,
         channels: technical.channels,
+        loudness: crate::tag_bag::loudness_tags(&tags.raw),
     })
 }
 
@@ -523,7 +526,12 @@ fn read_audio_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
         .map(|value| value.to_ascii_lowercase())
         .as_deref()
     {
-        Some("mp3") => read_id3v2_tags(path),
+        Some("mp3") => {
+            let mut tags = read_id3v2_tags(path)?;
+            tags.raw
+                .merge(crate::tag_bag::read_apev2(path).unwrap_or_default());
+            Ok(tags)
+        }
         Some("flac") => read_flac_tags(path),
         Some("ogg") | Some("opus") => read_ogg_tags(path),
         Some("m4a") | Some("aac") | Some("alac") => read_mp4_tags(path),
@@ -1149,6 +1157,7 @@ fn read_id3v2_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
     file.read_exact(&mut data)?;
 
     let mut values = HashMap::new();
+    let mut raw = TagBag::default();
     let mut offset = 0;
     while offset + 10 <= data.len() {
         let frame_id = &data[offset..offset + 4];
@@ -1173,6 +1182,7 @@ fn read_id3v2_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
             .unwrap_or_default()
             .to_string();
         let frame = &data[offset..offset + frame_size];
+        collect_id3_raw(&mut raw, &id, frame, major);
         if let Some(value) = parse_id3_frame_value(&id, frame) {
             values.entry(id).or_insert(value);
         }
@@ -1180,6 +1190,7 @@ fn read_id3v2_tags(path: &Path) -> Result<AudioTags, std::io::Error> {
     }
 
     Ok(AudioTags {
+        raw,
         title: take_tag(&mut values, "TIT2"),
         artist: take_tag(&mut values, "TPE1"),
         album: take_tag(&mut values, "TALB"),
@@ -1207,6 +1218,7 @@ fn parse_vorbis_comments(data: &[u8]) -> AudioTags {
     };
 
     let mut values = HashMap::new();
+    let mut bag = TagBag::default();
     for _ in 0..comment_count {
         let Some(length) = read_le_u32(data, &mut offset).map(|value| value as usize) else {
             break;
@@ -1217,6 +1229,7 @@ fn parse_vorbis_comments(data: &[u8]) -> AudioTags {
         if let Ok(raw) = std::str::from_utf8(&data[offset..offset + length]) {
             if let Some((key, value)) = raw.split_once('=') {
                 let value = value.trim();
+                bag.push(key, value);
                 if !value.is_empty() {
                     values
                         .entry(key.trim().to_ascii_uppercase())
@@ -1226,7 +1239,10 @@ fn parse_vorbis_comments(data: &[u8]) -> AudioTags {
         }
         offset += length;
     }
-    tags_from_common_map(values)
+    AudioTags {
+        raw: bag,
+        ..tags_from_common_map(values)
+    }
 }
 
 fn tags_from_common_map(mut values: HashMap<String, String>) -> AudioTags {
@@ -1245,6 +1261,7 @@ fn tags_from_common_map(mut values: HashMap<String, String>) -> AudioTags {
             .and_then(|value| parse_leading_i64(&value)),
         comment: take_any_tag(&mut values, &["COMMENT", "DESCRIPTION"]),
         bpm: take_any_tag(&mut values, &["BPM"]).and_then(|value| parse_leading_i64(&value)),
+        raw: TagBag::default(),
     }
 }
 
@@ -1279,6 +1296,11 @@ fn parse_mp4_atoms(data: &[u8], depth: usize) -> AudioTags {
             b"tmpo" => tags.bpm = parse_mp4_number_atom(payload),
             b"trkn" => tags.track_number = parse_mp4_pair_atom(payload),
             b"disk" => tags.disc_number = parse_mp4_pair_atom(payload),
+            b"----" => {
+                if let Some((key, value)) = parse_mp4_freeform_atom(payload) {
+                    tags.raw.push(&key, &value);
+                }
+            }
             _ => {}
         }
         offset = atom_end;
@@ -1299,6 +1321,58 @@ impl AudioTags {
         self.year = self.year.or(other.year);
         self.comment = self.comment.take().or(other.comment);
         self.bpm = self.bpm.or(other.bpm);
+        self.raw.merge(other.raw);
+    }
+}
+
+/// Reads an iTunes-style freeform `----` atom (`mean` + `name` + `data` children) as
+/// `("----:<mean>:<name>", text)`. ReplayGain from iTunes-compatible taggers lives here.
+fn parse_mp4_freeform_atom(payload: &[u8]) -> Option<(String, String)> {
+    let (mut mean, mut name) = (None, None);
+    let mut offset = 0;
+    while offset + 8 <= payload.len() {
+        let (atom_type, start, end) = read_mp4_atom(payload, offset)?;
+        // `mean` and `name` are FullBoxes: version(1) + flags(3) before the text.
+        let text = payload
+            .get(start + 4..end)
+            .map(|bytes| String::from_utf8_lossy(bytes).trim().to_owned());
+        match atom_type.as_slice() {
+            b"mean" => mean = text,
+            b"name" => name = text,
+            _ => {}
+        }
+        offset = end;
+    }
+    let value = parse_mp4_text_atom(payload)?;
+    Some((format!("----:{}:{}", mean?, name?), value))
+}
+
+/// Adds one ID3v2 frame to the tag bag: text frames under their id (v2.4 multi-values split on NUL),
+/// `TXXX` under `TXXX:<description>`. Other frames (comments, pictures, private data) are skipped here.
+fn collect_id3_raw(raw: &mut TagBag, id: &str, frame: &[u8], major: u8) {
+    if !id.starts_with('T') {
+        return;
+    }
+    let Some((&encoding, payload)) = frame.split_first() else {
+        return;
+    };
+    let Some(text) = decode_id3_text_payload(encoding, payload) else {
+        return;
+    };
+    if id == "TXXX" {
+        let Some((description, value)) = text.split_once('\0') else {
+            return;
+        };
+        let key = format!("TXXX:{}", description.trim_matches('\u{feff}').trim());
+        for part in value.split('\0') {
+            raw.push(&key, part);
+        }
+    } else if major == 4 {
+        for part in text.split('\0') {
+            raw.push(id, part);
+        }
+    } else {
+        raw.push(id, &text);
     }
 }
 
@@ -2653,6 +2727,181 @@ mod tests {
     }
 
     // -- Scheduler tick ----------------------------------------------------------------
+
+    // -- Tag bag (every text tag, beyond the fixed fields) ------------------------------
+
+    fn id3_frame(id: &[u8; 4], major: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = id.to_vec();
+        if major == 4 {
+            frame.extend_from_slice(&syncsafe_encode(payload.len() as u32));
+        } else {
+            frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        }
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    fn id3_file(prefix: &str, major: u8, frames: &[Vec<u8>], tail: &[u8]) -> PathBuf {
+        let body: Vec<u8> = frames.concat();
+        let mut bytes = vec![b'I', b'D', b'3', major, 0, 0];
+        bytes.extend_from_slice(&syncsafe_encode(body.len() as u32));
+        bytes.extend_from_slice(&body);
+        bytes.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+        bytes.extend_from_slice(&[0; 64]);
+        bytes.extend_from_slice(tail);
+        let path = temp_dir(prefix).join("t.mp3");
+        fs::write(&path, &bytes).unwrap();
+        path
+    }
+
+    fn utf16le(text: &str) -> Vec<u8> {
+        let mut out = vec![0xff, 0xfe];
+        for unit in text.encode_utf16() {
+            out.extend_from_slice(&unit.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn keeps_every_txxx_frame_under_its_description() {
+        let latin = [b"\x00".as_slice(), b"replaygain_track_gain\0-7.32 dB"].concat();
+        let utf8 = [b"\x03".as_slice(), b"REPLAYGAIN_TRACK_PEAK\x000.988\0"].concat();
+        let mut utf16 = vec![1_u8];
+        utf16.extend(utf16le("REPLAYGAIN_ALBUM_GAIN"));
+        utf16.extend_from_slice(&[0, 0]);
+        utf16.extend(utf16le("-6.10 dB"));
+        let frames = [
+            id3_frame(b"TIT2", 3, b"\x03Song"),
+            id3_frame(b"TXXX", 3, &latin),
+            id3_frame(b"TXXX", 3, &utf8),
+            id3_frame(b"TXXX", 3, &utf16),
+            id3_frame(b"APIC", 3, b"\x00image/png\0\x03\0binary"),
+        ];
+        let tags = read_audio_tags(&id3_file("txxx", 3, &frames, &[])).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("Song"));
+        assert_eq!(
+            tags.raw.first("TXXX:REPLAYGAIN_TRACK_GAIN"),
+            Some("-7.32 dB")
+        );
+        assert_eq!(tags.raw.first("TXXX:REPLAYGAIN_TRACK_PEAK"), Some("0.988"));
+        assert_eq!(
+            tags.raw.first("TXXX:REPLAYGAIN_ALBUM_GAIN"),
+            Some("-6.10 dB")
+        );
+        assert_eq!(tags.raw.first("TIT2"), Some("Song"));
+        assert!(tags.raw.first("APIC").is_none());
+    }
+
+    #[test]
+    fn build_track_input_carries_replaygain_tags() {
+        let txxx = [b"".as_slice(), b"REPLAYGAIN_TRACK_GAIN -5.25 dB"].concat();
+        let frames = [id3_frame(b"TXXX", 3, &txxx)];
+        let input = build_track_input(
+            &EntityId::Str("lib".into()),
+            &id3_file("rg-input", 3, &frames, &[]),
+        )
+        .unwrap();
+        assert_eq!(input.loudness.and_then(|l| l.track_gain_db), Some(-5.25));
+        let plain = build_track_input(
+            &EntityId::Str("lib".into()),
+            &id3_file("rg-none", 3, &[], &[]),
+        )
+        .unwrap();
+        assert!(plain.loudness.is_none());
+    }
+
+    #[test]
+    fn splits_id3v2_4_multi_value_frames_but_not_v2_3() {
+        let v4 = [id3_frame(b"TPE1", 4, b"\x03Simon\0Garfunkel")];
+        let tags = read_audio_tags(&id3_file("v24-multi", 4, &v4, &[])).unwrap();
+        assert_eq!(tags.raw.all("TPE1"), ["Simon", "Garfunkel"]);
+
+        let v3 = [id3_frame(b"TPE1", 3, b"\x03Simon/Garfunkel")];
+        let tags = read_audio_tags(&id3_file("v23-slash", 3, &v3, &[])).unwrap();
+        assert_eq!(tags.raw.all("TPE1"), ["Simon/Garfunkel"]);
+        assert_eq!(tags.artist.as_deref(), Some("Simon/Garfunkel"));
+    }
+
+    #[test]
+    fn reads_an_apev2_tag_after_the_mp3_audio() {
+        let ape = crate::tag_bag::tests::apev2_tag(&[("REPLAYGAIN_TRACK_GAIN", "-4.00 dB")]);
+        let frames = [id3_frame(b"TIT2", 3, b"\x03Song")];
+        let tags = read_audio_tags(&id3_file("ape", 3, &frames, &ape)).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("Song"));
+        assert_eq!(tags.raw.first("REPLAYGAIN_TRACK_GAIN"), Some("-4.00 dB"));
+
+        // No ID3v2 at all: the APEv2 values are still read.
+        let mut bare = vec![0xff_u8, 0xfb, 0x90, 0x00];
+        bare.extend_from_slice(&[0; 64]);
+        bare.extend_from_slice(&ape);
+        let path = temp_dir("ape-only").join("t.mp3");
+        fs::write(&path, &bare).unwrap();
+        let tags = read_audio_tags(&path).unwrap();
+        assert!(tags.title.is_none());
+        assert_eq!(tags.raw.first("REPLAYGAIN_TRACK_GAIN"), Some("-4.00 dB"));
+    }
+
+    #[test]
+    fn keeps_repeated_vorbis_keys_in_order() {
+        let comments = [
+            "ARTIST=Simon",
+            "artist=Garfunkel",
+            "REPLAYGAIN_TRACK_GAIN=-3.5 dB",
+            "EMPTY=",
+        ];
+        let mut block = Vec::new();
+        block.extend_from_slice(&0_u32.to_le_bytes());
+        block.extend_from_slice(&(comments.len() as u32).to_le_bytes());
+        for comment in comments {
+            block.extend_from_slice(&(comment.len() as u32).to_le_bytes());
+            block.extend_from_slice(comment.as_bytes());
+        }
+        let tags = parse_vorbis_comments(&block);
+        assert_eq!(tags.artist.as_deref(), Some("Simon"));
+        assert_eq!(tags.raw.all("ARTIST"), ["Simon", "Garfunkel"]);
+        assert_eq!(tags.raw.first("REPLAYGAIN_TRACK_GAIN"), Some("-3.5 dB"));
+        assert!(tags.raw.first("EMPTY").is_none());
+    }
+
+    #[test]
+    fn reads_mp4_freeform_atoms() {
+        let fullbox = |kind: &[u8; 4], text: &str| {
+            let mut payload = vec![0_u8; 4];
+            payload.extend_from_slice(text.as_bytes());
+            mp4_atom(kind, &payload)
+        };
+        let freeform = [
+            fullbox(b"mean", "com.apple.iTunes"),
+            fullbox(b"name", "replaygain_track_gain"),
+            mp4_data_atom(b"-8.01 dB"),
+        ]
+        .concat();
+        let no_name = [fullbox(b"mean", "com.apple.iTunes"), mp4_data_atom(b"x")].concat();
+        let ilst = mp4_atom(
+            b"ilst",
+            &[
+                mp4_atom(b"\xa9nam", &mp4_data_atom(b"MP4 Song")),
+                mp4_atom(b"----", &freeform),
+                mp4_atom(b"----", &no_name),
+            ]
+            .concat(),
+        );
+        let mut meta = vec![0_u8; 4];
+        meta.extend_from_slice(&ilst);
+        let moov = mp4_atom(b"moov", &mp4_atom(b"udta", &mp4_atom(b"meta", &meta)));
+        let path = temp_dir("mp4-freeform").join("t.m4a");
+        fs::write(&path, &moov).unwrap();
+
+        let tags = read_mp4_tags(&path).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("MP4 Song"));
+        assert_eq!(
+            tags.raw
+                .first("----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"),
+            Some("-8.01 dB")
+        );
+        assert_eq!(tags.raw.len(), 1);
+    }
 
     fn build_post_scan_state(
         db: Arc<Mutex<rusqlite::Connection>>,

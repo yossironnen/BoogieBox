@@ -1132,3 +1132,12 @@ export interface LogLinesPage {
   truncated: boolean;
 }
 
+/** Library-wide loudness data progress (admin). */
+export interface LoudnessStatus {
+  tagged: number;
+  measured: number;
+  remaining: number;
+  failed: number;
+  enabled: boolean;
+  running: boolean;
+}

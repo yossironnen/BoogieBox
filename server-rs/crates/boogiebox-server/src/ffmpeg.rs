@@ -382,6 +382,39 @@ fn estimate_bpm_from_samples(
 ///
 /// Uses `std::process::Command` (anonymous Windows pipes, no IOCP) to avoid
 /// a compatibility issue with FFmpeg 8.x's async muxer task writing to
+/// Static levelling gain on a transcode (wip/loudness-levelling-plan.md §8). Positive gain gets a
+/// limiter at about −1.5 dBFS so it cannot clip; negative gain is a plain volume change.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LoudnessFilter {
+    /// Leave the audio as it is.
+    #[default]
+    None,
+    /// Apply this many dB.
+    StaticDb(f64),
+}
+
+impl LoudnessFilter {
+    /// A filter for `db`, or `None` when it is too small to matter.
+    pub fn from_db(db: f64) -> Self {
+        if db.is_finite() && db.abs() >= 0.05 {
+            LoudnessFilter::StaticDb(db)
+        } else {
+            LoudnessFilter::None
+        }
+    }
+
+    /// The `-af` value, if any.
+    pub fn filter_arg(self) -> Option<String> {
+        match self {
+            LoudnessFilter::None => None,
+            LoudnessFilter::StaticDb(db) if db > 0.0 => {
+                Some(format!("volume={db:.2}dB,alimiter=limit=0.84:level=false"))
+            }
+            LoudnessFilter::StaticDb(db) => Some(format!("volume={db:.2}dB")),
+        }
+    }
+}
+
 /// Tokio's IOCP-backed named pipes, which caused EINVAL after ~1 KB.
 ///
 /// Returns the child process with stdout and stderr piped.
@@ -391,7 +424,7 @@ pub fn spawn_transcode(
     file_path: &Path,
     seek_seconds: f64,
     bitrate: u32,
-    replay_gain: bool,
+    loudness: LoudnessFilter,
 ) -> std::io::Result<std::process::Child> {
     let mut cmd = std::process::Command::new(ffmpeg); // nosemgrep: boogiebox-rust-dynamic-command
 
@@ -403,8 +436,8 @@ pub fn spawn_transcode(
     cmd.arg(file_path);
     // -map 0:a: skip attached_pic / cover-art streams that -vn misses in 8.x
     cmd.args(["-map", "0:a"]);
-    if replay_gain {
-        cmd.args(["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]);
+    if let Some(filter) = loudness.filter_arg() {
+        cmd.arg("-af").arg(filter);
     }
     cmd.args([
         "-acodec",
@@ -464,7 +497,7 @@ impl StreamCodec {
 pub fn encode_args(
     codec: StreamCodec,
     bitrate: u32,
-    replay_gain: bool,
+    loudness: LoudnessFilter,
     seek_seconds: f64,
 ) -> Vec<String> {
     let mut args: Vec<String> = ["-loglevel", "error", "-hide_banner"]
@@ -479,8 +512,8 @@ pub fn encode_args(
             .iter()
             .map(|a| a.to_string()),
     );
-    if replay_gain {
-        args.extend(["-af".into(), "loudnorm=I=-14:TP=-1.5:LRA=11".into()]);
+    if let Some(filter) = loudness.filter_arg() {
+        args.extend(["-af".into(), filter]);
     }
     let (encoder, rate, format) = match codec {
         StreamCodec::Opus => ("libopus", "48000", "ogg"),
@@ -510,11 +543,11 @@ pub fn spawn_encode(
     file_path: &Path,
     codec: StreamCodec,
     bitrate: u32,
-    replay_gain: bool,
+    loudness: LoudnessFilter,
     seek_seconds: f64,
 ) -> std::io::Result<std::process::Child> {
     let mut cmd = std::process::Command::new(ffmpeg); // nosemgrep: boogiebox-rust-dynamic-command
-    for arg in encode_args(codec, bitrate, replay_gain, seek_seconds) {
+    for arg in encode_args(codec, bitrate, loudness, seek_seconds) {
         if arg.is_empty() {
             cmd.arg(file_path);
         } else {
@@ -551,7 +584,13 @@ pub fn encoder_listed(listing: &str, name: &str) -> bool {
 
 /// Builds the ffmpeg arguments for raw little-endian PCM output (no container; the caller writes the WAV
 /// header so byte offsets stay exact).
-pub fn pcm_args(seek_seconds: f64, sample_rate: u32, channels: u16, bits: u16) -> Vec<String> {
+pub fn pcm_args(
+    seek_seconds: f64,
+    sample_rate: u32,
+    channels: u16,
+    bits: u16,
+    loudness: LoudnessFilter,
+) -> Vec<String> {
     let (codec, format) = if bits >= 24 {
         ("pcm_s24le", "s24le")
     } else {
@@ -563,6 +602,9 @@ pub fn pcm_args(seek_seconds: f64, sample_rate: u32, channels: u16, bits: u16) -
     }
     args.push("-i".into());
     args.push(String::new()); // placeholder for the input path (kept as OsStr by the caller)
+    if let Some(filter) = loudness.filter_arg() {
+        args.extend(["-af".into(), filter]);
+    }
     for a in ["-map", "0:a", "-vn", "-acodec", codec, "-ar"] {
         args.push(a.to_string());
     }
@@ -583,9 +625,10 @@ pub fn spawn_pcm(
     sample_rate: u32,
     channels: u16,
     bits: u16,
+    loudness: LoudnessFilter,
 ) -> std::io::Result<std::process::Child> {
     let mut cmd = std::process::Command::new(ffmpeg); // nosemgrep: boogiebox-rust-dynamic-command
-    for arg in pcm_args(seek_seconds, sample_rate, channels, bits) {
+    for arg in pcm_args(seek_seconds, sample_rate, channels, bits, loudness) {
         if arg.is_empty() {
             cmd.arg(file_path);
         } else {
@@ -598,13 +641,67 @@ pub fn spawn_pcm(
         .spawn()
 }
 
+/// Measures a file's loudness with FFmpeg's `ebur128` filter (true peak, mono counted as dual mono,
+/// as listeners hear it on two speakers). `timeout` kills a stuck decode.
+pub async fn measure_loudness(
+    ffmpeg: &Path,
+    file_path: &Path,
+    timeout: std::time::Duration,
+) -> Result<boogiebox_db::loudness::Measurement, String> {
+    let child = tokio::process::Command::new(ffmpeg) // nosemgrep: boogiebox-rust-dynamic-command
+        .args(["-nostats", "-hide_banner", "-nostdin", "-i"])
+        .arg(file_path)
+        .args([
+            "-map",
+            "0:a:0",
+            "-af",
+            "ebur128=peak=true:dualmono=true:framelog=verbose",
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| "ffmpeg timed out".to_string())?
+        .map_err(|e| format!("ffmpeg failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("ffmpeg exited with status {}", output.status));
+    }
+    parse_ebur128_summary(&String::from_utf8_lossy(&output.stderr))
+        .ok_or_else(|| "no ebur128 summary in the ffmpeg output".to_string())
+}
+
+/// Reads the `Summary:` block `ebur128` prints at the end. Integrated loudness at the −70 LUFS
+/// floor, and `-inf` peaks, mean digital silence and come back as `None`.
+pub fn parse_ebur128_summary(stderr: &str) -> Option<boogiebox_db::loudness::Measurement> {
+    let summary = &stderr[stderr.rfind("Summary:")?..];
+    let value = |label: &str| {
+        summary.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix(label)?;
+            rest.split_whitespace().next()?.parse::<f64>().ok()
+        })
+    };
+    let integrated = value("I:")?;
+    Some(boogiebox_db::loudness::Measurement {
+        integrated_lufs: (integrated.is_finite() && integrated > -69.5).then_some(integrated),
+        true_peak_dbtp: value("Peak:").filter(|peak| peak.is_finite()),
+        lra: value("LRA:").filter(|lra| lra.is_finite()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn pcm_args_select_codec_and_seek() {
-        let a = pcm_args(0.0, 44_100, 2, 16);
+        let a = pcm_args(0.0, 44_100, 2, 16, LoudnessFilter::None);
         assert!(!a.contains(&"-ss".to_string()));
         assert!(a.contains(&"pcm_s16le".to_string()) && a.contains(&"s16le".to_string()));
         assert_eq!(
@@ -612,25 +709,41 @@ mod tests {
             1,
             "one input placeholder"
         );
-        let b = pcm_args(12.5, 96_000, 2, 24);
+        let b = pcm_args(12.5, 96_000, 2, 24, LoudnessFilter::StaticDb(-4.0));
         assert!(b.windows(2).any(|w| w[0] == "-ss" && w[1] == "12.500000"));
         assert!(b.contains(&"pcm_s24le".to_string()) && b.contains(&"96000".to_string()));
+        assert!(b
+            .windows(2)
+            .any(|w| w[0] == "-af" && w[1] == "volume=-4.00dB"));
+        assert!(!a.contains(&"-af".to_string()));
+    }
+
+    #[test]
+    fn loudness_filter_limits_only_positive_gain() {
+        assert_eq!(LoudnessFilter::from_db(0.02), LoudnessFilter::None);
+        assert_eq!(LoudnessFilter::from_db(f64::NAN), LoudnessFilter::None);
+        assert_eq!(LoudnessFilter::None.filter_arg(), None);
+        assert_eq!(
+            LoudnessFilter::from_db(-7.5).filter_arg().as_deref(),
+            Some("volume=-7.50dB")
+        );
+        assert_eq!(
+            LoudnessFilter::from_db(3.0).filter_arg().as_deref(),
+            Some("volume=3.00dB,alimiter=limit=0.84:level=false")
+        );
     }
 
     #[test]
     fn encode_args_seek_the_input() {
-        let a = encode_args(StreamCodec::Opus, 128, false, 0.0);
+        let a = encode_args(StreamCodec::Opus, 128, LoudnessFilter::None, 0.0);
         assert!(!a.contains(&"-ss".to_string()));
         assert_eq!(a.iter().filter(|s| s.is_empty()).count(), 1);
-        let b = encode_args(StreamCodec::Aac, 192, true, 30.0);
+        let b = encode_args(StreamCodec::Aac, 192, LoudnessFilter::StaticDb(-2.0), 30.0);
         let ss = b.iter().position(|s| s == "-ss").expect("seek");
         let input = b.iter().position(|s| s == "-i").expect("input");
         assert_eq!(b[ss + 1], "30.000");
         assert!(ss < input, "-ss before -i seeks the input, not the output");
-        assert!(
-            b.contains(&"adts".to_string())
-                && b.contains(&"loudnorm=I=-14:TP=-1.5:LRA=11".to_string())
-        );
+        assert!(b.contains(&"adts".to_string()) && b.contains(&"volume=-2.00dB".to_string()));
     }
 
     #[test]
@@ -787,5 +900,24 @@ mod tests {
             bpm < 90.0,
             "genuine slow tempo should stay uncorrected, got {bpm}"
         );
+    }
+
+    #[test]
+    fn parses_the_ebur128_summary() {
+        let stderr = "[Parsed_ebur128_0 @ 0x1] t: 4.9 TARGET:-23 LUFS M: -27.8 S: -27.8 I: -27.8 LUFS\n\
+[Parsed_ebur128_0 @ 0x1] Summary:\n\n  Integrated loudness:\n    I:         -9.4 LUFS\n    Threshold: -19.5 LUFS\n\n\
+  Loudness range:\n    LRA:         5.2 LU\n    Threshold: -29.6 LUFS\n\n  True peak:\n    Peak:        0.6 dBFS\n";
+        let m = parse_ebur128_summary(stderr).unwrap();
+        assert_eq!(m.integrated_lufs, Some(-9.4));
+        assert_eq!(m.lra, Some(5.2));
+        assert_eq!(m.true_peak_dbtp, Some(0.6));
+
+        let silent =
+            "Summary:\n  I:         -70.0 LUFS\n  LRA:         0.0 LU\n  Peak:       -inf dBFS\n";
+        let m = parse_ebur128_summary(silent).unwrap();
+        assert_eq!(m.integrated_lufs, None);
+        assert_eq!(m.true_peak_dbtp, None);
+        assert!(parse_ebur128_summary("no summary here").is_none());
+        assert!(parse_ebur128_summary("Summary:\n  LRA: 1 LU\n").is_none());
     }
 }

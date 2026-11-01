@@ -1246,6 +1246,8 @@ pub struct Annotations {
     pub starred: HashMap<String, String>,
     pub played: HashMap<String, String>,
     pub plays: HashMap<String, i64>,
+    /// Tracks only: levelling values, sent as OpenSubsonic `replayGain`.
+    pub loudness: HashMap<String, crate::loudness::TrackLoudness>,
 }
 
 fn collect_pairs<T: rusqlite::types::FromSql>(
@@ -1294,8 +1296,28 @@ pub fn annotations(
     )?;
     let mut played = HashMap::new();
     let mut plays = HashMap::new();
+    let mut loudness = HashMap::new();
     match kind {
         ItemKind::Track => {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT track_id, track_gain_db, track_peak, album_gain_db, album_peak FROM track_loudness
+                 WHERE track_gain_db IS NOT NULL AND track_id IN ({ph})"
+            ))?;
+            let rows = stmt.query_map(params_from_iter(id_values(ids)), |row| {
+                Ok((
+                    text_id(row, 0)?,
+                    crate::loudness::TrackLoudness {
+                        track_gain_db: row.get(1)?,
+                        track_peak: row.get(2)?,
+                        album_gain_db: row.get(3)?,
+                        album_peak: row.get(4)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (id, values) = row?;
+                loudness.insert(id, values);
+            }
             let mut stmt = conn.prepare(&format!(
                 "SELECT track_id, play_count, last_played_at FROM user_track_stats
                  WHERE user_id = ? AND track_id IN ({ph})"
@@ -1333,6 +1355,7 @@ pub fn annotations(
         starred,
         played,
         plays,
+        loudness,
     })
 }
 

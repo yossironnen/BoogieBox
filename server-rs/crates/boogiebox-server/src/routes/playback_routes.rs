@@ -129,31 +129,24 @@ async fn stream_track_handler(
 
     // Transcode path
     if !skip_transcode && needs_transcode {
-        let (quality, replay_gain) = {
+        // The web player levels in the browser (wip/loudness-levelling-plan.md D4), so this
+        // transcode never adds gain of its own.
+        let quality = {
             let db = match get_db(&state) {
                 Some(d) => d,
                 None => return setup_required_response().into_response(),
             };
             tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                let quality = conn
-                    .query_row(
-                        "SELECT value FROM settings WHERE key='transcodeQuality'",
-                        [],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .unwrap_or_else(|_| "low".into());
-                let rg = conn
-                    .query_row(
-                        "SELECT value FROM settings WHERE key='replayGainEnabled'",
-                        [],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .unwrap_or_else(|_| "false".into());
-                (quality, rg == "true")
+                conn.query_row(
+                    "SELECT value FROM settings WHERE key='transcodeQuality'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_else(|_| "low".into())
             })
             .await
-            .unwrap_or_else(|_| ("low".into(), false))
+            .unwrap_or_else(|_| "low".into())
         };
         let kbps = ffmpeg::bitrate_for_quality(&quality);
         let resp = media_serve::serve_mp3_transcode(media_serve::Mp3Transcode {
@@ -162,7 +155,7 @@ async fn stream_track_handler(
             range: range_header.as_deref(),
             bitrate_kbps: kbps,
             start_seconds: 0.0,
-            replay_gain,
+            loudness: ffmpeg::LoudnessFilter::None,
             head_only: false,
             log_id: &id,
             log_ext: &track_ext,

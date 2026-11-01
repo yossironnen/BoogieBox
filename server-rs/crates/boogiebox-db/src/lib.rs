@@ -5,6 +5,7 @@ pub mod artwork;
 pub mod backup;
 pub mod favourites;
 pub mod jobs;
+pub mod loudness;
 pub mod maintenance;
 pub mod music;
 pub mod playback;
@@ -841,6 +842,10 @@ fn tracked_migrations() -> Vec<Migration> {
         Migration {
             id: "2026-10-30-remove-auto-dj-crossfade",
             apply: remove_auto_dj_crossfade_overrides,
+        },
+        Migration {
+            id: "2026-11-01-track-loudness",
+            apply: loudness::ensure_loudness_schema,
         },
     ]
 }

@@ -168,6 +168,7 @@ pub fn song_node(song: &SubsonicSong, ann: &Annotations) -> Node {
         .opt("displayArtist", song.artist.clone())
         .opt("displayAlbumArtist", song.album_artist.clone())
         .list("genres", genre_list(&genres))
+        .opt_object(ann.loudness.get(&song.id).map(replay_gain_node))
         .list(
             "artists",
             id_name(song.artist_id.as_deref(), song.artist.as_deref()),
@@ -179,6 +180,17 @@ pub fn song_node(song: &SubsonicSong, ann: &Annotations) -> Node {
                 song.album_artist.as_deref(),
             ),
         )
+}
+
+/// OpenSubsonic `replayGain` for a song. Gains are relative to the ReplayGain 2.0 reference
+/// (−18 LUFS), so `baseGain` is 0.
+fn replay_gain_node(values: &boogiebox_db::loudness::TrackLoudness) -> Node {
+    Node::new("replayGain")
+        .attr("trackGain", values.track_gain_db)
+        .opt("albumGain", values.album_gain_db)
+        .opt("trackPeak", values.track_peak)
+        .opt("albumPeak", values.album_peak)
+        .attr("baseGain", 0.0)
 }
 
 /// Id of the per-user read-only "BoogieMix" playlist.
@@ -437,6 +449,35 @@ mod tests {
 
     fn attr<'a>(node: &'a Node, name: &str) -> Option<&'a super::super::response::Scalar> {
         node.attrs.iter().find(|(k, _)| *k == name).map(|(_, v)| v)
+    }
+
+    #[test]
+    fn song_node_sends_replay_gain_only_when_known() {
+        let mut ann = Annotations::default();
+        assert!(song_node(&song(), &ann)
+            .objects
+            .iter()
+            .all(|o| o.name != "replayGain"));
+        ann.loudness.insert(
+            "t1".into(),
+            boogiebox_db::loudness::TrackLoudness {
+                track_gain_db: -7.5,
+                track_peak: Some(0.98),
+                album_gain_db: None,
+                album_peak: None,
+            },
+        );
+        let node = song_node(&song(), &ann);
+        let rg = node
+            .objects
+            .iter()
+            .find(|o| o.name == "replayGain")
+            .expect("replayGain");
+        use super::super::response::Scalar::*;
+        assert_eq!(attr(rg, "trackGain"), Some(&Float(-7.5)));
+        assert_eq!(attr(rg, "trackPeak"), Some(&Float(0.98)));
+        assert_eq!(attr(rg, "baseGain"), Some(&Float(0.0)));
+        assert_eq!(attr(rg, "albumGain"), None);
     }
 
     #[test]
