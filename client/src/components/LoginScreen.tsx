@@ -2,7 +2,7 @@
  * Defines the Login Screen React component and related UI helpers.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { hybridControlStyles, hybridEntryStyles } from '../hybridPreview';
 import type { AuthUser, LoginUser } from '../types';
@@ -32,7 +32,14 @@ function UserAvatar({ username, size = 64 }: { username: string; size?: number }
 export default function LoginScreen({ onLogin }: Props) {
   const [users, setUsers] = useState<LoginUser[]>([]);
   const [selected, setSelected] = useState<LoginUser | null>(null);
-  const [pin, setPin] = useState<string[]>(['', '', '', '']);
+  const [pin, setPinState] = useState<string[]>(['', '', '', '']);
+  // The digits as typed so far. A fast typist (or a password manager) can fill the next box before React
+  // re-renders, so each keystroke builds on this, not on the `pin` captured by the last render.
+  const pinValueRef = useRef<string[]>(['', '', '', '']);
+  const setPin = useCallback((next: string[]) => {
+    pinValueRef.current = next;
+    setPinState(next);
+  }, []);
   const [stayLoggedIn, setStayLoggedIn] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -70,7 +77,7 @@ export default function LoginScreen({ onLogin }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [onLogin, pinRefs, stayLoggedIn]);
+  }, [onLogin, pinRefs, setPin, stayLoggedIn]);
 
   const submitPin = async (pinValue: string) => {
     if (!selected) return;
@@ -95,7 +102,7 @@ export default function LoginScreen({ onLogin }: Props) {
 
   const handlePinChange = (index: number, value: string) => {
     const digit = value.replace(/\D/g, '').slice(-1);
-    const next = [...pin];
+    const next = [...pinValueRef.current];
     next[index] = digit;
     setPin(next);
     setError('');

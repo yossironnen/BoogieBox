@@ -15,7 +15,8 @@ async function signIn(browser: Browser, username: string, pin?: string): Promise
   await page.getByRole('button', { name: `Sign in as ${username}` }).click()
   if (pin !== undefined) {
     for (const [index, digit] of [...pin].entries()) {
-      // The fourth digit submits the form on its own.
+      // The fourth digit submits the form on its own. Typed back to back on purpose: the login screen must keep
+      // every digit even when the next one arrives before it re-renders.
       await page.getByRole('textbox', { name: `PIN digit ${index + 1}` }).fill(digit)
     }
   }

@@ -252,7 +252,11 @@ test('volume levelling settings: mode chips, pre-amp and the admin server card s
     await expect.poll(async () => (await userSettings()).loudnessPreampDb).toBe('2.5')
 
     await openSettingsTab(page, 'Advanced')
+    await page.getByRole('navigation', { name: 'Advanced settings groups' }).getByRole('link', { name: 'Server levelling' }).click()
     const server = page.getByRole('region', { name: 'Server levelling' })
+    await expect(server).toBeInViewport()
+    // The whole Advanced tab is admin-only, so the card carries no "Admin" badge.
+    await expect(server.getByText('Admin', { exact: true })).toHaveCount(0)
     await server.getByLabel('Play On speakers').selectOption('track')
     await expect(server).toContainText('Saved')
     const shared = await (await page.request.get('/api/playback-settings')).json()

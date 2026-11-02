@@ -216,7 +216,7 @@ describe('SidebarStatusPanel', () => {
       ],
       downloads: [{ user: 'bob', client: 'Amperfy' }],
       mixJobs: [{ user: 'carol' }],
-      serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 },
+      serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0, background: [] },
       recent: [],
     } as unknown as ActivitySnapshot;
     render(

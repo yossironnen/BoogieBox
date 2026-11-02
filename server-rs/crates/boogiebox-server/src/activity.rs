@@ -762,6 +762,54 @@ pub struct ServerJobs {
     pub post_scan_queued: Vec<(String, i64)>,
     pub deep_analysis_queued: i64,
     pub deep_analysis_running: i64,
+    /// Library passes running right now (`loudness`, `bpm`, `waveforms`).
+    pub background: Vec<BackgroundLaneRow>,
+}
+
+/// A background library pass that is running, with the tracks it still has to do.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundLaneRow {
+    pub lane: String,
+    pub waiting: i64,
+}
+
+/// The background library passes running right now. Each count is read only while its pass runs.
+fn background_lanes(conn: &rusqlite::Connection) -> Vec<BackgroundLaneRow> {
+    let mut lanes = Vec::new();
+    let mut push = |lane: &str, waiting: Option<i64>| {
+        if let Some(waiting) = waiting {
+            lanes.push(BackgroundLaneRow {
+                lane: lane.to_owned(),
+                waiting,
+            });
+        }
+    };
+    if crate::loudness_analysis::is_running() {
+        push(
+            "loudness",
+            boogiebox_db::loudness::loudness_status(conn)
+                .ok()
+                .map(|s| s.remaining),
+        );
+    }
+    if crate::bpm_analysis::is_running() {
+        push(
+            "bpm",
+            boogiebox_db::playback::get_bpm_analysis_status(conn)
+                .ok()
+                .map(|s| s.missing_tracks),
+        );
+    }
+    if crate::waveform_map::is_running() {
+        push(
+            "waveforms",
+            boogiebox_db::playback::get_waveform_map_status(conn)
+                .ok()
+                .map(|s| s.missing_tracks),
+        );
+    }
+    lanes
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -883,6 +931,7 @@ fn read_db(db: &DbPool, mut ids: Vec<String>, pending: Vec<NewActivityEvent>) ->
     let mix_jobs = adb::list_active_mix_jobs(&conn).unwrap_or_default();
     let queues = boogiebox_db::jobs::queue_snapshot(&conn).ok();
     let (deep_queued, deep_running) = adb::deep_analysis_active_counts(&conn).unwrap_or((0, 0));
+    let background = background_lanes(&conn);
     let transcode_limit = boogiebox_db::artwork::get_setting(&conn, "subsonicMaxTranscodes")
         .and_then(|v| v.parse::<u32>().ok())
         .or(Some(3));
@@ -903,6 +952,7 @@ fn read_db(db: &DbPool, mut ids: Vec<String>, pending: Vec<NewActivityEvent>) ->
     let mut server_jobs = ServerJobs {
         deep_analysis_queued: deep_queued,
         deep_analysis_running: deep_running,
+        background,
         ..ServerJobs::default()
     };
     if let Some(q) = queues {
@@ -1247,7 +1297,8 @@ fn assemble(
     users.extend(db.mix_jobs.iter().filter_map(|j| j.user.clone()));
     let server_job_count = db.server_jobs.scans.len()
         + usize::from(!db.server_jobs.post_scan_queued.is_empty())
-        + usize::from(db.server_jobs.deep_analysis_running > 0);
+        + usize::from(db.server_jobs.deep_analysis_running > 0)
+        + db.server_jobs.background.len();
 
     let recent = db
         .recent
@@ -1768,6 +1819,37 @@ mod tests {
         assert!(v.get("generatedAtMs").is_some());
         assert!(v["totals"].get("subsonicTranscodeLimit").is_some());
         assert!(v["serverJobs"].get("postScanQueued").is_some());
+        assert!(v["serverJobs"].get("background").is_some());
         assert!(v.get("mixJobs").is_some());
+    }
+
+    #[test]
+    fn each_running_background_pass_counts_as_a_server_job() {
+        let mut part = db_part();
+        part.server_jobs.background = vec![
+            BackgroundLaneRow {
+                lane: "loudness".into(),
+                waiting: 1234,
+            },
+            BackgroundLaneRow {
+                lane: "bpm".into(),
+                waiting: 50,
+            },
+        ];
+        let snap = assemble(
+            now_ms(),
+            Vec::new(),
+            Live {
+                transfers: Vec::new(),
+                sessions: Vec::new(),
+                web_players: Vec::new(),
+            },
+            Vec::new(),
+            part,
+        );
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(v["totals"]["serverJobs"], 2);
+        assert_eq!(v["serverJobs"]["background"][0]["lane"], "loudness");
+        assert_eq!(v["serverJobs"]["background"][0]["waiting"], 1234);
     }
 }

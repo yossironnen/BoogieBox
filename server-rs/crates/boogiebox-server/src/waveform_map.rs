@@ -11,6 +11,11 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 static WAVEFORM_MAP_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// True while a library waveform batch runs (shown on the Activity page).
+pub fn is_running() -> bool {
+    WAVEFORM_MAP_RUNNING.load(Ordering::SeqCst)
+}
 /// Tracks FFmpeg keeps failing to decode; left alone until the server restarts.
 static FAILURES: LaneFailures = LaneFailures::new("waveform");
 

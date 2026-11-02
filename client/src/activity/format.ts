@@ -2,7 +2,7 @@
 
 import { formatBytes } from '../utils';
 import type {
-  ActiveMixJob, ActivitySource, DeliveryInfo, DownloadRow, PlayingRow, RecentRow, ServerJobs,
+  ActiveMixJob, ActivitySource, BackgroundLaneRow, DeliveryInfo, DownloadRow, PlayingRow, RecentRow, ServerJobs,
 } from './activityTypes';
 
 export { formatBytes };
@@ -108,6 +108,19 @@ export function postScanLabel(jobs: ServerJobs): string | null {
   if (!jobs.postScanQueued.length) return null;
   const names = jobs.postScanQueued.map(([kind]) => POST_SCAN_LABEL[kind] ?? kind.replace(/_/g, ' '));
   return `Queued after scan: ${[...new Set(names)].join(', ')}`;
+}
+
+const BACKGROUND_LANE: Record<string, { name: string; state: string }> = {
+  loudness: { name: 'Volume levelling', state: 'measuring' },
+  bpm: { name: 'BPM analysis', state: 'running' },
+  waveforms: { name: 'Waveforms', state: 'running' },
+};
+
+/** `Volume levelling · measuring, 1,234 tracks waiting`. */
+export function backgroundLaneLabel(row: BackgroundLaneRow): string {
+  const lane = BACKGROUND_LANE[row.lane] ?? { name: row.lane, state: 'running' };
+  const waiting = `${row.waiting.toLocaleString()} ${row.waiting === 1 ? 'track' : 'tracks'} waiting`;
+  return `${lane.name} · ${lane.state}, ${waiting}`;
 }
 
 /** One "Recent" line. */

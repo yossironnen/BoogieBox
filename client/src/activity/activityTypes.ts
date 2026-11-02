@@ -85,6 +85,13 @@ export interface ServerJobs {
   postScanQueued: Array<[string, number]>;
   deepAnalysisQueued: number;
   deepAnalysisRunning: number;
+  /** Library passes running right now, with the tracks each still has to do. */
+  background: BackgroundLaneRow[];
+}
+
+export interface BackgroundLaneRow {
+  lane: 'loudness' | 'bpm' | 'waveforms' | string;
+  waiting: number;
 }
 
 export type RecentKind =

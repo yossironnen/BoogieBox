@@ -46,6 +46,7 @@ function snapshot(over: Partial<ActivitySnapshot> = {}): ActivitySnapshot {
       postScanQueued: [['artwork', 4]],
       deepAnalysisQueued: 0,
       deepAnalysisRunning: 0,
+      background: [{ lane: 'loudness', waiting: 1234 }, { lane: 'bpm', waiting: 1 }],
     },
     recent: [
       { atMs: NOW - 120_000, kind: 'play', user: 'alice', source: 'subsonic', client: 'Amperfy', itemId: 't1', title: 'Opening', count: null, bytes: null },
@@ -91,6 +92,10 @@ describe('ActivityView', () => {
 
     expect(screen.getByText('Library scan · Music')).toBeInTheDocument();
     expect(screen.getByText('Queued after scan: artwork')).toBeInTheDocument();
+    expect(screen.getAllByTestId('activity-background-lane').map((row) => row.textContent)).toEqual([
+      'Volume levelling · measuring, 1,234 tracks waiting',
+      'BPM analysis · running, 1 track waiting',
+    ]);
     expect(screen.getByText('alice played Opening')).toBeInTheDocument();
     expect(screen.getByText('Amperfy · 2 min ago')).toBeInTheDocument();
     expect(screen.getByText('Scan of Music finished')).toBeInTheDocument();
@@ -100,7 +105,7 @@ describe('ActivityView', () => {
 
   it('spins a ring around the icon of busy sections only', () => {
     const { container } = render(<ActivityView feed={feed(snapshot({
-      serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 },
+      serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0, background: [] },
       totals: { ...snapshot().totals, serverJobs: 0 },
     }))} />);
     const frames = [...container.querySelectorAll('[data-busy]')];
@@ -125,7 +130,7 @@ describe('ActivityView', () => {
   it('shows empty states and "All quiet."', () => {
     const quiet = snapshot({
       playing: [], downloads: [], mixJobs: [], recent: [],
-      serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 },
+      serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0, background: [] },
     });
     const { rerender } = render(<ActivityView feed={feed(quiet)} />);
     expect(screen.getByText('All quiet.')).toBeInTheDocument();

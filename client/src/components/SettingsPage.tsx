@@ -2036,6 +2036,7 @@ export default function SettingsPage({
             <nav aria-label="Advanced settings groups" style={hybridSettingsStyles.advancedNav}>
               {[
                 ['advanced-playback', 'Playback'],
+                ['advanced-levelling', 'Server levelling'],
                 ['advanced-transitions', 'Transitions'],
                 ['advanced-boogiemix', 'BoogieMix'],
                 ['advanced-waveforms', 'Waveforms'],
@@ -2125,7 +2126,7 @@ export default function SettingsPage({
             </div>
           </div>
 
-          <div style={{ marginBottom: 12 }}>
+          <div id="advanced-levelling" style={{ marginBottom: 12 }}>
             <ServerLevellingCard />
           </div>
 

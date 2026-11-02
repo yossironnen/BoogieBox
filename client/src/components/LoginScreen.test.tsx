@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api';
 import LoginScreen from './LoginScreen';
@@ -62,6 +62,29 @@ describe('LoginScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Back to users/ }));
     expect(screen.getByText('Select a user')).toBeInTheDocument();
+  });
+
+  it('keeps every digit when the PIN is typed faster than the screen re-renders', async () => {
+    vi.mocked(api.auth.login)
+      .mockRejectedValueOnce(new Error('PIN required'))
+      .mockResolvedValueOnce({ user: { id: 'user-2', username: 'bob', role: 'user' } as any });
+    const onLogin = vi.fn();
+    render(<LoginScreen onLogin={onLogin} />);
+    fireEvent.click(await screen.findByRole('button', { name: /bob/i }));
+    await screen.findByRole('heading', { name: 'Enter your PIN' });
+
+    // A fast typist or a password manager fills the next box before React re-renders: all four change
+    // handlers then come from the same render. Take them from one render and call them back to back.
+    const handlers = ['4', '8', '2', '6'].map((_, index) => {
+      const box = screen.getByLabelText(`PIN digit ${index + 1}`);
+      const propsKey = Object.keys(box).find((key) => key.startsWith('__reactProps$')) as string;
+      return (box as unknown as Record<string, { onChange: (event: unknown) => void }>)[propsKey].onChange;
+    });
+    act(() => {
+      ['4', '8', '2', '6'].forEach((digit, index) => handlers[index]({ target: { value: digit } }));
+    });
+    await waitFor(() => expect(api.auth.login).toHaveBeenLastCalledWith('user-2', '4826', false));
+    await waitFor(() => expect(onLogin).toHaveBeenCalled());
   });
 
   it('keeps the user chooser usable when user discovery fails', async () => {

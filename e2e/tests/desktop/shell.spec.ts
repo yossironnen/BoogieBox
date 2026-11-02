@@ -33,6 +33,13 @@ for (const entry of VIEWS) {
   })
 }
 
+test('Home has the BoogieBox command bar above its widgets', async ({ page }) => {
+  await goTo(page, 'Home')
+  const bar = main(page).locator('[data-command-bar="boogiebox"]')
+  await expect(bar).toBeVisible()
+  await expect(bar).toContainText('BoogieBox')
+})
+
 for (const tab of ['User Settings', 'Libraries', 'Auto-Scan', 'Integrations', 'Advanced', 'Users', 'About']) {
   test(`Settings → ${tab} renders`, async ({ page }) => {
     await openSettingsTab(page, tab)

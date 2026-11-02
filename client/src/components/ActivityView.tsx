@@ -22,7 +22,7 @@ import type {
   ActiveMixJob, ActivitySnapshot, ActivitySource, DownloadRow, PlayingRow, RecentRow, ScanRow,
 } from '../activity/activityTypes';
 import {
-  deliveryLabel, downloadDetail, formatRate, formatRelative, mixStepLabel, mixStyleLabel, postScanLabel,
+  backgroundLaneLabel, deliveryLabel, downloadDetail, formatRate, formatRelative, mixStepLabel, mixStyleLabel, postScanLabel,
   progressLabel, recentMeta, recentText, sourceLabel,
 } from '../activity/format';
 
@@ -400,7 +400,8 @@ function Dashboard({ snapshot, nowMs, show, onCancel }: {
   const deepLine = serverJobs.deepAnalysisRunning + serverJobs.deepAnalysisQueued > 0
     ? `Deep analysis · ${serverJobs.deepAnalysisRunning} running, ${serverJobs.deepAnalysisQueued} queued`
     : null;
-  const hasJobs = serverJobs.scans.length > 0 || Boolean(queued) || Boolean(deepLine);
+  const background = serverJobs.background ?? [];
+  const hasJobs = serverJobs.scans.length > 0 || Boolean(queued) || Boolean(deepLine) || background.length > 0;
   const allQuiet = !snapshot.playing.length && !snapshot.downloads.length && !snapshot.mixJobs.length && !hasJobs;
   const transcodeTitle = totals.subsonicTranscodeLimit != null
     ? `${totals.transcodes} transcodes running · Subsonic limit ${totals.subsonicTranscodeLimit}`
@@ -464,6 +465,9 @@ function Dashboard({ snapshot, nowMs, show, onCancel }: {
                   )}
                   {queued && <p style={S.note}>{queued}</p>}
                   {deepLine && <p style={S.note}>{deepLine}</p>}
+                  {background.map((row) => (
+                    <p key={row.lane} style={S.note} data-testid="activity-background-lane">{backgroundLaneLabel(row)}</p>
+                  ))}
                 </>
               ) : <Empty text="No server jobs running" />}
             </ActivityCard>

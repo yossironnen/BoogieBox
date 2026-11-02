@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  deliveryLabel, downloadDetail, formatClock, formatRate, formatRelative, mixStepLabel, postScanLabel,
+  deliveryLabel, downloadDetail, formatClock, formatRate, formatRelative, mixStepLabel, backgroundLaneLabel, postScanLabel,
   progressLabel, recentMeta, recentText, sourceLabel,
 } from './format';
 import { activeCount, type ActiveMixJob, type DownloadRow, type PlayingRow, type RecentRow } from './activityTypes';
@@ -63,9 +63,11 @@ describe('activity formatting', () => {
     const job = { status: 'rendering', step: 'rendering transitions', progressPercent: 64 } as ActiveMixJob;
     expect(mixStepLabel(job)).toBe('Rendering transitions · 64%');
     expect(mixStepLabel({ ...job, status: 'pending', step: 'queued', progressPercent: 0 })).toBe('Queued · 0%');
-    expect(postScanLabel({ scans: [], postScanQueued: [['artwork', 3], ['waveforms', 2], ['bpm', 1]], deepAnalysisQueued: 0, deepAnalysisRunning: 0 }))
+    expect(postScanLabel({ scans: [], postScanQueued: [['artwork', 3], ['waveforms', 2], ['bpm', 1]], deepAnalysisQueued: 0, deepAnalysisRunning: 0, background: [] }))
       .toBe('Queued after scan: artwork, waveforms, BPM');
-    expect(postScanLabel({ scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 })).toBeNull();
+    expect(postScanLabel({ scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0, background: [] })).toBeNull();
+    expect(backgroundLaneLabel({ lane: 'waveforms', waiting: 2500 })).toBe('Waveforms · running, 2,500 tracks waiting');
+    expect(backgroundLaneLabel({ lane: 'loudness', waiting: 1 })).toBe('Volume levelling · measuring, 1 track waiting');
   });
 
   it('words recent events', () => {

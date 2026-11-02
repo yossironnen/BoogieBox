@@ -241,7 +241,6 @@ export function ServerLevellingCard() {
       <div style={styles.titleRow}>
         <StatIcon><rect x="2" y="3" width="20" height="8" rx="2" /><rect x="2" y="13" width="20" height="8" rx="2" /><path d="M6 7h.01M6 17h.01" /></StatIcon>
         <div id="server-levelling-title" style={hybridSettingsStyles.sectionTitle}>Server levelling</div>
-        <span style={styles.badge}>Admin</span>
       </div>
 
       <div style={styles.twoColumns}>
@@ -323,13 +322,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tileTitle: { fontSize: 13, fontWeight: 600, color: 'var(--text)' },
   tileText: { fontSize: 12, color: 'var(--text-muted)' },
-  badge: {
-    fontSize: 11,
-    padding: '2px 8px',
-    borderRadius: 10,
-    border: '1px solid var(--border)',
-    color: 'var(--text-muted)',
-  },
   twoColumns: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16, marginTop: 8 },
   field: { display: 'flex', flexDirection: 'column', gap: 6 },
   fieldLabel: { fontSize: 14, fontWeight: 600, color: 'var(--text)' },

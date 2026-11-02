@@ -27,7 +27,7 @@ const { apiMock, getStreamDirectMock, openContextMenuMock, kebabPropsMock } = vi
         playing: [],
         downloads: [],
         mixJobs: [],
-        serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0 },
+        serverJobs: { scans: [], postScanQueued: [], deepAnalysisQueued: 0, deepAnalysisRunning: 0, background: [] },
         recent: [],
       }),
       eventsUrl: () => '/api/activity/events',
