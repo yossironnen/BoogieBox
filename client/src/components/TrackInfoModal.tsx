@@ -8,7 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { ClientEntityId, Track } from '../types';
 import { fmtTrackDur } from './BrowseView';
-import { formatBytes } from './SettingsPage';
+import { formatBytes } from '../utils';
 import { parseTrackTimestamp } from './HomeView';
 
 interface Props {

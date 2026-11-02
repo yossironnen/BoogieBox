@@ -128,8 +128,9 @@ describe('App sidebar', () => {
     await waitFor(() => expect(within(nav).getByLabelText('3 active')).toHaveTextContent('3'));
     fireEvent.click(nav);
     expect(nav).toHaveAttribute('aria-current', 'page');
+    // The Activity page loads on demand.
+    expect(await screen.findByRole('tab', { name: 'Playback' })).toBeInTheDocument();
     expect(container.querySelector('[data-command-bar="activity"]')).not.toBeNull();
-    expect(screen.getByRole('tab', { name: 'Playback' })).toBeInTheDocument();
     expect(screen.getByTestId('sidebar-status-activity')).toHaveAttribute('role', 'button');
     unmount();
 

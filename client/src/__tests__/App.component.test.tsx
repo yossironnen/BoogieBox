@@ -281,7 +281,8 @@ describe('App component flows', () => {
     expect(screen.getByText('Libraries')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    expect(screen.getByTestId('settings-view')).toBeInTheDocument();
+    // Settings loads on demand.
+    expect(await screen.findByTestId('settings-view')).toBeInTheDocument();
     fireEvent.click(screen.getByText('set-stream-direct'));
     expect(screen.getByLabelText(/Transcoding off/i)).toBeInTheDocument();
   }, 10000);

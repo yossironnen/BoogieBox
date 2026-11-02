@@ -22,7 +22,7 @@ import { isLibraryTrackId, isLiveTrack, isRadioTrackId, radioStationTrack, type 
 import { favouritesStore } from './favourites';
 import { PlayOnContext, usePlayOn } from './remote/usePlayOn';
 import { PlayOnTakeoverModal } from './remote/PlayOnTakeover';
-import SettingsPage, { type SettingsSectionRequest } from './components/SettingsPage';
+import type { SettingsSectionRequest } from './components/SettingsPage';
 import BrowseView, { type BrowseSpecial } from './components/BrowseView';
 import CommandBar from './components/CommandBar';
 import PlaylistsView from './components/PlaylistsView';
@@ -31,7 +31,6 @@ import HomeView from './components/HomeView';
 import SetupView from './components/SetupView';
 import LoginScreen from './components/LoginScreen';
 import SidebarStatusPanel from './components/SidebarStatusPanel';
-import ActivityView from './components/ActivityView';
 import { ActivityIcon } from './components/activityIcons';
 import { useActivityFeed } from './activity/useActivityFeed';
 import { useWebPlayerHeartbeat } from './activity/useWebPlayerHeartbeat';
@@ -41,7 +40,6 @@ import TrackInfoModal from './components/TrackInfoModal';
 import StarRating from './components/StarRating';
 import { APP_VERSION } from './version';
 import { parseServerDate } from './utils';
-import MobileApp from './mobile/MobileApp';
 import { phase2 } from './uiPhase2';
 import { useMobileShell } from './mobile/useMobileShell';
 import { useScanActivityRefresh } from './hooks/useScanActivityRefresh';
@@ -68,6 +66,12 @@ import {
   VintageStyleContext,
   type VintageStyle,
 } from './vintageThemes';
+
+// Screens most sessions never open load on demand, which keeps the main bundle small: Settings, the admin
+// Activity page, and the whole mobile shell on desktop.
+const SettingsPage = React.lazy(() => import('./components/SettingsPage'));
+const ActivityView = React.lazy(() => import('./components/ActivityView'));
+const MobileApp = React.lazy(() => import('./mobile/MobileApp'));
 
 // ─── CSS Variable injection ───────────────────────────────────────────────────
 // Injects theme as CSS custom properties on :root so ALL components pick them up.
@@ -1633,6 +1637,7 @@ export default function App() {
   if (isMobileShell) {
     return (
       <PlayOnContext.Provider value={playOn}>
+      <React.Suspense fallback={null}>
       <MobileApp
         currentUser={currentUser as AuthUser}
         libraries={libraries}
@@ -1666,6 +1671,7 @@ export default function App() {
         onVinylAnalogFxDisabledChange={setVinylAnalogFxDisabled}
         onVinylNeedleDropIntensityChange={setVinylNeedleDropIntensity}
       />
+      </React.Suspense>
       </PlayOnContext.Provider>
     );
   }
@@ -2009,7 +2015,9 @@ export default function App() {
               resetRequest={playlistsResetRequest}
             />
           )}
-          {view === 'activity' && isAdminUser && <ActivityView feed={activityFeed} />}
+          {view === 'activity' && isAdminUser && (
+            <React.Suspense fallback={null}><ActivityView feed={activityFeed} /></React.Suspense>
+          )}
           {view === 'mixes' && (
             <MixesView
               playTrack={playTrack}
@@ -2023,6 +2031,7 @@ export default function App() {
             />
           )}
           {view === 'settings'  && (
+            <React.Suspense fallback={null}>
             <SettingsPage
               currentUser={currentUser as AuthUser}
               onLogout={handleLogout}
@@ -2049,6 +2058,7 @@ export default function App() {
               onVinylNeedleDropIntensityChange={setVinylNeedleDropIntensity}
               sectionRequest={settingsSectionRequest}
             />
+            </React.Suspense>
           )}
         </main>
       </div>
