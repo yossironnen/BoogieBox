@@ -1,6 +1,6 @@
 //! Defines Rust server support logic for Waveform Map.
 
-use crate::{ffmpeg, mix_priority_gate, DbPool};
+use crate::{ffmpeg, lane_failures::LaneFailures, mix_priority_gate, DbPool};
 use boogiebox_db::playback::TrackStreamRow;
 use serde::Serialize;
 use std::{
@@ -11,6 +11,8 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 static WAVEFORM_MAP_RUNNING: AtomicBool = AtomicBool::new(false);
+/// Tracks FFmpeg keeps failing to decode; left alone until the server restarts.
+static FAILURES: LaneFailures = LaneFailures::new("waveform");
 
 /// Public Waveform Map Run Result data shape used by BoogieBox.
 #[derive(Debug, Serialize)]
@@ -70,7 +72,8 @@ async fn run_waveform_map_if_due(db: &DbPool) {
             return Ok(false);
         }
         let missing = boogiebox_db::playback::get_waveform_map_status(&conn)?.missing_tracks;
-        if missing <= 0 {
+        // Only files the lane has given up on are left: nothing to do until the next restart.
+        if missing <= FAILURES.count() as i64 {
             return Ok(false);
         }
         let due = match settings
@@ -146,8 +149,12 @@ async fn run_waveform_map_batch_inner(
             let conn = db.lock().unwrap_or_else(|p| p.into_inner());
             let settings = boogiebox_db::playback::get_waveform_settings(&conn);
             let missing = boogiebox_db::playback::get_waveform_map_status(&conn)?.missing_tracks;
+            let tracks = boogiebox_db::playback::list_tracks_missing_waveforms(
+                &conn,
+                settings.batch_size + FAILURES.count() as i64,
+            )?;
             let tracks =
-                boogiebox_db::playback::list_tracks_missing_waveforms(&conn, settings.batch_size)?;
+                FAILURES.without_skipped(tracks, |t| &t.id, settings.batch_size.max(1) as usize);
             Ok::<_, rusqlite::Error>((settings, missing, tracks))
         }
     })
@@ -226,6 +233,7 @@ async fn analyze_waveform_tracks(db: &DbPool, tracks: Vec<TrackStreamRow>) -> (i
             Err(error) => {
                 errors += 1;
                 tracing::warn!(track_id = %track.id, error = %error, "waveform map generation failed");
+                FAILURES.note_failure(&track.id, false);
             }
         }
     }
@@ -384,6 +392,33 @@ mod tests {
 
         let status = boogiebox_db::playback::get_waveform_map_status(&db.lock().unwrap()).unwrap();
         assert!(status.last_run.is_some());
+    }
+
+    /// An all-zero ".mp3" (a download that never finished): FFmpeg fails on it every time, so the lane
+    /// tries it 3 times and then leaves it alone instead of failing and logging on every run.
+    #[tokio::test]
+    async fn a_file_ffmpeg_cannot_decode_is_left_alone_after_three_failures() {
+        let _guard = RUN_LOCK.lock().await;
+        FAILURES.clear();
+        let db = temp_db("undecodable");
+        let track_id = seed_track_missing_waveform(&db);
+        let file = std::env::temp_dir().join(format!("waveform-zero-{track_id}.mp3"));
+        std::fs::write(&file, vec![0_u8; 64 * 1024]).unwrap();
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE tracks SET file_path = ? WHERE id = ?",
+                params![file.to_string_lossy(), track_id],
+            )
+            .unwrap();
+        for _ in 0..crate::lane_failures::MAX_ATTEMPTS {
+            let result = run_waveform_map_batch(db.clone(), "test").await.unwrap();
+            assert_eq!((result.processed, result.errors), (1, 1));
+        }
+        let result = run_waveform_map_batch(db.clone(), "test").await.unwrap();
+        assert_eq!(result.processed, 0, "left alone until the next restart");
+        FAILURES.clear();
+        let _ = std::fs::remove_file(&file);
     }
 
     #[tokio::test]

@@ -3,15 +3,12 @@
 //! gain for albums whose tracks are all known. The DB lock is held only to pick a batch and to write
 //! its results, never during FFmpeg.
 
-use crate::{ffmpeg, mix_priority_gate, DbPool};
+use crate::{ffmpeg, lane_failures::LaneFailures, mix_priority_gate, DbPool};
 use boogiebox_db::loudness::{self, Measurement};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        LazyLock, Mutex,
-    },
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
@@ -22,42 +19,14 @@ const TRACK_BATCH: usize = 50;
 const MIX_BATCH: usize = 5;
 const ALBUM_BATCH: usize = 200;
 const MEASURE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// A file that fails this often is left alone until the server restarts.
-const MAX_ATTEMPTS: u8 = 3;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
-static ATTEMPTS: LazyLock<Mutex<HashMap<String, u8>>> = LazyLock::new(Default::default);
-
-/// Ids (track ids, or `mix:<id>`) that failed too often in this run.
-fn given_up() -> HashSet<String> {
-    ATTEMPTS
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .iter()
-        .filter(|(_, n)| **n >= MAX_ATTEMPTS)
-        .map(|(id, _)| id.clone())
-        .collect()
-}
-
-fn note_failure(id: &str, give_up: bool) {
-    let mut attempts = ATTEMPTS.lock().unwrap_or_else(|p| p.into_inner());
-    let n = attempts.entry(id.to_owned()).or_default();
-    *n = if give_up {
-        MAX_ATTEMPTS
-    } else {
-        n.saturating_add(1)
-    };
-    if *n >= MAX_ATTEMPTS {
-        tracing::warn!(
-            id,
-            "loudness measuring gave up on this file until the next restart"
-        );
-    }
-}
+/// Track ids, or `mix:<id>`, the lane failed on or could not find.
+static FAILURES: LaneFailures = LaneFailures::new("loudness");
 
 /// Number of files the lane has given up on since the server started.
 pub fn failed_count() -> usize {
-    given_up().len()
+    FAILURES.count()
 }
 
 /// True while a batch is being measured.
@@ -113,7 +82,7 @@ async fn run_batch(
     ffmpeg_path: &Path,
     cancel: &CancellationToken,
 ) -> Result<usize, String> {
-    let skip = given_up();
+    let skip: HashSet<String> = FAILURES.skipped();
     let (tracks, mixes) = blocking(db, move |conn| {
         if !is_enabled(conn) {
             return Ok((Vec::new(), Vec::new()));
@@ -150,7 +119,7 @@ async fn run_batch(
         };
         let file = Path::new(path);
         if !file.is_file() {
-            note_failure(&key, true);
+            FAILURES.note_missing(&key);
             continue;
         }
         match ffmpeg::measure_loudness(ffmpeg_path, file, MEASURE_TIMEOUT).await {
@@ -158,7 +127,7 @@ async fn run_batch(
             Ok(m) => measured_tracks.push((id, m)),
             Err(error) => {
                 tracing::debug!(id = %key, %error, "loudness measuring failed");
-                note_failure(&key, false);
+                FAILURES.note_failure(&key, false);
             }
         }
     }
@@ -178,7 +147,7 @@ async fn run_batch(
             // A silent render keeps no value; it is not measured again until the next restart.
             match integrated_lufs {
                 Some(lufs) => loudness::record_mix_loudness(conn, id, *lufs, *true_peak_dbtp)?,
-                None => note_failure(&format!("mix:{id}"), true),
+                None => FAILURES.note_failure(&format!("mix:{id}"), true),
             }
         }
         Ok((written, loudness::compute_album_gains(conn, ALBUM_BATCH)?))
@@ -231,16 +200,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gives_up_on_missing_files_and_stops_when_switched_off() {
+    async fn skips_missing_files_without_counting_them_and_stops_when_switched_off() {
         let _guard = LANE_TEST_LOCK.lock().await;
         let _gate = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
-        ATTEMPTS.lock().unwrap().clear();
+        FAILURES.clear();
         let db = db_with_tracks(&["/definitely/missing/a.flac"]);
         run_until_done(&db, &CancellationToken::new()).await;
-        assert_eq!(given_up(), HashSet::from(["t0".to_string()]));
+        assert_eq!(FAILURES.skipped(), HashSet::from(["t0".to_string()]));
+        assert_eq!(
+            failed_count(),
+            0,
+            "a missing file is not a failure (the share may be offline)"
+        );
         assert!(!is_running());
 
-        ATTEMPTS.lock().unwrap().clear();
+        FAILURES.clear();
         db.lock()
             .unwrap()
             .execute(
@@ -249,18 +223,21 @@ mod tests {
             )
             .unwrap();
         run_until_done(&db, &CancellationToken::new()).await;
-        assert!(given_up().is_empty(), "switched off: nothing is looked at");
+        assert!(
+            FAILURES.skipped().is_empty(),
+            "switched off: nothing is looked at"
+        );
     }
 
     #[tokio::test]
     async fn stands_down_while_a_mix_renders() {
         let _guard = LANE_TEST_LOCK.lock().await;
         let _gate = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
-        ATTEMPTS.lock().unwrap().clear();
+        FAILURES.clear();
         let db = db_with_tracks(&["/definitely/missing/b.flac"]);
         let priority = crate::mix_priority_gate::PriorityAnalysisGuard::acquire();
         run_until_done(&db, &CancellationToken::new()).await;
-        assert!(given_up().is_empty());
+        assert!(FAILURES.skipped().is_empty());
         drop(priority);
     }
 
@@ -268,7 +245,7 @@ mod tests {
     async fn measures_a_real_file_when_ffmpeg_is_available() {
         let _guard = LANE_TEST_LOCK.lock().await;
         let _gate = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
-        ATTEMPTS.lock().unwrap().clear();
+        FAILURES.clear();
         let ffmpeg_path = ffmpeg::resolve_ffmpeg();
         let dir = std::env::temp_dir().join(format!("boogiebox-loudness-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -298,6 +275,6 @@ mod tests {
         // A 1 kHz sine at FFmpeg's default 1/8 amplitude, dual mono, sits near −18 LUFS.
         let gain = found["t0"].track_gain_db;
         assert!(gain.abs() < 1.5, "gain {gain}");
-        assert!(given_up().is_empty());
+        assert!(FAILURES.skipped().is_empty());
     }
 }

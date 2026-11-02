@@ -44,6 +44,7 @@ pub mod event_log;
 pub mod ffmpeg;
 pub mod home_cache;
 pub mod image_thumb;
+pub mod lane_failures;
 pub mod logging;
 pub mod logs;
 pub mod loudness_analysis;
