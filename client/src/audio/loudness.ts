@@ -10,6 +10,8 @@ export const LOUDNESS_PREAMP_MIN = -6;
 export const LOUDNESS_PREAMP_MAX = 6;
 /** Positive gain allowed when the peak is unknown. */
 export const MAX_GAIN_WITHOUT_PEAK_DB = 6;
+/** Room left under full scale: the gain never lifts the peak above −1 dBTP. */
+export const PEAK_HEADROOM_DB = 1;
 
 /** A user's levelling choice. */
 export interface LoudnessPrefs {
@@ -39,8 +41,8 @@ export function parseLoudnessPreamp(value: string | null | undefined): number {
 
 /**
  * Gain in dB for one track. Off, or no data, plays at unity. Album gain is used in album mode, and in
- * auto mode when a neighbouring queue item is from the same album. The result never pushes the
- * peak above full scale; without a peak, positive gain is capped.
+ * auto mode when a neighbouring queue item is from the same album. The result never lifts the
+ * peak above −1 dBTP; without a peak, positive gain is capped.
  */
 export function pickGainDb(
   mode: LoudnessMode,
@@ -54,7 +56,7 @@ export function pickGainDb(
   const peak = useAlbum ? (data.albumPeak ?? data.trackPeak) : data.trackPeak;
   let applied = gain + preampDb;
   applied = peak != null && peak > 0
-    ? Math.min(applied, -20 * Math.log10(peak))
+    ? Math.min(applied, -PEAK_HEADROOM_DB - 20 * Math.log10(peak))
     : Math.min(applied, MAX_GAIN_WITHOUT_PEAK_DB);
   return Math.round(applied * 100) / 100;
 }

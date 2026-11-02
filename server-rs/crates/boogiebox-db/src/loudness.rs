@@ -51,8 +51,11 @@ pub struct TrackLoudness {
 /// Positive gain allowed on a server transcode when the peak is unknown.
 pub const MAX_GAIN_WITHOUT_PEAK_DB: f64 = 6.0;
 
+/// Room left under full scale: the gain never lifts the peak above −1 dBTP.
+pub const PEAK_HEADROOM_DB: f64 = 1.0;
+
 /// Gain a server path applies for `mode` (`off`, `track`, `album`, `auto`): album gain in album mode,
-/// or in auto mode with `album_context`; never past the peak (capped at +6 dB without one). Server
+/// or in auto mode with `album_context`; never lifts the peak above −1 dBTP (capped at +6 dB without one). Server
 /// paths have no pre-amp. Mirrors `pickGainDb` in `client/src/audio/loudness.ts`.
 pub fn applied_gain_db(mode: &str, data: Option<&TrackLoudness>, album_context: bool) -> f64 {
     let Some(data) = data.filter(|_| mode != "off") else {
@@ -69,7 +72,7 @@ pub fn applied_gain_db(mode: &str, data: Option<&TrackLoudness>, album_context: 
         (data.track_gain_db, data.track_peak)
     };
     let applied = match peak.filter(|p| *p > 0.0) {
-        Some(peak) => gain.min(-20.0 * peak.log10()),
+        Some(peak) => gain.min(-PEAK_HEADROOM_DB - 20.0 * peak.log10()),
         None => gain.min(MAX_GAIN_WITHOUT_PEAK_DB),
     };
     (applied * 100.0).round() / 100.0
@@ -691,7 +694,7 @@ mod tests {
             album_gain_db: None,
             album_peak: None,
         };
-        assert_eq!(applied_gain_db("album", Some(&quiet), true), 6.02);
+        assert_eq!(applied_gain_db("album", Some(&quiet), true), 5.02);
         let no_peak = TrackLoudness {
             track_peak: None,
             ..quiet

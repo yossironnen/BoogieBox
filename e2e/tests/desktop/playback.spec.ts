@@ -221,7 +221,7 @@ test('loudness levelling: tag values, measured tracks and the player gain', asyn
         const playing = Array.from(document.querySelectorAll('audio')).find(a => !a.paused)
         return playing?.getAttribute('data-loudness-gain') ?? null
       })
-      // Peak 0.5 allows up to +6 dB, so the tag's −6.5 dB is applied as is.
+      // A cut is never clamped (peak 0.5 allows up to +5 dB), so the tag's −6.5 dB is applied as is.
       await expect.poll(gain).toBe('-6.5')
 
       expect((await setMode('off')).ok()).toBe(true)

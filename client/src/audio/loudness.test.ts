@@ -25,8 +25,9 @@ describe('pickGainDb', () => {
 
   it('adds the pre-amp and clamps to the peak', () => {
     expect(pickGainDb('track', 2, loud, false)).toBe(-6);
-    // Peak 0.5 allows +6.02 dB at most.
-    expect(pickGainDb('track', 6, quiet, false)).toBe(6.02);
+    // Peak 0.5 allows +5.02 dB at most (−1 dBTP headroom).
+    expect(pickGainDb('track', 6, quiet, false)).toBe(5.02);
+    expect(pickGainDb('track', 0, { trackGainDb: 3, trackPeak: 0.8 }, false)).toBe(0.94);
     expect(pickGainDb('album', 0, { trackGainDb: 0, albumGainDb: 9, albumPeak: null, trackPeak: 0.25 }, true)).toBe(9);
     expect(pickGainDb('track', 0, { trackGainDb: 9 }, false)).toBe(6);
     expect(pickGainDb('track', 0, { trackGainDb: -9 }, false)).toBe(-9);
