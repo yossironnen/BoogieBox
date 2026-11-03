@@ -199,7 +199,8 @@ pub fn record_scanned_tags(
             MEASURE_VERSION,
         ],
     )?;
-    if changed > 0 && album_source.is_none() {
+    // Any change resets the album: its other tracks may have copied this track's album tag.
+    if changed > 0 {
         reset_computed_album_gain(conn, track_id)?;
     }
     Ok(())
@@ -288,7 +289,8 @@ pub fn record_measurements(
 }
 
 /// Computes album gain for up to `limit` albums whose tracks all have a row and some lack album
-/// gain: the duration-weighted power mean of the track loudness, peak = loudest track peak.
+/// gain: the album tag some of its tracks carry, else the duration-weighted power mean of the track
+/// loudness with peak = loudest track peak.
 pub fn compute_album_gains(conn: &Connection, limit: usize) -> rusqlite::Result<usize> {
     let albums: Vec<String> = {
         let mut stmt = conn.prepare_cached(
@@ -304,6 +306,24 @@ pub fn compute_album_gains(conn: &Connection, limit: usize) -> rusqlite::Result<
         rows.collect::<Result<_, _>>()?
     };
     for album_id in &albums {
+        // When some tracks carry album tags, that is the album's level: the rest take it too (the
+        // most common value), so the whole album plays at one level.
+        let tagged: Option<(f64, Option<f64>)> = conn
+            .query_row(
+                "SELECT l.album_gain_db, l.album_peak FROM tracks t
+                 JOIN track_loudness l ON l.track_id = t.id
+                 WHERE t.album_id = ?1 AND l.album_source = 'tag' AND l.album_gain_db IS NOT NULL
+                 GROUP BY l.album_gain_db, l.album_peak
+                 ORDER BY COUNT(*) DESC, l.album_gain_db
+                 LIMIT 1",
+                [album_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((gain, peak)) = tagged {
+            set_computed_album_gain(conn, album_id, gain, peak)?;
+            continue;
+        }
         let tracks: Vec<(f64, Option<f64>, f64)> = {
             let mut stmt = conn.prepare_cached(
                 "SELECT l.track_gain_db, l.track_peak, t.duration FROM tracks t
@@ -322,14 +342,44 @@ pub fn compute_album_gains(conn: &Connection, limit: usize) -> rusqlite::Result<
         let Some((gain, peak)) = album_gain(&tracks) else {
             continue;
         };
-        conn.execute(
-            "UPDATE track_loudness SET album_gain_db = ?2, album_peak = ?3, album_source = 'computed'
-             WHERE album_source IS NULL AND track_gain_db IS NOT NULL
-               AND track_id IN (SELECT id FROM tracks WHERE album_id = ?1)",
-            params![album_id, gain, peak],
-        )?;
+        set_computed_album_gain(conn, album_id, gain, peak)?;
     }
     Ok(albums.len())
+}
+
+/// Gives the album's tracks that have no album gain yet `gain` and `peak`, marked computed.
+fn set_computed_album_gain(
+    conn: &Connection,
+    album_id: &str,
+    gain: f64,
+    peak: Option<f64>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE track_loudness SET album_gain_db = ?2, album_peak = ?3, album_source = 'computed'
+         WHERE album_source IS NULL AND track_gain_db IS NOT NULL
+           AND track_id IN (SELECT id FROM tracks WHERE album_id = ?1)",
+        params![album_id, gain, peak],
+    )?;
+    Ok(())
+}
+
+/// Migration `2026-11-02-loudness-partial-album-tags`: on albums where only some tracks carry album
+/// tags, the others got a computed album gain of their own. Clears it so the lane gives them the
+/// tagged value.
+pub fn reset_album_gains_beside_album_tags(conn: &Connection) -> rusqlite::Result<()> {
+    if !crate::table_exists(conn, "track_loudness") {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE track_loudness SET album_gain_db = NULL, album_peak = NULL, album_source = NULL
+         WHERE album_source = 'computed'
+           AND track_id IN (
+             SELECT id FROM tracks WHERE album_id IN (
+               SELECT t.album_id FROM tracks t JOIN track_loudness l ON l.track_id = t.id
+               WHERE l.album_source = 'tag'))",
+        [],
+    )?;
+    Ok(())
 }
 
 /// Album gain from `(track gain dB, track peak, duration s)` rows; tracks without a duration count
@@ -672,6 +722,55 @@ mod tests {
         let found = loudness_for_tracks(&conn, &["t1".into(), "t2".into(), "nope".into()]).unwrap();
         assert_eq!(found.len(), 2);
         assert!(found["t1"].album_gain_db.is_some());
+    }
+
+    #[test]
+    fn tracks_beside_an_album_tag_take_its_value_and_follow_it() {
+        let conn = db();
+        record_scanned_tags(&conn, &id("t1"), 100, Some(&tags(2.25, Some(-1.0)))).unwrap();
+        record_measurements(&conn, &[("t2".into(), measured(-18.8))]).unwrap();
+        compute_album_gains(&conn, 10).unwrap();
+        let (_, _, album, source) = row(&conn, "t2").unwrap();
+        assert_eq!((album, source.as_deref()), (Some(-1.0), Some("computed")));
+        assert_eq!(row(&conn, "t1").unwrap().3.as_deref(), Some("tag"));
+        assert_eq!(compute_album_gains(&conn, 10).unwrap(), 0);
+
+        // A new album tag on the tagged track reaches the other track too.
+        record_scanned_tags(&conn, &id("t1"), 100, Some(&tags(2.25, Some(-3.0)))).unwrap();
+        assert_eq!(row(&conn, "t2").unwrap().3, None);
+        compute_album_gains(&conn, 10).unwrap();
+        assert_eq!(row(&conn, "t2").unwrap().2, Some(-3.0));
+    }
+
+    #[test]
+    fn migration_clears_album_gains_computed_beside_album_tags() {
+        let conn = db();
+        record_scanned_tags(&conn, &id("t1"), 100, Some(&tags(2.25, Some(-1.0)))).unwrap();
+        record_measurements(
+            &conn,
+            &[
+                ("t2".into(), measured(-18.8)),
+                ("t3".into(), measured(-12.0)),
+            ],
+        )
+        .unwrap();
+        // What the earlier build stored: a power mean on t2, and t3's own album.
+        conn.execute_batch(
+            "UPDATE track_loudness SET album_gain_db = 1.46, album_source = 'computed' WHERE track_id = 't2';
+             UPDATE track_loudness SET album_gain_db = -6.0, album_source = 'computed' WHERE track_id = 't3';",
+        )
+        .unwrap();
+        reset_album_gains_beside_album_tags(&conn).unwrap();
+        assert_eq!(row(&conn, "t2").unwrap().3, None);
+        assert_eq!(row(&conn, "t1").unwrap().2, Some(-1.0));
+        assert_eq!(
+            row(&conn, "t3").unwrap().2,
+            Some(-6.0),
+            "untagged albums keep theirs"
+        );
+        compute_album_gains(&conn, 10).unwrap();
+        assert_eq!(row(&conn, "t2").unwrap().2, Some(-1.0));
+        reset_album_gains_beside_album_tags(&Connection::open_in_memory().unwrap()).unwrap();
     }
 
     #[test]

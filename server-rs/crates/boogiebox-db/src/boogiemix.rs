@@ -518,6 +518,9 @@ pub const DEEP_ANALYSIS_PRIORITY_BACKGROUND: i64 = 10;
 pub const DEEP_ANALYSIS_PRIORITY_MANUAL: i64 = 70;
 /// Documents the DEEP ANALYSIS PRIORITY PLAYLIST MIX public API surface.
 pub const DEEP_ANALYSIS_PRIORITY_PLAYLIST_MIX: i64 = 90;
+/// Failures after which the background sweep stops re-queueing a track until
+/// its file changes. Manual and forced runs still retry it.
+pub const DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS: i64 = 3;
 
 // ── Mix Job CRUD ──────────────────────────────────────────────────────────────
 
@@ -2144,7 +2147,7 @@ pub fn requeue_deep_analysis_job(conn: &Connection, job_id: &EntityId) -> Result
 pub fn complete_deep_analysis_job(conn: &Connection, job_id: &EntityId) -> Result<(), JobError> {
     conn.execute(
         "UPDATE deep_analysis_jobs
-         SET status='done', error_message=NULL, finished_at=datetime('now'),
+         SET status='done', error_message=NULL, attempts=0, finished_at=datetime('now'),
              updated_at=datetime('now')
          WHERE id=?1",
         params![job_id],
@@ -2152,20 +2155,29 @@ pub fn complete_deep_analysis_job(conn: &Connection, job_id: &EntityId) -> Resul
     Ok(())
 }
 
-/// Documents the Fail Deep Analysis Job public API surface.
+/// Marks a job failed and returns how many times it has now failed for the
+/// current file.
 pub fn fail_deep_analysis_job(
     conn: &Connection,
     job_id: &EntityId,
     error: &str,
-) -> Result<(), JobError> {
+) -> Result<i64, JobError> {
     conn.execute(
         "UPDATE deep_analysis_jobs
-         SET status='failed', error_message=?1, finished_at=datetime('now'),
-             updated_at=datetime('now')
+         SET status='failed', error_message=?1, attempts=attempts + 1,
+             finished_at=datetime('now'), updated_at=datetime('now')
          WHERE id=?2",
         params![error, job_id],
     )?;
-    Ok(())
+    let attempts = conn
+        .query_row(
+            "SELECT attempts FROM deep_analysis_jobs WHERE id=?1",
+            params![job_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    Ok(attempts)
 }
 
 /// Documents the Skip Deep Analysis Job public API surface.
@@ -2369,6 +2381,10 @@ pub fn queue_missing_deep_analysis_for_tracks_with_priority(
                      ELSE 'pending'
                    END,
                    priority=MAX(deep_analysis_jobs.priority, excluded.priority),
+                   attempts=CASE
+                     WHEN deep_analysis_jobs.file_fingerprint != excluded.file_fingerprint THEN 0
+                     ELSE deep_analysis_jobs.attempts
+                   END,
                    file_fingerprint=excluded.file_fingerprint,
                    updated_at=datetime('now')",
                 params![track.track_id, priority, fingerprint],
@@ -2423,7 +2439,7 @@ pub fn queue_background_deep_analysis_batch(
     let Some(scope) = background_mode_scope(mode) else {
         return Ok(0);
     };
-    let tracks = load_scoped_deep_analysis_tracks(conn, scope, Some(batch_size), false)?;
+    let tracks = load_scoped_deep_analysis_tracks(conn, scope, Some(batch_size), false, false)?;
     queue_missing_deep_analysis_for_tracks_with_priority(
         conn,
         &tracks,
@@ -2443,7 +2459,7 @@ pub fn queue_background_deep_analysis_batch(
 /// routine background analysis — a run this large needs to be pausable
 /// through the control the user already knows.
 pub fn queue_all_deep_analysis(conn: &Connection, force: bool) -> Result<usize, JobError> {
-    let tracks = load_scoped_deep_analysis_tracks(conn, ALL_MUSIC_SCOPE, None, force)?;
+    let tracks = load_scoped_deep_analysis_tracks(conn, ALL_MUSIC_SCOPE, None, force, true)?;
     queue_missing_deep_analysis_for_tracks_with_priority(
         conn,
         &tracks,
@@ -2515,21 +2531,37 @@ fn background_mode_scope(mode: &str) -> Option<&'static str> {
 /// this can't live purely in the caller: a caller asking to force gets an
 /// already-empty list from a non-force-aware query and silently queues
 /// nothing.
+///
+/// Without `retry_given_up`, a track whose job failed
+/// `DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS` times on the current file is left
+/// out. Otherwise the newest-first `LIMIT` keeps picking the same broken files
+/// and the sweep never reaches the rest of the collection.
 fn load_scoped_deep_analysis_tracks(
     conn: &Connection,
     scope: &str,
     limit: Option<usize>,
     force: bool,
+    retry_given_up: bool,
 ) -> Result<Vec<MixTrackInput>, JobError> {
     let staleness = if force {
         "?1 IS NOT NULL"
     } else {
         "tda.track_id IS NULL OR tda.analysis_version != ?1 OR tda.file_fingerprint != (t.file_path || '|' || COALESCE(t.file_size, -1) || '|' || COALESCE(t.scanned_at, ''))"
     };
+    let given_up = if retry_given_up {
+        String::new()
+    } else {
+        format!(
+            "AND NOT EXISTS(SELECT 1 FROM deep_analysis_jobs j WHERE j.track_id=t.id AND j.status='failed'
+                AND j.attempts >= {DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS}
+                AND j.file_fingerprint = (t.file_path || '|' || COALESCE(t.file_size, -1) || '|' || COALESCE(t.scanned_at, '')))"
+        )
+    };
     let mut sql = base_deep_track_select(&format!(
         "WHERE {scope}
            AND {DEEP_ELIGIBLE_SQL}
            AND NOT EXISTS(SELECT 1 FROM deep_analysis_jobs j WHERE j.track_id=t.id AND j.status IN ('pending','running'))
+           {given_up}
            AND ({staleness})"
     ));
     append_limit(&mut sql, limit);
@@ -2955,6 +2987,7 @@ mod tests {
               priority INTEGER NOT NULL DEFAULT 50,
               file_fingerprint TEXT NOT NULL DEFAULT '',
               error_message TEXT,
+              attempts INTEGER NOT NULL DEFAULT 0,
               started_at TEXT,
               finished_at TEXT,
               created_at TEXT,
@@ -3055,6 +3088,89 @@ mod tests {
             queued_ids.iter().all(|id| id.starts_with('t')),
             "{queued_ids:?}"
         );
+    }
+
+    fn job_id_for(conn: &Connection, track_id: &str) -> EntityId {
+        let id: String = conn
+            .query_row(
+                "SELECT id FROM deep_analysis_jobs WHERE track_id=?1",
+                params![track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        coerce_entity_id(&id)
+    }
+
+    fn job_status_and_attempts(conn: &Connection, track_id: &str) -> (String, i64) {
+        conn.query_row(
+            "SELECT status, attempts FROM deep_analysis_jobs WHERE track_id=?1",
+            params![track_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn background_sweep_gives_up_on_a_track_after_max_failures() {
+        let conn = setup_deep_db();
+        queue_background_deep_analysis_batch(&conn, "all_music", 10).unwrap();
+        let t1 = job_id_for(&conn, "t1");
+        for expected in 1..=DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS {
+            assert_eq!(
+                fail_deep_analysis_job(&conn, &t1, "boom").unwrap(),
+                expected
+            );
+        }
+        fail_deep_analysis_job(&conn, &job_id_for(&conn, "t2"), "boom").unwrap();
+        fail_deep_analysis_job(&conn, &job_id_for(&conn, "t3"), "boom").unwrap();
+
+        queue_background_deep_analysis_batch(&conn, "all_music", 10).unwrap();
+
+        assert_eq!(job_status_and_attempts(&conn, "t1").0, "failed");
+        assert_eq!(job_status_and_attempts(&conn, "t2"), ("pending".into(), 1));
+        assert_eq!(job_status_and_attempts(&conn, "t3"), ("pending".into(), 1));
+    }
+
+    #[test]
+    fn background_sweep_retries_a_given_up_track_once_its_file_changes() {
+        let conn = setup_deep_db();
+        queue_background_deep_analysis_batch(&conn, "all_music", 10).unwrap();
+        let t1 = job_id_for(&conn, "t1");
+        for _ in 0..DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS {
+            fail_deep_analysis_job(&conn, &t1, "boom").unwrap();
+        }
+        conn.execute("UPDATE tracks SET file_size=5678 WHERE id='t1'", [])
+            .unwrap();
+
+        queue_background_deep_analysis_batch(&conn, "all_music", 10).unwrap();
+
+        assert_eq!(job_status_and_attempts(&conn, "t1"), ("pending".into(), 0));
+    }
+
+    #[test]
+    fn analyse_all_still_retries_a_given_up_track() {
+        let conn = setup_deep_db();
+        queue_background_deep_analysis_batch(&conn, "all_music", 10).unwrap();
+        let t1 = job_id_for(&conn, "t1");
+        for _ in 0..DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS {
+            fail_deep_analysis_job(&conn, &t1, "boom").unwrap();
+        }
+
+        queue_all_deep_analysis(&conn, false).unwrap();
+
+        assert_eq!(job_status_and_attempts(&conn, "t1").0, "pending");
+    }
+
+    #[test]
+    fn completing_a_job_clears_its_failure_count() {
+        let conn = setup_deep_db();
+        queue_background_deep_analysis_batch(&conn, "all_music", 10).unwrap();
+        let t1 = job_id_for(&conn, "t1");
+        fail_deep_analysis_job(&conn, &t1, "boom").unwrap();
+
+        complete_deep_analysis_job(&conn, &t1).unwrap();
+
+        assert_eq!(job_status_and_attempts(&conn, "t1"), ("done".into(), 0));
     }
 
     #[test]

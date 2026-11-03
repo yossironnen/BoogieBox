@@ -8,6 +8,7 @@ use boogiebox_db::{
         queue_background_deep_analysis_batch, requeue_deep_analysis_job,
         reset_stale_deep_analysis_jobs, should_skip_deep_analysis, skip_deep_analysis_job,
         upsert_deep_analysis, ClaimedDeepAnalysisJob, MixTrackInput,
+        DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS,
     },
     music::set_track_bpm_detected,
 };
@@ -330,26 +331,34 @@ async fn run_tick(
                 process_job(&state, &settings, &runtime, job.clone(), cancel.clone()).await
             {
                 let preempted = err == PREEMPTED;
+                let track = describe_job_track(&job);
                 if preempted {
                     tracing::info!(
                         "[boogiemix:deep] job {} paused and requeued for higher-priority work",
                         job.id
                     );
                 } else {
-                    tracing::error!("[boogiemix:deep] job {} failed: {err}", job.id);
+                    tracing::error!("[boogiemix:deep] job {} failed for {track}: {err}", job.id);
                 }
                 let job_id = job.id.clone();
                 let db = state.db.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    if let Ok(conn) = db.lock() {
-                        if preempted {
-                            let _ = requeue_deep_analysis_job(&conn, &job_id);
-                        } else {
-                            let _ = fail_deep_analysis_job(&conn, &job_id, &err);
-                        }
+                let attempts = tokio::task::spawn_blocking(move || {
+                    let conn = db.lock().ok()?;
+                    if preempted {
+                        let _ = requeue_deep_analysis_job(&conn, &job_id);
+                        None
+                    } else {
+                        fail_deep_analysis_job(&conn, &job_id, &err).ok()
                     }
                 })
-                .await;
+                .await
+                .ok()
+                .flatten();
+                if attempts == Some(DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS) {
+                    tracing::warn!(
+                        "[boogiemix:deep] giving up on {track} after {DEEP_ANALYSIS_MAX_BACKGROUND_ATTEMPTS} failed attempts; background analysis skips it until the file changes (a manual or forced run still retries it)"
+                    );
+                }
             }
             if let Ok(mut map) = running.lock() {
                 map.remove(&job_key);
@@ -596,20 +605,13 @@ async fn process_job(
     // Only applies when a Demucs model was actually requested — HPSS mode
     // (forced on no-GPU machines) never runs Demucs by design.
     if demucs_model != MODEL_HPSS && !used_demucs {
-        let demucs_err = output["transition_hints_json"]
-            .as_str()
-            .and_then(|s| serde_json::from_str::<Value>(s).ok())
-            .and_then(|v| v["demucsError"].as_str().map(|e| e.to_string()))
-            .unwrap_or_else(|| "demucs did not run".to_string());
+        let demucs_err = demucs_error_tail(&output, 200);
         tracing::warn!(
-            "[boogiemix:deep] job {} — demucs fallback, marking failed: {}",
+            "[boogiemix:deep] job {} — demucs fallback for {}, marking failed: {demucs_err}",
             job.id,
-            &demucs_err[..demucs_err.len().min(200)]
+            describe_job_track(&job)
         );
-        return Err(format!(
-            "demucs_fallback: {}",
-            &demucs_err[..demucs_err.len().min(200)]
-        ));
+        return Err(format!("demucs_fallback: {demucs_err}"));
     }
 
     // Merge key_neural and cue_points into transition_hints_json so they are
@@ -712,6 +714,33 @@ async fn process_job(
     tracing::info!("[boogiemix:deep] job {} completed: track={} confidence={:.3} energy={:.3} processing_ms={}",
         job.id, job.track_id, confidence, energy, processing_ms);
     Ok(())
+}
+
+/// `"Artist - Title" (path)` for log lines, so an admin can find the file.
+fn describe_job_track(job: &ClaimedDeepAnalysisJob) -> String {
+    let name = match (job.artist.as_deref(), job.title.as_deref()) {
+        (Some(artist), Some(title)) => format!("\"{artist} - {title}\""),
+        (None, Some(title)) => format!("\"{title}\""),
+        _ => "track".to_string(),
+    };
+    format!("{name} ({})", job.file_path)
+}
+
+/// Last `max_chars` of the worker's `demucsError`. The worker sends
+/// `transition_hints_json` as an object, older builds as a JSON string.
+/// The tail is kept because Python tracebacks end with the actual error.
+fn demucs_error_tail(output: &Value, max_chars: usize) -> String {
+    let hints = match &output["transition_hints_json"] {
+        Value::String(s) => serde_json::from_str::<Value>(s).unwrap_or(Value::Null),
+        v => v.clone(),
+    };
+    let err = hints["demucsError"]
+        .as_str()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .unwrap_or("demucs did not run");
+    let skip = err.chars().count().saturating_sub(max_chars);
+    err.chars().skip(skip).collect()
 }
 
 fn json_field(output: &Value, key: &str, fallback: &str) -> String {
@@ -1272,6 +1301,22 @@ mod tests {
     fn json_field_preserves_object_payloads() {
         let value = serde_json::json!({"stem_feature_json":{"a":1}});
         assert_eq!(json_field(&value, "stem_feature_json", "{}"), "{\"a\":1}");
+    }
+
+    #[test]
+    fn demucs_error_tail_reads_object_and_string_hints() {
+        let obj = serde_json::json!({"transition_hints_json":{"demucsError":"Traceback\nAssertionError"}});
+        assert_eq!(demucs_error_tail(&obj, 200), "Traceback\nAssertionError");
+        let s = serde_json::json!({"transition_hints_json":"{\"demucsError\":\"boom\"}"});
+        assert_eq!(demucs_error_tail(&s, 200), "boom");
+        let none = serde_json::json!({"transition_hints_json":{"demucsError":null}});
+        assert_eq!(demucs_error_tail(&none, 200), "demucs did not run");
+    }
+
+    #[test]
+    fn demucs_error_tail_keeps_tail_on_char_boundary() {
+        let v = serde_json::json!({"transition_hints_json":{"demucsError":"ééééxyz"}});
+        assert_eq!(demucs_error_tail(&v, 4), "éxyz");
     }
 
     #[test]

@@ -599,6 +599,7 @@ pub fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error>
           priority         INTEGER NOT NULL DEFAULT 50,
           file_fingerprint TEXT NOT NULL DEFAULT '',
           error_message    TEXT,
+          attempts         INTEGER NOT NULL DEFAULT 0,
           started_at       TEXT,
           finished_at      TEXT,
           created_at       TEXT NOT NULL DEFAULT (datetime('now')),
@@ -846,6 +847,14 @@ fn tracked_migrations() -> Vec<Migration> {
         Migration {
             id: "2026-11-01-track-loudness",
             apply: loudness::ensure_loudness_schema,
+        },
+        Migration {
+            id: "2026-11-02-deep-analysis-attempts",
+            apply: ensure_deep_analysis_attempts_column,
+        },
+        Migration {
+            id: "2026-11-02-loudness-partial-album-tags",
+            apply: loudness::reset_album_gains_beside_album_tags,
         },
     ]
 }
@@ -2953,6 +2962,19 @@ fn remove_auto_dj_crossfade_overrides(connection: &Connection) -> Result<(), rus
     Ok(())
 }
 
+/// Failure count per deep-analysis job, so the background sweep can stop
+/// re-queueing a file that never analyses.
+fn ensure_deep_analysis_attempts_column(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "deep_analysis_jobs")
+        && !column_exists(connection, "deep_analysis_jobs", "attempts")?
+    {
+        connection.execute_batch(
+            "ALTER TABLE deep_analysis_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    Ok(())
+}
+
 fn ensure_library_missing_kept_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
     if !table_exists(connection, "libraries") {
         return Ok(());
@@ -4612,6 +4634,7 @@ mod tests {
             ),
             1
         );
+        assert!(column_exists(&connection, "deep_analysis_jobs", "attempts").unwrap());
     }
 
     #[test]

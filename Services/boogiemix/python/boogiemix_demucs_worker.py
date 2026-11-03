@@ -94,7 +94,10 @@ BASS_PRESENT_THRESHOLD = 0.30
 
 
 def run_cmd(cmd):
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Explicit UTF-8: Demucs/tqdm emit UTF-8 progress bars, and Windows' default
+    # cp1252 decode crashes the reader thread, silently dropping stderr.
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, encoding="utf-8", errors="replace")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -128,6 +131,50 @@ def run_demucs(file_path, model, use_gpu, temp_root):
     ]
     code, _, err = run_cmd(args)
     return code == 0, out_dir, err
+
+
+def ffmpeg_decodes(file_path):
+    """True when ffmpeg yields audio samples for file_path.
+
+    ffmpeg exits 0 with zero packets on some malformed files (seen: FLACs whose
+    tagger overflowed a 24-bit metadata block length, leaving exactly 16 MiB of
+    orphaned bytes before the first frame). Demucs decodes via ffmpeg and then
+    dies on an empty tensor, while libFLAC/soundfile resyncs and reads them fine.
+    """
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", file_path, "-map", "0:a:0",
+             "-t", "1", "-f", "s16le", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60,
+        )
+    except Exception:
+        return True  # can't tell; let Demucs report its own error
+    return proc.returncode == 0 and len(proc.stdout) > 0
+
+
+def decode_to_wav(file_path, temp_root):
+    """Decode file_path to a temp float WAV via soundfile (libFLAC/libsndfile)."""
+    import soundfile as sf
+    fd, out_path = tempfile.mkstemp(suffix=".wav", prefix="bbmix_", dir=temp_root)
+    os.close(fd)
+    try:
+        with sf.SoundFile(file_path) as src, sf.SoundFile(
+            out_path, "w", samplerate=src.samplerate, channels=src.channels,
+            format="WAV", subtype="FLOAT",
+        ) as dst:
+            # Explicit seek(0) is required: it makes libFLAC search for the first
+            # real frame. Reading straight after open hits the orphaned bytes
+            # and raises "flac decoder lost sync".
+            src.seek(0)
+            while True:
+                block = src.read(1 << 18, dtype="float32")
+                if not len(block):
+                    break
+                dst.write(block)
+    except Exception:
+        os.unlink(out_path)
+        raise
+    return out_path
 
 
 def extract_segment_clip(file_path, start_sec, duration_sec, out_path):
@@ -1366,6 +1413,7 @@ def main():
     demucs_used = False
     demucs_error = None
     temp_dir = None
+    decoded_copy = None
 
     analysis = None
     if model == "hpss":
@@ -1378,9 +1426,15 @@ def main():
     else:
         stems = {}
         try:
-            ok, out_dir, err = run_demucs(local_audio_path, model, use_gpu, temp_root)
+            demucs_input = local_audio_path
+            if not ffmpeg_decodes(local_audio_path):
+                print("[worker] ffmpeg yields no audio; decoding via soundfile for Demucs",
+                      file=sys.stderr, flush=True)
+                decoded_copy = decode_to_wav(local_audio_path, temp_root)
+                demucs_input = decoded_copy
+            ok, out_dir, err = run_demucs(demucs_input, model, use_gpu, temp_root)
             if ok:
-                stems = locate_stems(out_dir, model, local_audio_path)
+                stems = locate_stems(out_dir, model, demucs_input)
                 if stems:
                     demucs_used = True
                     temp_dir = out_dir
@@ -1413,8 +1467,9 @@ def main():
     neural_embedding = extract_neural_embedding(local_audio_path, duration)
     print("[worker] features done", file=sys.stderr, flush=True)
 
-    if shared_nas_copy and os.path.exists(shared_nas_copy):
-        os.unlink(shared_nas_copy)
+    for tmp_copy in (shared_nas_copy, decoded_copy):
+        if tmp_copy and os.path.exists(tmp_copy):
+            os.unlink(tmp_copy)
 
     output = {
         "track_id": track_id,
