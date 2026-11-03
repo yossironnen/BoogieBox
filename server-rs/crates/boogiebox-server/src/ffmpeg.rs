@@ -200,6 +200,10 @@ pub fn audio_mime_type(path: &Path) -> &'static str {
     }
 }
 
+/// FFmpeg exited cleanly but decoded no audio (e.g. a FLAC whose metadata hides its first frame). An error,
+/// so the lanes count it as a failure instead of storing a flat waveform or silence.
+pub const NO_AUDIO_DECODED: &str = "ffmpeg decoded no audio";
+
 /// Decode audio to mono 8 kHz s16le PCM via FFmpeg and compute 960-bucket amplitude peaks.
 /// Returns a `Vec<u8>` of length 960, each value 0–255.
 /// Documents the Generate Waveform public API surface.
@@ -223,7 +227,7 @@ pub async fn generate_waveform(ffmpeg: &Path, file_path: &Path) -> Result<Vec<u8
     let raw = output.stdout;
     let num_samples = raw.len() / 2;
     if num_samples == 0 {
-        return Ok(vec![0u8; WAVEFORM_POINTS]);
+        return Err(NO_AUDIO_DECODED.to_string());
     }
 
     let samples: Vec<i16> = raw
@@ -288,6 +292,9 @@ pub async fn detect_bpm(ffmpeg: &Path, file_path: &Path) -> Result<Option<f64>, 
         return Err(format!("ffmpeg exited with status {}", output.status));
     }
 
+    if output.stdout.len() < 2 {
+        return Err(NO_AUDIO_DECODED.to_string());
+    }
     let samples: Vec<f64> = output
         .stdout
         .chunks_exact(2)
@@ -673,7 +680,12 @@ pub async fn measure_loudness(
     if !output.status.success() {
         return Err(format!("ffmpeg exited with status {}", output.status));
     }
-    parse_ebur128_summary(&String::from_utf8_lossy(&output.stderr))
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // ebur128 still prints a summary (I −70, peak 0.0) when nothing was decoded.
+    if stderr.contains("Output file is empty") {
+        return Err(NO_AUDIO_DECODED.to_string());
+    }
+    parse_ebur128_summary(&stderr)
         .ok_or_else(|| "no ebur128 summary in the ffmpeg output".to_string())
 }
 
@@ -919,5 +931,90 @@ mod tests {
         assert_eq!(m.true_peak_dbtp, None);
         assert!(parse_ebur128_summary("no summary here").is_none());
         assert!(parse_ebur128_summary("Summary:\n  LRA: 1 LU\n").is_none());
+    }
+
+    /// A tagger that overflows FLAC's 24-bit block length leaves 16 MiB of picture bytes between the last
+    /// metadata block and the first frame. FFmpeg then exits 0 having decoded nothing.
+    fn write_flac_with_orphaned_picture_bytes(good: &[u8], out: &Path) {
+        assert_eq!(&good[..4], b"fLaC");
+        let mut pos = 4;
+        let mut blocks: Vec<(u8, &[u8])> = Vec::new();
+        loop {
+            let header = good[pos];
+            let len = u32::from_be_bytes([0, good[pos + 1], good[pos + 2], good[pos + 3]]) as usize;
+            blocks.push((header & 0x7f, &good[pos + 4..pos + 4 + len]));
+            pos += 4 + len;
+            if header & 0x80 != 0 {
+                break;
+            }
+        }
+        let mut picture = Vec::new();
+        for n in [3_u32, 10] {
+            picture.extend_from_slice(&n.to_be_bytes());
+        }
+        picture.extend_from_slice(b"image/jpeg");
+        for n in [0_u32, 500, 500, 24, 0, 5000] {
+            picture.extend_from_slice(&n.to_be_bytes());
+        }
+        let mut seed = 0x2545_f491_u32;
+        picture.extend((0..5000 + (1 << 24)).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        }));
+        blocks.push((6, &picture));
+        let mut bytes = b"fLaC".to_vec();
+        for (i, (kind, body)) in blocks.iter().enumerate() {
+            let last = if i == blocks.len() - 1 { 0x80 } else { 0 };
+            bytes.push(kind | last);
+            bytes.extend_from_slice(&((body.len() as u32) & 0xff_ffff).to_be_bytes()[1..]);
+            bytes.extend_from_slice(body);
+        }
+        bytes.extend_from_slice(&good[pos..]);
+        std::fs::write(out, bytes).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_file_that_decodes_to_nothing_is_an_error_not_silence() {
+        let ffmpeg = resolve_ffmpeg();
+        let dir = std::env::temp_dir().join(format!("boogiebox-no-audio-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.flac");
+        let made = std::process::Command::new(&ffmpeg) // nosemgrep: boogiebox-rust-dynamic-command
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg("sine=frequency=440:duration=10")
+            .arg(&good)
+            .status();
+        if !matches!(made, Ok(status) if status.success()) {
+            eprintln!("ffmpeg not available; skipping the no-audio check");
+            return;
+        }
+        assert!(generate_waveform(&ffmpeg, &good).await.is_ok());
+
+        let broken = dir.join("broken.flac");
+        write_flac_with_orphaned_picture_bytes(&std::fs::read(&good).unwrap(), &broken);
+        let timeout = std::time::Duration::from_secs(60);
+        assert_eq!(
+            generate_waveform(&ffmpeg, &broken).await,
+            Err(NO_AUDIO_DECODED.into())
+        );
+        assert_eq!(
+            detect_bpm(&ffmpeg, &broken).await,
+            Err(NO_AUDIO_DECODED.into())
+        );
+        assert_eq!(
+            measure_loudness(&ffmpeg, &broken, timeout).await.err(),
+            Some(NO_AUDIO_DECODED.into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

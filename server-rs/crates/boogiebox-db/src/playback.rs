@@ -659,21 +659,28 @@ fn spotify_configured(conn: &Connection) -> bool {
     .is_some_and(|v| !v.trim().is_empty())
 }
 
+/// Excludes tracks [`mark_track_bpm_not_found`] marked, until the scanner sees their file change (a new
+/// `scanned_at`). `julianday` because older rows may hold ISO `T` timestamps.
+const NOT_MARKED_NO_BEAT: &str = "NOT (bpm_detected IS NULL
+                AND bpm_analyzed_at IS NOT NULL
+                AND julianday(bpm_analyzed_at) >= julianday(scanned_at))";
+
 /// Documents the List Tracks Missing Bpm public API surface.
 pub fn list_tracks_missing_bpm(
     conn: &Connection,
     limit: i64,
 ) -> rusqlite::Result<Vec<TrackStreamRow>> {
     let limit = limit.clamp(1, 1000);
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, file_path, format, duration
          FROM tracks
          WHERE (bpm_detected IS NULL OR bpm_detected <= 0)
            AND (bpm IS NULL OR bpm <= 0)
            AND TRIM(COALESCE(file_path, '')) != ''
+           AND {NOT_MARKED_NO_BEAT}
          ORDER BY id
-         LIMIT ?",
-    )?;
+         LIMIT ?"
+    ))?;
     let rows = stmt
         .query_map(params![limit], |row| {
             Ok(TrackStreamRow {
@@ -706,6 +713,7 @@ pub fn list_tracks_missing_bpm_for_ids(
          WHERE (bpm_detected IS NULL OR bpm_detected <= 0)
            AND (bpm IS NULL OR bpm <= 0)
            AND TRIM(COALESCE(file_path, '')) != ''
+           AND {NOT_MARKED_NO_BEAT}
            AND id IN ({placeholders})
          ORDER BY id"
     );
@@ -760,6 +768,17 @@ pub fn save_track_bpm_detected(
              bpm_analyzed_at = datetime('now')
          WHERE id = ?4",
         params![bpm, source, confidence.clamp(0.0, 1.0), track_id],
+    )?;
+    Ok(())
+}
+
+/// Records that BPM detection found no beat in this file (beatless, or too short), so the sweep stops picking
+/// it until the file changes. `bpm_detected` stays NULL.
+pub fn mark_track_bpm_not_found(conn: &Connection, track_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE tracks SET bpm_analyzed_at = datetime('now')
+         WHERE id = ?1 AND bpm_detected IS NULL",
+        params![track_id],
     )?;
     Ok(())
 }
@@ -1452,6 +1471,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(confidence, 1.0);
+    }
+
+    #[test]
+    fn no_beat_marker_holds_until_the_file_changes() {
+        let f = fixture("bpm-no-beat");
+        f.conn
+            .execute(
+                "UPDATE tracks SET scanned_at = '2026-01-01T10:00:00.000Z' WHERE id = ?",
+                params![f.track_id],
+            )
+            .unwrap();
+        mark_track_bpm_not_found(&f.conn, &f.track_id).unwrap();
+        assert!(list_tracks_missing_bpm(&f.conn, 10).unwrap().is_empty());
+        let ids = [f.track_id.clone()];
+        assert!(list_tracks_missing_bpm_for_ids(&f.conn, &ids)
+            .unwrap()
+            .is_empty());
+
+        // The scanner moves scanned_at forward when the file changes.
+        f.conn
+            .execute(
+                "UPDATE tracks SET scanned_at = datetime('now', '+1 minute') WHERE id = ?",
+                params![f.track_id],
+            )
+            .unwrap();
+        assert_eq!(list_tracks_missing_bpm(&f.conn, 10).unwrap().len(), 1);
+        assert_eq!(
+            list_tracks_missing_bpm_for_ids(&f.conn, &ids)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

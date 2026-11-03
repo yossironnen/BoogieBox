@@ -194,7 +194,17 @@ async fn analyze_bpm_tracks(db: &DbPool, tracks: Vec<TrackStreamRow>) -> BpmBatc
                     _ => errors += 1,
                 }
             }
-            Ok(None) => skipped += 1,
+            Ok(None) => {
+                // No beat found: stop re-picking it every run (it used to hold a batch slot forever).
+                skipped += 1;
+                let db_save = db.clone();
+                let track_id = track.id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let conn = db_save.lock().unwrap_or_else(|p| p.into_inner());
+                    boogiebox_db::playback::mark_track_bpm_not_found(&conn, &track_id)
+                })
+                .await;
+            }
             Err(error) => {
                 errors += 1;
                 tracing::warn!(track_id = %track.id, error = %error, "BPM analysis failed");
