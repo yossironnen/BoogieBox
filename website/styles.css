@@ -386,6 +386,53 @@ h2 {
   margin-top: 40px;
 }
 
+.hero-news {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 22px;
+  padding: 6px 14px 6px 6px;
+  border: 1px solid rgba(255,255,255,.28);
+  border-radius: 999px;
+  background: rgba(8,10,13,.55);
+  color: rgba(255,255,255,.88);
+  font-size: 13px;
+  transition: border-color .2s ease;
+}
+
+.hero-news strong {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.hero-news:hover {
+  border-color: #fff;
+}
+
+.smart-stack {
+  position: relative;
+  padding: 0 0 48px;
+}
+
+.smart-stack-main {
+  width: 88%;
+}
+
+.smart-stack-phone {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 26%;
+  border: 3px solid var(--surface-raised);
+  border-radius: 18px;
+  box-shadow: 0 24px 48px rgba(0,0,0,.55);
+}
+
 .section-heading {
   display: grid;
   grid-template-columns: 1.4fr .6fr;
@@ -630,6 +677,15 @@ footer div {
 
   .phone-trio {
     gap: 10px;
+  }
+
+  .smart-stack {
+    padding-bottom: 32px;
+  }
+
+  .smart-stack-phone {
+    width: 30%;
+    border-radius: 12px;
   }
 
   .phone-trio .image-button {

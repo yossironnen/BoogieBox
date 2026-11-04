@@ -14,7 +14,7 @@ BoogieBox exposes a JSON REST API under `/api`. The React client uses `client/sr
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/system/status` | Report setup state, FFmpeg status, log path, and discovery metadata. |
+| `GET` | `/api/system/status` | Report setup state, FFmpeg status, and discovery metadata (no sign-in needed, so it never includes log or data paths). |
 | `POST` | `/api/system/setup` | Complete first-run setup by selecting the database folder. |
 | `POST` | `/api/system/select-folder` | Open the native folder picker during local first-run setup. |
 | `POST` | `/api/system/backups/inspect` | First-run only: validate a backup folder (`{path}`) and summarize it. |
@@ -53,7 +53,12 @@ While a restore swaps the database, every `/api` and `/rest` call except `/api/s
 | `PUT` | `/api/libraries/{id}` | Update library settings. |
 | `DELETE` | `/api/libraries/{id}` | Remove a library. |
 | `POST` | `/api/libraries/{id}/scan` | Start a scan for one library. |
+| `POST` | `/api/libraries/{id}/remove-missing-tracks` | Library managers: delete the tracks whose files are gone, after the user confirms. Every file is checked again first. |
 | `GET` | `/api/scan-jobs/active` | List active scan jobs and status. |
+
+Scan safety: when a library folder cannot be reached, its tracks are kept and the library reports `missing_kept`
+with `missing_kept_reason`. A scan that would remove more than 200 tracks and more than 25% of a library also
+keeps them; `remove-missing-tracks` is the explicit way to delete them.
 
 ## Music Browse And Search
 
@@ -70,6 +75,7 @@ While a restore swaps the database, every `/api` and `/rest` call except `/api/s
 | `GET` | `/api/artists/{id}/radio/options` | What the radio options popover offers: seed `tags`, `autoMoods`, per-mood availability and library-wide tagging progress. |
 | `GET` | `/api/tracks/{id}` | Fetch track detail. |
 | `GET` | `/api/genres` | List library genres. |
+| `GET` | `/api/library-radio/tracks` | A library radio queue for Home's genre cards: `genres` (comma-separated) and/or `library_id`, `limit` (default 200, at most 500). The old `/api/auto-dj/tracks` path still answers for one release. |
 | `GET` | `/api/stats` | Fetch library statistics. |
 
 ## Playback
@@ -83,6 +89,7 @@ While a restore swaps the database, every `/api` and `/rest` call except `/api/s
 | `POST` | `/api/tracks/{id}/played` | Record a track play event (also lists it in Subsonic `getNowPlaying` as "BoogieBox" and tells the user's scrobbling services it started). |
 | `POST` | `/api/tracks/{id}/scrobble` | The web player says a play counts (played half its length or 4 minutes; tracks of 30 s or less never count). Body `{ startedAt }` (Unix seconds, optional). Queued for the user's Last.fm / ListenBrainz accounts; does not change play counts. |
 | `GET` | `/api/user/history` | Fetch listening history for the current user. |
+| `POST` | `/api/tracks/loudness` | Volume levelling values `{ ids }` (up to 200 track ids or `boogiemix:<outputId>` mixes): gains and peaks per id; ids without values are left out. |
 
 Per-user play counts: every row in `play_history` also updates `user_track_stats` (database triggers), so each
 user's own counts are available without scanning the history. Subsonic `playCount`/`played` use them; the web UI's
@@ -150,6 +157,7 @@ passes the same threshold as the web player.
 | `PUT` | `/api/playlists/{id}/smart-definition` | Replace the rules `{ definition, expectedEditRevision }` and re-evaluate, all or nothing. `409` `edit_conflict` (with the current `editRevision`) when they changed meanwhile; `409` `unsupported` for rules from a newer version. |
 | `GET` | `/api/playlists/{id}/snapshot` | Playlist and tracks from one read, smart playlists refreshed first: `{ playlist, tracks, membershipRevision, refreshError }`. `refreshError` (`timed_out` / `unsupported` / `failed`) means the last result is shown. |
 | `POST` | `/api/playlists/{id}/refresh` | Re-evaluate a smart playlist now; returns the snapshot. |
+| `GET` | `/api/playlists/{id}/summary` | One playlist's card row; a smart playlist is refreshed first when its inputs changed. The client asks for the smart cards on screen, one at a time. |
 | `POST` | `/api/playlists/{id}/static-copy` | Save a smart playlist's current tracks as a new ordinary playlist `{ name, description? }`; returns `{ playlist, added }`. |
 
 ## Ratings And Metadata
@@ -181,6 +189,11 @@ passes the same threshold as the web player.
 | `GET` | `/api/waveforms/map/status` | Report waveform mapping status. |
 | `POST` | `/api/bpm/run` | Run BPM analysis for missing BPM values. |
 | `GET` | `/api/bpm/status` | Report BPM analysis status. |
+| `GET` | `/api/admin/loudness/status` | Admin: how much of the library has volume levelling values, how many files failed, and whether measuring is on and running. |
+
+The waveform, BPM and loudness passes give up on a file after 3 failed tries (until restart), and BPM
+"no beat found" is remembered until the file changes. Background deep analysis skips a track after 3 failures on
+the same file; "Analyse all" and library or playlist runs still retry it.
 
 ## BoogieMix
 
@@ -230,6 +243,17 @@ The desktop Activity page. Everything except the heartbeat is admin-only (`403` 
 | `GET` | `/api/activity/events` | Server-Sent Events: `snapshot` with the same body, sent when something changed (at most once a second; job tables are re-read every 2 s while connected). |
 | `POST` | `/api/activity/heartbeat` | Any signed-in user: the web player's `{playerId, trackId, positionSec, durationSec, paused, stopped}` (`trackId` is a track id, `mx-{outputId}` or `st-{stationId}`). `204`. A player that stops reporting for 45 s is dropped. |
 | `POST` | `/api/activity/mix-jobs/{jobId}/cancel` | Cancel any user's queued or analysing/planning BoogieMix job (`409` once rendering or finished). |
+
+## Logs (Admin)
+
+The Settings → Logs view. Files are named by key (`server`, `server.1`, `scan.<date>`, `deep.<date>`), never by a path.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/admin/logs` | The log folder and every log file, by source. |
+| `GET` | `/api/admin/logs/{key}/lines` | A page of lines ending at `before`; `limit`, `level` and `q` (search) filter it. |
+| `GET` | `/api/admin/logs/{key}/follow` | Server-Sent Events: `lines` (`{lines, end}`) for lines added after `from`, and `rotated` when the file was replaced or a debug log moved to a new day. |
+| `GET` | `/api/admin/logs/{key}/download` | The whole file, with secrets masked. |
 
 ## Subsonic Apps (OpenSubsonic `/rest`)
 
@@ -337,6 +361,11 @@ do not expose it to the internet. To listen away from home, download music to th
 | `GET` | `/api/lastfm/info` | Fetch Last.fm artist information. |
 | `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist. |
 | `GET` | `/api/radio/metadata/status` | Artist Radio metadata collection mode, provider availability and progress (`tracksChecked`/`tracksTotal`, `artistsTagged`/`artistsTotal`). |
+
+Volume levelling settings: per user `loudnessMode` (`off` | `track` | `album` | `auto`) and `loudnessPreampDb`
+(−6 to 6 in steps of 0.5); global (admin) `loudnessAnalysisEnabled` (measure tracks without ReplayGain tags),
+`loudnessPlayOnMode` (`off` | `track` | `album` | `auto`) and `loudnessSubsonicTranscodeMode` (`off` | `track` |
+`album`, applied to Subsonic transcodes). Gains never push a peak above −1 dBTP. Subsonic songs carry `replayGain`.
 
 Artist Radio settings (global, admin): `radioTrackTagSync` (`off` | `lazy` | `full`, default `full`) controls
 Last.fm track-tag collection; `radioKeylessProviders` (`true`/`false`, default `true`) enables MusicBrainz and

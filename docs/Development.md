@@ -175,7 +175,9 @@ Do not commit local database files, runtime config, logs, release output, tempor
 
 **Windows:** Packaged server logs default to `%PROGRAMDATA%\BoogieBox\logs\boogiebox-server.log`.
 
-**Linux:** Logs default to the working directory or systemd journal when running as a service. Use `BOOGIEBOX_LOG_DIR` to override.
+**Linux:** The systemd service writes to `/var/lib/boogiebox/logs/boogiebox-server.log` (the unit sets `BOOGIEBOX_CONFIG_DIR=/var/lib/boogiebox`). A manual run with `BOOGIEBOX_CONFIG_DIR` set uses `<that folder>/logs`; otherwise logs go to a `logs` folder next to the executable.
+
+The dated scan and deep-analysis debug logs are written to the same folder when turned on. Admins can read, search, follow and download all of them in **Settings → Logs** (secrets masked).
 
 The server supports:
 

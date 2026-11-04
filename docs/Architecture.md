@@ -27,7 +27,7 @@ Important server modules:
 
 - `src/main.rs`: process entry, Tokio runtime, and graceful shutdown.
 - `src/lib.rs`: `AppState`, route mounting, setup and database-switch flow, middleware, and static client delivery.
-- `src/routes/`: grouped API routes for auth, libraries/scans/schedules, music, playlists, settings, artwork, playback, crossfade, DLNA, Play On, providers, admin, BoogieMix, Subsonic credentials (passwords and API keys), favourites, internet radio, and scrobbling accounts.
+- `src/routes/`: grouped API routes for auth, libraries/scans/schedules, music, playlists, settings, artwork, playback, crossfade, DLNA, Play On, providers, admin, BoogieMix, Subsonic credentials (passwords and API keys), favourites, internet radio, scrobbling accounts, Activity, backups, admin logs, and volume levelling.
 - `src/auth.rs`: PIN hashing, sessions, brute-force tracking, and Axum auth extractors.
 - `src/cors.rs`: local/LAN origin allowlist.
 - `src/media_serve.rs`: shared ranged file serving and MP3/WAV transcodes for browser playback, DLNA, and Play On.
@@ -42,11 +42,14 @@ Important server modules:
 - `src/providers.rs`: Discogs, Deezer, Spotify, LRCLIB, and lyrics.ovh clients.
 - `src/image_thumb.rs`: JPEG thumbnail generation.
 - `src/home_cache.rs`: bounded, change-counter-invalidated Home query cache.
-- `src/scanner.rs`: music library scanning.
+- `src/scanner.rs`: music library scanning. An unreachable folder keeps its tracks, and a scan that would remove more than 200 tracks and more than 25% of a library keeps them too (the library reports `missing_kept`); "Remove missing tracks" deletes them on request.
+- `src/tag_bag.rs`: keeps every text tag a file carries (ReplayGain, MusicBrainz ids, multi-value credits), not only the fixed scanner fields.
 - `src/post_scan.rs`: follow-up jobs after scans.
 - `src/artwork_cache.rs`: artwork caching.
 - `src/waveform_map.rs`: waveform generation.
 - `src/bpm_analysis.rs`: BPM analysis.
+- `src/loudness_analysis.rs`: volume levelling. Measures tracks without ReplayGain tags, and BoogieMix mixes, with FFmpeg's ebur128 filter into `track_loudness`; the web player applies the gain, and Play On and Subsonic transcodes can too.
+- `src/lane_failures.rs`: shared by the waveform, BPM and loudness passes: a file that fails 3 times is left alone until restart; a missing file is only skipped for an hour.
 - `src/mix_worker.rs`: BoogieMix planning and rendering.
 - `src/beat_grid.rs`: beat-grid detection used for BoogieMix transitions.
 - `src/mix_priority_gate.rs`: BoogieMix job priority/concurrency gating.
@@ -58,14 +61,18 @@ Important server modules:
 - `src/tag_taxonomy.rs`: style/mood tag normalization for Artist Radio.
 - `src/db_warmup.rs`: background cache warm-up on startup and library switch.
 - `src/db_maintenance.rs`: weekly late-night `PRAGMA incremental_vacuum` sweep.
-- `src/logging.rs`: `server.log` plus live-toggled scan and deep-analysis debug logs.
+- `src/logging.rs`: `boogiebox-server.log` plus live-toggled, dated scan and deep-analysis debug logs.
+- `src/logs.rs`: admin Logs view: lists the log files, reads them backwards a page at a time, follows appended lines, and masks secrets. Clients name files by key, never by path.
+- `src/backup.rs`: scheduled and on-demand backups, live restore without a restart, first-run restore, a restore left pending at startup, and the `--list-backups` / `--restore` CLI. The database half lives in `boogiebox_db::backup`.
+- `src/shutdown_event.rs`: lets the Windows tray launcher stop the server it started (a named event, handled like Ctrl+C).
 - `src/event_log.rs`: Windows Event Log startup banner.
 - `src/ffmpeg.rs`: FFmpeg and FFprobe resolution.
 - `src/settings.rs`: global and per-user settings normalization.
 - `src/server_config.rs`: database locator and packaged runtime config.
-- `src/bin/`: maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`).
+- `src/bin/boogiebox.rs`: the Windows tray launcher (`boogiebox.exe`). It runs `boogiebox-server.exe` without a console window and shows a notification-area icon with "Open BoogieBox" and "Exit".
+- `src/bin/`: also maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`).
 
-`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, `subsonic` (credentials, API keys, stars, play queues, paged sync listings), `scrobble`, `radio_stations`, and `maintenance`.
+`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `smart_playlists` (rule validation, compiling and evaluation with a 1 s query budget, stored membership, freshness checks), `playlist_import` (M3U/M3U8 matching), `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, `subsonic` (credentials, API keys, stars, play queues, paged sync listings), `scrobble`, `radio_stations`, `favourites`, `activity`, `loudness`, `backup` (`VACUUM INTO` snapshots, manifest, retention, path remaps), and `maintenance`.
 
 ## Frontend
 
@@ -77,10 +84,13 @@ Important client modules:
 - `client/src/api.ts`: typed API client and URL helpers.
 - `client/src/components/`: desktop views and shared UI components.
 - `client/src/mobile/`: mobile shell and mobile-specific views.
-- `client/src/platform/`: browser and Tauri desktop platform abstractions.
+- `client/src/platform/`: browser and Tauri desktop platform abstractions, including OS media controls (Media Session).
 - `client/src/remote/`: Play On: `usePlayOn` orchestration, per-browser playback target, shared SSE stream (`/api/remote/events`), `remoteBridge` mapping `PlayerState` changes to server actions, output picker, and takeover prompt.
-- `client/src/audio/`: Web Audio EQ model and Vinyl Mode effects engine.
-- `client/src/hooks/`: shared data hooks (Home data, deep-analysis status, scan activity, adaptive accent).
+- `client/src/audio/`: Web Audio EQ model, Vinyl Mode effects engine, volume levelling gain, and the sleep timer.
+- `client/src/hooks/`: shared data hooks (Home data, deep-analysis status, scan activity, adaptive accent, keyboard shortcuts, backup health, smart playlist re-checks).
+- `client/src/smartPlaylistRules.ts`: smart playlist rule model, validation and wording, shared by the desktop and mobile editors.
+- `client/src/playlistImport.ts`: M3U/M3U8 import helpers.
+- `client/src/activity/`: Activity feed (SSE with polling fallback) and the web player heartbeat.
 - `client/src/types/`: shared TypeScript payload types.
 - `client/src/version.ts`: app version displayed by the client.
 
@@ -114,17 +124,17 @@ Core tables include:
 - `artist_ratings`, `album_ratings`, `track_ratings`, `play_history`
 - `artist_styles`, `album_styles`, `track_tags`, `track_tag_sync`, `lastfm_cache`, `lyrics_cache`
 - `scan_jobs`, `post_scan_jobs`, `scan_schedules`
-- `playlists`, `playlist_tracks`, `crossfade_overrides`
-- `track_waveforms`, `track_deep_analysis`, `track_mix_analysis`, `deep_analysis_jobs`
-- `mix_jobs`, `mix_job_logs`, `mix_outputs`, `mix_output_tracks`, `mix_transitions`, `boogiemix_plans`
+- `playlists` (`kind` `manual` / `smart`), `playlist_tracks`, `smart_playlist_definitions`, `smart_playlist_content_revision`, `smart_playlist_user_revisions`, `crossfade_overrides`
+- `track_waveforms`, `track_loudness`, `track_deep_analysis`, `track_mix_analysis`, `deep_analysis_jobs`
+- `mix_jobs`, `mix_job_tracks`, `mix_job_logs`, `mix_outputs`, `mix_output_tracks`, `mix_transitions`, `boogiemix_plans`
 - `upnp_renderers`, `remote_sessions`
 - `subsonic_credentials` (encrypted Subsonic password, API key hash), `subsonic_stars`, `subsonic_play_queues`, `user_track_stats`
-- `scrobble_accounts`, `scrobble_queue`, `internet_radio_stations`
+- `scrobble_accounts`, `scrobble_queue`, `internet_radio_stations`, `activity_events`
 - `settings`, `user_settings`, `provider_usage_stats`, `stats_cache`
 
 ## Background Work
 
-Scanning discovers local music, writes normalized library rows, and queues post-scan work. Post-scan jobs handle artwork caching, waveform generation, BPM analysis, and optional deep-analysis work. Background loops also collect radio tags/moods, warm caches, and run weekly database maintenance. BoogieMix rendering runs as a separate planning/rendering flow and writes downloadable mix outputs. Deep analysis shells out to the optional Python worker; Demucs (`demucs_runner.py`) and madmom beat tracking (`beatgrid_runner.py`) each run in their own process.
+Scanning discovers local music, writes normalized library rows, and queues post-scan work. Post-scan jobs handle artwork caching, waveform generation, BPM analysis, and optional deep-analysis work. Background loops also measure loudness for volume levelling, collect radio tags/moods, warm caches, run scheduled backups, and run weekly database maintenance. Smart playlists are re-evaluated on demand, when one is opened, its card is on screen, or BoogieMix, deep analysis, Subsonic or an export reads it, and only if its inputs changed (library content, the user's plays and ratings, or the clock for relative dates). BoogieMix rendering runs as a separate planning/rendering flow and writes downloadable mix outputs. Deep analysis shells out to the optional Python worker; Demucs (`demucs_runner.py`) and madmom beat tracking (`beatgrid_runner.py`) each run in their own process.
 
 ## Network Playback
 

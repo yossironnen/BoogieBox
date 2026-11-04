@@ -30,6 +30,12 @@ Also includes waveform and BPM analysis, mobile-friendly access, Subsonic/OpenSu
 
 ![BoogieMix](docs/Screenshots/boogiemix.png)
 
+### Smart Playlists
+
+![Smart playlist rules editor with a live preview](docs/Screenshots/smart_playlist_rules.png)
+
+![Smart playlists on the home screen](docs/Screenshots/smart_playlists_home.png)
+
 ### Karaoke Playback
 
 ![Karaoke playback](docs/Screenshots/karaoke_playback.png)
@@ -67,6 +73,7 @@ Also includes waveform and BPM analysis, mobile-friendly access, Subsonic/OpenSu
 - AI-powered BoogieMix DJ engine
 - Vinyl Mode plays your music with an analog look and sound (yeah, some crackles & pops)
 - Karaoke lyrics and waveform navigation
+- Smart playlists that keep themselves up to date
 - Genre Galaxy music discovery
 - Mobile-friendly interface
 - Play On: send playback to WiiM streamers, smart TVs, and other UPnP/DLNA speakers, and move it between devices mid-song
@@ -114,6 +121,8 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 ### 🎧 Rich Listening Experience
 
 - Full-featured music player with queue management, shuffle, repeat, and smooth transitions
+- Volume levelling with ReplayGain tags, or values the server measures for untagged tracks (per track, per album, or automatic)
+- Keyboard shortcuts (press **?**), a sleep timer, and media keys and lock-screen controls
 - Interactive waveform seek bar with Sonic Fingerprint stem-analysis overlay for precise navigation
 - Sonic Fingerprint panel showing per-stem energy, vocal/drum/bass presence, and transition windows from deep analysis
 - Synchronized lyrics and karaoke mode
@@ -158,6 +167,8 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 - Multi-user support
 - Local and network library support
 - Scheduled backups and one-click restore, including moving to a new machine
+- Safe scans: an offline drive or NAS never wipes its tracks from your library
+- Admin tools: a live Activity page and a server log viewer in Settings
 - Optional Windows desktop application with automatic server discovery (in dev)
 
 ---
@@ -171,6 +182,9 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 | Karaoke Lyrics | ✅ |
 | Waveform Navigation | ✅ |
 | Smart Playlists | ✅ |
+| Playlist Import (M3U/M3U8) | ✅ |
+| Volume Levelling (ReplayGain) | ✅ |
+| Backup & Restore | ✅ |
 | BoogieMix AI Mixing (experimental!) | ✅ |
 | Genre Galaxy | ✅ |
 | Mobile Interface | ✅ |

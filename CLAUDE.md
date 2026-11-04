@@ -54,7 +54,8 @@ Self-hosted music library app. Supports Windows and Linux (server-only on Linux)
 - SQLite via `rusqlite` in `server-rs`
 - Music-only libraries; legacy movie/TV/video schema and UI have been removed
 - Play On: playback on LAN UPnP/DLNA renderers (server-side queue + session actor per renderer)
-- Async music scanner plus post-scan follow-up jobs for artwork, waveforms, BPM, and BoogieMix deep analysis
+- Async music scanner plus post-scan follow-up jobs for artwork, waveforms, BPM, loudness (volume levelling), and BoogieMix deep analysis
+- Smart playlists (rule-picked, stored membership refreshed on demand), M3U/M3U8 import, scheduled backups with live restore
 - Optional Python BoogieMix deep-analysis worker under `Services/boogiemix/python/`
 - Standalone Rust server build/package flow via `build-server-rust.bat` for Windows  or 'build-server-rust.sh' for Linux
 
@@ -68,7 +69,10 @@ server_config.rs — On Windows `boogiebox-config.json` locator (ProgramData, ex
 server_config.rs — On Linux `boogiebox-config.json` locator (/etc/boogiebox/ or ~/.config/boogiebox/, exe-adjacent, CWD, env overrides)
 settings.rs — global + per-user settings normalization  
 ffmpeg.rs — FFmpeg/FFprobe resolution, transcode spawn, waveform generation  
-scanner.rs — async music scan worker (ID3v2, FLAC, Ogg, MP4/M4A tag parsing, technical metadata)  
+scanner.rs — async music scan worker (ID3v2, FLAC, Ogg, MP4/M4A tag parsing, technical metadata; offline-folder guard + mass-removal brake)  
+tag_bag.rs — keeps every text tag a file carries (ReplayGain, MusicBrainz ids, multi-value credits)  
+loudness_analysis.rs — volume levelling: ebur128 measurement of untagged tracks and mixes into `track_loudness`  
+lane_failures.rs — waveform/BPM/loudness lanes give up on a file after 3 failures (until restart)  
 post_scan.rs — async post-scan lanes (art caching, Last.fm, lyrics, artist styles)  
 mix_worker.rs — BoogieMix render + AI planner + deep-analysis Python orchestration  
 dlna.rs — SSDP + Axum DLNA server, ContentDirectory Browse, audio streaming  
@@ -77,13 +81,17 @@ upnp/ — UPnP AV control point (XML, device descriptions, SOAP, SSDP discovery,
 remote/ — Play On: RemoteManager, renderer registry, media tokens (`/media/r/{token}`), queue, per-renderer session actors  
 subsonic/ — OpenSubsonic-compatible `/rest` API for third-party apps (auth via per-user Subsonic password or OpenSubsonic API key, XML/JSON rendering, browse/search/stream/scrobble, internet radio, jukebox via Play On, saved play queue, scan status/start, transcode offsets; LAN-only)  
 plays.rs — shared play hub: now-playing list (web, Play On, Subsonic), play started/finished events, scrobble threshold  
+backup.rs — scheduled/on-demand backups, live restore, first-run restore, `--list-backups`/`--restore` CLI  
+logs.rs — admin Logs view (list, page backwards, follow, mask secrets; files named by key)  
+shutdown_event.rs — lets the Windows tray launcher stop the server  
+bin/boogiebox.rs — Windows tray launcher (`boogiebox.exe`)  
 activity.rs — admin Activity page: live transfer tracking (byte-counted responses), download sessions, web player heartbeats, persisted 7-day history, snapshot builder  
 scrobbling/ — Last.fm + ListenBrainz scrobble forwarder (encrypted per-user accounts, queued delivery with retries, Last.fm sign-in)  
 providers.rs — Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh  
 artwork_cache.rs — SHA-1 cache-key shards, UUID v7 markers, folder.jpg discovery  
 image_thumb.rs — JPEG thumbnail generation (pure Rust `image` crate)  
 deep_analysis.rs — Python/Demucs/Torch capability detection and job orchestration  
-routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session, subsonic [Subsonic password + API key management], favourites, radio [internet radio + stream relay], scrobble [scrobbling accounts], activity [admin Activity snapshot + SSE, heartbeat, admin mix cancel])
+routes/ — Axum route modules per domain (admin, auth, settings, library [libraries/scans/schedules], music, playlist, playback, crossfade, artwork, provider, boogiemix, dlna, remote, remote_session, subsonic [Subsonic password + API key management], favourites, radio [internet radio + stream relay], scrobble [scrobbling accounts], activity [admin Activity snapshot + SSE, heartbeat, admin mix cancel], backup, log [admin Logs], loudness)
 
 
 ### Client (`client/src`)
@@ -97,6 +105,10 @@ routes/ — Axum route modules per domain (admin, auth, settings, library [libra
 `components/SettingsPage.tsx` — settings/admin surfaces  
 `components/ActivityView.tsx` — admin Activity page (desktop)  
 `activity/` — Activity feed (SSE + polling fallback), web player heartbeat, types, wording  
+`smartPlaylistRules.ts` — smart playlist rule model, validation, wording (desktop + mobile)  
+`components/SmartPlaylistEditor.tsx` — smart playlist rules editor with live preview  
+`components/PlaylistImport.tsx` — M3U/M3U8 import preview  
+`audio/` — EQ, Vinyl Mode, volume levelling gain, sleep timer  
 `components/ContextMenu.tsx` — shared context menu  
 `mobile/` — mobile shell and mobile-specific views  
 `platform/` — browser/desktop platform abstraction  
@@ -128,9 +140,9 @@ libraries -> tracks -> artists, albums
 tracks_fts (FTS5 unicode61)  
 artist_ratings, album_ratings, track_ratings  
 scan_jobs, scan_schedules, post_scan_jobs  
-playlists, playlist_tracks  
-track_waveforms, track_deep_analysis  
-mix_jobs, mix_outputs  
+playlists (kind manual/smart), playlist_tracks, smart_playlist_definitions  
+track_waveforms, track_loudness, track_deep_analysis  
+mix_jobs, mix_job_tracks, mix_outputs  
 upnp_renderers, remote_sessions  
 subsonic_credentials, subsonic_stars, subsonic_play_queues, user_track_stats  
 scrobble_accounts, scrobble_queue, internet_radio_stations  

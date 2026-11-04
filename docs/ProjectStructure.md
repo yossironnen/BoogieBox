@@ -60,7 +60,9 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `client/src/mobile/` | Mobile shell and mobile-specific views. |
 | `client/src/platform/` | Browser and desktop platform abstraction. |
 | `client/src/remote/` | Play On hooks, SSE stream, PlayerState bridge, output picker, and takeover prompt. |
-| `client/src/audio/` | EQ model and Vinyl Mode effects engine. |
+| `client/src/activity/` | Activity feed (SSE with polling fallback) and web player heartbeat. |
+| `client/src/smartPlaylistRules.ts` | Smart playlist rule model, validation, and wording (desktop and mobile). |
+| `client/src/audio/` | EQ model, Vinyl Mode effects engine, volume levelling gain, and sleep timer. |
 | `client/src/hooks/` | Shared data hooks. |
 | `client/src/__tests__/` | Client test suites. |
 | `client/src/types/` | Shared TypeScript data shapes. |
@@ -77,7 +79,10 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `server-rs/crates/boogiebox-server/src/main.rs` | Process entry and graceful shutdown. |
 | `server-rs/crates/boogiebox-server/src/lib.rs` | `AppState`, route mounting, setup and database-switch flow. |
 | `server-rs/crates/boogiebox-server/src/routes/` | API route groups. |
-| `server-rs/crates/boogiebox-server/src/scanner.rs` | Music scanning. |
+| `server-rs/crates/boogiebox-server/src/scanner.rs` | Music scanning (with the offline-folder guard and mass-removal brake). |
+| `server-rs/crates/boogiebox-server/src/loudness_analysis.rs` | Volume levelling measurements. |
+| `server-rs/crates/boogiebox-server/src/backup.rs` | Backups, restores, and the backup CLI. |
+| `server-rs/crates/boogiebox-server/src/logs.rs` | Admin Logs view (list, page, follow, mask secrets). |
 | `server-rs/crates/boogiebox-server/src/post_scan.rs` | Post-scan job handling. |
 | `server-rs/crates/boogiebox-server/src/mix_worker.rs` | BoogieMix planning and rendering. |
 | `server-rs/crates/boogiebox-server/src/deep_analysis.rs` | BoogieMix deep-analysis orchestration. |
@@ -85,18 +90,21 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `server-rs/crates/boogiebox-server/src/dlna.rs` | Optional DLNA MediaServer. |
 | `server-rs/crates/boogiebox-server/src/upnp/` | UPnP AV control point: XML, device descriptions, SOAP, SSDP discovery, DIDL helpers. |
 | `server-rs/crates/boogiebox-server/src/remote/` | Play On manager, renderer registry, media tokens, queue, and per-renderer session actors. |
-| `server-rs/crates/boogiebox-server/src/bin/` | Maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`). |
+| `server-rs/crates/boogiebox-server/src/bin/boogiebox.rs` | Windows tray launcher (`boogiebox.exe`). |
+| `server-rs/crates/boogiebox-server/src/bin/` | Also maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`). |
 | `server-rs/crates/boogiebox-db/` | SQLite schema, migrations, and query helpers. |
+| `server-rs/crates/boogiebox-db/src/smart_playlists.rs` | Smart playlist rules engine and stored membership. |
+| `server-rs/crates/boogiebox-db/src/playlist_import.rs` | M3U/M3U8 import matcher. |
 
 ## Route Groups
 
 | Path | Purpose |
 | --- | --- |
 | `routes/auth_routes.rs` | Login, logout, and current-user endpoints. |
-| `routes/library_routes.rs` | Libraries, scan jobs, and scan schedules. |
-| `routes/music_routes.rs` | Artists, albums, tracks, search, genres, and stats. |
+| `routes/library_routes.rs` | Libraries, scan jobs, scan schedules, and "Remove missing tracks". |
+| `routes/music_routes.rs` | Artists, albums, tracks, search, genres, stats, Artist Radio, and library radio. |
 | `routes/playback_routes.rs` | Audio streaming, lyrics, history, and playback helpers. |
-| `routes/playlist_routes.rs` | Playlists and playlist tracks. |
+| `routes/playlist_routes.rs` | Playlists, playlist tracks, smart playlists, and M3U/M3U8 import and export. |
 | `routes/artwork_routes.rs` | Artwork serving and caching. |
 | `routes/settings_routes.rs` | Global and per-user settings. |
 | `routes/boogiemix_routes.rs` | BoogieMix jobs, outputs, and deep-analysis status. |
@@ -106,6 +114,14 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `routes/crossfade_routes.rs` | Crossfade settings and overrides. |
 | `routes/remote_routes.rs` | Play On renderer list/refresh/admin edits, icons, diagnostics, and `/media/r/{token}`. |
 | `routes/remote_session_routes.rs` | Play On session load/command/queue/transfer/end and the `/api/remote/events` SSE stream. |
+| `routes/subsonic_routes.rs` | Subsonic password and API key management (the `/rest` API itself is in `src/subsonic/`). |
+| `routes/favourites_routes.rs` | Favourites (hearts). |
+| `routes/radio_routes.rs` | Internet radio stations and the stream relay. |
+| `routes/scrobble_routes.rs` | Last.fm and ListenBrainz accounts. |
+| `routes/activity_routes.rs` | Admin Activity snapshot, SSE feed, web player heartbeat, and mix-job cancel. |
+| `routes/backup_routes.rs` | Backup settings, runs, restores, and first-run restore. |
+| `routes/log_routes.rs` | Admin Logs view. |
+| `routes/loudness_routes.rs` | Volume levelling values and status. |
 
 ## Desktop
 
