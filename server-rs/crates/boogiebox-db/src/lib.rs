@@ -16,6 +16,7 @@ pub mod radio_stations;
 pub mod remote;
 pub mod scrobble;
 pub mod smart_playlists;
+pub mod smart_steer;
 pub mod subsonic;
 
 use rusqlite::{params, Connection, OptionalExtension};

@@ -398,6 +398,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn smart_playlist_mood_pills_know_the_same_buckets() {
+        assert_eq!(boogiebox_db::smart_steer::MOOD_BUCKETS, MOOD_BUCKETS);
+    }
+
+    #[test]
     fn normalize_folds_aliases_and_drops_junk() {
         assert_eq!(
             normalize_tag("  Trip  Hop ", &[]).as_deref(),

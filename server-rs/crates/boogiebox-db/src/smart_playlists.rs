@@ -5,6 +5,7 @@
 
 use crate::music::EntityId;
 use crate::playlists::{self, CreatePlaylistError, PlaylistRow, PlaylistTrackRow};
+use crate::smart_steer::{self, CSteer, Steer, STEER_POOL_MAX};
 use rusqlite::{types::Value, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -50,6 +51,10 @@ pub struct Definition {
     pub sort: Vec<SortKey>,
     #[serde(default)]
     pub limit: Limit,
+    /// Steering pills: which matches get in, never what may match. Left out when empty, so definitions
+    /// without pills store exactly what they always did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steer: Vec<Steer>,
 }
 
 /// A rule group: every child (`all`) or at least one child (`any`) must match.
@@ -150,6 +155,7 @@ pub enum RuleErrorCode {
     BadRange,
     BadSort,
     BadLimit,
+    BadSteer,
 }
 
 /// What is wrong and where (`root.children[1].value`, `sort[0]`, `limit.maxTracks`).
@@ -160,7 +166,7 @@ pub struct RuleError {
     pub code: RuleErrorCode,
 }
 
-fn err(path: impl Into<String>, code: RuleErrorCode) -> RuleError {
+pub(crate) fn err(path: impl Into<String>, code: RuleErrorCode) -> RuleError {
     RuleError {
         path: path.into(),
         code,
@@ -269,6 +275,7 @@ pub struct ValidDefinition {
     shuffle_seed: Option<u32>,
     max_tracks: u32,
     max_duration_seconds: Option<u32>,
+    steers: Vec<CSteer>,
 }
 
 impl ValidDefinition {
@@ -293,7 +300,7 @@ impl ValidDefinition {
                 CNode::Cond(_) => false,
             })
         }
-        walk(&self.root)
+        walk(&self.root) || self.steers.iter().any(CSteer::is_time_based)
     }
 }
 
@@ -361,6 +368,8 @@ pub fn validate(mut def: Definition) -> Result<ValidDefinition, Vec<RuleError>> 
         }
     }
 
+    let steers = smart_steer::check_steer(&mut def.steer, &mut errors);
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -373,6 +382,7 @@ pub fn validate(mut def: Definition) -> Result<ValidDefinition, Vec<RuleError>> 
         max_duration_seconds: def.limit.max_duration_seconds,
         root,
         sort,
+        steers,
         canonical: def,
     })
 }
@@ -699,7 +709,7 @@ const ARTIST_NAME: &str = "TRIM(COALESCE(ar.name, ''))";
 const ALBUM_ARTIST: &str = "TRIM(t.album_artist)";
 const ALBUM_TITLE: &str = "TRIM(COALESCE(al.title, ''))";
 const GENRE: &str = "TRIM(COALESCE(t.genre, ''))";
-const BPM: &str =
+pub(crate) const BPM: &str =
     "(CASE WHEN t.bpm > 0 THEN t.bpm WHEN t.bpm_detected > 0 THEN t.bpm_detected END)";
 const LAST_PLAYED: &str = "NULLIF(s.last_played_at, '')";
 const PLAY_COUNT: &str = "COALESCE(s.play_count, 0)";
@@ -959,7 +969,13 @@ fn build_query(ctx: &Context, def: &ValidDefinition) -> rusqlite::Result<(String
     order.push("t.id ASC".to_owned());
 
     let joins = joins_sql(&mut c, ctx);
-    let limit = c.bind(i64::from(def.max_tracks));
+    // Pills pick from the matches, so a steered query reads past the playlist's own limit.
+    let limit = if def.steers.is_empty() {
+        i64::from(def.max_tracks)
+    } else {
+        STEER_POOL_MAX as i64
+    };
+    let limit = c.bind(limit);
     let sql = format!(
         "SELECT t.id, t.duration FROM tracks t{joins} WHERE {predicate} ORDER BY {} LIMIT {limit}",
         order.join(", ")
@@ -1037,6 +1053,7 @@ pub fn evaluate_with_budget(
         now,
     };
     let shuffled = def.shuffle_seed.is_some();
+    let started = std::time::Instant::now();
     let mut rows = with_query_budget(conn, budget, || {
         let (sql, params) = build_query(&ctx, def)?;
         let mut stmt = conn.prepare(&sql)?;
@@ -1056,12 +1073,22 @@ pub fn evaluate_with_budget(
                 duration: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
                 album,
                 artist,
+                rank: 0,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
     })?;
     if let Some(seed) = def.shuffle_seed {
         rows.sort_by_cached_key(|c| (shuffle_key(seed, &c.id), c.id.clone()));
+    }
+    let steered = !def.steers.is_empty();
+    if steered {
+        rows.truncate(STEER_POOL_MAX);
+        let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
+        let weights = with_query_budget(conn, budget.saturating_sub(started.elapsed()), || {
+            smart_steer::steer_weights(conn, owner_id, now, &def.steers, &ids)
+        })?;
+        rows = lean(rows, &weights, def);
     }
 
     let budget_seconds = def.max_duration_seconds.map(f64::from);
@@ -1081,6 +1108,8 @@ pub fn evaluate_with_budget(
     }
     if shuffled {
         picked = spread(picked);
+    } else if steered {
+        picked.sort_by_key(|c| c.rank);
     }
     Ok(Selection {
         track_ids: picked.into_iter().map(|c| c.id).collect(),
@@ -1094,6 +1123,35 @@ struct Candidate {
     duration: f64,
     album: String,
     artist: String,
+    /// Position in the rules' own order; only used to restore that order after a fixed-order lean.
+    rank: usize,
+}
+
+/// Puts the matches in the order they should get in, given one weight per match. A weight of 1 for every
+/// track leaves the order exactly as it was.
+fn lean(rows: Vec<Candidate>, weights: &[f64], def: &ValidDefinition) -> Vec<Candidate> {
+    let mut scored: Vec<(f64, Candidate)> = rows
+        .into_iter()
+        .zip(weights)
+        .enumerate()
+        .map(|(rank, (mut candidate, weight))| {
+            candidate.rank = rank;
+            let score = match def.shuffle_seed {
+                // Weighted sampling without replacement (Efraimidis–Spirakis), as ln(u) / weight. `u` falls as
+                // the shuffle key rises, so equal weights keep the plain shuffle's order.
+                Some(seed) => {
+                    let position = shuffle_key(seed, &candidate.id) as f64 / u64::MAX as f64;
+                    (1.0 - position).ln() / weight
+                }
+                // A weight moves a track up by ln(weight) playlist lengths, whatever the size of the pool, so
+                // this stays a lean: scaled by the pool, boosted tracks took every place (plan §2a).
+                None => weight.ln() - rank as f64 / f64::from(def.max_tracks),
+            };
+            (score, candidate)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.rank.cmp(&b.1.rank)));
+    scored.into_iter().map(|(_, candidate)| candidate).collect()
 }
 
 /// A fixed pseudo-random position for `id` under `seed` (FNV-1a, then a SplitMix64 finish so nearby ids
@@ -1180,7 +1238,7 @@ pub(crate) fn with_query_budget<T>(
 
 impl ValidDefinition {
     /// Whether any rule or sort key reads the owner's ratings, plays or favourites.
-    fn uses_personal(&self) -> bool {
+    pub(crate) fn uses_personal(&self) -> bool {
         fn walk(group: &CGroup) -> bool {
             group.children.iter().any(|child| match child {
                 CNode::Group(g) => walk(g),
@@ -1201,6 +1259,7 @@ impl ValidDefinition {
                     SortField::Rating | SortField::LastPlayedAt | SortField::PlayCount
                 )
             })
+            || self.steers.iter().any(CSteer::is_personal)
     }
 
     /// Library ids named by library rules.
@@ -3127,10 +3186,25 @@ mod tests {
         shuffled_json["limit"] = json!({ "maxTracks": 1000 });
         let shuffled = parse_definition(&shuffled_json.to_string()).unwrap();
 
+        // Pills: 5,000 sampled matches weighed against tags, plays and BPM.
+        conn.execute_batch(
+            "INSERT INTO artist_styles(artist_id, style, kind, weight) VALUES
+               ('a1', 'sludge', 'genre', 1.0), ('a2', 'atmospheric sludge', 'genre', 0.8);",
+        )
+        .unwrap();
+        let mut steered_json = shuffled_json.clone();
+        steered_json["steer"] = json!([
+            { "kind": "style", "tag": "sludge", "direction": "deeper" },
+            { "kind": "signal", "signal": "popular" },
+            { "kind": "signal", "signal": "faster" },
+        ]);
+        let steered = parse_definition(&steered_json.to_string()).unwrap();
+
         for (name, definition) in [
             ("simple", &simple),
             ("personal", &personal),
             ("shuffled", &shuffled),
+            ("steered", &steered),
         ] {
             evaluate(&conn, "alice", definition, NOW).unwrap();
             let start = std::time::Instant::now();
