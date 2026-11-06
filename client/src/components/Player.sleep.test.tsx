@@ -58,7 +58,7 @@ describe('Player sleep timer', () => {
     vi.spyOn(api, 'trackSonicFingerprint').mockResolvedValue(null);
     vi.spyOn(api.playlists, 'saveTrackProgress').mockResolvedValue({ ok: true });
     vi.spyOn(api, 'trackLyrics').mockResolvedValue({ lyrics: '', source: 'cache', synced: [] });
-    vi.spyOn(api, 'trackEqProfile').mockResolvedValue({ eq_profile: 'Rock', source: 'genre' });
+    vi.spyOn(api, 'trackEqProfile').mockResolvedValue({ eqProfile: 'Rock', source: 'genre' });
     vi.spyOn(api.auth, 'sessionValid').mockResolvedValue(true);
   });
 

@@ -120,6 +120,8 @@ export default function MobileApp(props: MobileSharedProps) {
           onPlayTrack={(track, allTracks) => props.onPlayTrack(track, allTracks, playlistSelection.playlist ? { type: 'playlist', id: playlistSelection.playlist.id, rememberProgress: !!playlistSelection.playlist.remember_progress } : undefined)}
           onPlayMixTrack={(track, allTracks) => props.onPlayTrack(track, allTracks)}
           onAddToQueue={props.onAddToQueue}
+          queueSource={props.playerState.queueSource}
+          onReplaceUpcoming={props.onReplaceUpcoming}
         />
       )}
       {tab === 'now-playing' && (

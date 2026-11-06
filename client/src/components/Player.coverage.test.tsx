@@ -161,7 +161,7 @@ describe('Player comprehensive behavior', () => {
     vi.spyOn(api, 'trackSonicFingerprint').mockResolvedValue(null);
     vi.spyOn(api.playlists, 'saveTrackProgress').mockResolvedValue({ ok: true });
     vi.spyOn(api, 'trackLyrics').mockResolvedValue({ lyrics: '', source: 'cache', synced: [] });
-    vi.spyOn(api, 'trackEqProfile').mockResolvedValue({ eq_profile: 'Rock', source: 'genre' });
+    vi.spyOn(api, 'trackEqProfile').mockResolvedValue({ eqProfile: 'Rock', source: 'genre' });
     vi.spyOn(api.auth, 'sessionValid').mockResolvedValue(true);
   });
 
@@ -288,6 +288,42 @@ describe('Player comprehensive behavior', () => {
       />,
     );
     expect(screen.getByAltText('Solo Album cover')).toBeInTheDocument();
+  });
+
+  it('applies the Auto EQ profile the server picks for the track', async () => {
+    delete (window as any).AudioContext;
+    setStreamDirect(true);
+    vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true' });
+    vi.mocked(api.trackEqProfile).mockResolvedValue({ eqProfile: 'Pop', source: 'track_tags' });
+    const onEqControlsChange = vi.fn();
+    const state: PlayerState = {
+      queue: [track('1')], currentIndex: 0, isPlaying: false, playToken: 1,
+      queueSource: { type: 'playlist', id: 'playlist-1' } as any,
+    };
+    render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />);
+    await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ autoEqEnabled: true, autoEqCurrentPreset: 'Pop' }),
+    ));
+    expect(api.trackEqProfile).toHaveBeenCalledWith('1');
+  });
+
+  it.each([
+    ['the lookup fails', () => vi.mocked(api.trackEqProfile).mockRejectedValue(new Error('offline'))],
+    ['the server names a profile the player lacks', () => vi.mocked(api.trackEqProfile).mockResolvedValue({ eqProfile: 'Jazz', source: 'artist_eq_cache' } as any)],
+  ])('goes flat when %s', async (_name, arrange) => {
+    delete (window as any).AudioContext;
+    setStreamDirect(true);
+    vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true' });
+    arrange();
+    const onEqControlsChange = vi.fn();
+    const state: PlayerState = {
+      queue: [track('1')], currentIndex: 0, isPlaying: false, playToken: 1,
+      queueSource: { type: 'playlist', id: 'playlist-1' } as any,
+    };
+    render(<Player state={state} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />);
+    await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ autoEqEnabled: true, autoEqCurrentPreset: 'Manual' }),
+    ));
   });
 
   it('covers transport, queue, settings, seek, lyrics, fingerprint, and audio error paths', async () => {

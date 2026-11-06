@@ -3,6 +3,8 @@
  * Shared by the desktop and mobile editors.
  */
 
+import type { SmartSteer } from './smartSteer';
+
 // ─── API contract (schema version 1, see docs/API.md) ─────────────────────────
 
 export type SmartField =
@@ -27,6 +29,8 @@ export interface SmartDefinition {
   root: SmartGroup;
   sort?: SmartSortKey[];
   limit?: SmartLimit;
+  /** Steering pills: which matches get in. */
+  steer?: SmartSteer[];
 }
 
 /** `GET /api/playlists/{id}/smart-definition`. */
@@ -249,6 +253,8 @@ export interface SmartDraft {
   maxTracks: string;
   limitLength: boolean;
   maxMinutes: string;
+  /** Pills on. The editor doesn't change them except through "Clear", and must not lose them on save. */
+  steer?: SmartSteer[];
 }
 
 let nextKey = 0;
@@ -456,7 +462,10 @@ export function draftToDefinition(draft: SmartDraft): SmartDefinition {
   }
   const limit: SmartLimit = { maxTracks: Number(draft.maxTracks.trim()) };
   if (draft.limitLength) limit.maxDurationSeconds = Number(draft.maxMinutes.trim()) * 60;
-  return { schemaVersion: 1, root: groupToApi(draft.root), sort, limit };
+  return {
+    schemaVersion: 1, root: groupToApi(draft.root), sort, limit,
+    ...(draft.steer?.length ? { steer: draft.steer } : {}),
+  };
 }
 
 function str(value: unknown): string {
@@ -587,6 +596,7 @@ export function definitionToDraft(definition: unknown, name: string): SmartDraft
     maxTracks: String(limit.maxTracks ?? DEFAULT_MAX_TRACKS),
     limitLength: limit.maxDurationSeconds != null,
     maxMinutes: limit.maxDurationSeconds != null ? String(Math.round(limit.maxDurationSeconds / 60)) : '',
+    ...(Array.isArray(def.steer) && def.steer.length ? { steer: def.steer } : {}),
   };
 }
 

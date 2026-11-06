@@ -20,6 +20,9 @@ import { ImportIcons, PlaylistImportDialog, PlaylistImportToast, type ImportedPl
 import { PLAYLIST_FILE_ACCEPT } from '../playlistImport';
 import SmartPlaylistEditor, { SmartIcon } from './SmartPlaylistEditor';
 import { useSmartRecheck } from '../hooks/useSmartRecheck';
+import { useSteer } from '../hooks/useSteer';
+import SteerPills, { STEER_ADDED_ROW, SteerAddedDot, SteerChangedChip } from './SteerPills';
+import { isQueueFrom } from '../smartSteer';
 import { useSmartCardSummaries, withSummary } from '../hooks/useSmartCardSummaries';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -531,7 +534,7 @@ function DraggableTrackRow({
   track, index, total,
   onPlay, onRemove, onDragStart, onDragEnter, onDragEnd,
   isDragOver, isHovered, onHoverChange,
-  onOpenAlbum, onOpenAlbumArtist, fixed = false,
+  onOpenAlbum, onOpenAlbumArtist, fixed = false, addedByPills = false,
 }: {
   track: PlaylistTrack; index: number; total: number;
   onPlay: () => void; onRemove: () => void;
@@ -545,6 +548,8 @@ function DraggableTrackRow({
   onOpenAlbumArtist: (artistId: ClientEntityId) => void;
   /** Smart playlist rows: no dragging and no remove button. */
   fixed?: boolean;
+  /** In the playlist only because of its steering pills. */
+  addedByPills?: boolean;
 }) {
   // A separate "album artist" link is only worth adding when it actually
   // differs from the track's own artist already shown — e.g. a compilation
@@ -570,15 +575,17 @@ function DraggableTrackRow({
       onMouseLeave={() => onHoverChange(false)}
       style={{
         ...T.row,
+        ...(addedByPills ? { position: 'relative' as const } : {}),
         ...(fixed ? { cursor: 'default' } : {}),
         backgroundColor: isDragOver
           ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
           : isHovered
             ? 'color-mix(in srgb, var(--accent) 12%, transparent)'
-            : 'transparent',
+            : addedByPills ? STEER_ADDED_ROW : 'transparent',
         borderTop: isDragOver ? '2px solid var(--accent)' : '2px solid transparent',
       }}
     >
+      {addedByPills && <SteerAddedDot />}
       {!fixed && <div style={T.grip} title="Drag to reorder"><GripIcon /></div>}
       <div style={T.num}>{index + 1}</div>
       <button type="button" aria-label={`Play ${track.title || track.file_name}`} style={T.playBtn} onClick={(e) => { e.stopPropagation(); onPlay(); }} title="Play"><PlayIcon /></button>
@@ -834,6 +841,7 @@ function defaultMixName(): string {
 function PlaylistDetail({
   playlist, onUpdate, onOptions, onBack,
   playTrack, addToQueue, onOpenAlbum, onOpenArtist, onOpenMixes, onEditRules, reloadToken = 0,
+  queueSource = null, onReplaceUpcoming,
 }: {
   playlist: Playlist;
   onUpdate: () => void;
@@ -848,6 +856,10 @@ function PlaylistDetail({
   onEditRules?: () => void;
   /** Bumped after the rules change so the tracks load again. */
   reloadToken?: number;
+  /** Where the player's queue came from, for the prompt after a pill changes the tracks. */
+  queueSource?: import('../types').QueueSource | null;
+  /** Replaces what comes next in the queue. */
+  onReplaceUpcoming?: (playlistId: ClientEntityId, tracks: Track[]) => void;
 }) {
   const smart = playlist.kind === 'smart';
   const [tracks, setTracks]       = useState<PlaylistTrack[]>([]);
@@ -931,6 +943,23 @@ function PlaylistDetail({
 
   useEffect(() => { loadTracks(); }, [loadTracks, reloadToken]);
 
+  const applySteerSnapshot = useCallback((snapshot: PlaylistSnapshot) => {
+    // Newer than any read still on its way.
+    loadSeqRef.current += 1;
+    setLoading(false);
+    setRefreshing(false);
+    applySnapshot(snapshot);
+    onUpdate();
+  }, [applySnapshot, onUpdate]);
+  const steer = useSteer(playlist.id, smart, applySteerSnapshot);
+  const reloadSteer = steer.reload;
+  const lastReloadToken = useRef(reloadToken);
+  useEffect(() => {
+    if (lastReloadToken.current === reloadToken) return;
+    lastReloadToken.current = reloadToken;
+    reloadSteer();
+  }, [reloadToken, reloadSteer]);
+
   // While open, picks up changes from scans, ratings, plays or other devices without "Updating…".
   const recheck = useCallback(async () => {
     const seq = ++loadSeqRef.current;
@@ -938,7 +967,8 @@ function PlaylistDetail({
       const snapshot = await api.playlists.snapshot(playlist.id);
       if (seq === loadSeqRef.current) applySnapshot(snapshot);
     } catch {}
-  }, [playlist.id, applySnapshot]);
+    reloadSteer();
+  }, [playlist.id, applySnapshot, reloadSteer]);
   useSmartRecheck(smart && !loading && !refreshing, recheck);
 
   const retryRefresh = async () => {
@@ -1405,7 +1435,8 @@ function PlaylistDetail({
                 {updatedDate && <span style={PD.detailChip}><span style={PD.detailIcon}><CalendarIcon /></span>Updated {updatedDate.toLocaleDateString()}</span>}
               </>
             )}
-            {refreshing && (
+            {smart && !loading && <SteerChangedChip steer={steer} style={PD.detailChip} />}
+            {(refreshing || steer.busy) && (
               <span role="status" style={{ ...PD.detailChip, color: 'var(--text-muted)' }}><SpinnerIcon />Updating…</span>
             )}
             {statusLine && !loading && <span style={PD.detailDivider} aria-hidden="true" />}
@@ -1482,6 +1513,13 @@ function PlaylistDetail({
             </div>
             )}
           </div>
+          {smart && !loading && (
+            <SteerPills
+              steer={steer}
+              queueIsThisPlaylist={isQueueFrom(queueSource, playlist.id)}
+              onUpdateQueue={() => onReplaceUpcoming?.(playlist.id, tracks)}
+            />
+          )}
           {smart && refreshError && !loading && (
             <div role="alert" style={PD.refreshAlert}>
               <AlertIcon />
@@ -1533,6 +1571,7 @@ function PlaylistDetail({
               onOpenAlbum={handleOpenAlbum}
               onOpenAlbumArtist={handleOpenAlbumArtist}
               fixed={smart}
+              addedByPills={smart && steer.addedIds.has(String(track.id))}
             />
           ))}
         </div>
@@ -1893,6 +1932,10 @@ interface Props {
   onOpenArtist?: (artist: import('../types').Artist) => void;
   /** Deep-links to the Mixes library, prefilling its search with `playlistName`. */
   onOpenMixes?: (playlistName: string) => void;
+  /** Where the player's queue came from, for the prompt after a pill changes a playlist's tracks. */
+  queueSource?: import('../types').QueueSource | null;
+  /** Replaces what comes next in the queue with a playlist's tracks. */
+  onReplaceUpcoming?: (playlistId: ClientEntityId, tracks: Track[]) => void;
   /** Bumped (e.g. `Date.now()`) to return to the playlist list from a drilled-in
    * playlist — same "sidebar nav item while already on this view" behavior as
    * BrowseView's `resetRequest`. */
@@ -1903,7 +1946,7 @@ interface Props {
 export default function PlaylistsView({
   playTrack, addToQueue, initialPlaylistId,
   onOpenAlbum = () => {}, onOpenArtist = () => {}, onOpenMixes = () => {},
-  resetRequest,
+  resetRequest, queueSource = null, onReplaceUpcoming,
 }: Props) {
   const [playlists, setPlaylists]   = useState<Playlist[]>([]);
   const [selected, setSelected]     = useState<Playlist | null>(null);
@@ -2024,6 +2067,8 @@ export default function PlaylistsView({
           onOpenMixes={onOpenMixes}
           onEditRules={() => setSmartEditor({ playlist: selected })}
           reloadToken={detailReload}
+          queueSource={queueSource}
+          onReplaceUpcoming={onReplaceUpcoming}
         />
       )}
 

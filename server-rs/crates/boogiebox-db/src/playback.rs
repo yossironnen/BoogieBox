@@ -814,27 +814,55 @@ pub struct EqProfileResolution {
     pub source: String,
 }
 
+/// The flat profile, for tracks whose genre says nothing about how to EQ them.
+const FLAT_EQ_PROFILE: &str = "Manual";
+
+/// Genre text -> Auto EQ profile. Every value must be a profile the player has (`client/src/audio/eq.ts`);
+/// it ignores any other name. The first key found in the genre wins, so narrower genres come first:
+/// "Punk Rock" is Punk and "Ambient House" is Atmosphere.
 const GENRE_EQ_MAP: &[(&str, &str)] = &[
-    ("jazz", "Jazz"),
+    ("metal", "Metal"),
+    ("post-punk", "Rock"),
+    ("punk", "Punk"),
+    ("ambient", "Atmosphere"),
+    ("new age", "Atmosphere"),
+    ("downtempo", "Atmosphere"),
+    ("trip-hop", "Atmosphere"),
+    ("trip hop", "Atmosphere"),
+    ("jazz", "Vintage"),
     ("classical", "Classical"),
     ("electronic", "Electronic"),
     ("edm", "Electronic"),
     ("dance", "Electronic"),
+    ("house", "Electronic"),
+    ("techno", "Electronic"),
+    ("trance", "Electronic"),
+    ("drum and bass", "Electronic"),
+    ("drum-and-bass", "Electronic"),
+    ("dubstep", "Electronic"),
+    ("new wave", "Electronic"),
+    ("synthpop", "Electronic"),
+    ("synth-pop", "Electronic"),
+    ("synth pop", "Electronic"),
+    ("disco", "Club"),
     ("hip-hop", "Hip-Hop"),
     ("hip hop", "Hip-Hop"),
     ("rap", "Hip-Hop"),
+    ("reggae", "Hip-Hop"),
+    ("r&b", "Soul"),
+    ("soul", "Soul"),
+    ("funk", "Soul"),
     ("pop", "Pop"),
-    ("r&b", "R&B"),
-    ("soul", "R&B"),
-    ("country", "Country"),
-    ("rock", "Rock"),
-    ("metal", "Rock"),
-    ("punk", "Rock"),
+    ("latin", "Pop"),
+    ("country", "Acoustic"),
     ("folk", "Acoustic"),
     ("acoustic", "Acoustic"),
-    ("blues", "Blues"),
-    ("reggae", "Reggae"),
-    ("latin", "Latin"),
+    ("blues", "Vintage"),
+    ("rock", "Rock"),
+    ("alternative", "Rock"),
+    ("grunge", "Rock"),
+    ("indie", "Rock"),
+    ("darkwave", "Rock"),
 ];
 
 fn genre_to_eq_profile(genre: &str) -> Option<&'static str> {
@@ -868,7 +896,7 @@ pub fn get_track_eq_profile(
     let (artist_name, track_genre, artist_genres) = match track_info {
         None => {
             return Ok(EqProfileResolution {
-                eq_profile: "Rock".into(),
+                eq_profile: FLAT_EQ_PROFILE.into(),
                 source: "default".into(),
             })
         }
@@ -921,7 +949,7 @@ pub fn get_track_eq_profile(
     }
 
     Ok(EqProfileResolution {
-        eq_profile: "Rock".into(),
+        eq_profile: FLAT_EQ_PROFILE.into(),
         source: "default".into(),
     })
 }
@@ -1517,11 +1545,39 @@ mod tests {
     // ── EQ profile ──────────────────────────────────────────────────────────
 
     #[test]
-    fn get_track_eq_profile_defaults_to_rock_for_missing_track() {
+    fn get_track_eq_profile_is_flat_for_a_missing_track() {
         let f = fixture("eq-missing-track");
         let res = get_track_eq_profile(&f.conn, "no-such-track").unwrap();
-        assert_eq!(res.eq_profile, "Rock");
+        assert_eq!(res.eq_profile, "Manual");
         assert_eq!(res.source, "default");
+    }
+
+    #[test]
+    fn get_track_eq_profile_works_after_upgrading_a_database_without_artist_genres() {
+        let f = fixture("eq-upgrade");
+        f.conn
+            .execute(
+                "UPDATE tracks SET genre='Pop' WHERE id=?",
+                params![f.track_id],
+            )
+            .unwrap();
+        // A database from before the column: the older migration is recorded as done, so it won't add it.
+        f.conn
+            .execute_batch(
+                "ALTER TABLE artists DROP COLUMN genres;
+                 DELETE FROM schema_migrations WHERE id = '2026-11-05-artists-genres';",
+            )
+            .unwrap();
+        assert!(
+            get_track_eq_profile(&f.conn, &f.track_id).is_err(),
+            "the lookup fails without the column"
+        );
+
+        crate::initialize_schema(&f.conn).unwrap();
+
+        let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
+        assert_eq!(res.eq_profile, "Pop");
+        assert_eq!(res.source, "track_tags");
     }
 
     #[test]
@@ -1575,8 +1631,84 @@ mod tests {
     fn get_track_eq_profile_defaults_when_nothing_matches() {
         let f = fixture("eq-default-fallback");
         let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
-        assert_eq!(res.eq_profile, "Rock");
+        assert_eq!(res.eq_profile, "Manual");
         assert_eq!(res.source, "default");
+    }
+
+    /// The names in `BUILTIN_EQ_PROFILE_GAINS` (`client/src/audio/eq.ts`). The player ignores anything else.
+    const PLAYER_EQ_PROFILES: [&str; 13] = [
+        "Manual",
+        "Rock",
+        "Metal",
+        "Pop",
+        "Punk",
+        "Electronic",
+        "Club",
+        "Hip-Hop",
+        "Soul",
+        "Acoustic",
+        "Atmosphere",
+        "Classical",
+        "Vintage",
+    ];
+
+    #[test]
+    fn every_genre_maps_to_a_profile_the_player_has() {
+        assert!(PLAYER_EQ_PROFILES.contains(&FLAT_EQ_PROFILE));
+        for (genre, profile) in GENRE_EQ_MAP {
+            assert!(
+                PLAYER_EQ_PROFILES.contains(profile),
+                "{genre} maps to {profile}"
+            );
+        }
+    }
+
+    #[test]
+    fn genres_pick_the_narrowest_profile() {
+        for (genre, expected) in [
+            // Their own profiles, even when "rock" or "pop" is also in the name.
+            ("Metal", Some("Metal")),
+            ("Alternative Metal", Some("Metal")),
+            ("Punk Rock", Some("Punk")),
+            ("Pop Punk", Some("Punk")),
+            ("General Post-Punk", Some("Rock")),
+            ("Neo Soul", Some("Soul")),
+            ("R&B", Some("Soul")),
+            // No curve of their own: the closest the player has.
+            ("Jazz", Some("Vintage")),
+            ("Blues", Some("Vintage")),
+            ("Country", Some("Acoustic")),
+            ("Reggae", Some("Hip-Hop")),
+            ("Latin", Some("Pop")),
+            // Genres on real libraries that used to match nothing.
+            ("Minimal/Tech House", Some("Electronic")),
+            ("Progressive House", Some("Electronic")),
+            ("Melodic House & Techno", Some("Electronic")),
+            ("New Age", Some("Atmosphere")),
+            ("Trip-Hop", Some("Atmosphere")),
+            ("Downtempo", Some("Atmosphere")),
+            ("Alternative", Some("Rock")),
+            ("Grunge", Some("Rock")),
+            ("Indie", Some("Rock")),
+            ("Darkwave", Some("Rock")),
+            ("New Wave", Some("Electronic")),
+            ("New Wave, Synth-Pop", Some("Electronic")),
+            ("New Wave, Europop, Synth-Pop", Some("Electronic")),
+            ("Synthpop", Some("Electronic")),
+            ("Pop, Synthpop", Some("Electronic")),
+            ("Synth Pop", Some("Electronic")),
+            // Unchanged.
+            ("Pop/Rock", Some("Pop")),
+            ("Hip Hop", Some("Hip-Hop")),
+            ("Big Beat/Electronic/Pop", Some("Electronic")),
+            ("Classical", Some("Classical")),
+            ("Folk", Some("Acoustic")),
+            // Says nothing about the sound.
+            ("", None),
+            ("Spoken Word", None),
+        ] {
+            assert_eq!(genre_to_eq_profile(genre), expected, "{genre}");
+        }
     }
 
     // ── Crossfade ───────────────────────────────────────────────────────────

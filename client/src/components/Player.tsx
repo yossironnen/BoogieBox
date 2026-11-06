@@ -2265,13 +2265,13 @@ export default function Player({
     (api as any).trackEqProfile(currentTrack.id)
       .then((result: any) => {
         if (cancelled) return;
-        const profile = result?.eq_profile as string;
-        if (!isBuiltinEqProfileName(profile)) return;
-        applyAutoProfile(profile);
+        const profile = result?.eqProfile as string;
+        // Flat rather than keeping the previous track's curve.
+        applyAutoProfile(isBuiltinEqProfileName(profile) ? profile : 'Manual');
       })
       .catch(() => {
         if (cancelled) return;
-        applyAutoProfile('Rock');
+        applyAutoProfile('Manual');
       });
     return () => { cancelled = true; };
   }, [autoEqEnabled, currentTrack?.id, isRemote, playToken]);

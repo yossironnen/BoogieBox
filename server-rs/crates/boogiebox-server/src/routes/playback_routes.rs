@@ -1142,7 +1142,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json_body(&body)["eqProfile"], "Rock");
+        assert_eq!(json_body(&body)["eqProfile"], "Manual");
     }
 
     #[tokio::test]

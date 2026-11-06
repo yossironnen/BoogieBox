@@ -4,7 +4,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
-import type { ClientEntityId, Playlist, PlaylistTrack, Track } from '../../types';
+import type { ClientEntityId, Playlist, PlaylistSnapshot, PlaylistTrack, QueueSource, Track } from '../../types';
 import type { EntityId } from '../../entityId';
 import type { MobilePlaylistSelection } from '../mobileShell';
 import ArtImage from '../../components/ArtImage';
@@ -23,6 +23,9 @@ import { ImportIcons, PlaylistImportToast, type ImportedPlaylist } from '../../c
 import { PLAYLIST_FILE_ACCEPT } from '../../playlistImport';
 import SmartPlaylistEditor, { SmartIcon } from '../../components/SmartPlaylistEditor';
 import { useSmartRecheck } from '../../hooks/useSmartRecheck';
+import { useSteer } from '../../hooks/useSteer';
+import SteerPills, { STEER_ADDED_ROW, SteerAddedDot, SteerChangedChip } from '../../components/SteerPills';
+import { isQueueFrom } from '../../smartSteer';
 import { useSmartCardSummaries, withSummary } from '../../hooks/useSmartCardSummaries';
 
 type LoadedPlaylist = { playlist: Playlist; tracks: PlaylistTrack[]; refreshError: boolean };
@@ -267,6 +270,8 @@ export default function MobilePlaylistsView({
   onPlayTrack,
   onPlayMixTrack,
   onAddToQueue,
+  queueSource = null,
+  onReplaceUpcoming,
 }: {
   initialPlaylistId: EntityId | null;
   selection: MobilePlaylistSelection;
@@ -274,6 +279,10 @@ export default function MobilePlaylistsView({
   onPlayTrack: (track: PlaylistTrack, allTracks?: PlaylistTrack[]) => void;
   onPlayMixTrack: (track: Track, allTracks?: Track[]) => void;
   onAddToQueue: (track: PlaylistTrack) => void;
+  /** Where the player's queue came from, for the prompt after a pill changes the tracks. */
+  queueSource?: QueueSource | null;
+  /** Replaces what comes next in the queue. */
+  onReplaceUpcoming?: (playlistId: ClientEntityId, tracks: Track[]) => void;
 }) {
   const [libraryTab, setLibraryTab] = useState<LibraryTab>('playlists');
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
@@ -596,6 +605,17 @@ export default function MobilePlaylistsView({
     await loadSelectedPlaylist(selection.playlist.id);
   }, [loadSelectedPlaylist, selection.playlist]);
 
+  const applySteerSnapshot = useCallback((snapshot: PlaylistSnapshot) => {
+    // Newer than any read still on its way.
+    loadSeqRef.current += 1;
+    setDetailLoading(false);
+    setRefreshError(!!snapshot.refreshError);
+    onSelectionChange({ playlist: snapshot.playlist, tracks: snapshot.tracks });
+    setPlaylists((prev) => prev.map((entry) => (entry.id === snapshot.playlist.id ? snapshot.playlist : entry)));
+  }, [onSelectionChange]);
+  const steer = useSteer(selection.playlist?.id ?? null, selectedSmart, applySteerSnapshot);
+  const reloadSteer = steer.reload;
+
   const retrySmartRefresh = useCallback(() => {
     if (!selection.playlist) return;
     loadSelectedPlaylist(selection.playlist.id, true, true).catch(() => setRefreshError(true));
@@ -604,7 +624,8 @@ export default function MobilePlaylistsView({
   const recheckSmart = useCallback(() => {
     if (!selection.playlist) return;
     loadSelectedPlaylist(selection.playlist.id, true, false, true).catch(() => {});
-  }, [loadSelectedPlaylist, selection.playlist]);
+    reloadSteer();
+  }, [loadSelectedPlaylist, reloadSteer, selection.playlist]);
   useSmartRecheck(selectedSmart && !detailLoading, recheckSmart);
   const observeSmartCard = useSmartCardSummaries((row) => setPlaylists((prev) => withSummary(prev, row)));
 
@@ -616,8 +637,9 @@ export default function MobilePlaylistsView({
       onSelectionChange({ playlist: saved, tracks: [] });
     } else {
       loadSelectedPlaylist(saved.id, true).catch(() => setRefreshError(true));
+      reloadSteer();
     }
-  }, [loadPlaylists, loadSelectedPlaylist, onSelectionChange, smartEditor]);
+  }, [loadPlaylists, loadSelectedPlaylist, onSelectionChange, reloadSteer, smartEditor]);
 
   const smartEditorSheet = smartEditor ? (
     <SmartPlaylistEditor
@@ -707,7 +729,8 @@ export default function MobilePlaylistsView({
               <div style={styles.heroSummary}>
                 {selection.playlist.track_count} tracks - {fmtDuration(playlistDuration)}
               </div>
-              {selectedSmart && detailLoading ? <div role="status" style={styles.smartStatus}>Updating…</div> : null}
+              {selectedSmart ? <SteerChangedChip steer={steer} style={styles.steerChanged} /> : null}
+              {selectedSmart && (detailLoading || steer.busy) ? <div role="status" style={styles.smartStatus}>Updating…</div> : null}
               {selection.playlist.description ? (
                 <p style={styles.heroDescription}>{selection.playlist.description}</p>
               ) : null}
@@ -770,6 +793,15 @@ export default function MobilePlaylistsView({
           trackCount={selection.tracks.length}
         />
 
+        {selectedSmart && selection.playlist ? (
+          <SteerPills
+            steer={steer}
+            mobile
+            queueIsThisPlaylist={isQueueFrom(queueSource, selection.playlist.id)}
+            onUpdateQueue={() => { if (selection.playlist) onReplaceUpcoming?.(selection.playlist.id, selection.tracks); }}
+          />
+        ) : null}
+
         {error ? <div role="alert" style={styles.error}>{error}</div> : null}
         {selectedSmart && refreshError ? (
           <div role="alert" style={styles.error}>
@@ -807,6 +839,7 @@ export default function MobilePlaylistsView({
             const isReordering = gesture?.mode === 'reorder' && gesture.trackId === trackGestureId;
             const isDropTarget = gesture?.mode === 'reorder' && gesture.targetIndex === index && gesture.rowIndex !== index;
             const canReorder = sortMode === 'manual' && !trackFilter.trim();
+            const addedByPills = selectedSmart && steer.addedIds.has(String(track.id));
             // Smart playlists pick their own tracks: no swipe-to-delete or drag reorder.
             const rowGestures = selectedSmart ? {} : {
               onPointerDown: (event: React.PointerEvent<HTMLElement>) => handlePointerDown(event, index, trackGestureId, 'row'),
@@ -824,8 +857,10 @@ export default function MobilePlaylistsView({
                     boxShadow: isReordering ? 'var(--shadow-raised)' : 'none',
                     borderColor: isDropTarget ? 'var(--accent)' : 'var(--divider-subtle)',
                     opacity: busyTrackId === track.playlist_track_id ? 0.55 : 1,
+                    ...(addedByPills ? { background: STEER_ADDED_ROW } : null),
                   }}
                 >
+                  {addedByPills ? <SteerAddedDot /> : null}
                   <button
                     type="button"
                     style={styles.trackButton}
@@ -1474,6 +1509,14 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--accent)',
     fontSize: 12,
     fontWeight: 700,
+  },
+  steerChanged: {
+    marginTop: 4,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    fontSize: 13,
+    fontWeight: 600,
   },
   smartStatus: {
     marginTop: 4,

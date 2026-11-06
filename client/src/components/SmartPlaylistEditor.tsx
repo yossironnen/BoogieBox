@@ -3,6 +3,7 @@
  * Creates a smart playlist or edits a saved one's rules. Wording: wip/f01-approved-copy.md.
  */
 
+import { STEER_COPY, pillLabel } from '../smartSteer';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, SmartPlaylistApiError } from '../api';
@@ -744,6 +745,19 @@ export default function SmartPlaylistEditor({
                 <GroupChildren group={draft.root} depth={1} ctx={ctx} />
                 <AddButtons group={draft.root} depth={1} ctx={ctx} />
               </section>
+
+              {!!draft.steer?.length && (
+                <div data-testid="smart-editor-pills" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, fontSize: 13 }}>
+                  <span style={{ flex: 1, minWidth: 160 }}>Pills on: {draft.steer.map(pill => pillLabel(pill)).join(', ')}</span>
+                  {load === 'ready' && (
+                    <button type="button" style={{
+                      minHeight: mobile ? 44 : 32, padding: '0 10px', borderRadius: 8, fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+                      color: 'var(--text)', background: 'transparent', borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--border)',
+                      cursor: 'pointer',
+                    }} onClick={() => setDraft(d => ({ ...d, steer: [] }))}>{STEER_COPY.clear}</button>
+                  )}
+                </div>
+              )}
 
               {mobile ? (
                 <details open style={MS.orderBox}>

@@ -44,6 +44,8 @@ export interface MobileSharedProps {
   onPlaybackPosition?: (seconds: number) => void;
   onPlayTrack: (track: Track, allTracks?: Track[], source?: QueueSource) => void;
   onAddToQueue: (track: Track) => void;
+  /** Replaces what comes next in the queue with a playlist's tracks. */
+  onReplaceUpcoming?: (playlistId: ClientEntityId, tracks: Track[]) => void;
   /** Plays an internet radio station (in this browser). */
   onPlayRadioStation?: (station: RadioStation) => void;
   onConsumeOpenPlaylist: () => void;

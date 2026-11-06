@@ -2,6 +2,7 @@
  * Defines App behavior for BoogieBox.
  */
 
+import { withUpcoming } from './smartSteer';
 import { DEFAULT_LOUDNESS_PREFS, parseLoudnessMode, parseLoudnessPreamp, type LoudnessPrefs } from './audio/loudness';
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { api, getStreamDirect } from './api';
@@ -1481,6 +1482,9 @@ export default function App() {
       if (playbackMode === 'vinyl') return prev;
       return { ...prev, queue: [...prev.queue, track] };
     });
+  // A steering pill changed the playlist the queue came from, and the user asked to follow it.
+  const replaceUpcoming = (playlistId: ClientEntityId, tracks: Track[]) =>
+    dispatchPlayerState(prev => withUpcoming(prev, playlistId, tracks));
   const nowPlayingTrack = playOn.playerState.queue[playOn.playerState.currentIndex] ?? null;
 
   const openArtistFromPlayer = useCallback(async (artistName: string) => {
@@ -1660,6 +1664,7 @@ export default function App() {
         onPlaybackPosition={handleMobilePlaybackPosition}
         onPlayTrack={playTrack}
         onAddToQueue={addToQueue}
+        onReplaceUpcoming={replaceUpcoming}
         onPlayRadioStation={playRadioStation}
         onConsumeOpenPlaylist={() => setOpenPlaylistRequest(null)}
         onSettingsChange={setSettings}
@@ -2011,6 +2016,8 @@ export default function App() {
               initialPlaylistId={openPlaylistRequest?.playlistId ?? null}
               onOpenArtist={artist => { setBrowseOpenArtistRequest({ artist, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
               onOpenAlbum={album   => { setBrowseOpenAlbumRequest({ album, token: Date.now() }); clearSidebarLibrarySelection(); setView('browse'); }}
+              queueSource={playOn.playerState.queueSource}
+              onReplaceUpcoming={replaceUpcoming}
               onOpenMixes={playlistName => { setOpenMixesRequest({ playlistName, token: Date.now() }); setView('mixes'); }}
               resetRequest={playlistsResetRequest}
             />

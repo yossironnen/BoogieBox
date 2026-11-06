@@ -21,6 +21,8 @@ const { apiMock } = vi.hoisted(() => ({
       snapshot: vi.fn(),
       summary: vi.fn(),
       refresh: vi.fn(),
+      steer: vi.fn(),
+      setSteer: vi.fn(),
       exportM3uUrl: vi.fn(() => '#export'),
     },
     boogiemix: { listAllOutputs: vi.fn() },
@@ -71,6 +73,65 @@ function Harness({ initial, spy }: { initial: MobilePlaylistSelection; spy?: (s:
       onPlayTrack={() => {}} onPlayMixTrack={() => {}} onAddToQueue={() => {}} />
   );
 }
+
+describe('MobilePlaylistsView steering pills', () => {
+  const steerView = {
+    active: [], pills: [{ kind: 'style', tag: 'sludge', direction: 'more', count: 40 }], pool: 200, tagged: 200,
+    fewTags: false, popularSource: 'local', addedTrackIds: [], editRevision: 1,
+  };
+  const added = { ...track, id: 't2', playlist_track_id: 'pt2', title: 'Added Song' } as unknown as PlaylistTrack;
+
+  function Steered({ onReplaceUpcoming }: { onReplaceUpcoming?: (id: unknown, tracks: unknown[]) => void }) {
+    const [selection, setSelection] = useState<MobilePlaylistSelection>({ playlist: smart, tracks: [track] });
+    return (
+      <MobilePlaylistsView initialPlaylistId={null} selection={selection} onSelectionChange={setSelection}
+        onPlayTrack={() => {}} onPlayMixTrack={() => {}} onAddToQueue={() => {}}
+        queueSource={{ type: 'playlist', id: 's1' }} onReplaceUpcoming={onReplaceUpcoming as never} />
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.playlists.list.mockResolvedValue([smart]);
+    apiMock.playlists.snapshot.mockResolvedValue(snapshot());
+    apiMock.playlists.summary.mockResolvedValue(smart);
+    apiMock.playlists.steer.mockResolvedValue(steerView);
+    apiMock.boogiemix.listAllOutputs.mockResolvedValue([]);
+    apiMock.search.mockResolvedValue({ artists: [], albums: [], tracks: [] });
+  });
+  afterEach(() => cleanup());
+
+  it('shows pills on a smart playlist, applies a tap, marks new rows and can follow in the queue', async () => {
+    apiMock.playlists.setSteer.mockResolvedValue({
+      steer: {
+        ...steerView, pills: [], active: [{ kind: 'style', tag: 'sludge', direction: 'more' }], addedTrackIds: ['t2'],
+      },
+      snapshot: snapshot({ tracks: [track, added] }),
+    });
+    const onReplaceUpcoming = vi.fn();
+    render(<Steered onReplaceUpcoming={onReplaceUpcoming} />);
+    const offered = await screen.findByRole('button', { name: 'More sludge' });
+    expect(offered).toHaveStyle({ height: '44px' });
+    fireEvent.click(offered);
+
+    expect(await screen.findByText('Added Song')).toBeVisible();
+    expect(screen.getByText('1 track changed')).toBeVisible();
+    expect(screen.getAllByTestId('steer-added-dot')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: "Update what's next" }));
+    expect(onReplaceUpcoming).toHaveBeenCalledWith('s1', [track, added]);
+  });
+
+  it('has no pills on an ordinary playlist', async () => {
+    apiMock.playlists.tracks.mockResolvedValue([track]);
+    apiMock.playlists.get.mockResolvedValue(manual);
+    apiMock.playlists.list.mockResolvedValue([manual]);
+    render(<Harness initial={{ playlist: manual, tracks: [track] }} />);
+    await screen.findAllByText('Teardrop');
+    expect(apiMock.playlists.steer).not.toHaveBeenCalled();
+    expect(screen.queryByRole('group', { name: 'Steer this playlist' })).toBeNull();
+  });
+});
 
 describe('MobilePlaylistsView smart playlists', () => {
   beforeEach(() => {

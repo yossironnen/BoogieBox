@@ -858,6 +858,10 @@ fn tracked_migrations() -> Vec<Migration> {
             id: "2026-11-02-loudness-partial-album-tags",
             apply: loudness::reset_album_gains_beside_album_tags,
         },
+        Migration {
+            id: "2026-11-05-artists-genres",
+            apply: ensure_artists_genres_column,
+        },
     ]
 }
 
@@ -2966,6 +2970,16 @@ fn remove_auto_dj_crossfade_overrides(connection: &Connection) -> Result<(), rus
 
 /// Failure count per deep-analysis job, so the background sweep can stop
 /// re-queueing a file that never analyses.
+/// `artists.genres` was added to the body of `ensure_artist_external_identity_schema` after that migration
+/// had already run on existing databases, so only databases created later have it. Without it every EQ
+/// profile lookup fails.
+fn ensure_artists_genres_column(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "artists") && !column_exists(connection, "artists", "genres")? {
+        connection.execute_batch("ALTER TABLE artists ADD COLUMN genres TEXT")?;
+    }
+    Ok(())
+}
+
 fn ensure_deep_analysis_attempts_column(connection: &Connection) -> Result<(), rusqlite::Error> {
     if table_exists(connection, "deep_analysis_jobs")
         && !column_exists(connection, "deep_analysis_jobs", "attempts")?

@@ -74,6 +74,7 @@ import type { FavouriteIds, FavouriteKind, Favourites } from './favourites';
 import type { RadioStation, RadioStationInput } from './radioStations';
 import type { ScrobbleAccountsResponse } from './scrobbling';
 import type { SmartDefinition, SmartDefinitionView } from './smartPlaylistRules';
+import type { SmartSteer, SteerUpdate, SteerView } from './smartSteer';
 import { invalidateHomeData } from './homeCache';
 import { notifyServerRestoring } from './restoreState';
 import type {
@@ -538,7 +539,7 @@ export const api = {
   track: (id: ApiEntityId) => get<Track>(`/tracks/${id}`),
   setTrackRating: (id: ApiEntityId, rating: number | null) =>
     patch<{ ok: boolean; rating: number | null }>(`/tracks/${id}/rating`, { rating }),
-  trackEqProfile: (id: ApiEntityId) => get<{ eq_profile: 'Rock' | 'Metal' | 'Pop' | 'Punk' | 'Electronic' | 'Club' | 'Hip-Hop' | 'Soul' | 'Acoustic' | 'Atmosphere' | 'Classical' | 'Vintage'; source: string }>(`/tracks/${id}/eq-profile`),
+  trackEqProfile: (id: ApiEntityId) => get<{ eqProfile: 'Manual' | 'Rock' | 'Metal' | 'Pop' | 'Punk' | 'Electronic' | 'Club' | 'Hip-Hop' | 'Soul' | 'Acoustic' | 'Atmosphere' | 'Classical' | 'Vintage'; source: string }>(`/tracks/${id}/eq-profile`),
   trackLyrics: (id: ApiEntityId) => get<{
     lyrics: string;
     source: 'cache' | 'lrclib' | 'lyrics.ovh';
@@ -728,6 +729,10 @@ export const api = {
     smartDefinition: (id: EntityId) => smartRequest<SmartDefinitionView>('GET', `/playlists/${id}/smart-definition`),
     updateSmartDefinition: (id: EntityId, definition: SmartDefinition, expectedEditRevision: number) =>
                    smartRequest<SmartDefinitionView>('PUT', `/playlists/${id}/smart-definition`, { definition, expectedEditRevision }),
+    /** A smart playlist's steering pills: the ones on and the ones to offer. */
+    steer:       (id: EntityId) => smartRequest<SteerView>('GET', `/playlists/${id}/steer`),
+    /** Replaces the pills; answers with the pills and the new tracks. */
+    setSteer:    (id: EntityId, steer: SmartSteer[]) => smartRequest<SteerUpdate>('PUT', `/playlists/${id}/steer`, { steer }),
     /** Saves a smart playlist's current tracks as a new ordinary playlist. */
     saveAsOrdinary: (id: EntityId, name: string) =>
                    smartRequest<{ playlist: Playlist; added: number }>('POST', `/playlists/${id}/static-copy`, { name }),

@@ -15,7 +15,7 @@ use rusqlite::{types::Value, Connection};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-/// Most pills shown at once.
+/// Most pills shown at once, counting the ones already on.
 const MAX_PILLS: usize = 8;
 /// Most style and mood pills; the other places go to favourites, popular, new and sound.
 const MAX_TAG_PILLS: usize = 5;
@@ -657,8 +657,10 @@ pub fn suggest_pills(
                 &dry_run,
             )
         };
+        let room = MAX_PILLS.saturating_sub(def.steers().len());
+        pills.truncate(room);
         for choice in signals {
-            if pills.len() >= MAX_PILLS {
+            if pills.len() >= room {
                 break;
             }
             let factors = signal_factors(conn, &index, owner, now, choice.signal)?;
@@ -1035,6 +1037,30 @@ mod tests {
             !got.contains(&"signal slower".to_owned()),
             "the opposite would be refused: {got:?}"
         );
+    }
+
+    #[test]
+    fn pills_already_on_count_towards_the_eight() {
+        let conn = db();
+        for name in [
+            "sludge", "thrash", "grind", "stoner", "drone", "speed", "folk", "crust",
+        ] {
+            artist(&conn, name, 30, &[(name, 1.0)]);
+        }
+        conn.execute_batch(
+            "INSERT INTO play_history(id, user_id, track_id, played_at)
+             SELECT 'h' || id, 'alice', id, '2026-10-01 10:00:00' FROM tracks ORDER BY id LIMIT 25;
+             INSERT INTO track_ratings(user_id, track_id, rating)
+             SELECT 'alice', id, 5 FROM tracks ORDER BY id LIMIT 20;
+             UPDATE tracks SET bpm_detected = 60 + rowid % 90;",
+        )
+        .unwrap();
+        let steer = json!([
+            { "kind": "style", "tag": "sludge", "direction": "more" },
+            { "kind": "style", "tag": "thrash", "direction": "more" },
+        ]);
+        let got = suggest(&conn, &definition(steer, 60));
+        assert_eq!(got.pills.len(), MAX_PILLS - 2, "{:?}", words(&got));
     }
 
     #[test]

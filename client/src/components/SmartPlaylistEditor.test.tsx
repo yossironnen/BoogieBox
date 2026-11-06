@@ -100,6 +100,46 @@ describe('SmartPlaylistEditor', () => {
     expect(apiMock.playlists.createSmart).toHaveBeenCalledWith('Trip hop', expect.objectContaining({ schemaVersion: 1 }));
   });
 
+  describe('steering pills', () => {
+    const steer = [
+      { kind: 'style', tag: 'sludge', direction: 'more' },
+      { kind: 'signal', signal: 'popular' },
+    ];
+    const openWithPills = async () => {
+      apiMock.playlists.smartDefinition.mockResolvedValue({ ...stored, definition: { ...stored.definition, steer } });
+      apiMock.playlists.updateSmartDefinition.mockResolvedValue(stored);
+      apiMock.playlists.update.mockResolvedValue(smartPlaylist);
+      render(<SmartPlaylistEditor playlist={smartPlaylist} existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+      const dialog = screen.getByRole('dialog', { name: 'Edit rules' });
+      expect(await within(dialog).findByText('Pills on: More sludge, Most played here')).toBeVisible();
+      return dialog;
+    };
+
+    it('keeps them when the rules are saved', async () => {
+      const dialog = await openWithPills();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save rules' }));
+      await waitFor(() => expect(apiMock.playlists.updateSmartDefinition).toHaveBeenCalled());
+      expect(apiMock.playlists.updateSmartDefinition.mock.calls[0][1].steer).toEqual(steer);
+    });
+
+    it('takes them off with Clear', async () => {
+      const dialog = await openWithPills();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Clear' }));
+      expect(within(dialog).queryByTestId('smart-editor-pills')).toBeNull();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save rules' }));
+      await waitFor(() => expect(apiMock.playlists.updateSmartDefinition).toHaveBeenCalled());
+      expect(apiMock.playlists.updateSmartDefinition.mock.calls[0][1]).not.toHaveProperty('steer');
+    });
+
+    it('shows no line when none are on', async () => {
+      apiMock.playlists.smartDefinition.mockResolvedValue(stored);
+      render(<SmartPlaylistEditor playlist={smartPlaylist} existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+      const dialog = screen.getByRole('dialog', { name: 'Edit rules' });
+      await within(dialog).findByRole('button', { name: 'Save rules' });
+      expect(within(dialog).queryByTestId('smart-editor-pills')).toBeNull();
+    });
+  });
+
   it('marks wrong values instead of saving', async () => {
     render(<SmartPlaylistEditor existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     const dialog = screen.getByRole('dialog', { name: 'New smart playlist' });
