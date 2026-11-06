@@ -27,13 +27,17 @@ pub const MOOD_BUCKETS: [&str; 8] = [
 ];
 
 /// Discogs-style album tags have no weight of their own.
-const ALBUM_AFFINITY: f64 = 0.7;
+pub(crate) const ALBUM_AFFINITY: f64 = 0.7;
 /// Artist tags say less about one track than a track or album tag does.
-const ARTIST_AFFINITY_SCALE: f64 = 0.6;
+pub(crate) const ARTIST_AFFINITY_SCALE: f64 = 0.6;
 /// `artist_styles.weight` is empty on rows written before weights existed (same default as Artist Radio).
-const DEFAULT_ARTIST_WEIGHT: f64 = 0.6;
+pub(crate) const DEFAULT_ARTIST_WEIGHT: f64 = 0.6;
 /// A track "added recently" for the Something new pill.
-const NEW_TRACK_DAYS: i64 = 30;
+pub(crate) const NEW_TRACK_DAYS: i64 = 30;
+
+/// The share of a playlist a rare signal aims for: see `rare_boost`.
+const RARE_SIGNAL_SHARE: f64 = 0.3;
+const MAX_RARE_BOOST: f64 = 200.0;
 
 /// Kinds of music that are a narrower form of another without saying so in their name. Name-based children
 /// ("atmospheric black metal" under "black metal") need no entry. Both sides are normalized tags.
@@ -70,7 +74,7 @@ const PARENTS: &[(&str, &str)] = &[
     ("downtempo", "electronic"),
     ("trip-hop", "electronic"),
     ("idm", "electronic"),
-    ("drum and bass", "electronic"),
+    ("drum-and-bass", "electronic"),
     ("dubstep", "electronic"),
     ("electro", "electronic"),
     ("synthwave", "electronic"),
@@ -91,6 +95,34 @@ const PARENTS: &[(&str, &str)] = &[
     ("ska", "reggae"),
     ("dancehall", "reggae"),
 ];
+
+/// Other spellings of a style that stored tags still carry. `tag_taxonomy` folds spellings as tags are written;
+/// these appeared in real libraries after that and are read as one style here.
+const TAG_ALIASES: &[(&str, &str)] = &[
+    ("goth rock", "gothic rock"),
+    ("goth", "gothic"),
+    ("rhythm and blues", "r&b"),
+    ("ndw", "neue deutsche welle"),
+    ("synth-pop", "synthpop"),
+];
+
+/// The one name a style goes by. `tag` must be lowercase.
+pub(crate) fn canonical_tag(tag: &str) -> &str {
+    TAG_ALIASES
+        .iter()
+        .find(|(from, _)| *from == tag)
+        .map_or(tag, |(_, to)| to)
+}
+
+/// `tag` plus every spelling that folds to it, for reading stored rows.
+fn stored_spellings(tag: &str) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(tag.to_owned()).chain(
+        TAG_ALIASES
+            .iter()
+            .filter(move |(_, to)| *to == tag)
+            .map(|(from, _)| (*from).to_owned()),
+    )
+}
 
 /// One pill as sent by clients and stored in the definition. Fields stay strings so the validator can name
 /// what is wrong.
@@ -147,11 +179,19 @@ impl CSteer {
         matches!(self, CSteer::Signal(Signal::New))
     }
 
+    pub(crate) fn style_target(tag: &str) -> String {
+        format!("style:{tag}")
+    }
+
+    pub(crate) fn mood_target(bucket: &str) -> String {
+        format!("mood:{bucket}")
+    }
+
     /// Two pills sharing a target would fight or repeat each other.
-    fn target(&self) -> String {
+    pub(crate) fn target(&self) -> String {
         match self {
-            CSteer::Style { tag, .. } => format!("style:{tag}"),
-            CSteer::Mood { bucket, .. } => format!("mood:{bucket}"),
+            CSteer::Style { tag, .. } => Self::style_target(tag),
+            CSteer::Mood { bucket, .. } => Self::mood_target(bucket),
             CSteer::Signal(Signal::Faster | Signal::Slower) => "signal:bpm".to_owned(),
             CSteer::Signal(Signal::Energetic | Signal::Calmer) => "signal:energy".to_owned(),
             CSteer::Signal(signal) => format!("signal:{signal:?}"),
@@ -169,7 +209,7 @@ fn normalized_tag(raw: &str) -> Option<String> {
         .to_lowercase();
     (1..=MAX_TAG_CHARS)
         .contains(&tag.chars().count())
-        .then_some(tag)
+        .then(|| canonical_tag(&tag).to_owned())
 }
 
 fn check_one(steer: &mut Steer, path: &str, errors: &mut Vec<RuleError>) -> Option<CSteer> {
@@ -283,8 +323,9 @@ pub fn children_in_library(conn: &Connection, parent: &str) -> rusqlite::Result<
         let tags = stmt.query_map([], |row| row.get::<_, String>(0))?;
         for tag in tags {
             let tag = tag?.to_lowercase();
-            if is_child_tag(&tag, parent) {
-                found.insert(tag);
+            let tag = canonical_tag(&tag);
+            if is_child_tag(tag, parent) {
+                found.insert(tag.to_owned());
             }
         }
     }
@@ -302,7 +343,7 @@ fn id_text(value: Value) -> String {
 }
 
 /// Runs a query whose first column is a track id and hands each row to `visit`.
-fn scan(
+pub(crate) fn scan(
     conn: &Connection,
     sql: &str,
     params: Vec<Value>,
@@ -318,7 +359,7 @@ fn scan(
 }
 
 /// The ids in `sql`'s first column that are in the pool, as flags per pool position.
-fn pool_flags(
+pub(crate) fn pool_flags(
     conn: &Connection,
     index: &HashMap<&str, usize>,
     sql: &str,
@@ -334,11 +375,11 @@ fn pool_flags(
     Ok(flags)
 }
 
-fn more_factor(affinity: f64) -> f64 {
+pub(crate) fn more_factor(affinity: f64) -> f64 {
     1.0 + 3.0 * affinity
 }
 
-fn less_factor(affinity: f64) -> f64 {
+pub(crate) fn less_factor(affinity: f64) -> f64 {
     (1.0 - 0.9 * affinity).max(0.1)
 }
 
@@ -364,6 +405,24 @@ fn percentiles(values: &[Option<f64>]) -> Vec<Option<f64>> {
         .collect()
 }
 
+/// "Go deeper": narrower kinds count far more than the style itself.
+pub(crate) fn deeper_factor(own: f64, narrower: f64) -> f64 {
+    1.0 + 4.0 * narrower + own
+}
+
+/// The boost for a yes/no signal. A flat boost does nothing for a rare one (20 favourites among 2,040 matches
+/// moved 1 track of 100 on a real library), so it rises until those tracks would fill about
+/// [`RARE_SIGNAL_SHARE`] of a sample. Never below `floor`.
+fn rare_boost(flags: &[bool], floor: f64) -> f64 {
+    let hits = flags.iter().filter(|f| **f).count();
+    if hits == 0 {
+        return floor;
+    }
+    let others = (flags.len() - hits) as f64;
+    let odds = RARE_SIGNAL_SHARE / (1.0 - RARE_SIGNAL_SHARE);
+    (odds * others / hits as f64).clamp(floor, MAX_RARE_BOOST)
+}
+
 fn style_factors(
     conn: &Connection,
     index: &HashMap<&str, usize>,
@@ -371,8 +430,10 @@ fn style_factors(
     lean: Lean,
 ) -> rusqlite::Result<Vec<f64>> {
     let children = children_in_library(conn, tag)?;
-    let mut tags = vec![tag.to_owned()];
-    tags.extend(children);
+    let mut tags: Vec<String> = stored_spellings(tag).collect();
+    for child in &children {
+        tags.extend(stored_spellings(child));
+    }
     let marks = vec!["?"; tags.len()].join(",");
     let params: Vec<Value> = tags.iter().cloned().map(Value::Text).collect();
 
@@ -381,7 +442,7 @@ fn style_factors(
     let mut narrower = vec![0.0_f64; index.len()];
     let mut note = |id: &str, found: &str, affinity: f64| {
         if let Some(&i) = index.get(id) {
-            let slot = if found.eq_ignore_ascii_case(tag) {
+            let slot = if canonical_tag(&found.to_lowercase()) == tag {
                 &mut own[i]
             } else {
                 &mut narrower[i]
@@ -435,7 +496,7 @@ fn style_factors(
         .map(|(own, narrower)| match lean {
             Lean::More => more_factor(own.max(narrower)),
             Lean::Less => less_factor(own.max(narrower)),
-            Lean::Deeper => 1.0 + 4.0 * narrower + own,
+            Lean::Deeper => deeper_factor(own, narrower),
         })
         .collect())
 }
@@ -484,7 +545,7 @@ fn mood_factors(
 }
 
 /// Values per pool track from a query of `(track id, number)`; tracks it doesn't list get `missing`.
-fn pool_values(
+pub(crate) fn pool_values(
     conn: &Connection,
     index: &HashMap<&str, usize>,
     sql: &str,
@@ -515,7 +576,17 @@ fn rank_factors(values: &[Option<f64>], rising: bool) -> Vec<f64> {
         .collect()
 }
 
-fn signal_factors(
+/// Each track's BPM, tag value first and then the analysed one.
+pub(crate) fn bpm_sql() -> String {
+    format!("SELECT t.id, {BPM} FROM tracks t")
+}
+
+/// Deep-analysis energy where the analysis was confident enough. Reads a covering index: these columns sit
+/// behind large JSON overflow pages in the table itself.
+pub(crate) const ENERGY_SQL: &str = "SELECT track_id, energy_score_refined FROM track_deep_analysis
+     WHERE confidence > 0.25 AND energy_score_refined IS NOT NULL";
+
+pub(crate) fn signal_factors(
     conn: &Connection,
     index: &HashMap<&str, usize>,
     owner: &str,
@@ -523,9 +594,7 @@ fn signal_factors(
     signal: Signal,
 ) -> rusqlite::Result<Vec<f64>> {
     let owner_param = || vec![Value::Text(owner.to_owned())];
-    let bpm_sql = format!("SELECT t.id, {BPM} FROM tracks t");
-    const ENERGY_SQL: &str = "SELECT track_id, energy_score_refined FROM track_deep_analysis
-                              WHERE confidence > 0.25 AND energy_score_refined IS NOT NULL";
+    let bpm_sql = bpm_sql();
     Ok(match signal {
         Signal::Favourites => {
             let starred = pool_flags(
@@ -540,21 +609,35 @@ fn signal_factors(
                 "SELECT track_id FROM track_ratings WHERE user_id = ?1 AND rating >= 4",
                 owner_param(),
             )?;
-            starred
+            let liked: Vec<bool> = starred
                 .into_iter()
                 .zip(rated)
-                .map(|(s, r)| if s || r { 4.0 } else { 1.0 })
+                .map(|(s, r)| s || r)
+                .collect();
+            let boost = rare_boost(&liked, 4.0);
+            liked
+                .into_iter()
+                .map(|l| if l { boost } else { 1.0 })
                 .collect()
         }
-        Signal::Popular => rank_factors(
-            &pool_values(
+        Signal::Popular => {
+            // Tracks with plays, ranked among themselves. Most of a library usually has none, and those stay
+            // neutral rather than counting as the bottom of the ranking.
+            let plays = pool_values(
                 conn,
                 index,
-                "SELECT track_id, SUM(play_count) FROM user_track_stats GROUP BY track_id",
-                Some(0.0),
-            )?,
-            true,
-        ),
+                "SELECT track_id, SUM(play_count) FROM user_track_stats
+                 GROUP BY track_id HAVING SUM(play_count) > 0",
+                None,
+            )?;
+            let played: Vec<bool> = plays.iter().map(Option::is_some).collect();
+            let boost = rare_boost(&played, 1.0);
+            rank_factors(&plays, true)
+                .into_iter()
+                .zip(played)
+                .map(|(rank, was_played)| if was_played { rank * boost } else { 1.0 })
+                .collect()
+        }
         Signal::New => {
             let played = pool_flags(
                 conn,
@@ -568,10 +651,15 @@ fn signal_factors(
                 &format!("SELECT id FROM tracks WHERE added_at >= datetime(?1, '-{NEW_TRACK_DAYS} days')"),
                 vec![Value::Text(now.to_owned())],
             )?;
-            played
+            let fresh: Vec<bool> = played
                 .into_iter()
                 .zip(recent)
-                .map(|(p, r)| if !p || r { 3.0 } else { 1.0 })
+                .map(|(p, r)| !p || r)
+                .collect();
+            let boost = rare_boost(&fresh, 3.0);
+            fresh
+                .into_iter()
+                .map(|f| if f { boost } else { 1.0 })
                 .collect()
         }
         Signal::Faster => rank_factors(&pool_values(conn, index, &bpm_sql, None)?, true),
@@ -822,7 +910,7 @@ mod tests {
     fn children_come_from_the_name_or_the_list() {
         assert!(is_child_tag("atmospheric black metal", "black metal"));
         assert!(is_child_tag("classic rock", "rock"));
-        assert!(is_child_tag("synth-pop", "pop"));
+        assert!(is_child_tag("k-pop", "pop"));
         assert!(is_child_tag("sludge", "doom metal"));
         assert!(!is_child_tag("rock", "rock"));
         assert!(!is_child_tag("krock", "rock"));
@@ -838,6 +926,24 @@ mod tests {
         assert_eq!(
             children_in_library(&conn, "doom metal").unwrap(),
             vec!["sludge"]
+        );
+    }
+
+    #[test]
+    fn other_spellings_count_as_the_same_style() {
+        let conn = fixture();
+        conn.execute_batch(
+            "INSERT INTO artist_styles(artist_id, style, kind, weight) VALUES ('th', 'goth rock', 'genre', 1.0);",
+        )
+        .unwrap();
+        let stored = shuffled(json!([style("Goth Rock", "more")]), 50);
+        assert_eq!(
+            stored.definition().steer[0].tag.as_deref(),
+            Some("gothic rock")
+        );
+        let base = pick(&conn, "alice", &shuffled(json!([]), 50));
+        assert!(
+            by_artist(&conn, &pick(&conn, "alice", &stored), "th") > by_artist(&conn, &base, "th")
         );
     }
 
@@ -1006,6 +1112,40 @@ mod tests {
             "alice has none"
         );
         assert!(by_artist(&conn, &bob, "sl") > by_artist(&conn, &alice, "sl"));
+    }
+
+    #[test]
+    fn rare_signals_get_a_stronger_boost() {
+        let flags = |hits: usize, total: usize| (0..total).map(|i| i < hits).collect::<Vec<_>>();
+        assert_eq!(rare_boost(&flags(0, 100), 4.0), 4.0);
+        assert_eq!(rare_boost(&flags(90, 100), 4.0), 4.0, "common: the floor");
+        let rare = rare_boost(&flags(20, 2040), 4.0);
+        assert!((43.0..44.0).contains(&rare), "{rare}");
+        assert_eq!(rare_boost(&flags(1, 100_000), 4.0), MAX_RARE_BOOST);
+
+        // On a real pick: a dozen favourites among 200 matches mostly get into 50 places.
+        let conn = fixture();
+        for i in 0..12 {
+            conn.execute(
+                "INSERT INTO track_ratings(user_id, track_id, rating) VALUES ('alice', ?1, 5)",
+                [format!("t{:03}", i * 15)],
+            )
+            .unwrap();
+        }
+        let picked = pick(&conn, "alice", &shuffled(json!([signal("favourites")]), 50));
+        let liked = picked
+            .iter()
+            .filter(|id| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM track_ratings WHERE user_id = 'alice' AND track_id = ?1",
+                    [id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                    > 0
+            })
+            .count();
+        assert!(liked >= 6, "{liked} of 12");
     }
 
     #[test]

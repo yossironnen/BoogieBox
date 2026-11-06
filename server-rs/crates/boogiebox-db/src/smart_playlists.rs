@@ -6,6 +6,7 @@
 use crate::music::EntityId;
 use crate::playlists::{self, CreatePlaylistError, PlaylistRow, PlaylistTrackRow};
 use crate::smart_steer::{self, CSteer, Steer, STEER_POOL_MAX};
+use crate::smart_suggest::{suggest_pills, Pill};
 use rusqlite::{types::Value, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -282,6 +283,42 @@ impl ValidDefinition {
     /// The normalized definition (trimmed text, de-duplicated library ids).
     pub fn definition(&self) -> &Definition {
         &self.canonical
+    }
+
+    /// The same rules with no pills on.
+    fn without_steer(&self) -> Self {
+        let mut plain = self.clone();
+        plain.steers.clear();
+        plain.canonical.steer.clear();
+        plain
+    }
+
+    /// The pills in this definition.
+    pub(crate) fn steers(&self) -> &[CSteer] {
+        &self.steers
+    }
+
+    pub(crate) fn max_tracks(&self) -> u32 {
+        self.max_tracks
+    }
+
+    /// Genres the rules require ("Genre is X"), anywhere in the rule tree.
+    pub(crate) fn positive_genres(&self) -> Vec<String> {
+        fn walk(group: &CGroup, out: &mut Vec<String>) {
+            for child in &group.children {
+                match child {
+                    CNode::Group(g) => walk(g, out),
+                    CNode::Cond(Condition::Genre {
+                        negate: false,
+                        label,
+                    }) => out.push(label.clone()),
+                    CNode::Cond(_) => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &mut out);
+        out
     }
 
     /// Canonical JSON for storage.
@@ -940,7 +977,11 @@ fn sort_sql(c: &mut Compiler, field: SortField) -> (&'static str, bool) {
 }
 
 /// The selection query and its parameters.
-fn build_query(ctx: &Context, def: &ValidDefinition) -> rusqlite::Result<(String, Vec<Value>)> {
+fn build_query(
+    ctx: &Context,
+    def: &ValidDefinition,
+    limit: i64,
+) -> rusqlite::Result<(String, Vec<Value>)> {
     let mut c = Compiler::default();
     let mut predicate = compile_group(&mut c, ctx, &def.root)?;
     if def.max_duration_seconds.is_some() {
@@ -969,12 +1010,6 @@ fn build_query(ctx: &Context, def: &ValidDefinition) -> rusqlite::Result<(String
     order.push("t.id ASC".to_owned());
 
     let joins = joins_sql(&mut c, ctx);
-    // Pills pick from the matches, so a steered query reads past the playlist's own limit.
-    let limit = if def.steers.is_empty() {
-        i64::from(def.max_tracks)
-    } else {
-        STEER_POOL_MAX as i64
-    };
     let limit = c.bind(limit);
     let sql = format!(
         "SELECT t.id, t.duration FROM tracks t{joins} WHERE {predicate} ORDER BY {} LIMIT {limit}",
@@ -1029,6 +1064,63 @@ pub fn db_now(conn: &Connection) -> rusqlite::Result<String> {
     conn.query_row("SELECT datetime('now')", [], |r| r.get(0))
 }
 
+/// Every match in the rules' own order (a fixed-order query stops at `limit`).
+fn matching_rows(
+    ctx: &Context,
+    def: &ValidDefinition,
+    budget: Duration,
+    limit: i64,
+) -> Result<Vec<Candidate>, EvalError> {
+    let shuffled = def.shuffle_seed.is_some();
+    let mut rows = with_query_budget(ctx.conn, budget, || {
+        let (sql, params) = build_query(ctx, def, limit)?;
+        let mut stmt = ctx.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            let id = match row.get::<_, Value>(0)? {
+                Value::Integer(n) => n.to_string(),
+                Value::Text(s) => s,
+                _ => String::new(),
+            };
+            let (album, artist) = if shuffled {
+                (row.get(2)?, row.get(3)?)
+            } else {
+                (String::new(), String::new())
+            };
+            Ok(Candidate {
+                id,
+                duration: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                album,
+                artist,
+                rank: 0,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+    })?;
+    if let Some(seed) = def.shuffle_seed {
+        rows.sort_by_cached_key(|c| (shuffle_key(seed, &c.id), c.id.clone()));
+    }
+    Ok(rows)
+}
+
+/// What the rules match, ignoring the playlist's limits and any pills: what steering chooses from. Capped at
+/// [`STEER_POOL_MAX`], in the same order a steered evaluation uses.
+pub(crate) fn matching_pool(
+    conn: &Connection,
+    owner_id: &str,
+    def: &ValidDefinition,
+    now: &str,
+    budget: Duration,
+) -> Result<Vec<String>, EvalError> {
+    let ctx = Context {
+        conn,
+        owner: owner_id,
+        now,
+    };
+    let mut rows = matching_rows(&ctx, def, budget, STEER_POOL_MAX as i64)?;
+    rows.truncate(STEER_POOL_MAX);
+    Ok(rows.into_iter().map(|c| c.id).collect())
+}
+
 /// Evaluates `def` for `owner_id` at `now` (from [`db_now`]), with the default query budget.
 pub fn evaluate(
     conn: &Connection,
@@ -1054,33 +1146,13 @@ pub fn evaluate_with_budget(
     };
     let shuffled = def.shuffle_seed.is_some();
     let started = std::time::Instant::now();
-    let mut rows = with_query_budget(conn, budget, || {
-        let (sql, params) = build_query(&ctx, def)?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
-            let id = match row.get::<_, Value>(0)? {
-                Value::Integer(n) => n.to_string(),
-                Value::Text(s) => s,
-                _ => String::new(),
-            };
-            let (album, artist) = if shuffled {
-                (row.get(2)?, row.get(3)?)
-            } else {
-                (String::new(), String::new())
-            };
-            Ok(Candidate {
-                id,
-                duration: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
-                album,
-                artist,
-                rank: 0,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-    })?;
-    if let Some(seed) = def.shuffle_seed {
-        rows.sort_by_cached_key(|c| (shuffle_key(seed, &c.id), c.id.clone()));
-    }
+    // Pills pick from the matches, so a steered query reads past the playlist's own limit.
+    let limit = if def.steers.is_empty() {
+        i64::from(def.max_tracks)
+    } else {
+        STEER_POOL_MAX as i64
+    };
+    let mut rows = matching_rows(&ctx, def, budget, limit)?;
     let steered = !def.steers.is_empty();
     if steered {
         rows.truncate(STEER_POOL_MAX);
@@ -1127,8 +1199,20 @@ struct Candidate {
     rank: usize,
 }
 
-/// Puts the matches in the order they should get in, given one weight per match. A weight of 1 for every
-/// track leaves the order exactly as it was.
+/// How strongly a match at position `rank` of the rules' order wants in, given its weight. Equal weights keep
+/// the order exactly as it was.
+fn lean_score(def: &ValidDefinition, id: &str, rank: usize, weight: f64) -> f64 {
+    match def.shuffle_seed {
+        // Weighted sampling without replacement (Efraimidis–Spirakis), as ln(u) / weight. `u` falls as the
+        // shuffle key rises, so equal weights keep the plain shuffle's order.
+        Some(seed) => (1.0 - shuffle_key(seed, id) as f64 / u64::MAX as f64).ln() / weight,
+        // A weight moves a track up by ln(weight) playlist lengths, whatever the size of the pool, so this
+        // stays a lean: scaled by the pool, boosted tracks took every place (plan §2a).
+        None => weight.ln() - rank as f64 / f64::from(def.max_tracks),
+    }
+}
+
+/// Puts the matches in the order they should get in, given one weight per match.
 fn lean(rows: Vec<Candidate>, weights: &[f64], def: &ValidDefinition) -> Vec<Candidate> {
     let mut scored: Vec<(f64, Candidate)> = rows
         .into_iter()
@@ -1136,22 +1220,33 @@ fn lean(rows: Vec<Candidate>, weights: &[f64], def: &ValidDefinition) -> Vec<Can
         .enumerate()
         .map(|(rank, (mut candidate, weight))| {
             candidate.rank = rank;
-            let score = match def.shuffle_seed {
-                // Weighted sampling without replacement (Efraimidis–Spirakis), as ln(u) / weight. `u` falls as
-                // the shuffle key rises, so equal weights keep the plain shuffle's order.
-                Some(seed) => {
-                    let position = shuffle_key(seed, &candidate.id) as f64 / u64::MAX as f64;
-                    (1.0 - position).ln() / weight
-                }
-                // A weight moves a track up by ln(weight) playlist lengths, whatever the size of the pool, so
-                // this stays a lean: scaled by the pool, boosted tracks took every place (plan §2a).
-                None => weight.ln() - rank as f64 / f64::from(def.max_tracks),
-            };
-            (score, candidate)
+            (lean_score(def, &candidate.id, rank, *weight), candidate)
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.rank.cmp(&b.1.rank)));
     scored.into_iter().map(|(_, candidate)| candidate).collect()
+}
+
+/// Which pool positions the first `count` places would go to with these weights. `ids` is in
+/// [`matching_pool`] order. A dry run of [`lean`] that ignores the length limit.
+pub(crate) fn leaned_positions(
+    def: &ValidDefinition,
+    ids: &[String],
+    weights: &[f64],
+    count: usize,
+) -> std::collections::HashSet<usize> {
+    let mut scored: Vec<(f64, usize)> = ids
+        .iter()
+        .zip(weights)
+        .enumerate()
+        .map(|(rank, (id, weight))| (lean_score(def, id, rank, *weight), rank))
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .take(count)
+        .map(|(_, rank)| rank)
+        .collect()
 }
 
 /// A fixed pseudo-random position for `id` under `seed` (FNV-1a, then a SplitMix64 finish so nearby ids
@@ -1688,6 +1783,83 @@ pub fn update_smart_definition(
         Ok::<(), SmartError>(())
     })?;
     smart_definition(conn, playlist_id, user_id)?.ok_or(SmartError::NotFound)
+}
+
+/// A smart playlist's pills: the ones on, the ones to offer, and what the pills changed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteerView {
+    /// Pills on, as stored.
+    pub active: Vec<Steer>,
+    /// Pills to offer, each ready to send back as it is.
+    pub pills: Vec<Pill>,
+    pub pool: usize,
+    pub tagged: usize,
+    pub few_tags: bool,
+    pub popular_source: &'static str,
+    /// Tracks in the playlist only because of the pills, in playlist order.
+    pub added_track_ids: Vec<String>,
+    pub edit_revision: i64,
+    /// Tracks worth an on-demand tag lookup.
+    #[serde(skip)]
+    pub untagged_ids: Vec<String>,
+}
+
+/// The owner's pills, after bringing the playlist up to date.
+pub fn steer_view(
+    conn: &Connection,
+    playlist_id: &EntityId,
+    user_id: &str,
+) -> Result<SteerView, SmartError> {
+    ensure_fresh(conn, playlist_id, user_id, false)?.ok_or(SmartError::NotFound)?;
+    let stored = load_stored(conn, playlist_id, user_id)?.ok_or(SmartError::NotFound)?;
+    let def = stored.parse()?;
+    let now = db_now(conn)?;
+    let suggestions = suggest_pills(conn, user_id, &def, &now)?;
+    let added_track_ids = if def.steers.is_empty() {
+        Vec::new()
+    } else {
+        let plain: std::collections::HashSet<String> =
+            evaluate(conn, user_id, &def.without_steer(), &now)?
+                .track_ids
+                .into_iter()
+                .collect();
+        evaluate(conn, user_id, &def, &now)?
+            .track_ids
+            .into_iter()
+            .filter(|id| !plain.contains(id))
+            .collect()
+    };
+    Ok(SteerView {
+        active: def.canonical.steer,
+        pills: suggestions.pills,
+        pool: suggestions.pool,
+        tagged: suggestions.tagged,
+        few_tags: suggestions.few_tags,
+        popular_source: suggestions.popular_source,
+        added_track_ids,
+        edit_revision: stored.edit_revision,
+        untagged_ids: suggestions.untagged_ids,
+    })
+}
+
+/// Replaces only the playlist's pills and re-evaluates it, all or nothing. Takes no expected revision, so a
+/// tap never fails because the rules are open elsewhere; the revision still moves, so an open editor finds out
+/// when it saves.
+pub fn set_steer(
+    conn: &Connection,
+    playlist_id: &EntityId,
+    user_id: &str,
+    steer: &Json,
+) -> Result<SteerView, SmartError> {
+    let stored = load_stored(conn, playlist_id, user_id)?.ok_or(SmartError::NotFound)?;
+    stored.parse()?;
+    let mut definition: Json =
+        serde_json::from_str(&stored.json).map_err(|_| SmartError::Unsupported)?;
+    definition["steer"] = steer.clone();
+    let def = parse_definition(&definition.to_string()).map_err(SmartError::Invalid)?;
+    update_smart_definition(conn, playlist_id, user_id, &def, stored.edit_revision)?;
+    steer_view(conn, playlist_id, user_id)
 }
 
 /// What unsaved rules would pick. Nothing is stored.
@@ -3217,6 +3389,16 @@ mod tests {
             assert!(!selection.track_ids.is_empty(), "{name}");
             assert!(elapsed < Duration::from_secs(2), "{name} took {elapsed:?}");
         }
+
+        let start = std::time::Instant::now();
+        let suggestions =
+            crate::smart_suggest::suggest_pills(&conn, "alice", &steered, NOW).unwrap();
+        let elapsed = start.elapsed();
+        eprintln!(
+            "suggestions: {} pills in {elapsed:?}",
+            suggestions.pills.len()
+        );
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
 
         // A full 1,000-track playlist: first fill, a refresh after half the matches
         // left, and an unchanged check. Each holds the database lock, so streaming waits this long at worst.

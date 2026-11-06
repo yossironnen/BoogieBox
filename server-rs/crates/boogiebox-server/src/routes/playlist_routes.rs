@@ -25,8 +25,8 @@ use boogiebox_db::{
     },
     smart_playlists::{
         self as smart, create_smart_playlist, ensure_fresh, parse_definition, playlist_snapshot,
-        save_as_ordinary, smart_definition, update_smart_definition, RuleError, SmartError,
-        ValidDefinition,
+        save_as_ordinary, set_steer, smart_definition, steer_view, update_smart_definition,
+        RuleError, SmartError, ValidDefinition,
     },
 };
 use serde::Deserialize;
@@ -77,6 +77,10 @@ pub fn playlist_router(state: SharedState) -> Router {
             "/api/playlists/{id}/smart-definition",
             get(get_smart_definition_handler).put(put_smart_definition_handler),
         )
+        .route(
+            "/api/playlists/{id}/steer",
+            get(get_steer_handler).put(put_steer_handler),
+        )
         .route("/api/playlists/{id}/snapshot", get(snapshot_handler))
         .route("/api/playlists/{id}/summary", get(summary_handler))
         .route("/api/playlists/{id}/refresh", post(refresh_handler))
@@ -105,6 +109,11 @@ struct PlaylistPayload {
 struct SmartDefinitionPayload {
     definition: Option<serde_json::Value>,
     expected_edit_revision: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SteerPayload {
+    steer: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1005,6 +1014,102 @@ async fn put_smart_definition_handler(
     }
 }
 
+/// Starts an on-demand tag lookup for tracks the steering suggestions found untagged. Does nothing when no
+/// tracks need it or Last.fm lookups are off.
+fn look_up_tags(state: &SharedState, db: &DbPool, untagged_ids: &[String]) {
+    let http_client = state
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .http_client
+        .clone();
+    crate::radio_metadata::spawn_lazy_tag_fetch(
+        db.clone(),
+        http_client,
+        untagged_ids.iter().map(|id| coerce_entity_id(id)).collect(),
+    );
+}
+
+/// The pills on a smart playlist and the pills to offer.
+async fn get_steer_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let Ok(permit) = preview_permits().try_acquire_owned() else {
+        return import_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "busy",
+            "Too many previews at once",
+        );
+    };
+    let playlist_id = coerce_entity_id(&id);
+    let user_id = user.id;
+    let worker_db = db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        steer_view(&worker_db.lock().expect("db"), &playlist_id, &user_id)
+    })
+    .await;
+    match result {
+        Ok(Ok(view)) => {
+            look_up_tags(&state, &db, &view.untagged_ids);
+            (StatusCode::OK, Json(view)).into_response()
+        }
+        Ok(Err(e)) => smart_error(e),
+        Err(_) => internal_error(),
+    }
+}
+
+/// Replaces a smart playlist's pills and answers with the pills and the new tracks, from one read.
+async fn put_steer_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(payload): Json<SteerPayload>,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    let Some(steer) = payload.steer else {
+        return error(StatusCode::BAD_REQUEST, "steer is required");
+    };
+    let Ok(permit) = preview_permits().try_acquire_owned() else {
+        return import_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "busy",
+            "Too many previews at once",
+        );
+    };
+    let playlist_id = coerce_entity_id(&id);
+    let user_id = user.id;
+    let worker_db = db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let conn = worker_db.lock().expect("db");
+        let view = set_steer(&conn, &playlist_id, &user_id, &steer)?;
+        let snapshot = playlist_snapshot(&conn, &playlist_id, &user_id, false)?;
+        Ok::<_, SmartError>((view, snapshot))
+    })
+    .await;
+    match result {
+        Ok(Ok((view, snapshot))) => {
+            look_up_tags(&state, &db, &view.untagged_ids);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "steer": view, "snapshot": snapshot })),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => smart_error(e),
+        Err(_) => internal_error(),
+    }
+}
+
 async fn snapshot_response(
     state: SharedState,
     user: AuthenticatedUser,
@@ -1895,6 +2000,127 @@ mod tests {
             ids.push(id);
         }
         ids
+    }
+
+    #[tokio::test]
+    async fn steering_pills_over_the_api() {
+        let (app, pool) = new_test_app_with_pool("smart-steer");
+        let cookie = seed_user_session(&pool, "u1");
+        let other = seed_user_session(&pool, "u2");
+        seed_genres(&pool);
+        let mut rules = genre_rules("Rock");
+        rules["limit"] = serde_json::json!({ "maxTracks": 1 });
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists",
+                &cookie,
+                serde_json::json!({ "name": "Rock", "kind": "smart", "definition": rules }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = json_body(&body)["id"].as_str().unwrap().to_owned();
+        let uri = format!("/api/playlists/{id}/steer");
+
+        // Nothing on yet, and no style tags in this library.
+        let (status, body) = send(app.clone(), get_req(&uri, &cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+        let view = json_body(&body);
+        assert_eq!(view["active"], serde_json::json!([]));
+        assert_eq!(view["pool"], 2);
+        assert_eq!(view["fewTags"], true);
+        assert_eq!(view["popularSource"], "local");
+        assert_eq!(view["addedTrackIds"], serde_json::json!([]));
+        assert!(view.get("untaggedIds").is_none(), "stays on the server");
+        let revision = view["editRevision"].as_i64().unwrap();
+
+        // A tap answers with the pills and the tracks together.
+        let pill = serde_json::json!({ "kind": "style", "tag": "Sludge", "direction": "more" });
+        let (status, body) = send(
+            app.clone(),
+            put_json(&uri, &cookie, serde_json::json!({ "steer": [pill] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let answer = json_body(&body);
+        assert_eq!(answer["steer"]["active"][0]["tag"], "sludge");
+        assert_eq!(answer["steer"]["editRevision"], revision + 1);
+        assert_eq!(answer["snapshot"]["tracks"].as_array().unwrap().len(), 1);
+
+        // Bad pills are refused with what is wrong, and a missing list is refused too.
+        let (status, body) = send(
+            app.clone(),
+            put_json(
+                &uri,
+                &cookie,
+                serde_json::json!({ "steer": [{ "kind": "weather" }] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let refused = json_body(&body);
+        assert_eq!(refused["code"], "invalid_rules");
+        assert_eq!(refused["errors"][0]["code"], "bad_steer");
+        assert_eq!(refused["errors"][0]["path"], "steer[0].kind");
+        let (status, _) = send(app.clone(), put_json(&uri, &cookie, serde_json::json!({}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Other people's playlists, manual playlists and signed-out requests have no pills.
+        let (status, _) = send(app.clone(), get_req(&uri, &other)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(
+            app.clone(),
+            put_json(&uri, &other, serde_json::json!({ "steer": [] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists",
+                &cookie,
+                serde_json::json!({ "name": "Manual" }),
+            ),
+        )
+        .await;
+        let manual = json_body(&body)["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            app.clone(),
+            get_req(&format!("/api/playlists/{manual}/steer"), &cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(
+            app.clone(),
+            Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Unsaved rules with pills can be previewed.
+        let mut preview = genre_rules("Rock");
+        preview["steer"] = serde_json::json!([{ "kind": "signal", "signal": "new" }]);
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists/smart-preview",
+                &cookie,
+                serde_json::json!({ "definition": preview }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["trackCount"], 2);
+
+        // Off again.
+        let (status, body) = send(
+            app.clone(),
+            put_json(&uri, &cookie, serde_json::json!({ "steer": [] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["steer"]["active"], serde_json::json!([]));
     }
 
     #[tokio::test]
