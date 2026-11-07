@@ -35,6 +35,12 @@ pub(crate) const DEFAULT_ARTIST_WEIGHT: f64 = 0.6;
 /// A track "added recently" for the Something new pill.
 pub(crate) const NEW_TRACK_DAYS: i64 = 30;
 
+/// The popular pill uses Last.fm scrobbles when this share of the pool has them, and local plays otherwise.
+/// Chosen per pool, never per track: 2 million scrobbles and 12 local plays aren't on one scale.
+const MIN_SCROBBLE_SHARE: f64 = 0.5;
+pub(crate) const POPULAR_FROM_LASTFM: &str = "lastfm";
+pub(crate) const POPULAR_FROM_PLAYS: &str = "local";
+
 /// The share of a playlist a rare signal aims for: see `rare_boost`.
 const RARE_SIGNAL_SHARE: f64 = 0.3;
 const MAX_RARE_BOOST: f64 = 200.0;
@@ -115,7 +121,7 @@ pub(crate) fn canonical_tag(tag: &str) -> &str {
 }
 
 /// `tag` plus every spelling that folds to it, for reading stored rows.
-fn stored_spellings(tag: &str) -> impl Iterator<Item = String> + '_ {
+pub(crate) fn stored_spellings(tag: &str) -> impl Iterator<Item = String> + '_ {
     std::iter::once(tag.to_owned()).chain(
         TAG_ALIASES
             .iter()
@@ -200,7 +206,7 @@ impl CSteer {
 }
 
 /// Lowercases and tidies a tag the way `tag_taxonomy::normalize_tag` does, so it matches stored tags.
-fn normalized_tag(raw: &str) -> Option<String> {
+pub(crate) fn normalized_tag(raw: &str) -> Option<String> {
     let tag = raw
         .replace(['_', '\u{a0}'], " ")
         .split_whitespace()
@@ -586,6 +592,31 @@ pub(crate) fn bpm_sql() -> String {
 pub(crate) const ENERGY_SQL: &str = "SELECT track_id, energy_score_refined FROM track_deep_analysis
      WHERE confidence > 0.25 AND energy_score_refined IS NOT NULL";
 
+/// The counts behind the popular pill for this pool, and where they came from. A track with no count is `None`.
+pub(crate) fn popular_counts(
+    conn: &Connection,
+    index: &HashMap<&str, usize>,
+) -> rusqlite::Result<(Vec<Option<f64>>, &'static str)> {
+    let scrobbles = pool_values(
+        conn,
+        index,
+        "SELECT track_id, scrobbles FROM track_popularity WHERE scrobbles > 0",
+        None,
+    )?;
+    let known = scrobbles.iter().flatten().count();
+    if known > 0 && known as f64 >= MIN_SCROBBLE_SHARE * index.len() as f64 {
+        return Ok((scrobbles, POPULAR_FROM_LASTFM));
+    }
+    let plays = pool_values(
+        conn,
+        index,
+        "SELECT track_id, SUM(play_count) FROM user_track_stats
+         GROUP BY track_id HAVING SUM(play_count) > 0",
+        None,
+    )?;
+    Ok((plays, POPULAR_FROM_PLAYS))
+}
+
 pub(crate) fn signal_factors(
     conn: &Connection,
     index: &HashMap<&str, usize>,
@@ -621,15 +652,9 @@ pub(crate) fn signal_factors(
                 .collect()
         }
         Signal::Popular => {
-            // Tracks with plays, ranked among themselves. Most of a library usually has none, and those stay
-            // neutral rather than counting as the bottom of the ranking.
-            let plays = pool_values(
-                conn,
-                index,
-                "SELECT track_id, SUM(play_count) FROM user_track_stats
-                 GROUP BY track_id HAVING SUM(play_count) > 0",
-                None,
-            )?;
+            // Tracks with a count, ranked among themselves. Most of a library may have no local plays, and those
+            // tracks stay neutral rather than counting as the bottom of the ranking.
+            let (plays, _) = popular_counts(conn, index)?;
             let played: Vec<bool> = plays.iter().map(Option::is_some).collect();
             let boost = rare_boost(&played, 1.0);
             rank_factors(&plays, true)
@@ -1162,6 +1187,33 @@ mod tests {
         let popular = pick(&conn, "alice", &shuffled(json!([signal("popular")]), 50));
         let base = pick(&conn, "alice", &shuffled(json!([]), 50));
         assert!(by_artist(&conn, &popular, "sl") > by_artist(&conn, &base, "sl"));
+    }
+
+    #[test]
+    fn popular_uses_scrobbles_once_most_of_the_pool_has_them() {
+        let conn = fixture();
+        // Local plays favour thrash; a few scrobbles on sludge aren't enough to trust yet.
+        conn.execute_batch(
+            "INSERT INTO play_history(id, user_id, track_id, played_at)
+             SELECT 'h' || id, 'alice', id, '2026-10-01 10:00:00' FROM tracks WHERE artist_id = 'th';
+             INSERT INTO track_popularity(track_id, scrobbles, source)
+             SELECT id, 1000000, 'lastfm' FROM tracks WHERE artist_id = 'sl';",
+        )
+        .unwrap();
+        let def = shuffled(json!([signal("popular")]), 50);
+        let few_scrobbles = pick(&conn, "alice", &def);
+        let base = pick(&conn, "alice", &shuffled(json!([]), 50));
+        assert!(by_artist(&conn, &few_scrobbles, "th") > by_artist(&conn, &base, "th"));
+
+        // Now most of the Metal pool has a count, with sludge far ahead, and local plays stop counting.
+        conn.execute_batch(
+            "INSERT INTO track_popularity(track_id, scrobbles, source)
+             SELECT id, 10, 'lastfm' FROM tracks WHERE artist_id IN ('dm', 'bm');",
+        )
+        .unwrap();
+        let scrobbled = pick(&conn, "alice", &def);
+        assert!(by_artist(&conn, &scrobbled, "sl") > by_artist(&conn, &few_scrobbles, "sl"));
+        assert!(by_artist(&conn, &scrobbled, "th") < by_artist(&conn, &few_scrobbles, "th"));
     }
 
     #[test]

@@ -228,6 +228,12 @@ enum Condition {
         label: String,
     },
     GenrePresent(bool),
+    /// A track, album or artist tag: finer than the file's genre tag. `within` also takes narrower kinds.
+    Style {
+        negate: bool,
+        within: bool,
+        tag: String,
+    },
     Number(NumField, Cmp),
     /// Year, rating or BPM known (`true`) or unknown.
     NumberPresent(NumField, bool),
@@ -302,7 +308,7 @@ impl ValidDefinition {
         self.max_tracks
     }
 
-    /// Genres the rules require ("Genre is X"), anywhere in the rule tree.
+    /// Genres and styles the rules require ("Genre is X"), anywhere in the rule tree.
     pub(crate) fn positive_genres(&self) -> Vec<String> {
         fn walk(group: &CGroup, out: &mut Vec<String>) {
             for child in &group.children {
@@ -312,6 +318,9 @@ impl ValidDefinition {
                         negate: false,
                         label,
                     }) => out.push(label.clone()),
+                    CNode::Cond(Condition::Style {
+                        negate: false, tag, ..
+                    }) => out.push(tag.clone()),
                     CNode::Cond(_) => {}
                 }
             }
@@ -326,14 +335,15 @@ impl ValidDefinition {
         serde_json::to_string(&self.canonical).unwrap_or_default()
     }
 
-    /// Whether membership can change with time alone (an "in the last / not in the last N days" rule), so a
-    /// cached result must expire even when no revision moved.
+    /// Whether membership can change with no revision moving, so a cached result must expire: an "in the last /
+    /// not in the last N days" rule, or a style rule, whose tags arrive from the background lookups.
     pub fn has_relative_dates(&self) -> bool {
         fn walk(group: &CGroup) -> bool {
             group.children.iter().any(|child| match child {
                 CNode::Group(g) => walk(g),
                 CNode::Cond(Condition::Date(_, DateCmp::InLastDays(_)))
-                | CNode::Cond(Condition::Date(_, DateCmp::NotInLastDays(_))) => true,
+                | CNode::Cond(Condition::Date(_, DateCmp::NotInLastDays(_)))
+                | CNode::Cond(Condition::Style { .. }) => true,
                 CNode::Cond(_) => false,
             })
         }
@@ -479,6 +489,7 @@ fn allowed_operators(field: &str) -> Option<&'static [&'static str]> {
     Some(match field {
         "artist" | "album" => TEXT,
         "genre" => &["is", "is_not", "is_missing", "is_present"],
+        "style" => &["is", "is_not", "is_within"],
         "year" | "rating" | "bpm" => KNOWN_NUMBER,
         "play_count" => &["is", "gte", "lte", "between"],
         "library_id" => &["in", "not_in"],
@@ -561,6 +572,20 @@ fn check_rule(rule: &mut Rule, path: &str, errors: &mut Vec<RuleError>) -> Optio
                 })
             }
         },
+        "style" => {
+            let Some(tag) = text_value(rule.value.as_ref())
+                .as_deref()
+                .and_then(smart_steer::normalized_tag)
+            else {
+                return bad(errors, RuleErrorCode::BadValue);
+            };
+            rule.value = Some(Json::String(tag.clone()));
+            Some(Condition::Style {
+                negate: op == "is_not",
+                within: op == "is_within",
+                tag,
+            })
+        }
         "year" | "rating" | "bpm" | "play_count" => {
             let num_field = match field.as_str() {
                 "year" => NumField::Year,
@@ -870,6 +895,27 @@ fn compile_condition(
         }
         Condition::GenrePresent(present) => {
             format!("{GENRE} {} ''", if *present { "<>" } else { "=" })
+        }
+        Condition::Style {
+            negate,
+            within,
+            tag,
+        } => {
+            let mut names: Vec<String> = smart_steer::stored_spellings(tag).collect();
+            if *within {
+                for child in smart_steer::children_in_library(ctx.conn, tag)? {
+                    names.extend(smart_steer::stored_spellings(&child));
+                }
+            }
+            let on_track = c.list(&names);
+            let on_album = c.list(&names);
+            let on_artist = c.list(&names);
+            format!(
+                "{}(EXISTS (SELECT 1 FROM track_tags st WHERE st.track_id = t.id AND st.tag IN ({on_track}))
+                  OR EXISTS (SELECT 1 FROM album_styles sa WHERE sa.album_id = t.album_id AND sa.tag IN ({on_album}))
+                  OR EXISTS (SELECT 1 FROM artist_styles sr WHERE sr.artist_id = t.artist_id AND sr.style IN ({on_artist})))",
+                if *negate { "NOT " } else { "" }
+            )
         }
         Condition::Number(field, cmp) => match field {
             NumField::Year => format!("t.year > 0 AND {}", compile_cmp(c, "t.year", *cmp, false)),
@@ -3358,6 +3404,16 @@ mod tests {
         shuffled_json["limit"] = json!({ "maxTracks": 1000 });
         let shuffled = parse_definition(&shuffled_json.to_string()).unwrap();
 
+        // A style rule with its narrower kinds, against every track.
+        let styled = parse_definition(
+            &def(
+                "all",
+                vec![rule("style", "is_within", Some(json!("sludge")))],
+            )
+            .to_string(),
+        )
+        .unwrap();
+
         // Pills: 5,000 sampled matches weighed against tags, plays and BPM.
         conn.execute_batch(
             "INSERT INTO artist_styles(artist_id, style, kind, weight) VALUES
@@ -3377,6 +3433,7 @@ mod tests {
             ("personal", &personal),
             ("shuffled", &shuffled),
             ("steered", &steered),
+            ("styled", &styled),
         ] {
             evaluate(&conn, "alice", definition, NOW).unwrap();
             let start = std::time::Instant::now();
@@ -3398,6 +3455,12 @@ mod tests {
             "suggestions: {} pills in {elapsed:?}",
             suggestions.pills.len()
         );
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+
+        let start = std::time::Instant::now();
+        let styles = crate::smart_suggest::library_styles(&conn).unwrap();
+        let elapsed = start.elapsed();
+        eprintln!("style list: {} styles in {elapsed:?}", styles.len());
         assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
 
         // A full 1,000-track playlist: first fill, a refresh after half the matches

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, setStreamDirect } from '../api';
+import { BUILTIN_PARAMETRIC_PRESETS } from '../audio/eq';
 import type { Track } from '../types';
 import Player, { type PlayerState } from './Player';
 
@@ -324,6 +325,136 @@ describe('Player comprehensive behavior', () => {
     await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
       expect.objectContaining({ autoEqEnabled: true, autoEqCurrentPreset: 'Manual' }),
     ));
+  });
+
+  describe('a curve per playback slot', () => {
+    const VOCAL_FOCUS = [-3, -2, -1, 2, 4, 1, -1];
+    const BASS_TIGHTEN = [-2, 4, -2, -1, 0, 0, 0];
+
+    /** Filters as they are created, slot A's seven first; gains move at once when glided to. */
+    function recordFilters() {
+      const { context } = installAudioContext();
+      const filters: any[] = [];
+      context.createBiquadFilter = vi.fn(() => {
+        const param = (value: number) => {
+          const p: any = { value };
+          p.setTargetAtTime = vi.fn((v: number) => { p.value = v; });
+          return p;
+        };
+        const filter = { type: 'peaking', frequency: param(0), Q: param(0), gain: param(0), connect: vi.fn() };
+        filters.push(filter);
+        return filter;
+      });
+      const gainsOf = (slot: number) => filters.slice(slot * 7, slot * 7 + 7).map(f => f.gain.value);
+      return { filters, gainsOf };
+    }
+
+    function byTrack(presets: Record<string, string>) {
+      vi.mocked(api.trackEqProfile).mockImplementation(((id: string) => (
+        Promise.resolve({ eqProfile: presets[id], source: 'track_tags' })
+      )) as any);
+    }
+
+    const playing = (over: Partial<PlayerState> = {}): PlayerState => ({
+      queue: [track('1'), track('2')], currentIndex: 0, isPlaying: true, playToken: 1,
+      queueSource: { type: 'playlist', id: 'playlist-1' } as any, ...over,
+    });
+
+    it('keeps the outgoing song on its curve while the next one fades in', async () => {
+      const { gainsOf, filters } = recordFilters();
+      setStreamDirect(false);
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true' });
+      vi.mocked(api.crossfade.config).mockResolvedValue({ mode: 'crossfade', duration: 2, source: 'global' });
+      byTrack({ 1: 'Pop', 2: 'Hip-Hop' });
+      const onEqControlsChange = vi.fn();
+      const { container } = render(
+        <Player state={playing()} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />,
+      );
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Pop' }),
+      ));
+      await waitFor(() => expect(filters.length).toBeGreaterThanOrEqual(7));
+      await waitFor(() => expect(gainsOf(0)).toEqual(VOCAL_FOCUS));
+
+      const [slotA] = Array.from(container.querySelectorAll('audio'));
+      await waitFor(() => expect(api.crossfade.config).toHaveBeenCalled());
+      setMediaState(slotA, { currentTime: 99, duration: 100 });
+      fireEvent.timeUpdate(slotA);
+      await waitFor(() => expect(api.trackEqProfile).toHaveBeenCalledWith('2'));
+      await act(async () => { await Promise.resolve(); });
+
+      // The fade has started: the outgoing song hasn't moved, and the panel still shows it.
+      expect(gainsOf(0)).toEqual(VOCAL_FOCUS);
+      expect(filters.length).toBe(14);
+      expect(gainsOf(1)).toEqual(BASS_TIGHTEN);
+      expect(onEqControlsChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Pop' }),
+      );
+    });
+
+    it('never saves what Auto EQ chose as the user\'s own EQ, and shows it while playing', async () => {
+      delete (window as any).AudioContext;
+      setStreamDirect(true);
+      const own = JSON.stringify(BUILTIN_PARAMETRIC_PRESETS.Bright);
+      vi.mocked(api.userSettings.get).mockResolvedValue({
+        autoEqEnabled: 'true', parametricEqBands: own, parametricEqSelectedProfile: 'Bright',
+      });
+      byTrack({ 1: 'Pop', 2: 'Hip-Hop' });
+      const onEqControlsChange = vi.fn();
+      const { rerender } = render(
+        <Player state={playing({ isPlaying: false })} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />,
+      );
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Pop', profile: 'Vocal Focus' }),
+      ));
+      rerender(
+        <Player state={playing({ isPlaying: false, currentIndex: 1, playToken: 2 })} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />,
+      );
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Hip-Hop', profile: 'Bass Tighten' }),
+      ));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      for (const [saved] of vi.mocked(api.userSettings.update).mock.calls) {
+        const updates = saved as Record<string, string>;
+        if ('parametricEqSelectedProfile' in updates) expect(updates.parametricEqSelectedProfile).toBe('Bright');
+        if ('parametricEqBands' in updates) expect(updates.parametricEqBands).toBe(own);
+      }
+
+      // Turning Auto EQ off goes back to the user's own EQ, untouched.
+      const controls = onEqControlsChange.mock.calls[onEqControlsChange.mock.calls.length - 1][0];
+      act(() => controls.onAutoEqEnabledChange(false));
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ autoEqEnabled: false, autoEqCurrentPreset: 'Manual', profile: 'Bright' }),
+      ));
+    });
+
+    it('asks the server once per song, and uses the user\'s own EQ for mixes', async () => {
+      delete (window as any).AudioContext;
+      setStreamDirect(true);
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true' });
+      byTrack({ 1: 'Pop' });
+      const onEqControlsChange = vi.fn();
+      const { rerender } = render(
+        <Player state={playing({ isPlaying: false, queue: [track('1')] })} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />,
+      );
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Pop' }),
+      ));
+      const calls = vi.mocked(api.trackEqProfile).mock.calls.length;
+      rerender(
+        <Player state={playing({ isPlaying: false, queue: [track('1')], playToken: 2 })} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />,
+      );
+      await act(async () => { await Promise.resolve(); });
+      expect(vi.mocked(api.trackEqProfile).mock.calls.length).toBe(calls);
+
+      rerender(
+        <Player state={playing({ isPlaying: false, queue: [track('boogiemix:7')], playToken: 3 })} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />,
+      );
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Manual' }),
+      ));
+      expect(api.trackEqProfile).not.toHaveBeenCalledWith('boogiemix:7');
+    });
   });
 
   it('covers transport, queue, settings, seek, lyrics, fingerprint, and audio error paths', async () => {

@@ -8,7 +8,7 @@ import type { SmartSteer } from './smartSteer';
 // ─── API contract (schema version 1, see docs/API.md) ─────────────────────────
 
 export type SmartField =
-  | 'artist' | 'album' | 'genre' | 'year' | 'library_id' | 'rating'
+  | 'artist' | 'album' | 'genre' | 'style' | 'year' | 'library_id' | 'rating'
   | 'added_at' | 'last_played_at' | 'play_count' | 'bpm' | 'favourite';
 
 export type SmartSortField =
@@ -62,7 +62,7 @@ export function isGroup(node: SmartNode): node is SmartGroup {
 
 /** How a condition takes its value. */
 export type ValueKind =
-  | 'text' | 'genre' | 'number' | 'number_range' | 'rating' | 'rating_range'
+  | 'text' | 'genre' | 'style' | 'number' | 'number_range' | 'rating' | 'rating_range'
   | 'libraries' | 'days' | 'date' | 'none';
 
 export interface ConditionSpec { value: string; label: string; kind: ValueKind }
@@ -123,6 +123,15 @@ export const FIELDS: FieldSpec[] = [
       { value: 'is_present', label: 'is not empty', kind: 'none' },
     ],
     error: 'Choose a genre.', valueLabel: 'Genre', placeholder: 'Choose a genre',
+  },
+  {
+    field: 'style', label: 'Style', icon: 'M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8zM7.5 7.5h.01',
+    conditions: [
+      { value: 'is', label: 'is', kind: 'style' },
+      { value: 'is_not', label: 'is not', kind: 'style' },
+      { value: 'is_within', label: 'is or is a kind of', kind: 'style' },
+    ],
+    error: 'Choose a style.', valueLabel: 'Style', placeholder: 'Choose a style',
   },
   {
     field: 'year', label: 'Year', icon: 'M4 5h16v16H4zM4 10h16M9 3v4M15 3v4',
@@ -376,7 +385,8 @@ export function ruleValue(rule: DraftRule): { value?: unknown; error?: string } 
     case 'none':
       return {};
     case 'text':
-    case 'genre': {
+    case 'genre':
+    case 'style': {
       const text = rule.text.trim();
       return text && text.length <= MAX_TEXT_CHARS ? { value: text } : { error: spec.error };
     }
@@ -601,6 +611,11 @@ export function definitionToDraft(definition: unknown, name: string): SmartDraft
 }
 
 // ─── Tree edits ───────────────────────────────────────────────────────────────
+
+/** Whether any rule in the tree is about `field`. */
+export function usesField(group: DraftGroup, field: SmartField): boolean {
+  return group.children.some(child => (child.kind === 'group' ? usesField(child, field) : child.field === field));
+}
 
 /** Replaces the node with `key` anywhere in the tree (`null` removes it). */
 export function replaceNode(group: DraftGroup, nodeKey: string, next: DraftNode | null): DraftGroup {

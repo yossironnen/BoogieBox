@@ -73,6 +73,7 @@ pub fn playlist_router(state: SharedState) -> Router {
         )
         .route("/api/playlists/import/commit", post(import_commit_handler))
         .route("/api/playlists/smart-preview", post(smart_preview_handler))
+        .route("/api/playlists/smart-styles", get(smart_styles_handler))
         .route(
             "/api/playlists/{id}/smart-definition",
             get(get_smart_definition_handler).put(put_smart_definition_handler),
@@ -1027,6 +1028,29 @@ fn look_up_tags(state: &SharedState, db: &DbPool, untagged_ids: &[String]) {
         http_client,
         untagged_ids.iter().map(|id| coerce_entity_id(id)).collect(),
     );
+}
+
+/// Styles in the library, for choosing one in a smart playlist rule.
+async fn smart_styles_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+) -> impl IntoResponse {
+    let db = match get_db(&state) {
+        Some(db) => db,
+        None => return setup_required(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        boogiebox_db::smart_suggest::library_styles(&db.lock().expect("db"))
+    })
+    .await
+    {
+        Ok(Ok(styles)) => (StatusCode::OK, Json(styles)).into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!("Could not list styles: {e}");
+            internal_error()
+        }
+        Err(_) => internal_error(),
+    }
 }
 
 /// The pills on a smart playlist and the pills to offer.
@@ -2000,6 +2024,56 @@ mod tests {
             ids.push(id);
         }
         ids
+    }
+
+    #[tokio::test]
+    async fn style_rules_and_the_style_list_over_the_api() {
+        let (app, pool) = new_test_app_with_pool("smart-style");
+        let cookie = seed_user_session(&pool, "u1");
+        let ids = seed_genres(&pool);
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute(
+                "INSERT INTO artist_styles(artist_id, style, kind, weight)
+                 SELECT artist_id, 'sludge', 'genre', 1.0 FROM tracks WHERE id = ?",
+                params![ids[0]],
+            )
+            .unwrap();
+        }
+        let (status, body) =
+            send(app.clone(), get_req("/api/playlists/smart-styles", &cookie)).await;
+        assert_eq!(status, StatusCode::OK);
+        let styles = json_body(&body);
+        assert_eq!(styles[0]["style"], "sludge");
+        assert_eq!(styles[0]["trackCount"], 3);
+
+        let definition = serde_json::json!({
+            "schemaVersion": 1,
+            "root": { "mode": "all", "children": [
+                { "field": "style", "operator": "is", "value": "Sludge" }
+            ]}
+        });
+        let (status, body) = send(
+            app.clone(),
+            post_json(
+                "/api/playlists/smart-preview",
+                &cookie,
+                serde_json::json!({ "definition": definition }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_body(&body)["trackCount"], 3);
+
+        let (status, _) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/playlists/smart-styles")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

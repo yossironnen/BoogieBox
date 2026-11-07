@@ -11,6 +11,7 @@ pub mod music;
 pub mod playback;
 pub mod playlist_import;
 pub mod playlists;
+pub mod popularity;
 pub mod radio;
 pub mod radio_stations;
 pub mod remote;
@@ -861,6 +862,10 @@ fn tracked_migrations() -> Vec<Migration> {
         Migration {
             id: "2026-11-05-artists-genres",
             apply: ensure_artists_genres_column,
+        },
+        Migration {
+            id: "2026-11-06-track-popularity",
+            apply: popularity::ensure_track_popularity_schema,
         },
     ]
 }

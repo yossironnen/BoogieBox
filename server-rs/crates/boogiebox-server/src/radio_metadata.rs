@@ -12,8 +12,9 @@
 use crate::{
     mix_priority_gate,
     providers::{
-        fetch_lastfm_track_top_tags, fetch_musicbrainz_artist_tags, is_valid_mbid,
-        search_musicbrainz_artist, ProviderFetchError,
+        fetch_lastfm_artist_track_counts, fetch_lastfm_track_top_tags,
+        fetch_musicbrainz_artist_tags, is_valid_mbid, search_musicbrainz_artist,
+        ProviderFetchError,
     },
     tag_taxonomy::to_tag_inputs,
     DbPool,
@@ -21,6 +22,7 @@ use crate::{
 use boogiebox_db::{
     artwork::{get_setting, save_lastfm_cache},
     music::EntityId,
+    popularity::{list_artists_needing_popularity, store_artist_popularity},
     radio::{
         insert_artist_tags_if_none, list_artists_needing_musicbrainz_id,
         list_artists_needing_musicbrainz_tags, list_tracks_needing_tags, list_untagged_among,
@@ -199,6 +201,19 @@ pub async fn run_one_pass(db: &DbPool, http: &Client, cancel: &CancellationToken
                     return outcome;
                 }
             }
+            let artists = blocking(db, |conn| {
+                list_artists_needing_popularity(conn, ARTIST_BATCH)
+            })
+            .await
+            .and_then(Result::ok)
+            .unwrap_or_default();
+            if !artists.is_empty() {
+                let (done, stop) = process_artist_popularity(db, http, key, &artists, cancel).await;
+                progressed |= done > 0;
+                if let Some(outcome) = stop {
+                    return outcome;
+                }
+            }
         }
     }
 
@@ -314,6 +329,47 @@ async fn process_track_candidates(
             Err(ProviderFetchError::RateLimited) => return (done, Some(Outcome::Backoff)),
             Err(ProviderFetchError::Failed(message)) => {
                 tracing::debug!("radio metadata: Last.fm track tags failed: {message}");
+                errors += 1;
+                if errors >= ERRORS_BEFORE_BACKOFF {
+                    return (done, Some(Outcome::Backoff));
+                }
+            }
+        }
+        tokio::time::sleep(track_tag_delay()).await;
+    }
+    (done, None)
+}
+
+/// Scrobble counts for a batch of artists, for the "Popular" steering pill. One request per artist.
+async fn process_artist_popularity(
+    db: &DbPool,
+    http: &Client,
+    api_key: &str,
+    artists: &[(EntityId, String)],
+    cancel: &CancellationToken,
+) -> (usize, Option<Outcome>) {
+    let mut done = 0;
+    let mut errors = 0;
+    for (artist_id, name) in artists {
+        if cancel.is_cancelled() {
+            return (done, Some(Outcome::Idle));
+        }
+        if mix_priority_gate::is_active() {
+            return (done, Some(Outcome::Gated));
+        }
+        match fetch_lastfm_artist_track_counts(http, api_key, name).await {
+            Ok(entries) => {
+                let artist_id = artist_id.clone();
+                blocking(db, move |conn| {
+                    store_artist_popularity(conn, &artist_id, &entries)
+                })
+                .await;
+                done += 1;
+            }
+            // Never recorded as "no data": the next pass retries the artist.
+            Err(ProviderFetchError::RateLimited) => return (done, Some(Outcome::Backoff)),
+            Err(ProviderFetchError::Failed(message)) => {
+                tracing::debug!("radio metadata: Last.fm track counts failed: {message}");
                 errors += 1;
                 if errors >= ERRORS_BEFORE_BACKOFF {
                     return (done, Some(Outcome::Backoff));
@@ -503,6 +559,156 @@ mod tests {
         assert_eq!(s.mode, SyncMode::Full);
         assert!(s.keyless);
         assert_eq!(s.lastfm_key, None);
+    }
+
+    fn scrobbles(db: &DbPool, track_id: &str) -> Option<i64> {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT scrobbles FROM track_popularity WHERE track_id = ?1",
+                [track_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    fn popularity_checked(db: &DbPool) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM artist_popularity_sync", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn full_mode_collects_scrobble_counts_once_per_artist() {
+        let _env = ENV_LOCK.lock().await;
+        let _gate = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
+        fast_delays();
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        Mock::given(method("GET"))
+            .and(query_param("method", "track.gettoptags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptags": { "tag": [] }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("method", "artist.gettoptracks"))
+            .and(query_param("artist", "Erasure"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptracks": { "track": [
+                    { "name": "A Little Respect", "playcount": "900", "listeners": "90" }
+                ]}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let db = temp_db();
+        quiet_musicbrainz(&db);
+        set_setting(&db, "lastfmKey", "key");
+        let (_, track) = seed(&db, "Erasure", "A Little Respect (Remastered)");
+        let (_, other) = seed(&db, "Erasure", "Obscure");
+
+        let cancel = CancellationToken::new();
+        assert_eq!(
+            run_one_pass(&db, &Client::new(), &cancel).await,
+            Outcome::Progress
+        );
+        assert_eq!(scrobbles(&db, &track), Some(900));
+        assert_eq!(scrobbles(&db, &other), None);
+        assert_eq!(popularity_checked(&db), 1);
+
+        // Nothing left to do: no second request for this artist.
+        assert_eq!(
+            run_one_pass(&db, &Client::new(), &cancel).await,
+            Outcome::Idle
+        );
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn scrobble_counts_stop_for_throttles_gates_and_missing_keys() {
+        let _env = ENV_LOCK.lock().await;
+        let _gate = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
+        fast_delays();
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        Mock::given(method("GET"))
+            .and(query_param("method", "track.gettoptags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptags": { "tag": [] }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("method", "artist.gettoptracks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "error": 29, "message": "Rate limit exceeded"
+            })))
+            .mount(&server)
+            .await;
+        let db = temp_db();
+        quiet_musicbrainz(&db);
+        seed(&db, "Erasure", "Sometimes");
+        let cancel = CancellationToken::new();
+
+        // No key: nothing asked, nothing recorded.
+        assert_eq!(
+            run_one_pass(&db, &Client::new(), &cancel).await,
+            Outcome::Idle
+        );
+        assert_eq!(popularity_checked(&db), 0);
+
+        // A throttle backs off and leaves the artist to retry.
+        set_setting(&db, "lastfmKey", "key");
+        assert_eq!(
+            run_one_pass(&db, &Client::new(), &cancel).await,
+            Outcome::Backoff
+        );
+        assert_eq!(popularity_checked(&db), 0);
+
+        // Lazy mode only enriches on demand.
+        set_setting(&db, "radioTrackTagSync", "lazy");
+        assert_eq!(
+            run_one_pass(&db, &Client::new(), &cancel).await,
+            Outcome::Idle
+        );
+        set_setting(&db, "radioTrackTagSync", "full");
+
+        // Repeated failures back off too, without recording anything.
+        let artists = vec![
+            (
+                boogiebox_db::music::coerce_entity_id("artist-Erasure"),
+                "Failing".to_owned()
+            );
+            ERRORS_BEFORE_BACKOFF
+        ];
+        server.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let (done, stop) =
+            process_artist_popularity(&db, &Client::new(), "key", &artists, &cancel).await;
+        assert_eq!((done, stop), (0, Some(Outcome::Backoff)));
+        assert_eq!(popularity_checked(&db), 0);
+
+        // A BoogieMix build has priority, and shutting down stops it.
+        {
+            let _priority = crate::mix_priority_gate::PriorityAnalysisGuard::acquire();
+            let (done, stop) =
+                process_artist_popularity(&db, &Client::new(), "key", &artists, &cancel).await;
+            assert_eq!((done, stop), (0, Some(Outcome::Gated)));
+        }
+        let stopped = CancellationToken::new();
+        stopped.cancel();
+        let (done, stop) =
+            process_artist_popularity(&db, &Client::new(), "key", &artists, &stopped).await;
+        assert_eq!((done, stop), (0, Some(Outcome::Idle)));
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
     }
 
     #[tokio::test]

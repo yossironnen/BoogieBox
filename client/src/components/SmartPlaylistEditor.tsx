@@ -3,7 +3,7 @@
  * Creates a smart playlist or edits a saved one's rules. Wording: wip/f01-approved-copy.md.
  */
 
-import { STEER_COPY, pillLabel } from '../smartSteer';
+import { STEER_COPY, pillLabel, type PopularSource } from '../smartSteer';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, SmartPlaylistApiError } from '../api';
@@ -11,7 +11,7 @@ import type { Genre, Library, Playlist, SmartPlaylistPreview } from '../types';
 import {
   COPY, FIELDS, MAX_RULES, MAX_NODES, SORT_FIELDS,
   appendTo, canNestGroup, checkDraft, conditionSpec, countNodes, countRules, definitionToDraft, directionLabels,
-  draftToDefinition, fieldSpec, newDraft, newGroup, newRule, replaceNode, shuffleSort, withField, withOperator,
+  draftToDefinition, fieldSpec, newDraft, newGroup, newRule, replaceNode, shuffleSort, usesField, withField, withOperator,
   type DraftGroup, type DraftNode, type DraftRule, type DraftSort, type SmartDraft, type SmartField, type SmartPreset,
   type SmartSortField,
 } from '../smartPlaylistRules';
@@ -160,6 +160,7 @@ function usePreview(definitionJson: string | null): { state: PreviewState; retry
 interface TreeContext {
   libraries: Library[];
   genres: Genre[];
+  styles: string[];
   missingLibraryIds: Set<string>;
   errorFor: (rule: DraftRule) => string | undefined;
   touch: (key: string) => void;
@@ -212,6 +213,15 @@ function ValueEditor({ rule, onChange, onBlur, ctx, invalid }: {
             aria-invalid={invalid || undefined} list={listId} maxLength={128} style={{ ...inputStyle, ...valueWidth(ctx, 200) }}
             onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
           <datalist id={listId}>{ctx.genres.map(g => <option key={g.genre} value={g.genre} />)}</datalist>
+        </>
+      );
+    case 'style':
+      return (
+        <>
+          <input type="search" aria-label={spec.valueLabel} placeholder={spec.placeholder} value={rule.text}
+            aria-invalid={invalid || undefined} list={listId} maxLength={40} style={{ ...inputStyle, ...valueWidth(ctx, 200) }}
+            onChange={e => set({ text: e.target.value })} onBlur={onBlur} />
+          <datalist id={listId}>{ctx.styles.map(style => <option key={style} value={style} />)}</datalist>
         </>
       );
     case 'number':
@@ -565,9 +575,12 @@ export default function SmartPlaylistEditor({
   ));
   const [load, setLoad] = useState<LoadState>(editing ? 'loading' : 'ready');
   const [editRevision, setEditRevision] = useState(0);
+  // Which counts the popular pill uses decides its wording.
+  const [popularSource, setPopularSource] = useState<PopularSource>('local');
   const [missingLibraryIds, setMissingLibraryIds] = useState<Set<string>>(new Set());
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [genres, setGenres] = useState<Genre[]>([]);
+  const [styles, setStyles] = useState<string[]>([]);
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [showAllErrors, setShowAllErrors] = useState(false);
   const [nameError, setNameError] = useState('');
@@ -589,6 +602,17 @@ export default function SmartPlaylistEditor({
     api.genres().then(setGenres).catch(() => setGenres([]));
   }, []);
 
+  // Read only once a rule needs it: the list takes a scan of the library's tags.
+  const needsStyles = usesField(draft.root, 'style');
+  useEffect(() => {
+    if (!needsStyles) return;
+    let cancelled = false;
+    Promise.resolve().then(() => api.playlists.smartStyles())
+      .then(list => { if (!cancelled) setStyles(list.map(entry => entry.style)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [needsStyles]);
+
   const loadDefinition = useCallback(async () => {
     if (!playlist) return;
     setLoad('loading');
@@ -598,6 +622,11 @@ export default function SmartPlaylistEditor({
       setEditRevision(view.editRevision);
       setMissingLibraryIds(new Set(view.missingLibraryIds));
       if (!next) { setLoad('unsupported'); return; }
+      if (next.steer?.some(pill => pill.signal === 'popular')) {
+        Promise.resolve().then(() => api.playlists.steer(playlist.id))
+          .then(view => setPopularSource(view.popularSource))
+          .catch(() => {});
+      }
       setDraft(next);
       setTouched(new Set());
       setShowAllErrors(true);
@@ -627,6 +656,7 @@ export default function SmartPlaylistEditor({
   const ctx: TreeContext = {
     libraries,
     genres,
+    styles,
     missingLibraryIds,
     errorFor: rule => (showAllErrors || touched.has(rule.key) ? check.ruleErrors.get(rule.key) : undefined),
     touch: k => setTouched(prev => (prev.has(k) ? prev : new Set(prev).add(k))),
@@ -748,7 +778,7 @@ export default function SmartPlaylistEditor({
 
               {!!draft.steer?.length && (
                 <div data-testid="smart-editor-pills" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, fontSize: 13 }}>
-                  <span style={{ flex: 1, minWidth: 160 }}>Pills on: {draft.steer.map(pill => pillLabel(pill)).join(', ')}</span>
+                  <span style={{ flex: 1, minWidth: 160 }}>Pills on: {draft.steer.map(pill => pillLabel(pill, popularSource)).join(', ')}</span>
                   {load === 'ready' && (
                     <button type="button" style={{
                       minHeight: mobile ? 44 : 32, padding: '0 10px', borderRadius: 8, fontFamily: 'inherit', fontSize: 13, fontWeight: 600,

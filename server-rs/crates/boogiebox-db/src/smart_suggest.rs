@@ -485,14 +485,21 @@ struct SignalChoice {
     tracks: usize,
 }
 
-/// The other pills with enough behind them, best first, plus whether the energy pills are among them.
+/// The other pills with enough behind them, best first.
+struct SignalChoices {
+    choices: Vec<SignalChoice>,
+    /// The energy pills are among them.
+    energy_ok: bool,
+    popular_source: &'static str,
+}
+
 fn signal_choices(
     conn: &Connection,
     index: &HashMap<&str, usize>,
     owner: &str,
     now: &str,
     active: &HashSet<String>,
-) -> rusqlite::Result<(Vec<SignalChoice>, bool)> {
+) -> rusqlite::Result<SignalChoices> {
     let pool = index.len();
     let owner_param = || vec![Value::Text(owner.to_owned())];
 
@@ -514,13 +521,8 @@ fn signal_choices(
         .filter(|(starred, rated)| **starred || **rated)
         .count();
 
-    let any_plays = smart_steer::pool_flags(
-        conn,
-        index,
-        "SELECT track_id FROM user_track_stats WHERE play_count > 0",
-        Vec::new(),
-    )?;
-    let played = any_plays.iter().filter(|p| **p).count();
+    let (popular, popular_source) = smart_steer::popular_counts(conn, index)?;
+    let with_counts = popular.iter().flatten().count();
 
     let own_plays = smart_steer::pool_flags(
         conn,
@@ -558,7 +560,13 @@ fn signal_choices(
             useful(favourites),
             favourites,
         ),
-        ("popular", Signal::Popular, useful(played), played),
+        // Ranks by count, so every track having one is fine; the dry run decides whether it moves anything.
+        (
+            "popular",
+            Signal::Popular,
+            with_counts >= MIN_SIGNAL_TRACKS,
+            with_counts,
+        ),
         ("energetic", Signal::Energetic, energy_ok, energy_known),
         ("new", Signal::New, useful(fresh), fresh),
         ("calmer", Signal::Calmer, energy_ok, energy_known),
@@ -575,7 +583,57 @@ fn signal_choices(
         tracks,
     })
     .collect();
-    Ok((choices, energy_ok))
+    Ok(SignalChoices {
+        choices,
+        energy_ok,
+        popular_source,
+    })
+}
+
+/// A style in the library, for choosing one in a rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStyle {
+    pub style: String,
+    pub track_count: usize,
+}
+
+/// Styles with at least this many tracks are listed; rarer ones can still be typed.
+const MIN_LISTED_STYLE_TRACKS: usize = 3;
+const MAX_LISTED_STYLES: usize = 500;
+
+/// Styles on the library's tracks, most tracks first. Places, eras and moods aren't styles.
+pub fn library_styles(conn: &Connection) -> rusqlite::Result<Vec<LibraryStyle>> {
+    let mut tracks: HashMap<String, HashSet<String>> = HashMap::new();
+    for sql in [
+        "SELECT track_id, tag FROM track_tags WHERE kind IN ('genre', 'style')",
+        "SELECT t.id, s.tag FROM album_styles s JOIN tracks t ON t.album_id = s.album_id
+         WHERE s.kind IN ('genre', 'style')",
+        "SELECT t.id, s.style FROM artist_styles s JOIN tracks t ON t.artist_id = s.artist_id
+         WHERE s.kind IN ('genre', 'style')",
+    ] {
+        smart_steer::scan(conn, sql, Vec::new(), |id, row| {
+            if let Some(style) = style_key(&row.get::<_, String>(1)?) {
+                tracks.entry(style).or_default().insert(id.to_owned());
+            }
+            Ok(())
+        })?;
+    }
+    let mut styles: Vec<LibraryStyle> = tracks
+        .into_iter()
+        .filter(|(_, ids)| ids.len() >= MIN_LISTED_STYLE_TRACKS)
+        .map(|(style, ids)| LibraryStyle {
+            style,
+            track_count: ids.len(),
+        })
+        .collect();
+    styles.sort_by(|a, b| {
+        b.track_count
+            .cmp(&a.track_count)
+            .then_with(|| a.style.cmp(&b.style))
+    });
+    styles.truncate(MAX_LISTED_STYLES);
+    Ok(styles)
 }
 
 /// The rule's own genres, which can't be steered towards: every track already has them.
@@ -600,7 +658,6 @@ pub fn suggest_pills(
     let budget = || DEFAULT_QUERY_BUDGET.saturating_sub(started.elapsed());
     let ids = matching_pool(conn, owner, def, now, budget())?;
     let selection = evaluate_with_budget(conn, owner, def, now, budget())?;
-    let popular_source = "local";
     if selection.track_ids.len() >= ids.len() {
         // Every match already gets in, so no pill could change what's in the playlist.
         return Ok(Suggestions {
@@ -608,7 +665,7 @@ pub fn suggest_pills(
             pool: ids.len(),
             tagged: 0,
             few_tags: false,
-            popular_source,
+            popular_source: smart_steer::POPULAR_FROM_PLAYS,
             untagged_ids: Vec::new(),
         });
     }
@@ -633,7 +690,11 @@ pub fn suggest_pills(
             .flat_map(|tracks| tracks.keys().copied())
             .collect();
         let few_tags = (tagged_tracks.len() as f64) < MIN_TAGGED_SHARE * pool as f64;
-        let (signals, energy_offered) = signal_choices(conn, &index, owner, now, &active)?;
+        let SignalChoices {
+            choices: signals,
+            energy_ok: energy_offered,
+            popular_source,
+        } = signal_choices(conn, &index, owner, now, &active)?;
         let current_weights = if def.steers().is_empty() {
             vec![1.0; pool]
         } else {
@@ -1247,6 +1308,207 @@ mod tests {
                 steer_view(&conn, &id, "alice"),
                 Err(SmartError::Unsupported)
             ));
+        }
+    }
+
+    #[test]
+    fn the_popular_pill_says_where_its_counts_come_from() {
+        let conn = db();
+        artist(&conn, "a", 100, &[("sludge", 1.0)]);
+        artist(&conn, "b", 100, &[("doom metal", 1.0)]);
+        conn.execute_batch(
+            "INSERT INTO play_history(id, user_id, track_id, played_at)
+             SELECT 'h' || id, 'alice', id, '2026-10-01 10:00:00' FROM tracks ORDER BY id LIMIT 25;",
+        )
+        .unwrap();
+        let got = suggest(&conn, &definition(json!([]), 50));
+        assert_eq!(got.popular_source, "local");
+        assert!(words(&got).contains(&"signal popular".to_owned()));
+
+        // Every track has a count: still offered, and it ranks them.
+        conn.execute_batch(
+            "INSERT INTO track_popularity(track_id, scrobbles, source)
+             SELECT id, rowid * rowid, 'lastfm' FROM tracks;",
+        )
+        .unwrap();
+        let got = suggest(&conn, &definition(json!([]), 50));
+        assert_eq!(got.popular_source, "lastfm");
+        let pill = got
+            .pills
+            .iter()
+            .find(|p| p.steer.signal.as_deref() == Some("popular"))
+            .expect("offered");
+        assert_eq!(pill.count, 200);
+    }
+
+    mod style_rule {
+        use super::*;
+        use crate::smart_playlists::{evaluate, RuleErrorCode};
+
+        fn rule(operator: &str, value: Json) -> Json {
+            json!({ "field": "style", "operator": operator, "value": value })
+        }
+
+        fn styled(rule: Json) -> ValidDefinition {
+            parse_definition(
+                &json!({
+                    "schemaVersion": 1,
+                    "root": { "mode": "all", "children": [rule] },
+                    "sort": [{ "field": "title" }],
+                    "limit": { "maxTracks": 1000 },
+                })
+                .to_string(),
+            )
+            .expect("valid rule")
+        }
+
+        fn artists_in(conn: &Connection, def: &ValidDefinition) -> Vec<String> {
+            let mut found: Vec<String> = evaluate(conn, "alice", def, NOW)
+                .unwrap()
+                .track_ids
+                .into_iter()
+                .map(|id| id.split('-').next().unwrap().to_owned())
+                .collect();
+            found.sort();
+            found.dedup();
+            found
+        }
+
+        fn library() -> Connection {
+            let conn = db();
+            artist(&conn, "bm", 3, &[("black metal", 1.0)]);
+            artist(&conn, "ab", 3, &[("atmospheric black metal", 1.0)]);
+            artist(&conn, "th", 3, &[("thrash metal", 1.0)]);
+            artist(&conn, "go", 3, &[("goth rock", 1.0)]);
+            artist(&conn, "no", 3, &[]);
+            conn
+        }
+
+        #[test]
+        fn matches_a_style_alone_or_with_its_narrower_kinds() {
+            let conn = library();
+            assert_eq!(
+                artists_in(&conn, &styled(rule("is", json!("Black Metal")))),
+                ["bm"],
+                "any case"
+            );
+            assert_eq!(
+                artists_in(&conn, &styled(rule("is_within", json!("black metal")))),
+                ["ab", "bm"]
+            );
+            assert_eq!(
+                artists_in(&conn, &styled(rule("is_not", json!("black metal")))),
+                ["ab", "go", "no", "th"],
+                "untagged tracks aren't black metal"
+            );
+            assert_eq!(
+                artists_in(&conn, &styled(rule("is", json!("gothic rock")))),
+                ["go"],
+                "other spellings count"
+            );
+            assert!(artists_in(&conn, &styled(rule("is", json!("polka")))).is_empty());
+        }
+
+        #[test]
+        fn reads_track_and_album_tags_as_well_as_artist_tags() {
+            let conn = db();
+            artist(&conn, "tr", 2, &[]);
+            artist(&conn, "al", 2, &[]);
+            conn.execute_batch(
+                "INSERT INTO albums(id, title) VALUES ('album1', 'One');
+                 UPDATE tracks SET album_id = 'album1' WHERE artist_id = 'al';
+                 INSERT INTO album_styles(album_id, tag, kind) VALUES ('album1', 'sludge', 'style');
+                 INSERT INTO track_tags(track_id, tag, kind, weight, source)
+                 VALUES ('tr-000', 'sludge', 'genre', 0.9, 'lastfm');",
+            )
+            .unwrap();
+            let picked = evaluate(&conn, "alice", &styled(rule("is", json!("sludge"))), NOW)
+                .unwrap()
+                .track_ids;
+            assert_eq!(picked, ["al-000", "al-001", "tr-000"]);
+        }
+
+        #[test]
+        fn stores_the_tidy_name_and_refuses_bad_values() {
+            let def = styled(rule("is", json!("  Black_Metal ")));
+            assert!(def.canonical_json().contains("\"black metal\""));
+            for (operator, value) in [
+                ("is", json!("")),
+                ("is", json!(7)),
+                ("is", json!("x".repeat(41))),
+            ] {
+                let errors = parse_definition(
+                    &json!({
+                        "schemaVersion": 1,
+                        "root": { "mode": "all", "children": [rule(operator, value)] },
+                    })
+                    .to_string(),
+                )
+                .unwrap_err();
+                assert_eq!(errors[0].code, RuleErrorCode::BadValue);
+            }
+            let errors = parse_definition(
+                &json!({
+                    "schemaVersion": 1,
+                    "root": { "mode": "all", "children": [rule("contains", json!("rock"))] },
+                })
+                .to_string(),
+            )
+            .unwrap_err();
+            assert_eq!(errors[0].code, RuleErrorCode::UnknownOperator);
+        }
+
+        #[test]
+        fn expires_so_new_tags_reach_the_playlist() {
+            assert!(styled(rule("is", json!("rock"))).has_relative_dates());
+        }
+
+        #[test]
+        fn its_own_style_is_not_offered_as_a_pill() {
+            let conn = db();
+            artist(&conn, "a", 150, &[("metal", 1.0), ("doom metal", 1.0)]);
+            artist(&conn, "b", 50, &[("metal", 1.0), ("thrash metal", 1.0)]);
+            let def = parse_definition(
+                &json!({
+                    "schemaVersion": 1,
+                    "root": { "mode": "all", "children": [rule("is", json!("thrash metal"))] },
+                    "sort": [{ "field": "shuffle", "seed": 7 }],
+                    "limit": { "maxTracks": 20 },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let got = tag_words(&suggest(&conn, &def));
+            assert!(!got.iter().any(|w| w.contains("thrash")), "{got:?}");
+        }
+
+        #[test]
+        fn the_style_list_counts_tracks_once_and_leaves_out_what_is_not_a_style() {
+            let conn = db();
+            artist(&conn, "a", 5, &[("sludge", 1.0), ("british", 1.0)]);
+            artist(&conn, "b", 2, &[("goth rock", 1.0), ("rare", 1.0)]);
+            artist(&conn, "c", 2, &[("gothic rock", 1.0)]);
+            conn.execute_batch(
+                "INSERT INTO artist_styles(artist_id, style, kind, bucket, weight) VALUES
+                   ('a', '80s', 'era', NULL, 1.0), ('a', 'dark', 'mood', 'dark', 1.0);
+                 INSERT INTO track_tags(track_id, tag, kind, weight, source)
+                 VALUES ('a-000', 'sludge', 'genre', 0.9, 'lastfm');",
+            )
+            .unwrap();
+            let got = library_styles(&conn).unwrap();
+            assert_eq!(
+                got,
+                [
+                    LibraryStyle {
+                        style: "sludge".to_owned(),
+                        track_count: 5
+                    },
+                    LibraryStyle {
+                        style: "gothic rock".to_owned(),
+                        track_count: 4
+                    },
+                ]
+            );
         }
     }
 

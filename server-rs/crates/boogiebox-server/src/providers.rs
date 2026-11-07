@@ -1730,6 +1730,83 @@ pub async fn fetch_lastfm_track_top_tags(
     Ok(parse_tag_counts(&data["toptags"]["tag"]))
 }
 
+/// Most songs asked for per artist; on a sample of the dev library this covered 99% of its tracks.
+const LASTFM_TRACK_COUNTS_LIMIT: u32 = 1000;
+
+/// One artist's songs on Last.fm with their global scrobble counts. An artist Last.fm doesn't know is an empty
+/// list; a throttle stays an error so it's never recorded as "no data".
+pub async fn fetch_lastfm_artist_track_counts(
+    client: &Client,
+    api_key: &str,
+    artist_name: &str,
+) -> Result<Vec<boogiebox_db::popularity::PopularityEntry>, ProviderFetchError> {
+    let lastfm_api_root = lastfm_api_base();
+    let url = format!(
+        "{lastfm_api_root}?method=artist.gettoptracks&artist={}&api_key={}&format=json&autocorrect=1&limit={LASTFM_TRACK_COUNTS_LIMIT}",
+        urlencoding::encode(artist_name),
+        urlencoding::encode(api_key),
+    );
+    let t0 = log_request("lastfm", "artist_track_counts", artist_name);
+    let response = client
+        .get(&url)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("lastfm", "artist_track_counts", t0, response.status());
+    if response.status().as_u16() == 429 {
+        return Err(ProviderFetchError::RateLimited);
+    }
+    if !response.status().is_success() {
+        return Err(ProviderFetchError::Failed(format!(
+            "Last.fm returned {}",
+            response.status().as_u16()
+        )));
+    }
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    if let Some(code) = data["error"].as_i64() {
+        return match code {
+            29 => Err(ProviderFetchError::RateLimited),
+            6 => Ok(Vec::new()),
+            _ => Err(ProviderFetchError::Failed(
+                data["message"]
+                    .as_str()
+                    .unwrap_or("Last.fm request failed")
+                    .to_owned(),
+            )),
+        };
+    }
+    let count = |value: &Value| -> Option<u64> {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+    };
+    let track = &data["toptracks"]["track"];
+    // Last.fm sends a lone object instead of a one-item list.
+    let tracks: &[Value] = match track {
+        Value::Array(list) => list,
+        Value::Object(_) => std::slice::from_ref(track),
+        _ => &[],
+    };
+    Ok(tracks
+        .iter()
+        .filter_map(|entry| {
+            let title = entry["name"].as_str()?.trim();
+            let scrobbles = count(&entry["playcount"])?;
+            (!title.is_empty() && scrobbles > 0).then(|| {
+                boogiebox_db::popularity::PopularityEntry {
+                    title: title.to_owned(),
+                    scrobbles,
+                    listeners: count(&entry["listeners"]),
+                }
+            })
+        })
+        .collect())
+}
+
 /// MusicBrainz and ListenBrainz signal throttling with HTTP 429/503.
 fn check_metabrainz_status(response: &reqwest::Response) -> Result<(), ProviderFetchError> {
     match response.status().as_u16() {
@@ -2610,6 +2687,108 @@ pub(crate) mod provider_fetch_tests {
 
     const MBID_A: &str = "10adbe5e-a2c0-4bf3-8249-2b4cbf6e6ca8";
     const MBID_B: &str = "8f6bd1e4-fbe1-4f50-aa9b-94c450ec0f11";
+
+    #[tokio::test]
+    async fn artist_track_counts_parse_and_tell_throttles_from_unknown_artists() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        let client = Client::new();
+
+        Mock::given(method("GET"))
+            .and(query_param("method", "artist.gettoptracks"))
+            .and(query_param("artist", "Erasure"))
+            .and(query_param("autocorrect", "1"))
+            .and(query_param("limit", "1000"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptracks": { "track": [
+                    { "name": "A Little Respect", "playcount": "900", "listeners": "90" },
+                    { "name": "Sometimes", "playcount": 500 },
+                    { "name": "  ", "playcount": "5" },
+                    { "name": "Never Scrobbled", "playcount": "0" },
+                    { "name": "No Count" }
+                ]}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("artist", "Single"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptracks": { "track": { "name": "Only Song", "playcount": "7" } }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("artist", "Empty"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "toptracks": { "track": [] }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("artist", "Unknown"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "error": 6, "message": "The artist you supplied could not be found"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("artist", "Throttled"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "error": 29, "message": "Rate limit exceeded"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("artist", "Too Fast"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("artist", "Broken"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("artist", "Bad Key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "error": 10, "message": "Invalid API key"
+            })))
+            .mount(&server)
+            .await;
+
+        let fetch = |artist: &'static str| {
+            let client = client.clone();
+            async move { fetch_lastfm_artist_track_counts(&client, "key", artist).await }
+        };
+        let counts = fetch("Erasure").await.unwrap();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[0].title, "A Little Respect");
+        assert_eq!(counts[0].scrobbles, 900);
+        assert_eq!(counts[0].listeners, Some(90));
+        assert_eq!(counts[1].scrobbles, 500);
+        assert_eq!(counts[1].listeners, None);
+        assert_eq!(fetch("Single").await.unwrap()[0].title, "Only Song");
+        assert!(fetch("Empty").await.unwrap().is_empty());
+        assert!(fetch("Unknown").await.unwrap().is_empty());
+        assert_eq!(
+            fetch("Throttled").await.unwrap_err(),
+            ProviderFetchError::RateLimited
+        );
+        assert_eq!(
+            fetch("Too Fast").await.unwrap_err(),
+            ProviderFetchError::RateLimited
+        );
+        assert!(matches!(
+            fetch("Broken").await.unwrap_err(),
+            ProviderFetchError::Failed(_)
+        ));
+        assert_eq!(
+            fetch("Bad Key").await.unwrap_err(),
+            ProviderFetchError::Failed("Invalid API key".to_owned())
+        );
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
 
     #[tokio::test]
     async fn fetch_lastfm_track_top_tags_parses_and_distinguishes_rate_limits_from_misses() {

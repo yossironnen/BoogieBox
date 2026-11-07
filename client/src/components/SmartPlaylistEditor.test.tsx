@@ -23,6 +23,8 @@ const { apiMock, ApiError } = vi.hoisted(() => {
         smartPreview: vi.fn(),
         smartDefinition: vi.fn(),
         updateSmartDefinition: vi.fn(),
+        steer: vi.fn(),
+        smartStyles: vi.fn(),
         update: vi.fn(),
       },
       libraries: { list: vi.fn() },
@@ -100,12 +102,70 @@ describe('SmartPlaylistEditor', () => {
     expect(apiMock.playlists.createSmart).toHaveBeenCalledWith('Trip hop', expect.objectContaining({ schemaVersion: 1 }));
   });
 
+  it('offers a style rule with the styles in the library', async () => {
+    apiMock.playlists.smartStyles.mockResolvedValue([
+      { style: 'black metal', trackCount: 40 }, { style: 'sludge', trackCount: 12 },
+    ]);
+    render(<SmartPlaylistEditor existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'New smart playlist' });
+    expect(apiMock.playlists.smartStyles).not.toHaveBeenCalled();
+
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Field' }), { target: { value: 'style' } });
+    const conditions = within(dialog).getByRole('combobox', { name: 'Condition' }) as HTMLSelectElement;
+    expect(Array.from(conditions.options).map(o => o.textContent)).toEqual(['is', 'is not', 'is or is a kind of']);
+
+    const value = within(dialog).getByRole('combobox', { name: 'Style' });
+    expect(value).toHaveAttribute('placeholder', 'Choose a style');
+    await waitFor(() => expect(value.getAttribute('list')).toBeTruthy());
+    await waitFor(() => {
+      const options = document.getElementById(value.getAttribute('list')!)!.querySelectorAll('option');
+      expect(Array.from(options).map(o => o.value)).toEqual(['black metal', 'sludge']);
+    });
+
+    fireEvent.change(conditions, { target: { value: 'is_within' } });
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Style' }), { target: { value: 'black metal' } });
+    await waitFor(() => expect(apiMock.playlists.smartPreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: { mode: 'all', children: [{ field: 'style', operator: 'is_within', value: 'black metal' }] },
+      }),
+      expect.any(AbortSignal),
+    ));
+    expect(apiMock.playlists.smartStyles).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for a style and keeps working when the list can not be read', async () => {
+    apiMock.playlists.smartStyles.mockRejectedValue(new Error('offline'));
+    render(<SmartPlaylistEditor existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'New smart playlist' });
+    fireEvent.change(within(dialog).getByLabelText('Playlist name'), { target: { value: 'Styles' } });
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Field' }), { target: { value: 'style' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create playlist' }));
+    expect(await within(dialog).findByText('Choose a style.')).toBeVisible();
+    expect(apiMock.playlists.createSmart).not.toHaveBeenCalled();
+  });
+
+  it('opens a saved style rule', async () => {
+    apiMock.playlists.smartStyles.mockResolvedValue([]);
+    apiMock.playlists.smartDefinition.mockResolvedValue({
+      ...stored,
+      definition: {
+        ...stored.definition,
+        root: { mode: 'all', children: [{ field: 'style', operator: 'is_within', value: 'rock' }] },
+      },
+    });
+    render(<SmartPlaylistEditor playlist={smartPlaylist} existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Edit rules' });
+    expect(await within(dialog).findByRole('combobox', { name: 'Style' })).toHaveValue('rock');
+    expect(within(dialog).getByRole('combobox', { name: 'Condition' })).toHaveValue('is_within');
+  });
+
   describe('steering pills', () => {
     const steer = [
       { kind: 'style', tag: 'sludge', direction: 'more' },
       { kind: 'signal', signal: 'popular' },
     ];
     const openWithPills = async () => {
+      apiMock.playlists.steer.mockRejectedValue(new Error('not needed'));
       apiMock.playlists.smartDefinition.mockResolvedValue({ ...stored, definition: { ...stored.definition, steer } });
       apiMock.playlists.updateSmartDefinition.mockResolvedValue(stored);
       apiMock.playlists.update.mockResolvedValue(smartPlaylist);
@@ -120,6 +180,15 @@ describe('SmartPlaylistEditor', () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Save rules' }));
       await waitFor(() => expect(apiMock.playlists.updateSmartDefinition).toHaveBeenCalled());
       expect(apiMock.playlists.updateSmartDefinition.mock.calls[0][1].steer).toEqual(steer);
+    });
+
+    it('names the popular pill after where its counts come from', async () => {
+      apiMock.playlists.steer.mockResolvedValue({ popularSource: 'lastfm' });
+      apiMock.playlists.smartDefinition.mockResolvedValue({ ...stored, definition: { ...stored.definition, steer } });
+      render(<SmartPlaylistEditor playlist={smartPlaylist} existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+      const dialog = screen.getByRole('dialog', { name: 'Edit rules' });
+      expect(await within(dialog).findByText('Pills on: More sludge, Popular')).toBeVisible();
+      expect(apiMock.playlists.steer).toHaveBeenCalledWith('p1');
     });
 
     it('takes them off with Clear', async () => {

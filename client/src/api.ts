@@ -729,6 +729,8 @@ export const api = {
     smartDefinition: (id: EntityId) => smartRequest<SmartDefinitionView>('GET', `/playlists/${id}/smart-definition`),
     updateSmartDefinition: (id: EntityId, definition: SmartDefinition, expectedEditRevision: number) =>
                    smartRequest<SmartDefinitionView>('PUT', `/playlists/${id}/smart-definition`, { definition, expectedEditRevision }),
+    /** Styles in the library, for choosing one in a rule. */
+    smartStyles: () => smartRequest<{ style: string; trackCount: number }[]>('GET', '/playlists/smart-styles'),
     /** A smart playlist's steering pills: the ones on and the ones to offer. */
     steer:       (id: EntityId) => smartRequest<SteerView>('GET', `/playlists/${id}/steer`),
     /** Replaces the pills; answers with the pills and the new tracks. */

@@ -458,12 +458,18 @@ const BAND_TYPE_TO_BIQUAD: Record<ParametricEqBandType, BiquadFilterType> = {
   lowpass:    'lowpass',
 };
 
+/** Sets an audio parameter at once, or glides to it from time `at` so a change during playback doesn't click. */
+function setEqParam(param: AudioParam, value: number, at?: number): void {
+  if (at !== undefined && typeof param.setTargetAtTime === 'function') param.setTargetAtTime(value, at, 0.05);
+  else param.value = value;
+}
+
 /** Apply Parametric Band To Filter is part of this module's public API. */
-export function applyParametricBandToFilter(filter: BiquadFilterNode, band: ParametricEqBand): void {
+export function applyParametricBandToFilter(filter: BiquadFilterNode, band: ParametricEqBand, at?: number): void {
   filter.type = BAND_TYPE_TO_BIQUAD[band.type];
-  filter.frequency.value = band.frequencyHz;
-  filter.Q.value = band.q;
-  filter.gain.value = (band.type === 'highpass' || band.type === 'lowpass') ? 0 : band.gainDb;
+  setEqParam(filter.frequency, band.frequencyHz, at);
+  setEqParam(filter.Q, band.q, at);
+  setEqParam(filter.gain, (band.type === 'highpass' || band.type === 'lowpass') ? 0 : band.gainDb, at);
 }
 
 // Applies 7 parametric bands to a 7-element filter array. Disabled bands are
@@ -472,16 +478,17 @@ export function applyParametricBandToFilter(filter: BiquadFilterNode, band: Para
 export function applyParametricEqToFilters(
   filters: BiquadFilterNode[],
   bands: ParametricEqBand[],
+  at?: number,
 ): void {
   for (let i = 0; i < filters.length && i < bands.length; i++) {
     const band = bands[i];
     if (!band.enabled) {
       filters[i].type = 'peaking';
-      filters[i].gain.value = 0;
-      filters[i].frequency.value = band.frequencyHz;
-      filters[i].Q.value = 1;
+      setEqParam(filters[i].gain, 0, at);
+      setEqParam(filters[i].frequency, band.frequencyHz, at);
+      setEqParam(filters[i].Q, 1, at);
     } else {
-      applyParametricBandToFilter(filters[i], band);
+      applyParametricBandToFilter(filters[i], band, at);
     }
   }
 }

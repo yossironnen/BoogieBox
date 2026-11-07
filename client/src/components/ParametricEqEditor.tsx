@@ -113,6 +113,8 @@ export default function ParametricEqEditor({
   const isCustomProfile = !isBuiltinParametricPresetName(profile);
 
   const updateBand = (index: number, updates: Partial<ParametricEqBand>) => {
+    // Auto EQ decides the curve while it's on. The graph can still select a band, as the other controls can.
+    if (autoEqEnabled) return;
     const next = bands.map((b, i) => (i === index ? { ...b, ...updates } : b));
     onBandsChange(next);
   };
