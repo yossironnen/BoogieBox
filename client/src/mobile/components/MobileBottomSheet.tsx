@@ -116,6 +116,8 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: '84dvh',
     position: 'relative',
     display: 'grid',
+    // One column as wide as the sheet: an auto column grows to its widest content and the sheet clips it.
+    gridTemplateColumns: 'minmax(0, 1fr)',
     gridTemplateRows: 'auto auto minmax(0, 1fr)',
     boxSizing: 'border-box',
     overflow: 'hidden',
@@ -179,6 +181,7 @@ const styles: Record<string, React.CSSProperties> = {
   body: {
     minHeight: 0,
     display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
     gap: 12,
     overflowY: 'auto',
     overscrollBehaviorY: 'contain',

@@ -144,6 +144,84 @@ test('build a smart playlist on the phone and open its rule-picked tracks', asyn
   }
 })
 
+test('steering pills on a phone: the pills that are on, and Reset', async ({ page }) => {
+  // Too few fixture tracks for the server to offer pills, so one is turned on over the API.
+  const name = uniqueName('E2E Mobile Steer')
+  const created = await page.request.post('/api/playlists', {
+    data: {
+      name, kind: 'smart',
+      definition: {
+        schemaVersion: 1,
+        root: { mode: 'all', children: [{ field: 'genre', operator: 'is_present' }] },
+        sort: [{ field: 'title', direction: 'asc' }],
+        limit: { maxTracks: 4 },
+        steer: [{ kind: 'signal', signal: 'popular' }],
+      },
+    },
+  })
+  expect(created.status()).toBe(201)
+  const playlist: { id: string } = await created.json()
+  try {
+    await tabs(page).getByRole('button', { name: 'Playlists', exact: true }).click()
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    await page.getByRole('button', { name: new RegExp(`^${escaped} — Smart playlist`) }).click()
+    await expect(page.getByRole('heading', { name })).toBeVisible()
+    const pills = page.getByRole('group', { name: 'Steer this playlist' })
+    const pill = pills.getByRole('button', { name: 'Most played here', pressed: true })
+    await expect(pill).toBeVisible()
+    expect((await pill.boundingBox())!.height).toBeGreaterThanOrEqual(44)
+    await expect(page.getByRole('status').filter({ hasText: /tracks? changed$/ })).toBeVisible()
+    await pills.getByRole('button', { name: 'Reset' }).click()
+    await expect(pills).toBeHidden()
+    const view = await (await page.request.get(`/api/playlists/${playlist.id}/steer`)).json()
+    expect(view.active).toEqual([])
+  } finally {
+    await page.request.delete(`/api/playlists/${playlist.id}`)
+  }
+})
+
+test.describe('390 px phone', () => {
+  test.use({ viewport: { width: 390, height: 844 } })
+
+  test('the Equalizer sheet fits the screen', async ({ page }) => {
+    await tabs(page).getByRole('button', { name: 'Browse', exact: true }).click()
+    await page.getByLabel('Artists').getByRole('button', { name: /^Mira Kestrel/ }).click()
+    await page.getByLabel('Albums').getByRole('button', { name: /^Quiet Hours/ }).click()
+    await page.getByLabel('Album tracks').getByRole('button', { name: /^Blue Hour Waltz/ }).click()
+    await expectAudioPlaying(page)
+    await tabs(page).getByRole('button', { name: 'Now', exact: true }).click()
+    await page.getByRole('main').getByRole('button', { name: 'Open equalizer' }).click()
+    const sheet = page.getByRole('dialog', { name: 'Equalizer' })
+    await expect(sheet.locator('canvas')).toBeVisible()
+    // Anything past the screen edge is clipped. Only the band strip scrolls sideways, so its chips may run past it.
+    const clipped = await sheet.evaluate((root) => {
+      const limit = window.innerWidth
+      const strip = root.querySelector('[aria-label="EQ bands"]')
+      const name = (el: Element) => `${el.tagName.toLowerCase()}${el.getAttribute('aria-label') ? `[${el.getAttribute('aria-label')}]` : ''}`
+      const all = [root, ...root.querySelectorAll<HTMLElement>('*')]
+      const past = all
+        .filter(el => !(strip && strip !== el && strip.contains(el)))
+        .filter(el => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().right > limit + 0.5)
+        .map(el => `${name(el)} right=${Math.round(el.getBoundingClientRect().right)}`)
+      const sideways = all
+        .filter(el => el !== strip && el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0)
+        .map(el => `${name(el)} scrolls sideways ${el.scrollWidth} > ${el.clientWidth}`)
+      return [...past, ...sideways]
+    })
+    expect(clipped).toEqual([])
+    await sheet.getByRole('group', { name: 'EQ bands' }).getByRole('button', { name: /^Band 2 / }).click()
+    for (const control of [
+      sheet.getByRole('spinbutton', { name: 'Band 2 Q' }),
+      sheet.getByRole('slider', { name: 'Band 2 gain' }),
+      sheet.getByRole('button', { name: 'Close equalizer' }),
+    ]) {
+      const box = (await control.boundingBox())!
+      expect(box.x + box.width, String(control)).toBeLessThanOrEqual(390)
+    }
+    await sheet.getByRole('button', { name: 'Close equalizer' }).click()
+  })
+})
+
 test('the Now Playing Sleep tool starts and cancels a timer', async ({ page }) => {
   await tabs(page).getByRole('button', { name: 'Browse', exact: true }).click()
   await page.getByLabel('Artists').getByRole('button', { name: /^The Velvet Owls/ }).click()

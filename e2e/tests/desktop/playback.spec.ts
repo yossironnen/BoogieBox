@@ -185,6 +185,69 @@ test.describe('sleep timer', () => {
   })
 })
 
+test('Auto EQ owns the curve graph while it is on and leaves my own EQ alone', async ({ page }) => {
+  const album = ALBUMS[0]
+  await openAlbum(page, album.artist, album.album)
+  await trackRow(page, album.tracks[0].title).getByRole('button', { name: 'Play', exact: true }).click()
+  await expectAudioPlaying(page, 0)
+  await dock(page).getByRole('button', { name: 'Equalizer', exact: true }).click()
+  const eq = page.getByRole('dialog', { name: 'Equalizer' })
+  const autoEq = eq.getByRole('checkbox', { name: 'Auto EQ' })
+  const bass = eq.getByRole('group', { name: 'EQ bands' }).getByRole('button', { name: /^Band 2 / })
+  const bassLabel = async () => (await bass.getAttribute('aria-label')) ?? ''
+  // Band 2 is a peaking band: "Band 2 Bass, 120 Hz, +0.0 dB". Its handle sits where EqCurveCanvas draws it.
+  const dragBass = async (dy: number) => {
+    const [, freqText, kilo, gainText] = /, ([\d.]+)(k?) Hz, ([+-][\d.]+) dB$/.exec(await bassLabel())!
+    const freq = Number(freqText) * (kilo ? 1000 : 1)
+    const box = (await eq.locator('canvas').boundingBox())!
+    const margin = { top: 8, right: 8, bottom: 20, left: 28 }
+    const x = margin.left + (Math.log10(freq / 20) / Math.log10(1000)) * (box.width - margin.left - margin.right)
+    const y = margin.top + ((12 - Number(gainText)) / 24) * (box.height - margin.top - margin.bottom)
+    await page.mouse.move(box.x + x, box.y + y)
+    await page.mouse.down()
+    await page.mouse.move(box.x + x, box.y + y + dy, { steps: 5 })
+    await page.mouse.up()
+  }
+  const wasOn = await autoEq.isChecked()
+  try {
+    if (wasOn) await autoEq.uncheck()
+    await bass.click()
+    await eq.getByRole('spinbutton', { name: 'Band 2 gain value' }).fill('0')
+    await eq.getByRole('spinbutton', { name: 'Band 2 frequency' }).fill('120')
+    await expect.poll(bassLabel).toBe('Band 2 Bass, 120 Hz, +0.0 dB')
+
+    await test.step('with Auto EQ off the graph moves a band', async () => {
+      await dragBass(-25)
+      await expect.poll(bassLabel).not.toBe('Band 2 Bass, 120 Hz, +0.0 dB')
+    })
+    const mine = await bassLabel()
+    expect(mine).toMatch(/\+\d+\.\d dB$/)
+
+    await test.step('with Auto EQ on the graph and band controls do not edit', async () => {
+      await autoEq.check()
+      await expect(eq.getByText(/^Auto EQ active - preset:/)).toBeVisible()
+      await expect(eq.getByRole('spinbutton', { name: 'Band 2 gain value' })).toBeDisabled()
+      await expect(eq.getByRole('combobox', { name: 'EQ profile' })).toBeDisabled()
+      const chosen = await bassLabel()
+      await dragBass(-25)
+      await page.waitForTimeout(300)
+      expect(await bassLabel()).toBe(chosen)
+    })
+
+    await test.step('turning Auto EQ off brings back my own EQ', async () => {
+      await autoEq.uncheck()
+      await expect.poll(bassLabel).toBe(mine)
+    })
+  } finally {
+    if (await autoEq.isChecked()) await autoEq.uncheck()
+    await bass.click()
+    await eq.getByRole('spinbutton', { name: 'Band 2 gain value' }).fill('0')
+    await eq.getByRole('spinbutton', { name: 'Band 2 frequency' }).fill('120')
+    if (wasOn) await autoEq.check()
+    await eq.getByRole('button', { name: 'Close equalizer' }).click()
+  }
+})
+
 test('loudness levelling: tag values, measured tracks and the player gain', async ({ page }) => {
   const idOf = async (title: string) => {
     const result = await (await page.request.get('/api/search', { params: { q: title, limit: 5 } })).json()

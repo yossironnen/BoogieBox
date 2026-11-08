@@ -880,20 +880,23 @@ pub fn get_track_eq_profile(
 ) -> rusqlite::Result<EqProfileResolution> {
     let track_info = conn
         .query_row(
-            "SELECT COALESCE(ar.name, ''), COALESCE(t.genre, ''), COALESCE(ar.genres, '') \
-             FROM tracks t LEFT JOIN artists ar ON ar.id = t.artist_id WHERE t.id = ?",
+            "SELECT COALESCE(ar.name, ''), COALESCE(t.genre, ''), COALESCE(ar.genres, ''), \
+                    CASE WHEN COALESCE(al.metadata_locked, 0) = 1 THEN COALESCE(al.genre, '') ELSE '' END \
+             FROM tracks t LEFT JOIN artists ar ON ar.id = t.artist_id \
+             LEFT JOIN albums al ON al.id = t.album_id WHERE t.id = ?",
             params![track_id],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
                 ))
             },
         )
         .optional()?;
 
-    let (artist_name, track_genre, artist_genres) = match track_info {
+    let (artist_name, track_genre, artist_genres, edited_album_genre) = match track_info {
         None => {
             return Ok(EqProfileResolution {
                 eq_profile: FLAT_EQ_PROFILE.into(),
@@ -902,6 +905,14 @@ pub fn get_track_eq_profile(
         }
         Some(v) => v,
     };
+
+    // A genre the user set on the album (the edit locks it) speaks for its tracks over their file tags.
+    if let Some(profile) = genre_to_eq_profile(edited_album_genre.trim()) {
+        return Ok(EqProfileResolution {
+            eq_profile: profile.to_string(),
+            source: "album_genre".into(),
+        });
+    }
 
     // Check artist_eq_cache (table may not exist on all DB versions)
     if !artist_name.trim().is_empty() {
@@ -1610,6 +1621,62 @@ mod tests {
             .unwrap();
         let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
         assert_eq!(res.eq_profile, "Hip-Hop");
+        assert_eq!(res.source, "track_tags");
+    }
+
+    #[test]
+    fn get_track_eq_profile_follows_a_genre_the_user_set_on_the_album() {
+        let f = fixture("eq-album-edit");
+        let album_id: String = f
+            .conn
+            .query_row(
+                "SELECT album_id FROM tracks WHERE id=?",
+                params![f.track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "UPDATE tracks SET genre='Pop' WHERE id=?",
+                params![f.track_id],
+            )
+            .unwrap();
+        // Before the edit the scan copied the tracks' genre to the album; it isn't locked, so the tag decides.
+        f.conn
+            .execute(
+                "UPDATE albums SET genre='Pop', metadata_locked=0 WHERE id=?",
+                params![album_id],
+            )
+            .unwrap();
+        assert_eq!(
+            get_track_eq_profile(&f.conn, &f.track_id)
+                .unwrap()
+                .eq_profile,
+            "Pop"
+        );
+
+        crate::playlists::update_album_metadata(
+            &f.conn,
+            &EntityId::Str(album_id.clone()),
+            crate::playlists::AlbumMetadataUpdate {
+                genre: Some("Electronic/New Wave".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
+        assert_eq!(res.eq_profile, "Electronic");
+        assert_eq!(res.source, "album_genre");
+
+        // A locked album whose genre says nothing for EQ leaves the track's own tag in charge.
+        f.conn
+            .execute(
+                "UPDATE albums SET genre='Soundtrack' WHERE id=?",
+                params![album_id],
+            )
+            .unwrap();
+        let res = get_track_eq_profile(&f.conn, &f.track_id).unwrap();
+        assert_eq!(res.eq_profile, "Pop");
         assert_eq!(res.source, "track_tags");
     }
 

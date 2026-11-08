@@ -3,7 +3,7 @@
  */
 
 import { IMPORTED_TITLES, writeImportFixture } from '../../support/m3u.ts'
-import { expect, expectAudioPlaying, goTo, main, openApp, test, uniqueName } from '../../support/test.ts'
+import { dock, expect, expectAudioPlaying, goTo, main, openApp, test, uniqueName } from '../../support/test.ts'
 
 test.beforeEach(async ({ page }) => openApp(page))
 
@@ -212,6 +212,96 @@ test('smart playlist UI: build rules with a preview, rule-picked detail, save a 
     for (const playlist of list.filter(p => p.name === name || p.name === copyName)) {
       await page.request.delete(`/api/playlists/${playlist.id}`)
     }
+  }
+})
+
+test('smart playlist steering pills: on, reset, queue prompt, editor line, Style rule', async ({ page }) => {
+  // The fixture has 10 untagged tracks, too few for the server to offer pills, so they are turned on over the API.
+  const name = uniqueName('E2E Steer')
+  const shoegaze = { kind: 'style', tag: 'shoegaze', direction: 'more' }
+  const popular = { kind: 'signal', signal: 'popular' }
+  const rules = {
+    schemaVersion: 1,
+    root: { mode: 'all', children: [{ field: 'genre', operator: 'is_present' }] },
+    sort: [{ field: 'title', direction: 'asc' }],
+    limit: { maxTracks: 4 },
+  }
+  const created = await page.request.post('/api/playlists', { data: { name, kind: 'smart', definition: rules } })
+  expect(created.status()).toBe(201)
+  const playlist: { id: string } = await created.json()
+  try {
+    await test.step('the steer API stores pills and refuses bad ones', async () => {
+      const put = await page.request.put(`/api/playlists/${playlist.id}/steer`, { data: { steer: [shoegaze, popular] } })
+      expect(put.ok()).toBe(true)
+      const answer = await put.json()
+      expect(answer.steer.active).toEqual([shoegaze, popular])
+      expect(answer.steer.popularSource).toBe('local')
+      expect(answer.steer.fewTags).toBe(true)
+      expect(answer.snapshot.tracks).toHaveLength(4)
+      const view = await (await page.request.get(`/api/playlists/${playlist.id}/steer`)).json()
+      expect(view.active).toEqual([shoegaze, popular])
+      const refused = await page.request.put(`/api/playlists/${playlist.id}/steer`, { data: { steer: [{ kind: 'weather' }] } })
+      expect(refused.status()).toBe(400)
+      expect((await refused.json()).errors[0].code).toBe('bad_steer')
+    })
+
+    const pills = main(page).getByRole('group', { name: 'Steer this playlist' })
+    await test.step('the detail shows the pills that are on', async () => {
+      await goTo(page, 'Playlists')
+      await main(page).getByText(name, { exact: true }).click()
+      await expect(pills.getByRole('button', { name: 'More shoegaze', pressed: true })).toBeVisible()
+      // No Last.fm counts in the fixture, so "Popular" uses the local wording.
+      await expect(pills.getByRole('button', { name: 'Most played here', pressed: true })).toBeVisible()
+      await expect(main(page).getByRole('status').filter({ hasText: /tracks? changed$/ })).toBeVisible()
+      await expect(main(page).getByText('More pills appear once BoogieBox finds style tags for these tracks.')).toBeVisible()
+    })
+
+    await test.step('the editor lists the pills that are on', async () => {
+      await main(page).getByRole('button', { name: 'Edit rules' }).first().click()
+      const dialog = page.getByRole('dialog', { name: 'Edit rules' })
+      await expect(dialog.getByTestId('smart-editor-pills')).toContainText('Pills on: More shoegaze, Most played here')
+      await page.keyboard.press('Escape')
+      await expect(dialog).toBeHidden()
+    })
+
+    await test.step('turning a pill off while the queue came from the playlist asks about the queue', async () => {
+      await main(page).getByRole('button', { name: 'Play All', exact: true }).click()
+      await expectAudioPlaying(page)
+      await pills.getByRole('button', { name: 'More shoegaze', pressed: true }).click()
+      await expect(pills.getByRole('button', { name: 'More shoegaze' })).toHaveCount(0)
+      const prompt = main(page).getByRole('status').filter({ hasText: 'Your queue still has the old tracks.' })
+      await expect(prompt).toBeVisible()
+      await prompt.getByRole('button', { name: "Update what's next" }).click()
+      await expect(prompt).toBeHidden()
+      await expect(pills.getByRole('button', { name: 'Most played here', pressed: true })).toBeVisible()
+    })
+
+    await test.step('Reset turns every pill off', async () => {
+      await pills.getByRole('button', { name: 'Reset' }).click()
+      await expect(pills).toBeHidden()
+      await expect(main(page).getByRole('status').filter({ hasText: /tracks? changed$/ })).toHaveCount(0)
+      const view = await (await page.request.get(`/api/playlists/${playlist.id}/steer`)).json()
+      expect(view.active).toEqual([])
+      await dock(page).getByRole('button', { name: 'Pause' }).click()
+    })
+
+    await test.step('the rules editor has a Style field', async () => {
+      await goTo(page, 'Playlists')
+      await main(page).getByRole('button', { name: 'New smart playlist' }).click()
+      const dialog = page.getByRole('dialog', { name: 'New smart playlist' })
+      await dialog.getByRole('combobox', { name: 'Field' }).selectOption('style')
+      const condition = dialog.getByRole('combobox', { name: 'Condition' })
+      await expect(condition.getByRole('option')).toHaveText(['is', 'is not', 'is or is a kind of'])
+      // No track carries a style tag: "is" picks nothing and "is not" keeps the library.
+      await dialog.getByRole('combobox', { name: 'Style', exact: true }).fill('shoegaze')
+      await expect(dialog.getByText('No tracks match these rules.')).toBeVisible()
+      await condition.selectOption('is_not')
+      await expect(dialog.getByRole('list', { name: 'First tracks' }).getByRole('listitem').first()).toBeVisible()
+      await dialog.getByRole('button', { name: 'Cancel' }).click()
+      await expect(dialog).toBeHidden()
+    })
+  } finally {
+    await page.request.delete(`/api/playlists/${playlist.id}`)
   }
 })
 

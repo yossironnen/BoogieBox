@@ -41,6 +41,7 @@ import { isLibraryTrackId, isLiveTrack } from '../radioStations';
 import { RadioIcon } from './FavouriteIcons';
 import { OutputPickerList, pickerRenderers } from '../remote/OutputPicker';
 import { useMediaSession } from '../platform/mediaSession';
+import { METADATA_SAVED_EVENT } from '../metadataEvents';
 import {
   sleepStopsAfterCurrent,
   sleepTimerBadge,
@@ -2181,8 +2182,11 @@ export default function Player({
     setAutoEqPlaying(autoEqEnabledRef.current ? slotEqRef.current[activeSlotRef.current] : null);
   }, []);
 
-  /** Chooses the curve for the song a slot is about to play. Until Auto EQ answers, the slot plays the user's own EQ. */
-  const resolveSlotEq = useCallback((slot: 'A' | 'B', track: Track | null) => {
+  /**
+   * Chooses the curve for the song a slot is about to play. Until Auto EQ answers, the slot plays the user's own
+   * EQ, or with `keepCurrent` (asking again about the same song) keeps the curve it has.
+   */
+  const resolveSlotEq = useCallback((slot: 'A' | 'B', track: Track | null, keepCurrent = false) => {
     const lookup = ++slotEqLookupRef.current[slot];
     const settle = (eq: SlotEq | null) => {
       slotEqRef.current[slot] = eq;
@@ -2200,7 +2204,7 @@ export default function Player({
       settle(slotEqForPreset(cached));
       return;
     }
-    settle(null);
+    if (!keepCurrent) settle(null);
     (api as any).trackEqProfile(track.id)
       .then((result: any) => {
         const name = result?.eqProfile as string;
@@ -2210,9 +2214,20 @@ export default function Player({
         if (slotEqLookupRef.current[slot] === lookup) settle(slotEqForPreset(preset));
       })
       .catch(() => {
-        if (slotEqLookupRef.current[slot] === lookup) settle(slotEqForPreset('Manual'));
+        if (slotEqLookupRef.current[slot] === lookup && !keepCurrent) settle(slotEqForPreset('Manual'));
       });
   }, [applySlotEq, showActiveSlotEq]);
+
+  // A genre edit can change what Auto EQ picks: forget its answers and ask again for the songs in both slots.
+  useEffect(() => {
+    const onSaved = () => {
+      autoEqPresetCacheRef.current.clear();
+      resolveSlotEq('A', slotLoudnessRef.current.A.track, true);
+      resolveSlotEq('B', slotLoudnessRef.current.B.track, true);
+    };
+    window.addEventListener(METADATA_SAVED_EVENT, onSaved);
+    return () => window.removeEventListener(METADATA_SAVED_EVENT, onSaved);
+  }, [resolveSlotEq]);
 
   /** Sets a slot's levelling gain from its track's cached loudness and the user's mode. */
   const applySlotGain = useCallback((slot: 'A' | 'B') => {

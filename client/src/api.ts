@@ -77,6 +77,7 @@ import type { SmartDefinition, SmartDefinitionView } from './smartPlaylistRules'
 import type { SmartSteer, SteerUpdate, SteerView } from './smartSteer';
 import { invalidateHomeData } from './homeCache';
 import { notifyServerRestoring } from './restoreState';
+import { announceMetadataSaved } from './metadataEvents';
 import type {
   RemoteCommand,
   RemoteDiagnostics,
@@ -385,6 +386,12 @@ export function encodeLibraryIdsParam(libraryIds?: ApiEntityId[]): string | unde
   return cleaned.length ? cleaned.join(',') : undefined;
 }
 
+/** Passes a metadata save's answer through after telling the app the tags changed. */
+function savedMetadata<T>(result: T): T {
+  announceMetadataSaved();
+  return result;
+}
+
 export const api = {
   libraries: {
     list: () => get<Library[]>('/libraries'),
@@ -679,9 +686,10 @@ export const api = {
     },
     resetLock?: boolean,
   ) =>
-    put<{ ok: boolean; merged_into?: ApiEntityId }>(`/albums/${id}/metadata`, resetLock ? { ...data, reset_lock: true } : data),
+    put<{ ok: boolean; merged_into?: ApiEntityId }>(`/albums/${id}/metadata`, resetLock ? { ...data, reset_lock: true } : data)
+      .then(savedMetadata),
   updateArtistMetadata: (id: ApiEntityId, data: { name: string; description?: string }, resetLock?: boolean) =>
-    put<{ ok: boolean }>(`/artists/${id}/metadata`, resetLock ? { ...data, reset_lock: true } : data),
+    put<{ ok: boolean }>(`/artists/${id}/metadata`, resetLock ? { ...data, reset_lock: true } : data).then(savedMetadata),
   updateTrackMetadata: (
     id: ApiEntityId,
     data: {
@@ -695,7 +703,7 @@ export const api = {
       discNumber?: number;
       year?: number;
     },
-  ) => put<{ ok: boolean }>(`/tracks/${id}/metadata`, data),
+  ) => put<{ ok: boolean }>(`/tracks/${id}/metadata`, data).then(savedMetadata),
   uploadAlbumArtwork: (id: ApiEntityId, imageBase64: string, mimeType: string) =>
     post<{ ok: boolean }>(`/albums/${id}/artwork`, { imageBase64, mimeType }),
   uploadArtistArtwork: (id: ApiEntityId, imageBase64: string, mimeType: string) =>

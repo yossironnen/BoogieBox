@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, setStreamDirect } from '../api';
 import { BUILTIN_PARAMETRIC_PRESETS } from '../audio/eq';
+import { announceMetadataSaved } from '../metadataEvents';
 import type { Track } from '../types';
 import Player, { type PlayerState } from './Player';
 
@@ -454,6 +455,33 @@ describe('Player comprehensive behavior', () => {
         expect.objectContaining({ autoEqCurrentPreset: 'Manual' }),
       ));
       expect(api.trackEqProfile).not.toHaveBeenCalledWith('boogiemix:7');
+    });
+
+    it('asks again after a genre edit, keeping the song\'s curve until the answer comes', async () => {
+      delete (window as any).AudioContext;
+      setStreamDirect(true);
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true' });
+      byTrack({ 1: 'Pop' });
+      const onEqControlsChange = vi.fn();
+      render(
+        <Player state={playing({ isPlaying: false, queue: [track('1')] })} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />,
+      );
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Pop' }),
+      ));
+
+      let answer: (value: unknown) => void = () => {};
+      vi.mocked(api.trackEqProfile).mockImplementation((() => new Promise(resolve => { answer = resolve; })) as any);
+      const calls = vi.mocked(api.trackEqProfile).mock.calls.length;
+      act(() => announceMetadataSaved());
+      expect(vi.mocked(api.trackEqProfile).mock.calls.length).toBe(calls + 1);
+      await act(async () => { await Promise.resolve(); });
+      expect(onEqControlsChange).toHaveBeenLastCalledWith(expect.objectContaining({ autoEqCurrentPreset: 'Pop' }));
+
+      await act(async () => { answer({ eqProfile: 'Electronic', source: 'album_genre' }); });
+      await waitFor(() => expect(onEqControlsChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ autoEqCurrentPreset: 'Electronic' }),
+      ));
     });
   });
 
