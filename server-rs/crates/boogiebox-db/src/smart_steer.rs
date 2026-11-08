@@ -61,7 +61,6 @@ const PARENTS: &[(&str, &str)] = &[
     ("punk", "rock"),
     ("glam", "rock"),
     ("metal", "rock"),
-    ("new wave", "rock"),
     ("gothic", "post-punk"),
     ("darkwave", "post-punk"),
     ("new wave", "pop"),
@@ -84,6 +83,9 @@ const PARENTS: &[(&str, &str)] = &[
     ("dubstep", "electronic"),
     ("electro", "electronic"),
     ("synthwave", "electronic"),
+    // Electronic, like Auto EQ (`GENRE_EQ_MAP` in playback.rs), not rock.
+    ("new wave", "electronic"),
+    ("synthpop", "electronic"),
     ("minimal", "techno"),
     ("gangsta rap", "hip-hop"),
     ("trap", "hip-hop"),
@@ -941,6 +943,12 @@ mod tests {
         assert!(!is_child_tag("krock", "rock"));
         assert!(!is_child_tag("black metal", "atmospheric black metal"));
         assert!(!is_child_tag("-pop", "pop"));
+
+        // Same family as Auto EQ gives them.
+        assert!(is_child_tag("new wave", "electronic"));
+        assert!(is_child_tag("synthpop", "electronic"));
+        assert!(!is_child_tag("new wave", "rock"));
+        assert!(is_child_tag("new wave", "pop"));
 
         let conn = fixture();
         assert_eq!(
