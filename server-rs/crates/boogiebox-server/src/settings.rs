@@ -94,6 +94,7 @@ pub const ALLOWED_USER_SETTING_KEYS: &[&str] = &[
     "parametricEqProfiles",
     "parametricEqSelectedProfile",
     "parametricEqBands",
+    "userSavedEqEnabled",
     "volume",
     "muted",
     "hideCompilationOnlyArtists",
@@ -139,7 +140,13 @@ pub fn validate_user_setting_value(key: &str, value: &str) -> Result<(), String>
     if key == "hideCompilationOnlyArtists" && value != "true" && value != "false" {
         return Err("Setting 'hideCompilationOnlyArtists' must be 'true' or 'false'".to_string());
     }
-    if ["vinylHardcore", "vinylNeedleDrop", "vinylAnalogFxDisabled"].contains(&key)
+    if [
+        "vinylHardcore",
+        "vinylNeedleDrop",
+        "vinylAnalogFxDisabled",
+        "userSavedEqEnabled",
+    ]
+    .contains(&key)
         && value != "true"
         && value != "false"
     {
@@ -599,6 +606,14 @@ mod tests {
         assert!(validate_user_setting_value("uiThemeMode", "custom").is_ok());
         assert!(validate_user_setting_value("uiThemeMode", "vintage").is_ok());
         assert!(validate_user_setting_value("uiThemeMode", "neon").is_err());
+    }
+
+    #[test]
+    fn the_saved_eq_switch_is_a_user_setting_and_takes_true_or_false() {
+        assert!(ALLOWED_USER_SETTING_KEYS.contains(&"userSavedEqEnabled"));
+        assert!(validate_user_setting_value("userSavedEqEnabled", "true").is_ok());
+        assert!(validate_user_setting_value("userSavedEqEnabled", "false").is_ok());
+        assert!(validate_user_setting_value("userSavedEqEnabled", "on").is_err());
     }
 
     #[test]

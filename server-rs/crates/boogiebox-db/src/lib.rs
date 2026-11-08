@@ -15,6 +15,7 @@ pub mod popularity;
 pub mod radio;
 pub mod radio_stations;
 pub mod remote;
+pub mod saved_eq;
 pub mod scrobble;
 pub mod smart_playlists;
 pub mod smart_steer;
@@ -866,6 +867,10 @@ fn tracked_migrations() -> Vec<Migration> {
         Migration {
             id: "2026-11-06-track-popularity",
             apply: popularity::ensure_track_popularity_schema,
+        },
+        Migration {
+            id: "2026-11-08-user-saved-eq",
+            apply: saved_eq::ensure_saved_eq_schema,
         },
     ]
 }

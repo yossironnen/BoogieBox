@@ -85,6 +85,9 @@ keeps them; `remove-missing-tracks` is the explicit way to delete them.
 | `GET` | `/api/tracks/{id}/stream` | Stream or transcode a track (requires a session). |
 | `GET` | `/api/tracks/{id}/waveform` | Fetch cached waveform data. |
 | `GET` | `/api/tracks/{id}/lyrics` | Fetch cached or provider lyrics. |
+| `GET` | `/api/tracks/{id}/saved-eq` | The signed-in user's saved EQ for this song, else for its album: `{ scope: "track" \| "album" \| null, bands, hasTrack, hasAlbum, albumId }`. `404` for an unknown track. |
+| `PUT` / `DELETE` | `/api/tracks/{id}/saved-eq` | Save (body `{ bands }`: exactly 7 parametric bands within the player's limits, else `400`) or remove the user's EQ for this song. `404` for an unknown track. |
+| `PUT` / `DELETE` | `/api/albums/{id}/saved-eq` | Same for the album. A song's own curve wins over its album's. Curves are removed with their song or album and follow an album merged by a rename. |
 | `GET` | `/api/tracks/{id}/sonic-fingerprint` | Fetch Sonic Fingerprint (stem analysis, sections, transition windows) for a track. |
 | `POST` | `/api/tracks/{id}/played` | Record a track play event (also lists it in Subsonic `getNowPlaying` as "BoogieBox" and tells the user's scrobbling services it started). |
 | `POST` | `/api/tracks/{id}/scrobble` | The web player says a play counts (played half its length or 4 minutes; tracks of 30 s or less never count). Body `{ startedAt }` (Unix seconds, optional). Queued for the user's Last.fm / ListenBrainz accounts; does not change play counts. |

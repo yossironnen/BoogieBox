@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,16 @@ pub fn playback_router(state: SharedState) -> Router {
             post(track_waveform_generate_handler),
         )
         .route("/api/tracks/{id}/eq-profile", get(track_eq_profile_handler))
+        .route(
+            "/api/tracks/{id}/saved-eq",
+            get(track_saved_eq_handler)
+                .put(save_track_eq_handler)
+                .delete(remove_track_eq_handler),
+        )
+        .route(
+            "/api/albums/{id}/saved-eq",
+            put(save_album_eq_handler).delete(remove_album_eq_handler),
+        )
         .route(
             "/api/waveforms/map/status",
             get(waveform_map_status_handler),
@@ -656,6 +666,147 @@ async fn track_eq_profile_handler(
     }
 }
 
+// -- Saved EQ (per user, per song or album) ----------------------------------------
+
+use boogiebox_db::{
+    music::coerce_entity_id,
+    saved_eq::{self, Scope},
+};
+
+fn bad_request(message: String) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: message,
+            setup_required: None,
+        }),
+    )
+        .into_response()
+}
+
+fn not_found(what: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: format!("{what} not found"),
+            setup_required: None,
+        }),
+    )
+        .into_response()
+}
+
+fn scope_name(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Track => "Track",
+        Scope::Album => "Album",
+    }
+}
+
+/// The curve the signed-in user saved for this song, or for its album.
+async fn track_saved_eq_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return setup_required_response();
+    };
+    let track_id = coerce_entity_id(&id);
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        saved_eq::saved_eq_for_track(&conn, &user.id, &track_id)
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(view))) => (StatusCode::OK, Json(view)).into_response(),
+        Ok(Ok(None)) => not_found("Track"),
+        _ => internal_error(),
+    }
+}
+
+async fn save_curve(
+    state: SharedState,
+    user: AuthenticatedUser,
+    scope: Scope,
+    id: String,
+    body: Value,
+) -> Response {
+    let bands = match saved_eq::validate_bands(body.get("bands").unwrap_or(&Value::Null)) {
+        Ok(bands) => bands,
+        Err(message) => return bad_request(message),
+    };
+    let Some(db) = get_db(&state) else {
+        return setup_required_response();
+    };
+    let entity_id = coerce_entity_id(&id);
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        saved_eq::save(&conn, &user.id, scope, &entity_id, &bands)
+    })
+    .await;
+    match result {
+        Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
+        Ok(Ok(false)) => not_found(scope_name(scope)),
+        _ => internal_error(),
+    }
+}
+
+async fn remove_curve(
+    state: SharedState,
+    user: AuthenticatedUser,
+    scope: Scope,
+    id: String,
+) -> Response {
+    let Some(db) = get_db(&state) else {
+        return setup_required_response();
+    };
+    let entity_id = coerce_entity_id(&id);
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        saved_eq::remove(&conn, &user.id, scope, &entity_id)
+    })
+    .await;
+    match result {
+        Ok(Ok(true)) => (StatusCode::OK, Json(OkResponse { ok: true })).into_response(),
+        Ok(Ok(false)) => not_found(scope_name(scope)),
+        _ => internal_error(),
+    }
+}
+
+async fn save_track_eq_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    save_curve(state, user, Scope::Track, id, body).await
+}
+
+async fn remove_track_eq_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Response {
+    remove_curve(state, user, Scope::Track, id).await
+}
+
+async fn save_album_eq_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    save_curve(state, user, Scope::Album, id, body).await
+}
+
+async fn remove_album_eq_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Response {
+    remove_curve(state, user, Scope::Album, id).await
+}
+
 use crate::auth::AdminUser;
 
 async fn waveform_map_status_handler(
@@ -1143,6 +1294,143 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json_body(&body)["eqProfile"], "Manual");
+    }
+
+    #[tokio::test]
+    async fn saved_eq_routes_save_read_and_remove_per_user() {
+        let (app, pool) = new_test_app_with_pool("playback-saved-eq");
+        let (track_id, _path) = seed_streamable_track(&pool);
+        let album_id: String = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT album_id FROM tracks WHERE id = ?",
+                [&track_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let alice = seed_user_session(&pool, "alice");
+        let bob = seed_user_session(&pool, "bob");
+        let bands = |gain: f64| {
+            serde_json::json!((1..=7).map(|i| serde_json::json!({
+                "id": format!("b{i}"), "label": format!("Band {i}"), "enabled": true, "type": "peaking",
+                "frequencyHz": 100 * i, "gainDb": gain, "q": 1.0,
+            })).collect::<Vec<_>>())
+        };
+        let call = |method: &str, uri: String, cookie: &str, body: Option<serde_json::Value>| {
+            let mut req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("cookie", cookie);
+            if body.is_some() {
+                req = req.header("content-type", "application/json");
+            }
+            req.body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+                .unwrap()
+        };
+        let track_uri = format!("/api/tracks/{track_id}/saved-eq");
+        let album_uri = format!("/api/albums/{album_id}/saved-eq");
+
+        let (status, body) = send(app.clone(), call("GET", track_uri.clone(), &alice, None)).await;
+        assert_eq!(status, StatusCode::OK);
+        let view = json_body(&body);
+        assert_eq!(view["scope"], serde_json::Value::Null);
+        assert_eq!(view["albumId"], album_id);
+
+        let (status, _) = send(
+            app.clone(),
+            call(
+                "PUT",
+                album_uri.clone(),
+                &alice,
+                Some(serde_json::json!({ "bands": bands(2.0) })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(
+            app.clone(),
+            call(
+                "PUT",
+                track_uri.clone(),
+                &alice,
+                Some(serde_json::json!({ "bands": bands(-3.0) })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = send(app.clone(), call("GET", track_uri.clone(), &alice, None)).await;
+        let view = json_body(&body);
+        assert_eq!(view["scope"], "track");
+        assert_eq!(view["bands"][0]["gainDb"], -3.0);
+        assert_eq!(
+            (view["hasTrack"].clone(), view["hasAlbum"].clone()),
+            (true.into(), true.into())
+        );
+
+        // Bob has none of Alice's curves.
+        let (_, body) = send(app.clone(), call("GET", track_uri.clone(), &bob, None)).await;
+        assert_eq!(json_body(&body)["scope"], serde_json::Value::Null);
+
+        let (status, _) = send(app.clone(), call("DELETE", track_uri.clone(), &alice, None)).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = send(app.clone(), call("GET", track_uri.clone(), &alice, None)).await;
+        assert_eq!(json_body(&body)["scope"], "album");
+
+        // Bad bands, unknown ids and no session.
+        let mut wrong = bands(0.0);
+        wrong[0]["gainDb"] = serde_json::json!(40);
+        let (status, body) = send(
+            app.clone(),
+            call(
+                "PUT",
+                track_uri.clone(),
+                &alice,
+                Some(serde_json::json!({ "bands": wrong })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(&body)["error"], "band 1 gain is out of range");
+        let (status, _) = send(
+            app.clone(),
+            call(
+                "PUT",
+                track_uri.clone(),
+                &alice,
+                Some(serde_json::json!({})),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        for (method, uri) in [
+            ("GET", "/api/tracks/nope/saved-eq"),
+            ("DELETE", "/api/tracks/nope/saved-eq"),
+            ("DELETE", "/api/albums/nope/saved-eq"),
+        ] {
+            let (status, _) = send(app.clone(), call(method, uri.into(), &alice, None)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+        let (status, _) = send(
+            app.clone(),
+            call(
+                "PUT",
+                "/api/albums/nope/saved-eq".into(),
+                &alice,
+                Some(serde_json::json!({ "bands": bands(1.0) })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(
+            app,
+            Request::builder()
+                .uri(track_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

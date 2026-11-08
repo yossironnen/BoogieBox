@@ -1025,6 +1025,7 @@ pub fn update_album_metadata(
                 "UPDATE tracks SET album_id=? WHERE album_id=?",
                 rusqlite::params![conflict_id, album_id],
             )?;
+            crate::saved_eq::carry_album_curves(conn, album_id, &conflict_id)?;
             conn.execute("DELETE FROM albums WHERE id=?", rusqlite::params![album_id])?;
             Ok(Some(conflict_id))
         } else {
