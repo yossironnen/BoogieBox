@@ -5,7 +5,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ClientEntityId, Track, TrackWaveform, CrossfadeConfig, CrossfadeMode, QueueSource, SonicFingerprint } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
-import { api } from '../api';
+import { api, type SavedEqView } from '../api';
 import WaveformBar, { type WaveformBarStatus } from './WaveformBar';
 import SonicFingerprintPanel from './SonicFingerprintPanel';
 import VinylTurntable from './VinylTurntable';
@@ -18,7 +18,7 @@ import {
   type ParametricEqBand, type ParametricEqProfile,
   DEFAULT_PARAMETRIC_BANDS, BUILTIN_PARAMETRIC_PRESETS,
   isBuiltinParametricPresetName, parseStoredParametricBands, parseStoredParametricProfiles,
-  applyParametricEqToFilters,
+  applyParametricEqToFilters, normalizeParametricBand,
   mapGraphicProfileToParametricPreset, migrateGraphicGainsToParametricBands,
   migrateGraphicProfileToParametricProfile,
 } from '../audio/eq';
@@ -84,7 +84,12 @@ export interface PlayerEqControls {
   customProfiles: ParametricEqProfile[];
   autoEqEnabled: boolean;
   autoEqCurrentPreset: BuiltinEqProfileName;
+  /** "Use my saved EQ". */
+  savedEqEnabled: boolean;
+  /** Whose saved curve the song playing now uses, if any. */
+  savedEqScope: 'track' | 'album' | null;
   onAutoEqEnabledChange: (enabled: boolean) => void;
+  onSavedEqEnabledChange: (enabled: boolean) => void;
   onBandsChange: (bands: ParametricEqBand[]) => void;
   onProfileChange: (name: string, bands: ParametricEqBand[]) => void;
   onSaveProfile: (name: string, bands: ParametricEqBand[]) => Promise<string | null>;
@@ -337,8 +342,10 @@ export function shouldShowDockMeters(dockWidth: number): boolean {
 
 const WAVEFORM_POLL_INTERVAL_MS = 1400;
 const WAVEFORM_POLL_MAX_ATTEMPTS = 24;
-/** A curve for one playback slot, in place of the user's own EQ. */
+/** A curve for one playback slot, in place of the user's own EQ: Auto EQ's, or one the user saved. */
 interface SlotEq {
+  source: 'auto' | 'track' | 'album';
+  /** Auto EQ's preset; `Manual` for a saved curve. */
   preset: BuiltinEqProfileName;
   profile: string;
   bands: ParametricEqBand[];
@@ -347,11 +354,20 @@ interface SlotEq {
 function slotEqForPreset(preset: BuiltinEqProfileName): SlotEq {
   const profile = mapGraphicProfileToParametricPreset(preset);
   const bands = BUILTIN_PARAMETRIC_PRESETS[profile] ?? BUILTIN_PARAMETRIC_PRESETS.Manual;
-  return { preset, profile, bands: bands.map((band) => ({ ...band })) };
+  return { source: 'auto', preset, profile, bands: bands.map((band) => ({ ...band })) };
+}
+
+/** The saved curve a song plays with, or null when it has none the player can use. */
+function slotEqForSaved(view: SavedEqView | null | undefined): SlotEq | null {
+  if (!view?.scope || !Array.isArray(view.bands) || view.bands.length !== DEFAULT_PARAMETRIC_BANDS.length) return null;
+  const bands = view.bands.map((band, i) => normalizeParametricBand(band, DEFAULT_PARAMETRIC_BANDS[i]));
+  if (bands.some((band) => !band)) return null;
+  return { source: view.scope, preset: 'Manual', profile: 'Manual', bands: bands as ParametricEqBand[] };
 }
 
 const USER_EQ_SETTINGS_KEY = 'eqProfiles';
 const USER_AUTO_EQ_ENABLED_SETTINGS_KEY = 'autoEqEnabled';
+const USER_SAVED_EQ_ENABLED_SETTINGS_KEY = 'userSavedEqEnabled';
 const USER_EQ_SELECTED_PROFILE_SETTINGS_KEY = 'eqSelectedProfile';
 const USER_EQ_GAINS_SETTINGS_KEY = 'eqGains';
 const USER_VOLUME_SETTINGS_KEY = 'volume';
@@ -2041,8 +2057,11 @@ export default function Player({
   );
   const [eqOpen,      setEqOpen]      = useState(false);
   const [autoEqEnabled, setAutoEqEnabled] = useState(false);
-  // What Auto EQ chose for the song in the active slot. `parametricBands` is always the user's own EQ.
-  const [autoEqPlaying, setAutoEqPlaying] = useState<SlotEq | null>(null);
+  // "Use my saved EQ": off until the user turns it on (or, from phase 4, saves a first curve).
+  const [savedEqEnabled, setSavedEqEnabled] = useState(false);
+  // The curve the song in the active slot plays: Auto EQ's or a saved one. `parametricBands` is always the
+  // user's own EQ.
+  const [slotEqPlaying, setSlotEqPlaying] = useState<SlotEq | null>(null);
   const [parametricBands, setParametricBands] = useState<ParametricEqBand[]>(() => DEFAULT_PARAMETRIC_BANDS.map((b) => ({ ...b })));
   const [parametricProfile, setParametricProfile] = useState<string>('Manual');
   const [customParametricProfiles, setCustomParametricProfiles] = useState<ParametricEqProfile[]>([]);
@@ -2166,10 +2185,13 @@ export default function Player({
   const slotEqRef = useRef<Record<'A' | 'B', SlotEq | null>>({ A: null, B: null });
   const slotEqLookupRef = useRef<Record<'A' | 'B', number>>({ A: 0, B: 0 });
   const autoEqPresetCacheRef = useRef(new Map<string, BuiltinEqProfileName>());
+  const savedEqCacheRef = useRef(new Map<string, SavedEqView>());
   const userBandsRef = useRef(parametricBands);
   userBandsRef.current = parametricBands;
   const autoEqEnabledRef = useRef(autoEqEnabled);
   autoEqEnabledRef.current = autoEqEnabled;
+  const savedEqEnabledRef = useRef(savedEqEnabled);
+  savedEqEnabledRef.current = savedEqEnabled;
 
   const applySlotEq = useCallback((slot: 'A' | 'B') => {
     const filters = slot === 'A' ? eqParametricFiltersARef.current : eqParametricFiltersBRef.current;
@@ -2179,49 +2201,96 @@ export default function Player({
   }, []);
 
   const showActiveSlotEq = useCallback(() => {
-    setAutoEqPlaying(autoEqEnabledRef.current ? slotEqRef.current[activeSlotRef.current] : null);
+    const eq = slotEqRef.current[activeSlotRef.current];
+    const allowed = !!eq && (eq.source === 'auto' ? autoEqEnabledRef.current : savedEqEnabledRef.current);
+    setSlotEqPlaying(allowed ? eq : null);
   }, []);
 
   /**
-   * Chooses the curve for the song a slot is about to play. Until Auto EQ answers, the slot plays the user's own
-   * EQ, or with `keepCurrent` (asking again about the same song) keeps the curve it has.
+   * Chooses the curve for the song a slot is about to play, in this order: the curve saved for the song, the one
+   * saved for its album (both while "Use my saved EQ" is on), Auto EQ's (while on), the user's own EQ. Until the
+   * answers come the slot plays the user's own EQ, or with `keepCurrent` (asking again about the same song) keeps
+   * the curve it has. Answers are kept for the session.
    */
   const resolveSlotEq = useCallback((slot: 'A' | 'B', track: Track | null, keepCurrent = false) => {
     const lookup = ++slotEqLookupRef.current[slot];
+    const current = () => slotEqLookupRef.current[slot] === lookup;
     const settle = (eq: SlotEq | null) => {
       slotEqRef.current[slot] = eq;
       applySlotEq(slot);
       if (activeSlotRef.current === slot) showActiveSlotEq();
     };
-    if (!track || !autoEqEnabledRef.current || isRemoteRef.current || isSyntheticTrackId(track.id)
-      || typeof (api as any).trackEqProfile !== 'function') {
+    const useSaved = savedEqEnabledRef.current && typeof api.savedEq?.get === 'function';
+    const useAuto = autoEqEnabledRef.current && typeof (api as any).trackEqProfile === 'function';
+    if (!track || (!useSaved && !useAuto) || isRemoteRef.current || isSyntheticTrackId(track.id)) {
       settle(null);
       return;
     }
     const id = String(track.id);
-    const cached = autoEqPresetCacheRef.current.get(id);
-    if (cached) {
-      settle(slotEqForPreset(cached));
+
+    // `undefined`: an answer isn't cached yet.
+    const fromCache = (): SlotEq | null | undefined => {
+      if (useSaved) {
+        const view = savedEqCacheRef.current.get(id);
+        if (view === undefined) return undefined;
+        const saved = slotEqForSaved(view);
+        if (saved) return saved;
+      }
+      if (!useAuto) return null;
+      const preset = autoEqPresetCacheRef.current.get(id);
+      return preset ? slotEqForPreset(preset) : undefined;
+    };
+    const cached = fromCache();
+    if (cached !== undefined) {
+      settle(cached);
       return;
     }
     if (!keepCurrent) settle(null);
-    (api as any).trackEqProfile(track.id)
-      .then((result: any) => {
-        const name = result?.eqProfile as string;
-        // Flat rather than keeping another song's curve.
-        const preset: BuiltinEqProfileName = isBuiltinEqProfileName(name) ? name : 'Manual';
-        autoEqPresetCacheRef.current.set(id, preset);
-        if (slotEqLookupRef.current[slot] === lookup) settle(slotEqForPreset(preset));
-      })
-      .catch(() => {
-        if (slotEqLookupRef.current[slot] === lookup && !keepCurrent) settle(slotEqForPreset('Manual'));
-      });
+
+    void (async () => {
+      if (useSaved) {
+        let view = savedEqCacheRef.current.get(id);
+        if (view === undefined) {
+          try {
+            view = await api.savedEq.get(track.id);
+            if (view) savedEqCacheRef.current.set(id, view);
+          } catch {
+            // Not cached, so the next song change asks again. Meanwhile Auto EQ or the user's own EQ plays.
+          }
+          if (!current()) return;
+        }
+        const saved = slotEqForSaved(view);
+        if (saved) {
+          settle(saved);
+          return;
+        }
+      }
+      if (!useAuto) {
+        if (current()) settle(null);
+        return;
+      }
+      let preset = autoEqPresetCacheRef.current.get(id);
+      if (!preset) {
+        try {
+          const result = await (api as any).trackEqProfile(track.id);
+          const name = result?.eqProfile as string;
+          // Flat rather than keeping another song's curve.
+          preset = isBuiltinEqProfileName(name) ? name : 'Manual';
+          autoEqPresetCacheRef.current.set(id, preset);
+        } catch {
+          if (current() && !keepCurrent) settle(slotEqForPreset('Manual'));
+          return;
+        }
+      }
+      if (current()) settle(slotEqForPreset(preset));
+    })();
   }, [applySlotEq, showActiveSlotEq]);
 
   // A genre edit can change what Auto EQ picks: forget its answers and ask again for the songs in both slots.
   useEffect(() => {
     const onSaved = () => {
       autoEqPresetCacheRef.current.clear();
+      savedEqCacheRef.current.clear();
       resolveSlotEq('A', slotLoudnessRef.current.A.track, true);
       resolveSlotEq('B', slotLoudnessRef.current.B.track, true);
     };
@@ -2333,16 +2402,16 @@ export default function Player({
   const showWaveformProgress = waveformStatus === 'ready' || waveformStatus === 'loading' || waveformStatus === 'generating';
   const liveTrack = isLiveTrack(currentTrack);
 
-  // Auto EQ turned on or off, or playback moved to or from a speaker: both slots choose again.
+  // Auto EQ or saved EQ turned on or off, or playback moved to or from a speaker: both slots choose again.
   useEffect(() => {
     resolveSlotEq('A', slotLoudnessRef.current.A.track);
     resolveSlotEq('B', slotLoudnessRef.current.B.track);
-  }, [autoEqEnabled, isRemote, resolveSlotEq]);
+  }, [autoEqEnabled, savedEqEnabled, isRemote, resolveSlotEq]);
 
   // The active slot changes with the song; the panel follows it.
   useEffect(() => {
     showActiveSlotEq();
-  }, [autoEqEnabled, currentTrack?.id, playToken, showActiveSlotEq]);
+  }, [autoEqEnabled, savedEqEnabled, currentTrack?.id, playToken, showActiveSlotEq]);
 
   const seekToTime = useCallback((timeSeconds: number, commit: boolean) => {
     if (isVinylMode && vinylHardcore) {
@@ -2411,9 +2480,17 @@ export default function Player({
     setParametricBands(BUILTIN_PARAMETRIC_PRESETS.Manual.map((band) => ({ ...band })));
   }, [customParametricProfiles, persistCustomParametricProfiles]);
 
-  const autoEqCurrentPreset: BuiltinEqProfileName = autoEqPlaying?.preset ?? 'Manual';
-  const shownBands = autoEqPlaying?.bands ?? parametricBands;
-  const shownProfile = autoEqPlaying?.profile ?? parametricProfile;
+  const autoEqCurrentPreset: BuiltinEqProfileName = slotEqPlaying?.source === 'auto' ? slotEqPlaying.preset : 'Manual';
+  const savedEqScope = slotEqPlaying && slotEqPlaying.source !== 'auto' ? slotEqPlaying.source : null;
+  const shownBands = slotEqPlaying?.bands ?? parametricBands;
+  const shownProfile = slotEqPlaying?.profile ?? parametricProfile;
+
+  const changeSavedEqEnabled = useCallback((enabled: boolean) => {
+    setSavedEqEnabled(enabled);
+    if (canPersistUserEqProfiles) {
+      userSettingsApi!.update!({ [USER_SAVED_EQ_ENABLED_SETTINGS_KEY]: String(enabled) }).catch(() => {});
+    }
+  }, [canPersistUserEqProfiles, userSettingsApi]);
 
   const eqControls = useMemo<PlayerEqControls>(() => ({
     bands: shownBands,
@@ -2421,7 +2498,10 @@ export default function Player({
     customProfiles: customParametricProfiles,
     autoEqEnabled,
     autoEqCurrentPreset,
+    savedEqEnabled,
+    savedEqScope,
     onAutoEqEnabledChange: setAutoEqEnabled,
+    onSavedEqEnabledChange: changeSavedEqEnabled,
     onBandsChange: changeParametricBands,
     onProfileChange: changeParametricProfile,
     onSaveProfile: saveParametricProfile,
@@ -2430,6 +2510,9 @@ export default function Player({
     autoEqCurrentPreset,
     autoEqEnabled,
     changeParametricBands,
+    changeSavedEqEnabled,
+    savedEqEnabled,
+    savedEqScope,
     changeParametricProfile,
     customParametricProfiles,
     deleteParametricProfile,
@@ -2502,6 +2585,7 @@ export default function Player({
       } else {
         setAutoEqEnabled(false);
       }
+      setSavedEqEnabled(settings[USER_SAVED_EQ_ENABLED_SETTINGS_KEY] === 'true');
       const storedVolume = parseStoredVolume(settings[USER_VOLUME_SETTINGS_KEY]);
       if (storedVolume != null) {
         setVolume(storedVolume);
@@ -2518,6 +2602,7 @@ export default function Player({
       if (cancelled) return;
       setCustomParametricProfiles([]);
       setAutoEqEnabled(false);
+      setSavedEqEnabled(false);
       setVolume(0.5);
       setMuted(false);
       autoEqLoadedRef.current = true;

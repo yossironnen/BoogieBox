@@ -4,6 +4,7 @@
  */
 
 import type { TrackLoudness } from './audio/loudness';
+import type { ParametricEqBand } from './audio/eq';
 import type {
   BackupHealth,
   LoudnessStatus,
@@ -386,6 +387,15 @@ export function encodeLibraryIdsParam(libraryIds?: ApiEntityId[]): string | unde
   return cleaned.length ? cleaned.join(',') : undefined;
 }
 
+/** A saved EQ curve as the server answers for one song. */
+export interface SavedEqView {
+  scope: 'track' | 'album' | null;
+  bands: ParametricEqBand[] | null;
+  hasTrack: boolean;
+  hasAlbum: boolean;
+  albumId: string | null;
+}
+
 /** Passes a metadata save's answer through after telling the app the tags changed. */
 function savedMetadata<T>(result: T): T {
   announceMetadataSaved();
@@ -547,6 +557,16 @@ export const api = {
   setTrackRating: (id: ApiEntityId, rating: number | null) =>
     patch<{ ok: boolean; rating: number | null }>(`/tracks/${id}/rating`, { rating }),
   trackEqProfile: (id: ApiEntityId) => get<{ eqProfile: 'Manual' | 'Rock' | 'Metal' | 'Pop' | 'Punk' | 'Electronic' | 'Club' | 'Hip-Hop' | 'Soul' | 'Acoustic' | 'Atmosphere' | 'Classical' | 'Vintage'; source: string }>(`/tracks/${id}/eq-profile`),
+  /** The signed-in user's saved EQ: for the song, else its album (`wip/saved-eq-plan.md`). */
+  savedEq: {
+    get: (trackId: ApiEntityId) => get<SavedEqView>(`/tracks/${trackId}/saved-eq`),
+    saveForTrack: (trackId: ApiEntityId, bands: ParametricEqBand[]) =>
+      put<{ ok: boolean }>(`/tracks/${trackId}/saved-eq`, { bands }),
+    removeForTrack: (trackId: ApiEntityId) => del<{ ok: boolean }>(`/tracks/${trackId}/saved-eq`),
+    saveForAlbum: (albumId: ApiEntityId, bands: ParametricEqBand[]) =>
+      put<{ ok: boolean }>(`/albums/${albumId}/saved-eq`, { bands }),
+    removeForAlbum: (albumId: ApiEntityId) => del<{ ok: boolean }>(`/albums/${albumId}/saved-eq`),
+  },
   trackLyrics: (id: ApiEntityId) => get<{
     lyrics: string;
     source: 'cache' | 'lrclib' | 'lyrics.ovh';

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, setStreamDirect } from '../api';
-import { BUILTIN_PARAMETRIC_PRESETS } from '../audio/eq';
+import { BUILTIN_PARAMETRIC_PRESETS, DEFAULT_PARAMETRIC_BANDS } from '../audio/eq';
 import { announceMetadataSaved } from '../metadataEvents';
 import type { Track } from '../types';
 import Player, { type PlayerState } from './Player';
@@ -164,6 +164,7 @@ describe('Player comprehensive behavior', () => {
     vi.spyOn(api.playlists, 'saveTrackProgress').mockResolvedValue({ ok: true });
     vi.spyOn(api, 'trackLyrics').mockResolvedValue({ lyrics: '', source: 'cache', synced: [] });
     vi.spyOn(api, 'trackEqProfile').mockResolvedValue({ eqProfile: 'Rock', source: 'genre' });
+    vi.spyOn(api.savedEq, 'get').mockResolvedValue({ scope: null, bands: null, hasTrack: false, hasAlbum: false, albumId: 'al1' });
     vi.spyOn(api.auth, 'sessionValid').mockResolvedValue(true);
   });
 
@@ -483,6 +484,124 @@ describe('Player comprehensive behavior', () => {
         expect.objectContaining({ autoEqCurrentPreset: 'Electronic' }),
       ));
     });
+  });
+
+  describe('saved EQ (song, then album, then Auto EQ, then my own)', () => {
+    /** The default curve with band 2 at `gain` dB, as the server would answer it. */
+    const curve = (gain: number) => DEFAULT_PARAMETRIC_BANDS.map((band, i) => ({ ...band, gainDb: i === 1 ? gain : 0 }));
+    const view = (scope: 'track' | 'album' | null, gain = 0) => ({
+      scope, bands: scope ? curve(gain) : null, hasTrack: scope === 'track', hasAlbum: scope === 'album', albumId: 'al1',
+    });
+    const playing = (over: Partial<PlayerState> = {}): PlayerState => ({
+      queue: [track('1'), track('2'), track('3')], currentIndex: 0, isPlaying: false, playToken: 1,
+      queueSource: { type: 'playlist', id: 'playlist-1' } as any, ...over,
+    });
+    const lastControls = (spy: ReturnType<typeof vi.fn>) => spy.mock.calls[spy.mock.calls.length - 1][0];
+    const savedFor = (answers: Record<string, ReturnType<typeof view> | Error | Promise<unknown>>) =>
+      vi.mocked(api.savedEq.get).mockImplementation(((id: string) => {
+        const answer = answers[id] ?? view(null);
+        return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+      }) as any);
+
+    beforeEach(() => {
+      delete (window as any).AudioContext;
+      setStreamDirect(true);
+    });
+
+    it('plays the song\'s curve, else the album\'s, else Auto EQ\'s, else my own', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true', userSavedEqEnabled: 'true' });
+      savedFor({ 1: view('track', 5), 2: view('album', 3) });
+      vi.mocked(api.trackEqProfile).mockResolvedValue({ eqProfile: 'Pop', source: 'track_tags' });
+      const onEqControlsChange = vi.fn();
+      const props = { onStateChange: vi.fn(), ffmpegAvailable: true, onEqControlsChange };
+      const { rerender } = render(<Player state={playing()} {...props} />);
+
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqEnabled: true, savedEqScope: 'track' }));
+      expect(lastControls(onEqControlsChange).bands[1].gainDb).toBe(5);
+      expect(lastControls(onEqControlsChange).autoEqCurrentPreset).toBe('Manual');
+
+      rerender(<Player state={playing({ currentIndex: 1, playToken: 2 })} {...props} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqScope: 'album' }));
+      expect(lastControls(onEqControlsChange).bands[1].gainDb).toBe(3);
+
+      rerender(<Player state={playing({ currentIndex: 2, playToken: 3 })} {...props} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqScope: null, autoEqCurrentPreset: 'Pop' }));
+
+      // Auto EQ off: the song without a saved curve plays my own EQ.
+      act(() => lastControls(onEqControlsChange).onAutoEqEnabledChange(false));
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({
+        autoEqEnabled: false, savedEqScope: null, autoEqCurrentPreset: 'Manual', profile: 'Manual',
+      }));
+      expect(lastControls(onEqControlsChange).bands[1].gainDb).toBe(0);
+    });
+
+    it('never asks for saved curves while the switch is off, and the switch is saved when turned on', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true' });
+      savedFor({ 1: view('track', 5) });
+      byTrackPreset({ 1: 'Pop' });
+      const onEqControlsChange = vi.fn();
+      render(<Player state={playing()} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ autoEqCurrentPreset: 'Pop', savedEqEnabled: false }));
+      expect(api.savedEq.get).not.toHaveBeenCalled();
+
+      act(() => lastControls(onEqControlsChange).onSavedEqEnabledChange(true));
+      expect(api.userSettings.update).toHaveBeenCalledWith({ userSavedEqEnabled: 'true' });
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqEnabled: true, savedEqScope: 'track' }));
+
+      act(() => lastControls(onEqControlsChange).onSavedEqEnabledChange(false));
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqScope: null, autoEqCurrentPreset: 'Pop' }));
+    });
+
+    it('ignores a saved answer that comes after the slot moved on', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true', userSavedEqEnabled: 'true' });
+      let lateAnswer: (value: unknown) => void = () => {};
+      vi.mocked(api.savedEq.get).mockImplementation(((id: string) => (
+        id === '1' ? new Promise(resolve => { lateAnswer = resolve; }) : Promise.resolve(view(null))
+      )) as any);
+      byTrackPreset({ 1: 'Pop', 2: 'Hip-Hop' });
+      const onEqControlsChange = vi.fn();
+      const props = { onStateChange: vi.fn(), ffmpegAvailable: true, onEqControlsChange };
+      const { rerender } = render(<Player state={playing()} {...props} />);
+      await waitFor(() => expect(api.savedEq.get).toHaveBeenCalledWith('1'));
+
+      rerender(<Player state={playing({ currentIndex: 1, playToken: 2 })} {...props} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ autoEqCurrentPreset: 'Hip-Hop' }));
+      await act(async () => { lateAnswer(view('track', 5)); });
+      expect(lastControls(onEqControlsChange)).toMatchObject({ autoEqCurrentPreset: 'Hip-Hop', savedEqScope: null });
+    });
+
+    it('falls back to Auto EQ when the saved lookup fails, and asks again next time', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true', userSavedEqEnabled: 'true' });
+      savedFor({ 1: new Error('offline') });
+      byTrackPreset({ 1: 'Pop' });
+      const onEqControlsChange = vi.fn();
+      const props = { onStateChange: vi.fn(), ffmpegAvailable: true, onEqControlsChange };
+      const one = (over: Partial<PlayerState>) => playing({ queue: [track('1')], ...over });
+      const { rerender } = render(<Player state={one({})} {...props} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ autoEqCurrentPreset: 'Pop', savedEqScope: null }));
+      const asked = vi.mocked(api.savedEq.get).mock.calls.length;
+
+      savedFor({ 1: view('track', 5) });
+      rerender(<Player state={one({ playToken: 2 })} {...props} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqScope: 'track' }));
+      expect(vi.mocked(api.savedEq.get).mock.calls.length).toBeGreaterThan(asked);
+    });
+
+    it('uses my own EQ for mixes without asking', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ userSavedEqEnabled: 'true' });
+      const onEqControlsChange = vi.fn();
+      render(<Player state={playing({ queue: [track('boogiemix:7')] })} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqEnabled: true }));
+      await act(async () => { await Promise.resolve(); });
+      expect(api.savedEq.get).not.toHaveBeenCalled();
+      expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqScope: null, profile: 'Manual' });
+    });
+
+    function byTrackPreset(presets: Record<string, string>) {
+      vi.mocked(api.trackEqProfile).mockImplementation(((id: string) => (
+        Promise.resolve({ eqProfile: presets[id], source: 'track_tags' })
+      )) as any);
+    }
   });
 
   it('covers transport, queue, settings, seek, lyrics, fingerprint, and audio error paths', async () => {
