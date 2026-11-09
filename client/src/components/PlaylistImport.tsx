@@ -3,7 +3,7 @@
  * the desktop dialog, and the "Playlist imported" toast.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { PathRemap, Playlist, PlaylistImportPreview, PlaylistImportRemap } from '../types';
 import {
@@ -414,7 +414,7 @@ export function PlaylistImportDialog({ file, onClose, onImported }: {
   const state = usePlaylistImport(file);
   const closeRef = useRef<HTMLButtonElement>(null);
   const busyRef = useRef(state.busy);
-  useEffect(() => { busyRef.current = state.busy; }, [state.busy]);
+  useLayoutEffect(() => { busyRef.current = state.busy; }, [state.busy]);
 
   useEffect(() => {
     const trigger = document.activeElement as HTMLElement | null;
