@@ -597,6 +597,119 @@ describe('Player comprehensive behavior', () => {
       expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqScope: null, profile: 'Manual' });
     });
 
+    /** A server whose saved curves change as the player saves and removes them. */
+    function savedEqServer(start: Record<string, ReturnType<typeof view>>) {
+      const views = { ...start };
+      vi.mocked(api.savedEq.get).mockImplementation(((id: string) => Promise.resolve(views[id] ?? view(null))) as any);
+      const saveForTrack = vi.spyOn(api.savedEq, 'saveForTrack').mockImplementation((async (id: string, bands: any) => {
+        const prev = views[id] ?? view(null);
+        views[id] = { ...prev, scope: 'track', bands, hasTrack: true };
+        return { ok: true };
+      }) as any);
+      const saveForAlbum = vi.spyOn(api.savedEq, 'saveForAlbum').mockResolvedValue({ ok: true });
+      const removeForTrack = vi.spyOn(api.savedEq, 'removeForTrack').mockImplementation((async (id: string) => {
+        const prev = views[id] ?? view(null);
+        views[id] = prev.hasAlbum ? { ...view('album', 3), hasAlbum: true } : view(null);
+        return { ok: true };
+      }) as any);
+      return { views, saveForTrack, saveForAlbum, removeForTrack };
+    }
+
+    it('the first save turns the switch on; edits then change only what plays (D4, D5, D8)', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ autoEqEnabled: 'true' });
+      byTrackPreset({ 1: 'Pop' });
+      const server = savedEqServer({});
+      const onEqControlsChange = vi.fn();
+      render(<Player state={playing()} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />);
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({ autoEqCurrentPreset: 'Pop', locked: true }));
+
+      // The panel learns about the song's curves even with the switch off.
+      let stop = () => {};
+      act(() => { stop = lastControls(onEqControlsChange).watchSavedEq(); });
+      await waitFor(() => expect(api.savedEq.get).toHaveBeenCalledWith('1'));
+      expect(lastControls(onEqControlsChange).savedEq).toMatchObject({ hasTrack: false, canSave: true, canSaveAlbum: true, edited: false });
+
+      // Saving the curve Auto EQ chose, as it stands.
+      const autoBands = lastControls(onEqControlsChange).bands;
+      let ok = false;
+      await act(async () => { ok = await lastControls(onEqControlsChange).onSaveSavedEq('track'); });
+      expect(ok).toBe(true);
+      expect(server.saveForTrack).toHaveBeenCalledWith('1', autoBands);
+      expect(api.userSettings.update).toHaveBeenCalledWith({ userSavedEqEnabled: 'true' });
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({
+        savedEqEnabled: true, savedEqScope: 'track', locked: false, savedEq: { hasTrack: true, edited: false },
+      }));
+
+      // An edit changes what plays now, never my own EQ.
+      vi.mocked(api.userSettings.update).mockClear();
+      const edited = lastControls(onEqControlsChange).bands.map((band: any, i: number) => (i === 1 ? { ...band, gainDb: 4 } : band));
+      act(() => lastControls(onEqControlsChange).onBandsChange(edited));
+      await waitFor(() => expect(lastControls(onEqControlsChange).savedEq.edited).toBe(true));
+      expect(lastControls(onEqControlsChange).bands[1].gainDb).toBe(4);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      for (const [updates] of vi.mocked(api.userSettings.update).mock.calls) {
+        expect(updates).not.toHaveProperty('parametricEqBands');
+      }
+
+      // Save keeps it.
+      await act(async () => { await lastControls(onEqControlsChange).onSaveSavedEq('track'); });
+      expect(server.saveForTrack).toHaveBeenLastCalledWith('1', edited);
+      await waitFor(() => expect(lastControls(onEqControlsChange).savedEq.edited).toBe(false));
+      expect(lastControls(onEqControlsChange).bands[1].gainDb).toBe(4);
+      act(() => stop());
+    });
+
+    it('a save leaves the switch off once the user turned it off, and a failed save changes nothing', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ userSavedEqEnabled: 'false' });
+      const server = savedEqServer({});
+      const onEqControlsChange = vi.fn();
+      render(<Player state={playing()} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />);
+      act(() => { lastControls(onEqControlsChange).watchSavedEq(); });
+      await waitFor(() => expect(api.savedEq.get).toHaveBeenCalledWith('1'));
+
+      server.saveForTrack.mockRejectedValueOnce(new Error('offline'));
+      let ok = true;
+      await act(async () => { ok = await lastControls(onEqControlsChange).onSaveSavedEq('track'); });
+      expect(ok).toBe(false);
+      expect(lastControls(onEqControlsChange).savedEq.hasTrack).toBe(false);
+
+      await act(async () => { ok = await lastControls(onEqControlsChange).onSaveSavedEq('album'); });
+      expect(ok).toBe(true);
+      expect(server.saveForAlbum).toHaveBeenCalledWith('al1', expect.any(Array));
+      expect(api.userSettings.update).not.toHaveBeenCalledWith({ userSavedEqEnabled: 'true' });
+      expect(lastControls(onEqControlsChange)).toMatchObject({ savedEqEnabled: false, savedEqScope: null });
+    });
+
+    it('removing the song\'s curve goes back to the album\'s', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ userSavedEqEnabled: 'true' });
+      const server = savedEqServer({ 1: { ...view('track', 5), hasAlbum: true } });
+      const onEqControlsChange = vi.fn();
+      render(<Player state={playing()} onStateChange={vi.fn()} ffmpegAvailable onEqControlsChange={onEqControlsChange} />);
+      act(() => { lastControls(onEqControlsChange).watchSavedEq(); });
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({
+        savedEqScope: 'track', savedEq: { hasTrack: true, hasAlbum: true },
+      }));
+
+      await act(async () => { await lastControls(onEqControlsChange).onRemoveSavedEq('track'); });
+      expect(server.removeForTrack).toHaveBeenCalledWith('1');
+      await waitFor(() => expect(lastControls(onEqControlsChange)).toMatchObject({
+        savedEqScope: 'album', savedEq: { hasTrack: false, hasAlbum: true },
+      }));
+      expect(lastControls(onEqControlsChange).bands[1].gainDb).toBe(3);
+    });
+
+    it('shows the saved EQ block in the desktop Equalizer', async () => {
+      vi.mocked(api.userSettings.get).mockResolvedValue({ userSavedEqEnabled: 'true' });
+      savedEqServer({ 1: view('track', 5) });
+      render(<Player state={playing()} onStateChange={vi.fn()} ffmpegAvailable />);
+      fireEvent.click(screen.getByRole('button', { name: 'Equalizer' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Equalizer' });
+      await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Using the EQ saved for this song'));
+      expect(within(dialog).getByRole('checkbox', { name: 'Use my saved EQ' })).toBeChecked();
+      expect(within(dialog).getByRole('button', { name: 'Remove from this song' })).toBeInTheDocument();
+      expect(within(dialog).getByRole('combobox', { name: 'EQ profile' })).not.toBeDisabled();
+    });
+
     function byTrackPreset(presets: Record<string, string>) {
       vi.mocked(api.trackEqProfile).mockImplementation(((id: string) => (
         Promise.resolve({ eqProfile: presets[id], source: 'track_tags' })

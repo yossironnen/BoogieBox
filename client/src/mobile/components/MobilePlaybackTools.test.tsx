@@ -30,6 +30,11 @@ function eqControls(): PlayerEqControls {
     savedEqEnabled: false,
     savedEqScope: null,
     onSavedEqEnabledChange: vi.fn(),
+    locked: false,
+    savedEq: { hasTrack: false, hasAlbum: false, edited: false, canSave: true, canSaveAlbum: true, browserOnly: false },
+    onSaveSavedEq: vi.fn(async () => true),
+    onRemoveSavedEq: vi.fn(async () => true),
+    watchSavedEq: vi.fn(() => () => {}),
     onAutoEqEnabledChange: vi.fn(),
     onBandsChange: vi.fn(),
     onProfileChange: vi.fn(),
@@ -57,6 +62,11 @@ describe('MobilePlaybackTools', () => {
       BUILTIN_PARAMETRIC_PRESETS.Warm,
     );
     expect(screen.getByRole('button', { name: /Band 1/i })).toHaveStyle({ minHeight: '58px' });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Use my saved EQ' }));
+    expect(controls.onSavedEqEnabledChange).toHaveBeenCalledWith(true);
+    expect(screen.getByRole('button', { name: 'Save for this song' })).toHaveStyle({ minHeight: '44px' });
+    expect(controls.watchSavedEq).toHaveBeenCalled();
   });
 
   it('shows a useful Equalizer loading state before the player bridge is ready', () => {

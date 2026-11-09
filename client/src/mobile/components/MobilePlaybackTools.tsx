@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import ParametricEqEditor from '../../components/ParametricEqEditor';
+import SavedEqPanel from '../../components/SavedEqPanel';
 import type { PlaybackSnapshot, PlayerEqControls } from '../../components/Player';
 import VinylTurntable from '../../components/VinylTurntable';
 import { hybridMobileContentStyles } from '../../hybridPreview';
@@ -74,9 +75,9 @@ export function MobileEqualizerSheet({
           <span>
             <span style={S.controlTitle}>Auto EQ</span>
             <span style={S.controlMeta}>
-              {controls?.autoEqEnabled
-                ? `Active · ${controls.autoEqCurrentPreset}`
-                : 'Choose a profile manually'}
+              {!controls?.autoEqEnabled
+                ? 'Choose a profile manually'
+                : controls.locked ? `Active · ${controls.autoEqCurrentPreset}` : 'Active'}
             </span>
           </span>
           <input
@@ -89,12 +90,14 @@ export function MobileEqualizerSheet({
         </label>
       </div>
 
+      {controls ? <SavedEqPanel controls={controls} mobile /> : null}
+
       {controls ? (
         <ParametricEqEditor
           bands={controls.bands}
           profile={controls.profile}
           customProfiles={controls.customProfiles}
-          autoEqEnabled={controls.autoEqEnabled}
+          locked={controls.locked}
           newProfileName={newProfileName}
           accentColor="var(--accent)"
           onBandsChange={controls.onBandsChange}

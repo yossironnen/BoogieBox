@@ -17,7 +17,7 @@ describe('ParametricEqEditor', () => {
         bands={DEFAULT_PARAMETRIC_BANDS}
         profile="Manual"
         customProfiles={custom}
-        autoEqEnabled={false}
+        locked={false}
         newProfileName=""
         accentColor="#fff"
         onBandsChange={onBandsChange}
@@ -52,7 +52,7 @@ describe('ParametricEqEditor', () => {
       bands: DEFAULT_PARAMETRIC_BANDS,
       profile: 'My Curve',
       customProfiles: [{ name: 'My Curve', bands: DEFAULT_PARAMETRIC_BANDS }],
-      autoEqEnabled: false,
+      locked: false,
       newProfileName: ' My Curve ',
       accentColor: '#fff',
       onBandsChange: vi.fn(),
@@ -71,7 +71,7 @@ describe('ParametricEqEditor', () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith('My Curve'));
     expect(screen.getByText('Profile deleted.')).toBeInTheDocument();
 
-    rerender(<ParametricEqEditor {...props} profile="Manual" autoEqEnabled />);
+    rerender(<ParametricEqEditor {...props} profile="Manual" locked />);
     expect(screen.getByPlaceholderText('Save as...')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
     expect(screen.getByRole('slider', { name: 'Band 1 gain' })).toBeDisabled();

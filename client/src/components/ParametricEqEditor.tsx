@@ -80,7 +80,8 @@ export interface ParametricEqEditorProps {
   bands: ParametricEqBand[];
   profile: string;
   customProfiles: ParametricEqProfile[];
-  autoEqEnabled: boolean;
+  /** Auto EQ decides the curve: the profile and band controls are read-only. */
+  locked: boolean;
   newProfileName: string;
   accentColor: string;
   onBandsChange: (bands: ParametricEqBand[]) => void;
@@ -96,7 +97,7 @@ export default function ParametricEqEditor({
   bands,
   profile,
   customProfiles,
-  autoEqEnabled,
+  locked,
   newProfileName,
   accentColor,
   onBandsChange,
@@ -113,8 +114,8 @@ export default function ParametricEqEditor({
   const isCustomProfile = !isBuiltinParametricPresetName(profile);
 
   const updateBand = (index: number, updates: Partial<ParametricEqBand>) => {
-    // Auto EQ decides the curve while it's on. The graph can still select a band, as the other controls can.
-    if (autoEqEnabled) return;
+    // Locked while Auto EQ decides the curve. The graph can still select a band, as the other controls can.
+    if (locked) return;
     const next = bands.map((b, i) => (i === index ? { ...b, ...updates } : b));
     onBandsChange(next);
   };
@@ -148,7 +149,7 @@ export default function ParametricEqEditor({
           aria-label="EQ profile"
           style={{ ...STYLE.select, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
           value={profile}
-          disabled={autoEqEnabled}
+          disabled={locked}
           onChange={(e) => handleProfileSelect(e.currentTarget.value)}
         >
           {BUILTIN_PARAMETRIC_PRESET_NAMES.map((n) => (
@@ -160,7 +161,7 @@ export default function ParametricEqEditor({
         </select>
         <button
           style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
-          disabled={autoEqEnabled || !isCustomProfile}
+          disabled={locked || !isCustomProfile}
           onClick={handleDelete}
           title="Delete selected custom profile"
         >Delete</button>
@@ -173,12 +174,12 @@ export default function ParametricEqEditor({
           style={{ ...STYLE.input, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
           placeholder="Save as..."
           value={newProfileName}
-          disabled={autoEqEnabled}
+          disabled={locked}
           onChange={(e) => { onNewProfileNameChange(e.currentTarget.value); setStatus(null); }}
         />
         <button
           style={{ ...STYLE.btn, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
-          disabled={autoEqEnabled}
+          disabled={locked}
           onClick={handleSave}
         >
           Save
@@ -239,7 +240,7 @@ export default function ParametricEqEditor({
               aria-label={`Band ${selectedBandIndex + 1} type`}
               style={{ ...STYLE.smallSelect, ...(mobile ? { minHeight: 44, fontSize: 14 } : null) }}
               value={selectedBand.type}
-              disabled={autoEqEnabled}
+              disabled={locked}
               onChange={(e) => updateBand(selectedBandIndex, { type: e.currentTarget.value as ParametricEqBandType })}
             >
               {BAND_TYPES.map(({ value, label }) => (
@@ -250,7 +251,7 @@ export default function ParametricEqEditor({
               <input
                 type="checkbox"
                 checked={selectedBand.enabled}
-                disabled={autoEqEnabled}
+                disabled={locked}
                 onChange={(e) => updateBand(selectedBandIndex, { enabled: e.currentTarget.checked })}
               />
               Enabled
@@ -267,7 +268,7 @@ export default function ParametricEqEditor({
               max={PARAMETRIC_FREQ_MAX}
               step={1}
               value={Math.round(selectedBand.frequencyHz)}
-              disabled={autoEqEnabled}
+              disabled={locked}
               onChange={(e) => {
                 const v = Number(e.currentTarget.value);
                 if (Number.isFinite(v)) updateBand(selectedBandIndex, { frequencyHz: clampFreq(v) });
@@ -284,7 +285,7 @@ export default function ParametricEqEditor({
               max={PARAMETRIC_Q_MAX}
               step={0.1}
               value={selectedBand.q.toFixed(1)}
-              disabled={autoEqEnabled}
+              disabled={locked}
               onChange={(e) => {
                 const v = Number(e.currentTarget.value);
                 if (Number.isFinite(v)) updateBand(selectedBandIndex, { q: clampQ(v) });
@@ -306,7 +307,7 @@ export default function ParametricEqEditor({
               max={PARAMETRIC_DB_MAX}
               step={0.5}
               value={selectedBand.gainDb.toFixed(1)}
-              disabled={autoEqEnabled || !hasGain}
+              disabled={locked || !hasGain}
               onChange={(e) => {
                 const v = Number(e.currentTarget.value);
                 if (Number.isFinite(v)) updateBand(selectedBandIndex, { gainDb: clampDb(v) });
@@ -319,7 +320,7 @@ export default function ParametricEqEditor({
               max={PARAMETRIC_DB_MAX}
               step={0.5}
               value={selectedBand.gainDb}
-              disabled={autoEqEnabled || !hasGain}
+              disabled={locked || !hasGain}
               style={{ flex: 1, opacity: hasGain ? 1 : 0.4, accentColor }}
               onChange={(e) => updateBand(selectedBandIndex, { gainDb: clampDb(Number(e.currentTarget.value)) })}
               aria-label={`Band ${selectedBandIndex + 1} gain`}
