@@ -127,7 +127,8 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 - Sonic Fingerprint panel showing per-stem energy, vocal/drum/bass presence, and transition windows from deep analysis
 - Synchronized lyrics and karaoke mode
 - Vinyl Mode for a classic turntable-inspired experience
-- 7-band parametric EQ with presets, custom profiles, and automatic artist-based EQ matching
+- 7-band parametric EQ with presets, custom profiles, and Auto EQ that picks a curve from the genre
+- Save an EQ for a song or an album; with "Use my saved EQ" on, the player switches to it as the track starts (per user, in the web player)
 
 ### 🌌 Discover More Music
 
