@@ -209,6 +209,8 @@ test.describe('390 px phone', () => {
       return [...past, ...sideways]
     })
     expect(clipped).toEqual([])
+    await expect(sheet.getByRole('checkbox', { name: 'Use my saved EQ' })).toBeVisible()
+    await expect(sheet.getByRole('button', { name: 'Save for this song' })).toBeEnabled()
     await sheet.getByRole('group', { name: 'EQ bands' }).getByRole('button', { name: /^Band 2 / }).click()
     for (const control of [
       sheet.getByRole('spinbutton', { name: 'Band 2 Q' }),

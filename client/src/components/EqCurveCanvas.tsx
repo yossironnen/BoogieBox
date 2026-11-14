@@ -275,7 +275,8 @@ export default function EqCurveCanvas({
     const logRange = logMax - logMin;
     const innerW = w - MARGIN.left - MARGIN.right;
     const logDelta = (dx / innerW) * logRange;
-    const newFreq = clampFreq(Math.pow(10, Math.log10(drag.startFreq) + logDelta));
+    // Whole Hz, like the frequency field: the log round trip leaves float noise (120 -> 119.99999999999996).
+    const newFreq = clampFreq(Math.round(Math.pow(10, Math.log10(drag.startFreq) + logDelta)));
 
     // Vertical → gain
     const band = bands[drag.bandIndex];

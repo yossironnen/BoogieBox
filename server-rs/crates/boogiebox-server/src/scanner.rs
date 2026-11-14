@@ -771,7 +771,8 @@ fn read_ogg_technical(path: &Path) -> Option<AudioTechnical> {
         let ch = h[9] as i64;
         // Opus duration granule is always 48000 Hz
         (48000i64, ch, None)
-    } else if let Some(off) = find_bytes(&buf, b"\x01vorbis") {
+    } else {
+        let off = find_bytes(&buf, b"\x01vorbis")?;
         // Vorbis identification header: type(1)+magic(6)+version(4)+channels(1)+sr(4)+max_br(4)+nom_br(4)
         let h = &buf[off + 7..];
         if h.len() < 17 {
@@ -787,8 +788,6 @@ fn read_ogg_technical(path: &Path) -> Option<AudioTechnical> {
             None
         };
         (sr, ch, br)
-    } else {
-        return None;
     };
 
     let duration = read_ogg_last_granule(path, sample_rate_for_dur);
@@ -1417,8 +1416,9 @@ fn parse_mp4_number_atom(payload: &[u8]) -> Option<i64> {
 
 fn parse_mp4_pair_atom(payload: &[u8]) -> Option<i64> {
     let data = find_mp4_data_payload(payload)?;
+    // `trkn` is 8 bytes (pad, number, total, pad) and `disk` 6 (pad, number, total): the number is always bytes 2..4.
     if data.len() >= 4 {
-        let current = u16::from_be_bytes([data[data.len() - 4], data[data.len() - 3]]);
+        let current = u16::from_be_bytes([data[2], data[3]]);
         if current > 0 {
             return Some(i64::from(current));
         }
@@ -1507,7 +1507,9 @@ fn decode_utf16(payload: &[u8], allow_bom: bool) -> String {
         false
     };
     let units = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| {
             if little_endian {
                 u16::from_le_bytes([chunk[0], chunk[1]])
@@ -1694,6 +1696,22 @@ mod tests {
 
         assert_eq!(tags.title.as_deref(), Some("Song"));
         assert_eq!(tags.track_number, Some(5));
+    }
+
+    #[test]
+    fn mp4_track_and_disc_numbers_read_the_number_not_the_total() {
+        // iTunes and FFmpeg write `trkn` as 8 bytes (pad, number, total, pad) and `disk` as 6.
+        let trkn = mp4_atom(b"trkn", &mp4_data_atom(&[0, 0, 0, 1, 0, 2, 0, 0]));
+        let disk = mp4_atom(b"disk", &mp4_data_atom(&[0, 0, 0, 2, 0, 3]));
+        let mut ilst_payload = Vec::new();
+        ilst_payload.extend_from_slice(&trkn);
+        ilst_payload.extend_from_slice(&disk);
+        let ilst = mp4_atom(b"ilst", &ilst_payload);
+
+        let tags = parse_mp4_atoms(&ilst, 0);
+
+        assert_eq!(tags.track_number, Some(1));
+        assert_eq!(tags.disc_number, Some(2));
     }
 
     fn mp4_atom(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {

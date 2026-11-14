@@ -196,12 +196,23 @@ struct FollowerSlot;
 
 impl FollowerSlot {
     fn take() -> Option<Self> {
-        FOLLOWERS
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < MAX_FOLLOWERS).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| FollowerSlot)
+        // A compare-exchange loop rather than `fetch_update`: newer Rust deprecates it, and its
+        // replacement `try_update` is missing from the older toolchains we still build with.
+        let mut current = FOLLOWERS.load(Ordering::SeqCst);
+        loop {
+            if current >= MAX_FOLLOWERS {
+                return None;
+            }
+            match FOLLOWERS.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Some(FollowerSlot),
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 

@@ -75,11 +75,15 @@ describe('EqCurveCanvas', () => {
 
     fireEvent.pointerDown(canvas, { clientX: 158, clientY: 74, pointerId: 7 });
     expect(onSelectBand).toHaveBeenCalledWith(0);
+    // A purely vertical drag keeps the frequency exactly (no log round-trip float noise).
+    fireEvent.pointerMove(canvas, { clientX: 158, clientY: 54, pointerId: 7 });
+    expect(onChange).toHaveBeenLastCalledWith(0, { frequencyHz: 120, gainDb: expect.any(Number) });
     fireEvent.pointerMove(canvas, { clientX: 208, clientY: 54, pointerId: 7 });
     expect(onChange).toHaveBeenCalledWith(0, {
       frequencyHz: expect.any(Number),
       gainDb: expect.any(Number),
     });
+    expect(Number.isInteger(onChange.mock.lastCall![1].frequencyHz)).toBe(true);
     fireEvent.pointerUp(canvas, { pointerId: 7 });
     expect(releasePointerCapture).toHaveBeenCalled();
 

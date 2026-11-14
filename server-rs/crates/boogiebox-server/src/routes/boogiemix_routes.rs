@@ -614,6 +614,8 @@ async fn delete_output_handler(
 /// Settings, even though the file is untouched at the path the DB recorded.
 /// Both callers already treat a genuinely missing file as 404 on open, which
 /// is the actual failure mode that matters here.
+// `Response` is the early-return error here (axum idiom, cold path); boxing it buys nothing.
+#[allow(clippy::result_large_err)]
 async fn resolve_output_for_serving(
     db: &DbPool,
     output_id_raw: &str,

@@ -85,6 +85,7 @@ keeps them; `remove-missing-tracks` is the explicit way to delete them.
 | `GET` | `/api/tracks/{id}/stream` | Stream or transcode a track (requires a session). |
 | `GET` | `/api/tracks/{id}/waveform` | Fetch cached waveform data. |
 | `GET` | `/api/tracks/{id}/lyrics` | Fetch cached or provider lyrics. |
+| `GET` | `/api/tracks/{id}/eq-profile` | Auto EQ curve for a track: `{ eqProfile, source }`. Picks from a locked album genre (set in Edit metadata) first, then the cached artist profile, the track's genre tags, the artist's tags; `Manual` (flat) with source `default` when nothing maps. |
 | `GET` | `/api/tracks/{id}/saved-eq` | The signed-in user's saved EQ for this song, else for its album: `{ scope: "track" \| "album" \| null, bands, hasTrack, hasAlbum, albumId }`. `404` for an unknown track. |
 | `PUT` / `DELETE` | `/api/tracks/{id}/saved-eq` | Save (body `{ bands }`: exactly 7 parametric bands within the player's limits, else `400`) or remove the user's EQ for this song. `404` for an unknown track. |
 | `PUT` / `DELETE` | `/api/albums/{id}/saved-eq` | Same for the album. A song's own curve wins over its album's. Curves are removed with their song or album and follow an album merged by a rename. |

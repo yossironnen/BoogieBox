@@ -43,6 +43,29 @@ describe('ParametricEqEditor', () => {
     expect(screen.getByRole('slider', { name: 'Band 7 gain' })).toBeEnabled();
   });
 
+  it('shows band frequencies in whole Hz', () => {
+    const bands = DEFAULT_PARAMETRIC_BANDS.map((band, i) => (
+      i === 1 ? { ...band, frequencyHz: 119.99999999999996 } : i === 4 ? { ...band, frequencyHz: 2499.9999999999995 } : band
+    ));
+    render(
+      <ParametricEqEditor
+        bands={bands}
+        profile="Manual"
+        customProfiles={[]}
+        locked={false}
+        newProfileName=""
+        accentColor="#fff"
+        onBandsChange={vi.fn()}
+        onProfileChange={vi.fn()}
+        onNewProfileNameChange={vi.fn()}
+        onSaveProfile={vi.fn().mockResolvedValue(null)}
+        onDeleteProfile={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Band 2 Bass, 120 Hz, +0.0 dB' })).toHaveTextContent('120');
+    expect(screen.getByRole('button', { name: 'Band 5 Pres, 2.5k Hz, +0.0 dB' })).toBeInTheDocument();
+  });
+
   it('reports save errors and success, deletes custom profiles, and disables Auto EQ editing', async () => {
     const save = vi.fn()
       .mockResolvedValueOnce('Name already exists.')

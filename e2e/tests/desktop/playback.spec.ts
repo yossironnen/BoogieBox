@@ -330,3 +330,109 @@ test('volume levelling settings: mode chips, pre-amp and the admin server card s
     await page.request.put('/api/settings', { data: { loudnessPlayOnMode: 'off' } })
   }
 })
+
+test('Auto EQ follows a genre set on the album in Edit metadata', async ({ page }) => {
+  const album = ALBUMS.find((a) => a.album === 'Quiet Hours')!
+  await openAlbum(page, album.artist, album.album)
+  await trackRow(page, album.tracks[0].title).getByRole('button', { name: 'Play', exact: true }).click()
+  await expectAudioPlaying(page, 0)
+  const eqButton = dock(page).getByRole('button', { name: 'Equalizer', exact: true })
+  const eq = page.getByRole('dialog', { name: 'Equalizer' })
+  const autoEq = eq.getByRole('checkbox', { name: 'Auto EQ' })
+  const preset = eq.getByText(/^Auto EQ active - preset:/)
+  const setAlbumGenre = async (genre: string) => {
+    await main(page).getByRole('button', { name: 'Edit album' }).click()
+    const field = page.getByText('Genre', { exact: true }).locator('..').locator('input')
+    await field.fill(genre)
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(field).toBeHidden()
+  }
+
+  await eqButton.click()
+  const wasOn = await autoEq.isChecked()
+  let edited = false
+  try {
+    if (!wasOn) await autoEq.check()
+    // The tracks are tagged Jazz.
+    await expect(preset).toHaveText(/^Auto EQ active - preset: Vintage\b/)
+    await eq.getByRole('button', { name: 'Close equalizer' }).click()
+
+    edited = true
+    await setAlbumGenre('Classical')
+    await eqButton.click()
+    await expect(preset).toHaveText(/^Auto EQ active - preset: Classical\b/)
+    await eq.getByRole('button', { name: 'Close equalizer' }).click()
+  } finally {
+    if (await eq.isVisible()) await eq.getByRole('button', { name: 'Close equalizer' }).click()
+    if (edited) await setAlbumGenre(album.genre)
+    if (!wasOn) {
+      await eqButton.click()
+      await autoEq.uncheck()
+      await eq.getByRole('button', { name: 'Close equalizer' }).click()
+    }
+  }
+})
+
+test('Saved EQ: save for a song, keep it after a reload, remove it', async ({ page }) => {
+  const album = ALBUMS[1]
+  const track = album.tracks[0]
+  const playTrack = async () => {
+    await openAlbum(page, album.artist, album.album)
+    await trackRow(page, track.title).getByRole('button', { name: 'Play', exact: true }).click()
+    await expectAudioPlaying(page, 0)
+    await dock(page).getByRole('button', { name: 'Equalizer', exact: true }).click()
+  }
+  const eq = page.getByRole('dialog', { name: 'Equalizer' })
+  const autoEq = eq.getByRole('checkbox', { name: 'Auto EQ' })
+  const useSaved = eq.getByRole('checkbox', { name: 'Use my saved EQ' })
+  const status = eq.getByRole('status').filter({ hasText: /EQ saved for this|Not saved yet/ })
+  const bass = eq.getByRole('group', { name: 'EQ bands' }).getByRole('button', { name: /^Band 2 / })
+  // The gain part of "Band 2 Bass, 120 Hz, +4.0 dB" (the frequency can carry float noise from a graph drag).
+  const bassGain = async () => /([+-][\d.]+) dB$/.exec((await bass.getAttribute('aria-label')) ?? '')?.[1]
+  const setBass = async (gain: string) => {
+    await bass.click()
+    await eq.getByRole('spinbutton', { name: 'Band 2 gain value' }).fill(gain)
+  }
+  const removeSong = eq.getByRole('button', { name: 'Remove from this song' })
+
+  await playTrack()
+  const autoWasOn = await autoEq.isChecked()
+  const savedWasOn = await useSaved.isChecked()
+  try {
+    if (autoWasOn) await autoEq.uncheck()
+    if (savedWasOn) await useSaved.uncheck()
+    await expect(status).toBeHidden()
+
+    await test.step('saving for the song turns the switch on and says so', async () => {
+      await setBass('4')
+      await expect.poll(bassGain).toBe('+4.0')
+      await eq.getByRole('button', { name: 'Save for this song' }).click()
+      await expect(status).toHaveText('Using the EQ saved for this song')
+      await expect(useSaved).toBeChecked()
+      await expect(removeSong).toBeVisible()
+      await expect(eq.getByRole('button', { name: 'Remove from this album' })).toBeHidden()
+    })
+
+    await test.step('the saved curve is back after a reload', async () => {
+      await openApp(page)
+      await playTrack()
+      await expect(useSaved).toBeChecked()
+      await expect(status).toHaveText('Using the EQ saved for this song')
+      await expect.poll(bassGain).toBe('+4.0')
+    })
+
+    await test.step('removing it clears the status and the link', async () => {
+      await removeSong.click()
+      await expect(removeSong).toBeHidden()
+      await expect(status).toBeHidden()
+    })
+  } finally {
+    if (await removeSong.isVisible()) await removeSong.click()
+    await expect(removeSong).toBeHidden()
+    await setBass('0')
+    await expect.poll(bassGain).toBe('+0.0')
+    if ((await useSaved.isChecked()) !== savedWasOn) await useSaved.setChecked(savedWasOn)
+    if (autoWasOn) await autoEq.check()
+    await eq.getByRole('button', { name: 'Close equalizer' }).click()
+  }
+})

@@ -72,7 +72,7 @@ Important server modules:
 - `src/bin/boogiebox.rs`: the Windows tray launcher (`boogiebox.exe`). It runs `boogiebox-server.exe` without a console window and shows a notification-area icon with "Open BoogieBox" and "Exit".
 - `src/bin/`: also maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`).
 
-`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `smart_playlists` (rule validation, compiling and evaluation with a 1 s query budget, stored membership, freshness checks), `playlist_import` (M3U/M3U8 matching), `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, `subsonic` (credentials, API keys, stars, play queues, paged sync listings), `scrobble`, `radio_stations`, `favourites`, `activity`, `loudness`, `backup` (`VACUUM INTO` snapshots, manifest, retention, path remaps), and `maintenance`.
+`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `smart_playlists` (rule validation, compiling and evaluation with a 1 s query budget, stored membership, freshness checks), `smart_steer` (steering pills re-weighting membership inside the rules), `smart_suggest` (which pills to offer), `popularity` (Last.fm scrobble counts behind "Popular"), `playlist_import` (M3U/M3U8 matching), `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, `subsonic` (credentials, API keys, stars, play queues, paged sync listings), `scrobble`, `radio_stations`, `favourites`, `activity`, `loudness`, `saved_eq` (per-user EQ curves for a song or an album), `backup` (`VACUUM INTO` snapshots, manifest, retention, path remaps), and `maintenance`.
 
 ## Frontend
 
@@ -122,7 +122,8 @@ Core tables include:
 - `tracks`, `artists`, `albums`, `tracks_fts`
 - `artist_merges`, `artist_merge_members`, `artist_merge_moves`, `artist_name_aliases`
 - `artist_ratings`, `album_ratings`, `track_ratings`, `play_history`
-- `artist_styles`, `album_styles`, `track_tags`, `track_tag_sync`, `lastfm_cache`, `lyrics_cache`
+- `artist_styles`, `album_styles`, `track_tags`, `track_tag_sync`, `lastfm_cache`, `lyrics_cache`, `artist_eq_cache`
+- `track_popularity`, `artist_popularity_sync` (Last.fm scrobble counts for the "Popular" steering pill)
 - `scan_jobs`, `post_scan_jobs`, `scan_schedules`
 - `playlists` (`kind` `manual` / `smart`), `playlist_tracks`, `smart_playlist_definitions`, `smart_playlist_content_revision`, `smart_playlist_user_revisions`, `crossfade_overrides`
 - `track_waveforms`, `track_loudness`, `track_deep_analysis`, `track_mix_analysis`, `deep_analysis_jobs`
@@ -130,6 +131,7 @@ Core tables include:
 - `upnp_renderers`, `remote_sessions`
 - `subsonic_credentials` (encrypted Subsonic password, API key hash), `subsonic_stars`, `subsonic_play_queues`, `user_track_stats`
 - `scrobble_accounts`, `scrobble_queue`, `internet_radio_stations`, `activity_events`
+- `user_saved_eq` (per-user EQ curves saved for a song or an album)
 - `settings`, `user_settings`, `provider_usage_stats`, `stats_cache`
 
 ## Background Work

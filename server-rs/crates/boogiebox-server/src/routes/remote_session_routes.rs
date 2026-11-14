@@ -96,6 +96,8 @@ pub fn session_error_response(e: SessionError) -> Response {
 }
 
 /// Resolves state + checks the feature switch and per-user rate limit.
+// `Response` is the early-return error here (axum idiom, cold path); boxing it buys nothing.
+#[allow(clippy::result_large_err)]
 async fn gate(
     state: &SharedState,
     user: &AuthenticatedUser,

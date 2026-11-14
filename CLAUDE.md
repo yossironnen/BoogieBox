@@ -147,6 +147,7 @@ upnp_renderers, remote_sessions
 subsonic_credentials, subsonic_stars, subsonic_play_queues, user_track_stats  
 scrobble_accounts, scrobble_queue, internet_radio_stations  
 activity_events  
+user_saved_eq, track_popularity  
 settings, user_settings, provider_usage_stats  
 
 Fresh databases are music-only. Upgrade migrations remove legacy movie/TV/video tables and settings.  

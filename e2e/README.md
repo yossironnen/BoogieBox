@@ -65,13 +65,13 @@ Every test also fails on uncaught page errors, app `console.error` output and an
 | First-run setup, library add + scan | `tests/first-run.setup.ts` |
 | Every view and Settings tab renders, version, sidebar, Home command bar | `tests/desktop/shell.spec.ts` |
 | Browse artists/albums, drill-down, per-format tags, artwork, genres, ratings, scan safety (offline folder, mass-removal brake, Remove missing tracks) | `tests/desktop/library.spec.ts` |
-| Real audio playback per format, transport, queue, seek, auto-advance, OS media controls (MediaSession), sleep timer (minutes fade/pause with `page.clock`, end of track, cancel), Auto EQ (graph and band controls locked while on, own EQ kept), loudness levelling (ReplayGain tags, measured tracks, player gain, the Volume levelling and Server levelling settings cards, the Advanced "Server levelling" shortcut) | `tests/desktop/playback.spec.ts` |
+| Real audio playback per format, transport, queue, seek, auto-advance, OS media controls (MediaSession), sleep timer (minutes fade/pause with `page.clock`, end of track, cancel), Auto EQ (graph and band controls locked while on, own EQ kept, follows an album genre set in Edit metadata), Saved EQ (save for a song, status line, kept after a reload, remove), loudness levelling (ReplayGain tags, measured tracks, player gain, the Volume levelling and Server levelling settings cards, the Advanced "Server levelling" shortcut) | `tests/desktop/playback.spec.ts` |
 | Keyboard shortcuts (transport, volume, mute, `/` search, `?` help) and when they stay quiet | `tests/desktop/shortcuts.spec.ts` |
 | Playlist create / add / rename / play / delete, M3U import (preview tiles, not-found download, file order), smart playlist API (preview, create, manual edits refused, export), steering pills (steer API, pills that are on, Reset, queue prompt, editor "Pills on" line), Style rule field | `tests/desktop/playlists.spec.ts` |
 | Search by title/artist/album, genre filter | `tests/desktop/search.spec.ts` |
 | PIN users, wrong PIN, non-admin UI, sign-out, delete | `tests/desktop/users.spec.ts` |
 | Favourites, radio stations, themes, Subsonic switch, Activity, Home, Home smart playlists | `tests/desktop/features.spec.ts` |
-| Mobile shell, browse, search, Now Playing, OS media controls, Sleep tool, M3U import sheet, steering pills | `tests/mobile/mobile.spec.ts` |
+| Mobile shell, browse, search, Now Playing, OS media controls, Equalizer sheet fit and Saved EQ block, Sleep tool, M3U import sheet, steering pills | `tests/mobile/mobile.spec.ts` |
 | Backup: back up now (with an uploaded cover), schedule/keep, delete | `tests/desktop/backup.spec.ts` |
 | Restore (project `restore`, runs last because it signs everyone out): live restore, first-run restore on a second fresh server with a remapped music folder | `tests/restore/restore.spec.ts` |
 

@@ -82,6 +82,8 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
+// `Response` is the early-return error here (axum idiom, cold path); boxing it buys nothing.
+#[allow(clippy::result_large_err)]
 async fn run<T, F>(db: DbPool, f: F) -> Result<T, Response>
 where
     T: Send + 'static,

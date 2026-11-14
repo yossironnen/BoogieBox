@@ -57,6 +57,8 @@ struct BackupsResponse {
     backups: Vec<BackupSummary>,
 }
 
+// `Response` is the early-return error here (axum idiom, cold path); boxing it buys nothing.
+#[allow(clippy::result_large_err)]
 async fn overview(state: &SharedState) -> Result<BackupsResponse, Response> {
     let (db, paths, hub) = backup::active(state).ok_or_else(no_db)?;
     tokio::task::spawn_blocking(move || {

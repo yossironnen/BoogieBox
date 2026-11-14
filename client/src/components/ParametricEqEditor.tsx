@@ -209,7 +209,9 @@ export default function ParametricEqEditor({
         aria-label="EQ bands"
       >
         {bands.map((band, i) => {
-          const freqLabel = band.frequencyHz >= 1000 ? `${(band.frequencyHz / 1000).toFixed(band.frequencyHz % 1000 === 0 ? 0 : 1)}k` : `${band.frequencyHz}`;
+          // Whole Hz: curves saved before drags were rounded can carry float noise (119.99999999999996).
+          const hz = Math.round(band.frequencyHz);
+          const freqLabel = hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)}k` : `${hz}`;
           const gainLabel = (band.type !== 'highpass' && band.type !== 'lowpass') ? `${band.gainDb >= 0 ? '+' : ''}${band.gainDb.toFixed(1)}` : '--';
           return (
             <button

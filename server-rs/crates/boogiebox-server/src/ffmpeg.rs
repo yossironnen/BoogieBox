@@ -231,8 +231,10 @@ pub async fn generate_waveform(ffmpeg: &Path, file_path: &Path) -> Result<Vec<u8
     }
 
     let samples: Vec<i16> = raw
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
         .collect();
 
     let samples_per_bucket = (samples.len() / WAVEFORM_POINTS).max(1);
@@ -297,8 +299,10 @@ pub async fn detect_bpm(ffmpeg: &Path, file_path: &Path) -> Result<Option<f64>, 
     }
     let samples: Vec<f64> = output
         .stdout
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f64 / i16::MAX as f64)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b) as f64 / i16::MAX as f64)
         .collect();
     Ok(estimate_bpm_from_samples(&samples, SAMPLE_RATE, FRAME))
 }
