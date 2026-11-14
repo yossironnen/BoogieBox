@@ -433,6 +433,35 @@ h2 {
   box-shadow: 0 24px 48px rgba(0,0,0,.55);
 }
 
+.spotlight-extras {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+}
+
+.spotlight-extras .image-button img {
+  object-position: top;
+}
+
+.eq-trio {
+  display: grid;
+  grid-template-columns: 1fr 1fr .55fr;
+  align-items: start;
+  gap: 16px;
+}
+
+.eq-trio .image-button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.eq-trio .image-button:nth-child(2) {
+  margin-top: 40px;
+}
+
+.eq-trio .image-button:nth-child(3) {
+  border-radius: 18px;
+}
+
 .section-heading {
   display: grid;
   grid-template-columns: 1.4fr .6fr;
@@ -694,6 +723,18 @@ footer div {
 
   .phone-trio .image-button:nth-child(2) {
     margin-top: 24px;
+  }
+
+  .eq-trio {
+    gap: 8px;
+  }
+
+  .eq-trio .image-button:nth-child(2) {
+    margin-top: 20px;
+  }
+
+  .eq-trio .image-button:nth-child(3) {
+    border-radius: 10px;
   }
 
   .section-heading {
