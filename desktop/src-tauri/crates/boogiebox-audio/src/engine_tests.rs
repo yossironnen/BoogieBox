@@ -26,7 +26,7 @@ fn paced(kind: SampleKind, rate: u32, channels: u16, sleep: Duration) -> NullFac
             channels,
             kind,
         },
-        period_frames: (rate / 100) as usize,
+        period_div: 100,
         sleep,
         record: true,
     })
@@ -45,6 +45,7 @@ impl Run {
             Box::new(factory.clone()),
             EngineConfig {
                 backoff: Duration::from_millis(5),
+                resume_within: Duration::from_millis(400),
             },
         );
         Self {
@@ -98,7 +99,7 @@ impl Run {
     }
 
     fn recording(&self) -> Vec<u8> {
-        let rec = self.factory.last_recording.lock().unwrap().clone().unwrap();
+        let rec = self.factory.last_recording().unwrap();
         let bytes = rec.lock().unwrap().clone();
         bytes
     }
@@ -177,9 +178,10 @@ fn gapless_items_join_sample_exact_and_events_follow_the_sound() {
         (44_100, Some(16), "PCM")
     );
     assert_eq!(output.codec, "s16");
-    assert!(
-        path.is_empty(),
-        "same rate and channels on an integer device: nothing changes"
+    assert_eq!(
+        path,
+        [PathKind::SharedMixer],
+        "shared mode: Windows' mixer takes it from here"
     );
     run.until_stopped();
     assert_eq!(run.track_events(), ["start A", "end A", "start B", "end B"]);
@@ -233,7 +235,10 @@ fn a_rate_change_is_resampled_for_a_float_mixer() {
     let Event::TrackStarted { path, output, .. } = started else {
         unreachable!()
     };
-    assert_eq!(path, [PathKind::Resampled { to_hz: 48_000 }]);
+    assert_eq!(
+        path,
+        [PathKind::SharedMixer, PathKind::Resampled { to_hz: 48_000 }]
+    );
     assert_eq!((output.sample_rate, output.codec.as_str()), (48_000, "f32"));
     run.until_stopped();
     let rec = run.recording();
@@ -476,20 +481,395 @@ fn errors_become_events_and_stop_playback() {
     assert!(matches!(err, Event::Error { track_id: Some(ref t), .. } if t == "L"));
     run.until_stopped();
 
-    // Exclusive mode isn't built yet: a clear error, not a crash.
+    // Exclusive control turned off in Windows: said at once, not at the next play.
     run.send(Command::SetOutput {
         device_id: None,
         mode: OutputMode::Exclusive,
+        buffer_ms: 50,
     });
     run.until("exclusive refused", |e| {
         matches!(
             e,
             Event::Error {
-                code: ErrorCode::FormatUnsupported,
+                code: ErrorCode::ExclusiveNotAllowed,
                 ..
             }
         )
     });
+}
+
+// ---- Phase 3: exclusive mode -----------------------------------------------------------------------
+
+use crate::negotiate::{DeviceCaps, RATES};
+use crate::OutputFactory as _;
+
+/// Like the user's FiiO: every rate, 16-bit, 24-in-32 and 32-bit.
+fn fiio_caps(rates: &[u32]) -> DeviceCaps {
+    DeviceCaps {
+        formats: rates
+            .iter()
+            .flat_map(|r| {
+                [SampleKind::I16, SampleKind::I24In32, SampleKind::I32].map(|kind| DeviceFormat {
+                    sample_rate: *r,
+                    channels: 2,
+                    kind,
+                })
+            })
+            .collect(),
+    }
+}
+
+/// A null device at ~2x real time with exclusive formats.
+fn exclusive_run(caps: Option<DeviceCaps>) -> Run {
+    let f = paced(SampleKind::F32, 48_000, 2, Duration::from_millis(5));
+    *f.exclusive.lock().unwrap() = caps;
+    let run = Run::new(f);
+    run.send(Command::SetOutput {
+        device_id: None,
+        mode: OutputMode::Exclusive,
+        buffer_ms: 50,
+    });
+    run
+}
+
+/// Distinct, recognisable 24-bit samples (left-justified).
+fn pattern24(frames: usize, seed: i32) -> Vec<i32> {
+    (0..frames as i32 * 2)
+        .map(|i| ((i * 1_543 + seed) % 8_000_000 - 4_000_000) << 8)
+        .collect()
+}
+
+fn words(bytes: &[u8]) -> Vec<i32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// The non-silent stretch of a recording (24-in-32 words).
+fn sound(words: &[i32]) -> &[i32] {
+    let first = words.iter().position(|w| *w != 0).unwrap_or(0);
+    let last = words.iter().rposition(|w| *w != 0).map_or(0, |i| i + 1);
+    &words[first..last]
+}
+
+#[test]
+fn exclusive_mode_follows_each_items_rate_bit_for_bit() {
+    let server = TestServer::start();
+    let a = ramp(2, 44_100, 1);
+    let b = pattern24(96_000, 7);
+    let c = pattern24(192_000 / 2, 11);
+    server.put("/a", wav_bytes(44_100, 2, 16, &a), Behaviour::Normal);
+    server.put("/b", wav_bytes(96_000, 2, 24, &b), Behaviour::Normal);
+    server.put("/c", wav_bytes(192_000, 2, 24, &c), Behaviour::Normal);
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.send(Command::SetNext {
+        item: Some(item(&server, "/b", "B")),
+    });
+    let started = run.until("A", |e| matches!(e, Event::TrackStarted { .. }));
+    let Event::TrackStarted { path, output, .. } = started else {
+        unreachable!()
+    };
+    assert_eq!(path, [PathKind::BitPerfect]);
+    assert_eq!((output.sample_rate, output.codec.as_str()), (44_100, "s16"));
+    run.until(
+        "B",
+        |e| matches!(e, Event::TrackStarted { track_id, .. } if track_id == "B"),
+    );
+    run.send(Command::SetNext {
+        item: Some(item(&server, "/c", "C")),
+    });
+    run.until_stopped();
+    assert_eq!(
+        run.track_events(),
+        ["start A", "end A", "start B", "end B", "start C", "end C"]
+    );
+    // Nothing about an item before it is heard.
+    for (i, e) in run.seen.iter().enumerate() {
+        if let Event::NeedNext { track_id } = e {
+            let started = run.seen[..i]
+                .iter()
+                .any(|p| matches!(p, Event::TrackStarted { track_id: s, .. } if s == track_id));
+            assert!(started, "NeedNext for {track_id} before it started");
+        }
+    }
+    let opened = run.factory.opened.lock().unwrap().clone();
+    let formats: Vec<(u32, SampleKind, bool)> = opened
+        .iter()
+        .map(|(f, excl, _)| (f.sample_rate, f.kind, *excl))
+        .collect();
+    assert_eq!(
+        formats,
+        [
+            (44_100, SampleKind::I16, true),
+            (96_000, SampleKind::I24In32, true),
+            (192_000, SampleKind::I24In32, true)
+        ],
+        "the device follows every item's own rate (D8)"
+    );
+    let rec = |i: usize| opened[i].2.lock().unwrap().clone();
+    assert_eq!(
+        trimmed_i16_frames(&rec(0)),
+        expected_i16(&a),
+        "16/44.1 bit for bit"
+    );
+    assert_eq!(
+        sound(&words(&rec(1))),
+        &b[..],
+        "24/96 bit for bit in 24-in-32"
+    );
+    assert_eq!(sound(&words(&rec(2))), &c[..], "24/192 bit for bit");
+}
+
+#[test]
+fn same_format_items_stay_gapless_on_one_exclusive_stream() {
+    let server = TestServer::start();
+    let a = pattern24(48_000, 3);
+    let b = pattern24(24_000, 5);
+    server.put("/a", wav_bytes(96_000, 2, 24, &a), Behaviour::Normal);
+    server.put("/b", wav_bytes(96_000, 2, 24, &b), Behaviour::Normal);
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.send(Command::SetNext {
+        item: Some(item(&server, "/b", "B")),
+    });
+    run.until_stopped();
+    assert_eq!(run.factory.opened.lock().unwrap().len(), 1, "no reopen");
+    let mut both = a.clone();
+    both.extend_from_slice(&b);
+    assert_eq!(sound(&words(&run.recording())), &both[..]);
+}
+
+#[test]
+fn a_rate_the_device_lacks_is_resampled_to_the_nearest_one_it_takes() {
+    let server = TestServer::start();
+    server.put(
+        "/hi",
+        wav_bytes(176_400, 2, 24, &pattern24(17_640, 1)),
+        Behaviour::Normal,
+    );
+    // The Realtek S/PDIF output from the phase 0 spike: no 176.4 kHz.
+    let mut run = exclusive_run(Some(fiio_caps(&[44_100, 48_000, 88_200, 96_000, 192_000])));
+    run.send(Command::Load {
+        item: item(&server, "/hi", "H"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    let started = run.until("started", |e| matches!(e, Event::TrackStarted { .. }));
+    let Event::TrackStarted { path, output, .. } = started else {
+        unreachable!()
+    };
+    assert_eq!(path, [PathKind::Resampled { to_hz: 88_200 }]);
+    assert_eq!(output.sample_rate, 88_200);
+    run.until_stopped();
+}
+
+#[test]
+fn the_badge_follows_the_volume() {
+    let server = TestServer::start();
+    server.put(
+        "/a",
+        wav_bytes(96_000, 2, 24, &pattern24(96_000 * 4, 1)),
+        Behaviour::Normal,
+    );
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.until(
+        "bit-perfect",
+        |e| matches!(e, Event::TrackStarted { path, .. } if path == &[PathKind::BitPerfect]),
+    );
+    run.send(Command::SetVolume { linear: 0.5 });
+    run.until(
+        "volume applied",
+        |e| matches!(e, Event::PathChanged { path, .. } if path == &[PathKind::VolumeApplied]),
+    );
+    run.send(Command::SetVolume { linear: 0.7 });
+    run.send(Command::SetVolume { linear: 1.0 });
+    run.until(
+        "bit-perfect again",
+        |e| matches!(e, Event::PathChanged { path, .. } if path == &[PathKind::BitPerfect]),
+    );
+    let changes = run
+        .seen
+        .iter()
+        .filter(|e| matches!(e, Event::PathChanged { .. }))
+        .count();
+    assert_eq!(changes, 2, "only when it crosses 100%");
+    run.send(Command::Stop);
+    run.until_stopped();
+}
+
+#[test]
+fn refused_exclusive_mode_plays_shared_and_says_so() {
+    let server = TestServer::start();
+    server.put(
+        "/a",
+        wav_bytes(48_000, 2, 16, &ramp(2, 4_800, 1)),
+        Behaviour::Normal,
+    );
+
+    // Windows doesn't allow exclusive control.
+    let mut run = exclusive_run(None);
+    run.until("not allowed", |e| {
+        matches!(
+            e,
+            Event::Error {
+                code: ErrorCode::ExclusiveNotAllowed,
+                ..
+            }
+        )
+    });
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    let started = run.until("started", |e| matches!(e, Event::TrackStarted { .. }));
+    assert!(
+        matches!(started, Event::TrackStarted { ref path, .. } if path == &[PathKind::SharedMixer])
+    );
+    run.until_stopped();
+
+    // Another app holds the device.
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    run.factory
+        .busy
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    let err = run.until("busy", |e| matches!(e, Event::Error { .. }));
+    assert!(
+        matches!(err, Event::Error { code: ErrorCode::DeviceBusy, ref message, .. } if message.contains("shared mode instead"))
+    );
+    run.until_stopped();
+    let opened = run.factory.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    assert!(!opened[0].1, "played in shared mode");
+}
+
+#[test]
+fn a_lost_device_pauses_and_resumes_when_it_comes_back() {
+    let server = TestServer::start();
+    server.put(
+        "/long",
+        wav_bytes(44_100, 2, 16, &ramp(2, 44_100 * 8, 1)),
+        Behaviour::Normal,
+    );
+    let mut run = Run::new(paced(SampleKind::I16, 44_100, 2, Duration::from_millis(5)));
+    let devices = run.factory.devices();
+    run.send(Command::Load {
+        item: item(&server, "/long", "L"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.until("playing", |e| {
+        matches!(
+            e,
+            Event::State {
+                status: Status::Playing,
+                ..
+            }
+        )
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    // Unplugged: the device disappears and its stream fails.
+    run.factory.set_devices(Vec::new());
+    let shared = run.factory.last_shared.lock().unwrap().clone().unwrap();
+    shared.fail(crate::OutputError::new(ErrorCode::DeviceLost, "unplugged"));
+    run.until("device lost", |e| {
+        matches!(
+            e,
+            Event::Error {
+                code: ErrorCode::DeviceLost,
+                ..
+            }
+        )
+    });
+    let paused = run.until("paused", |e| {
+        matches!(
+            e,
+            Event::State {
+                status: Status::Paused,
+                ..
+            }
+        )
+    });
+    let Event::State {
+        position_sec: at, ..
+    } = paused
+    else {
+        unreachable!()
+    };
+    assert!(at > 0.0);
+    // Plugged back in within the window: picks up where it stopped.
+    run.factory.set_devices(devices);
+    run.until(
+        "device list",
+        |e| matches!(e, Event::DeviceChanged { devices, .. } if !devices.is_empty()),
+    );
+    let resumed = run.until("resumed", |e| {
+        matches!(
+            e,
+            Event::State {
+                status: Status::Playing,
+                ..
+            }
+        )
+    });
+    let Event::State { position_sec, .. } = resumed else {
+        unreachable!()
+    };
+    assert!(
+        (position_sec - at).abs() < 0.5,
+        "resumed at {position_sec}, lost at {at}"
+    );
+    run.send(Command::Stop);
+    run.until_stopped();
+
+    // Gone for good: stops after the window.
+    run.send(Command::Load {
+        item: item(&server, "/long", "L"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.until("playing again", |e| {
+        matches!(
+            e,
+            Event::State {
+                status: Status::Playing,
+                ..
+            }
+        )
+    });
+    run.factory.set_devices(Vec::new());
+    let shared = run.factory.last_shared.lock().unwrap().clone().unwrap();
+    shared.fail(crate::OutputError::new(ErrorCode::DeviceLost, "unplugged"));
+    run.until("paused", |e| {
+        matches!(
+            e,
+            Event::State {
+                status: Status::Paused,
+                ..
+            }
+        )
+    });
+    run.until_stopped();
 }
 
 #[test]
@@ -515,6 +895,8 @@ fn stop_silences_and_mono_fills_both_channels() {
     std::thread::sleep(Duration::from_millis(30));
     run.send(Command::Stop);
     run.until_stopped();
+    // Let the output finish the buffer it was writing when the stop came.
+    std::thread::sleep(Duration::from_millis(20));
     let len = run.recording().len();
     std::thread::sleep(Duration::from_millis(60));
     let frames = trimmed_i16_frames(&run.recording());

@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::convert::{apply_volume, DeviceFormat};
-use crate::types::{ErrorCode, OutputMode, PathKind};
+use crate::negotiate::DeviceCaps;
+use crate::types::{Device, ErrorCode, OutputMode, PathKind};
 
 /// An error opening or running an output.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -218,16 +219,53 @@ pub trait Output: Send {
     fn shared(&self) -> &Arc<OutputShared>;
     /// What this output does to samples (e.g. Windows' shared mixer).
     fn path(&self) -> Vec<PathKind>;
+    /// True when the engine owns the device (exclusive mode).
+    fn exclusive(&self) -> bool {
+        false
+    }
 }
+
+/// How to open an output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputRequest {
+    /// Shared or exclusive.
+    pub mode: OutputMode,
+    /// The exact format for exclusive mode (from [`crate::negotiate::choose`]); ignored in shared mode.
+    pub format: Option<DeviceFormat>,
+    /// Exclusive-mode buffer (ms).
+    pub buffer_ms: u32,
+}
+
+/// Default exclusive buffer (plan §8.2: 50 ms, "Normal").
+pub const DEFAULT_BUFFER_MS: u32 = 50;
+
+/// Called when the device list changes.
+pub type DeviceNotify = Arc<dyn Fn() + Send + Sync>;
+
+/// Keeps a device watch alive; dropping it stops watching.
+pub trait WatchGuard: Send {}
 
 /// Opens outputs for the engine (the real device, or [`null::NullFactory`] in tests).
 pub trait OutputFactory: Send {
-    /// Opens `device_id` (or the default) in `mode`.
+    /// Opens `device_id` (or the default).
     fn open(
         &self,
         device_id: Option<&str>,
-        mode: OutputMode,
+        request: &OutputRequest,
     ) -> Result<Box<dyn Output>, OutputError>;
+
+    /// The exclusive formats the device takes; [`ErrorCode::ExclusiveNotAllowed`] when Windows forbids it.
+    fn exclusive_caps(&self, device_id: Option<&str>) -> Result<DeviceCaps, OutputError>;
+
+    /// Output devices now.
+    fn devices(&self) -> Vec<Device> {
+        Vec::new()
+    }
+
+    /// Starts watching for device changes.
+    fn watch(&self, _notify: DeviceNotify) -> Option<Box<dyn WatchGuard>> {
+        None
+    }
 }
 
 #[cfg(test)]

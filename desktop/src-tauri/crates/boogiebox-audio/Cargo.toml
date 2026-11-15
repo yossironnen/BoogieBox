@@ -1,6 +1,6 @@
 [package]
 name = "boogiebox-audio"
-version = "0.9.99"
+version = "0.9.100"
 edition = "2021"
 publish = false
 description = "Native Hi-Res playback engine for the BoogieBox desktop app (HTTP range source, symphonia decode, WASAPI output)"
@@ -16,7 +16,7 @@ tracing = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.27.0"
-windows = { version = "0.62", features = ["Win32_System_Threading", "Win32_Foundation"] }
+windows = { version = "0.62", features = ["Win32_System_Threading", "Win32_System_Power", "Win32_Foundation"] }
 
 [lints.clippy]
 unwrap_used = "deny"

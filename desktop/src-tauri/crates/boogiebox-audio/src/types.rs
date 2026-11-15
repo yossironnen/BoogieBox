@@ -70,6 +70,8 @@ pub enum Command {
         device_id: Option<String>,
         /// Shared or exclusive.
         mode: OutputMode,
+        /// Exclusive-mode buffer (ms), 20..=200; plan §12.1 Low/Normal/Safe = 20/50/150.
+        buffer_ms: u32,
     },
     /// A fresh link for an item whose link expired ([`Event::TokenExpired`]).
     RefreshUrl {
@@ -151,6 +153,8 @@ pub enum ErrorCode {
     FormatUnsupported,
     /// The stream link expired and no new one came.
     TokenExpired,
+    /// Windows' "Allow applications to take exclusive control" is off for the device.
+    ExclusiveNotAllowed,
 }
 
 /// Something the host should know.
@@ -188,6 +192,20 @@ pub enum Event {
     NeedNext {
         /// Current item id.
         track_id: String,
+    },
+    /// What happens to the current item's samples changed (e.g. the volume left 100%).
+    PathChanged {
+        /// Item id.
+        track_id: String,
+        /// The new path.
+        path: Vec<PathKind>,
+    },
+    /// Output devices were added, removed or changed.
+    DeviceChanged {
+        /// Devices now.
+        devices: Vec<Device>,
+        /// The engine's device (`None`: the system default).
+        active: Option<String>,
     },
     /// An item's link expired: answer with [`Command::RefreshUrl`].
     TokenExpired {

@@ -13,6 +13,7 @@
 pub mod convert;
 pub mod decode;
 pub mod engine;
+pub mod negotiate;
 pub mod output;
 pub mod resample;
 pub mod source;

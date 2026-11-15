@@ -1,6 +1,7 @@
 //! Manual check on a real device: plays local files through the engine (WASAPI shared mode).
 //!
-//! `cargo run --release --example play -- [--device <name part>] [--start <s>] [--seconds <n>] <file> [<next file>]`
+//! `cargo run --release --example play -- [--device <name part>] [--exclusive] [--volume <0..1>] [--start <s>]
+//! [--seconds <n>] <file> [<more files>...]`
 //!
 //! The files are served over a throwaway localhost `Range` server, so the engine reads them exactly as it
 //! reads `/media/n/{token}` links.
@@ -30,6 +31,8 @@ mod windows_main {
 
     struct Args {
         device: Option<String>,
+        exclusive: bool,
+        volume: f64,
         start: f64,
         seconds: Option<f64>,
         files: Vec<PathBuf>,
@@ -38,6 +41,8 @@ mod windows_main {
     fn args() -> Result<Args, String> {
         let mut a = Args {
             device: None,
+            exclusive: false,
+            volume: 1.0,
             start: 0.0,
             seconds: None,
             files: Vec::new(),
@@ -46,6 +51,8 @@ mod windows_main {
         while let Some(x) = it.next() {
             match x.as_str() {
                 "--device" => a.device = it.next(),
+                "--exclusive" => a.exclusive = true,
+                "--volume" => a.volume = it.next().and_then(|v| v.parse().ok()).unwrap_or(1.0),
                 "--start" => {
                     a.start = it
                         .next()
@@ -164,8 +171,14 @@ mod windows_main {
         };
         engine.send(Command::SetOutput {
             device_id,
-            mode: OutputMode::Shared,
+            mode: if a.exclusive {
+                OutputMode::Exclusive
+            } else {
+                OutputMode::Shared
+            },
+            buffer_ms: 50,
         });
+        engine.send(Command::SetVolume { linear: a.volume });
         engine.send(Command::Load {
             item: item(0),
             start_sec: a.start,
@@ -197,7 +210,19 @@ mod windows_main {
                         break;
                     }
                 }
-                Ok(e) => println!("{:>6.2}s  {e:?}", began.elapsed().as_secs_f64()),
+                Ok(e) => {
+                    // Chain any number of files: when one starts, queue the one after it.
+                    if let Event::TrackStarted { track_id, .. } = &e {
+                        let i = (0..a.files.len()).find(|i| item(*i).track_id == *track_id);
+                        // The second file was queued at load; from then on queue the one after.
+                        if let Some(i) = i.filter(|i| *i >= 1 && i + 1 < a.files.len()) {
+                            engine.send(Command::SetNext {
+                                item: Some(item(i + 1)),
+                            });
+                        }
+                    }
+                    println!("{:>6.2}s  {e:?}", began.elapsed().as_secs_f64())
+                }
                 Err(_) => {}
             }
         }
