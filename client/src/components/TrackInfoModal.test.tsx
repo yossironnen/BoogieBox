@@ -23,6 +23,7 @@ const track = {
   duration: 637,
   bitrate: 1032,
   sample_rate: 44100,
+  bits_per_sample: 24,
   channels: 2,
   title: 'Strobe',
   artist: 'deadmau5',
@@ -61,6 +62,8 @@ describe('TrackInfoModal', () => {
     expect(screen.getByText('Home Library')).toBeInTheDocument();
     expect(screen.getByText('47')).toBeInTheDocument();
     expect(screen.getByText('neural · 92% conf.')).toBeInTheDocument();
+    expect(screen.getByText('Bit Depth')).toBeInTheDocument();
+    expect(screen.getByText('24-bit')).toBeInTheDocument();
   });
 
   it('edits and saves metadata fields', async () => {

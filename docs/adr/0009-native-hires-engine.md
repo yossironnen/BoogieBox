@@ -34,8 +34,9 @@ must keep working unchanged, and the Rust side of the app must not get broad pow
 - `cpal`. Cons: shared mode only on Windows (to verify). ASIO: later, phase 8.
 
 ### Decoder (D5)
-- **`symphonia`** (FLAC, ALAC, WAV, AIFF, MP3, AAC, Vorbis); the server sends FLAC at the source rate for formats
-  it can't decode (Opus, WMA), labelled "Converted by server". Pros: pure Rust, no bundle growth.
+- **`symphonia`** (FLAC, ALAC, WAV, AIFF, MP3, AAC, Vorbis); the server sends a 24-bit WAV at the source rate for
+  formats it can't decode (Opus, WMA), labelled "Converted by server". Pros: pure Rust, no bundle growth. (First
+  planned as a FLAC encode; changed in phase 1 because the existing WAV transcode seeks by exact byte range.)
 - Bundle FFmpeg in the desktop app. Cons: +80 MB.
 
 ## Decision

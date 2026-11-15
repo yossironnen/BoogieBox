@@ -265,6 +265,12 @@ async fn login_handler(
 async fn logout_handler(State(state): State<SharedState>, jar: CookieJar) -> impl IntoResponse {
     if let Some(token_cookie) = jar.get("bb_session") {
         let token = token_cookie.value().to_owned();
+        // The desktop app's native stream links end with the sign-in that asked for them.
+        state
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .native
+            .revoke_session(&crate::native::session_key(&token));
         if let Some(db) = get_db(&state) {
             let _ = tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
@@ -360,6 +366,7 @@ mod test_helpers {
             plays: crate::plays::PlayHub::default(),
             activity: crate::activity::ActivityHub::default(),
             backup: crate::backup::BackupHub::default(),
+            native: crate::native::NativeLinks::default(),
         };
         let shared = Arc::new(RwLock::new(state));
         auth_router(shared)

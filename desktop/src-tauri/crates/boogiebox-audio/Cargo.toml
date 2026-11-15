@@ -1,0 +1,24 @@
+[package]
+name = "boogiebox-audio"
+version = "0.9.99"
+edition = "2021"
+publish = false
+description = "Native Hi-Res playback engine for the BoogieBox desktop app (HTTP range source, symphonia decode, WASAPI output)"
+
+[dependencies]
+symphonia = { version = "0.6.1", features = ["all"] }
+rtrb = "0.4.1"
+rubato = "5.1.0"
+reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.27.0"
+windows = { version = "0.62", features = ["Win32_System_Threading", "Win32_Foundation"] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

@@ -104,6 +104,17 @@ export function TvIcon({ size = 16, style }: IconProps) {
   );
 }
 
+/** A desktop monitor on a stand: the Windows desktop app's own audio engine. */
+export function DesktopIcon({ size = 16, style }: IconProps) {
+  return (
+    <svg width={size} height={size} style={style} {...stroke}>
+      <rect x="3" y="3" width="18" height="13" rx="2" />
+      <path d="M12 16v4" />
+      <path d="M8 20h8" />
+    </svg>
+  );
+}
+
 export function ClockIcon({ size = 16, style }: IconProps) {
   return (
     <svg width={size} height={size} style={style} {...stroke}>

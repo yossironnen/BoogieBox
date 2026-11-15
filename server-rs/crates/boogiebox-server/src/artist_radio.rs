@@ -953,6 +953,7 @@ mod tests {
                 bitrate: None,
                 sample_rate: None,
                 channels: None,
+                bits_per_sample: None,
                 title: Some(id.to_owned()),
                 track_number: None,
                 disc_number: None,

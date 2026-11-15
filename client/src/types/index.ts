@@ -49,6 +49,8 @@ export interface Track {
   bitrate: number | null;
   sample_rate: number | null;
   channels: number | null;
+  /** Source bit depth (lossless files); only on the single-track detail (`api.track`). */
+  bits_per_sample?: number | null;
   title: string | null;
   artist: string | null;
   album: string | null;

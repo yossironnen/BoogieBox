@@ -8,6 +8,7 @@
  *   desktop/package.json                    — version field
  *   desktop/src-tauri/tauri.conf.json       — version field
  *   desktop/src-tauri/Cargo.toml            — version field
+ *   desktop/src-tauri/crates/boogiebox-audio/Cargo.toml — version field
  *   server-rs/Cargo.toml                    — [workspace.package] version field
  */
 
@@ -58,6 +59,11 @@ patchFile('desktop/src-tauri/tauri.conf.json', (s) => {
 
 // desktop/src-tauri/Cargo.toml  — version = "x.y.z" in [package] section
 patchFile('desktop/src-tauri/Cargo.toml', (s) =>
+  s.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${version}"`)
+);
+
+// desktop/src-tauri/crates/boogiebox-audio/Cargo.toml  — the desktop app's audio engine
+patchFile('desktop/src-tauri/crates/boogiebox-audio/Cargo.toml', (s) =>
   s.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${version}"`)
 );
 

@@ -62,6 +62,7 @@ pub fn build_test_state(db_path: &std::path::Path) -> AppState {
         plays: crate::plays::PlayHub::default(),
         activity: crate::activity::ActivityHub::default(),
         backup: crate::backup::BackupHub::default(),
+        native: crate::native::NativeLinks::default(),
     }
 }
 

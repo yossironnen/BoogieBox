@@ -99,6 +99,20 @@ Per-user play counts: every row in `play_history` also updates `user_track_stats
 user's own counts are available without scanning the history. Subsonic `playCount`/`played` use them; the web UI's
 counts stay global.
 
+`GET /api/tracks/{id}` (the single-track detail) also carries `bits_per_sample` for lossless files (FLAC, WAV,
+AIFF, ALAC), filled by the scanner; list rows leave it out. Existing tracks get it at their next scan.
+
+## Desktop App Native Engine
+
+Stream links for the Windows desktop app's own audio engine, which plays outside the web page and has no session
+cookie. Links are random, kept in memory, tied to the sign-in that asked for them (revoked at sign-out) and last the
+item's length plus 6 hours.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/native/stream-tokens` | Signed in. Body `{ ids, client? }`: 1 to 50 track ids or `boogiemix:{outputId}` mixes (the user's own), and the app's machine name for the Activity page. Answers `{ tokens }`, one entry per id in order: `{ id, url, expiresAt, format, sampleRate, bitsPerSample, channels, duration, decode }` or `{ id, error }` with `not_found`, `file_missing` or `unsupported`. `url` is `/media/n/{token}`. `decode` is `native` (the original file; the app decodes it) or `server_wav` (Opus and WMA: the server decodes to 24-bit WAV at the source rate; needs a known duration, else `unsupported`). `400` for an empty or longer list. |
+| `GET`/`HEAD` | `/media/n/{token}` | No cookie: the link is the authorization. The original file with `Range`, or the server WAV (byte-exact `Range`). `404` unknown or revoked, `410` expired (ask for a new link). Counted on the Activity page as source `desktop`. |
+
 ## Favourites
 
 Hearts in the web UI. They are the same per-user data as stars in Subsonic apps (`subsonic_stars`).
@@ -246,9 +260,9 @@ The desktop Activity page. Everything except the heartbeat is admin-only (`403` 
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/activity` | Snapshot: `totals` (`playing`, `downloading`, `mixJobs`, `transcodes`, `subsonicTranscodeLimit`, `activeUsers`, `serverJobs`), `playing` (source `web`/`subsonic`/`playOn`/`dlna`/`radio`, user, client, item, `positionSec`, `durationSec`, `estimated`, `sampledAtMs`, `status`, `delivery`), `downloads` (`offlineSync` sessions per user and app, or single `file` downloads), `mixJobs` (with `canCancel`), `serverJobs` (scans, post-scan queue by type, deep-analysis counts) and `recent` (last 24 h, newest first). DLNA rows name the device when it is a known renderer and never show its address. |
+| `GET` | `/api/activity` | Snapshot: `totals` (`playing`, `downloading`, `mixJobs`, `transcodes`, `subsonicTranscodeLimit`, `activeUsers`, `serverJobs`), `playing` (source `web`/`subsonic`/`playOn`/`dlna`/`radio`/`desktop`, user, client, item, `positionSec`, `durationSec`, `estimated`, `sampledAtMs`, `status`, `delivery`, and `outputFormat` on desktop rows), `downloads` (`offlineSync` sessions per user and app, or single `file` downloads), `mixJobs` (with `canCancel`), `serverJobs` (scans, post-scan queue by type, deep-analysis counts) and `recent` (last 24 h, newest first). DLNA rows name the device when it is a known renderer and never show its address. |
 | `GET` | `/api/activity/events` | Server-Sent Events: `snapshot` with the same body, sent when something changed (at most once a second; job tables are re-read every 2 s while connected). |
-| `POST` | `/api/activity/heartbeat` | Any signed-in user: the web player's `{playerId, trackId, positionSec, durationSec, paused, stopped}` (`trackId` is a track id, `mx-{outputId}` or `st-{stationId}`). `204`. A player that stops reporting for 45 s is dropped. |
+| `POST` | `/api/activity/heartbeat` | Any signed-in user: the web player's `{playerId, trackId, positionSec, durationSec, paused, stopped}` (`trackId` is a track id, `mx-{outputId}` or `st-{stationId}`). The desktop app's native engine adds `output: "native"`, `client` (machine name, up to 64 characters) and `outputFormat` (up to 120); its row has source `desktop`. `204`. A player that stops reporting for 45 s is dropped. |
 | `POST` | `/api/activity/mix-jobs/{jobId}/cancel` | Cancel any user's queued or analysing/planning BoogieMix job (`409` once rendering or finished). |
 
 ## Logs (Admin)

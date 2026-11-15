@@ -34,13 +34,18 @@ export function formatRelative(atMs: number, nowMs: number = Date.now()): string
   return new Date(atMs).toLocaleDateString();
 }
 
-/** Source chip: `Web player`, `Play On · Living room`, `Subsonic · Amperfy`, `DLNA · Bedroom TV`, `Radio`. */
+/**
+ * Source chip: `Web player`, `Play On · Living room`, `Subsonic · Amperfy`, `DLNA · Bedroom TV`, `Radio`,
+ * `Desktop app · STUDIO-PC`.
+ */
 export function sourceLabel(source: ActivitySource, client: string | null): string {
   const named = client?.trim() || null;
   switch (source) {
     case 'web':
     case 'mixFile':
       return 'Web player';
+    case 'desktop':
+      return named ? `Desktop app · ${named}` : 'Desktop app';
     case 'playOn':
       return named ? `Play On · ${named}` : 'Play On';
     case 'subsonic':

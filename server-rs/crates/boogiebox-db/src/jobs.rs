@@ -294,6 +294,8 @@ pub struct ScannedTrackInput {
     pub sample_rate: Option<i64>,
     /// Documents the Channels public API surface.
     pub channels: Option<i64>,
+    /// Source bit depth for lossless formats (FLAC, WAV, AIFF, ALAC); `None` for lossy files.
+    pub bits_per_sample: Option<i64>,
     /// ReplayGain values from the file's tags, if it has any.
     pub loudness: Option<crate::loudness::LoudnessTags>,
 }
@@ -746,8 +748,8 @@ pub fn upsert_scanned_track(
             id, library_id, artist_id, album_id, title, file_name, album_artist,
             genre, composer, duration, bitrate, sample_rate, channels,
             file_path, file_size, format,
-            track_number, disc_number, year, comment, bpm, scanned_at, added_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,datetime('now'),datetime('now'))
+            track_number, disc_number, year, comment, bpm, bits_per_sample, scanned_at, added_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,datetime('now'),datetime('now'))
          ON CONFLICT(file_path) DO UPDATE SET
             library_id=excluded.library_id,
             artist_id=excluded.artist_id,
@@ -761,6 +763,7 @@ pub fn upsert_scanned_track(
             bitrate=excluded.bitrate,
             sample_rate=excluded.sample_rate,
             channels=excluded.channels,
+            bits_per_sample=excluded.bits_per_sample,
             file_size=excluded.file_size,
             format=excluded.format,
             track_number=excluded.track_number,
@@ -794,6 +797,7 @@ pub fn upsert_scanned_track(
             input.year,
             input.comment,
             input.bpm,
+            input.bits_per_sample,
         ],
     )?;
     refresh_track_fts(conn, &track_id, input, &artist_id, &album_id)?;
@@ -1922,6 +1926,7 @@ mod tests {
             bitrate: Some(320),
             sample_rate: Some(44100),
             channels: Some(2),
+            bits_per_sample: None,
             loudness: None,
         }
     }
@@ -2086,6 +2091,39 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn bit_depth_column_is_added_to_an_older_database_and_filled_by_a_rescan() {
+        let f = fixture("bits-upgrade");
+        let path = "/music/hires.flac";
+        let id = upsert_scanned_track(&f.conn, &scanned_track(&f.library_id, path, "Hi")).unwrap();
+        // A database from before the column: the migration is not recorded, the column is missing.
+        f.conn
+            .execute_batch(
+                "ALTER TABLE tracks DROP COLUMN bits_per_sample;
+                 DELETE FROM schema_migrations WHERE id = '2026-11-14-track-bits-per-sample';",
+            )
+            .unwrap();
+        crate::initialize_schema(&f.conn).unwrap();
+
+        let track_id = crate::music::coerce_entity_id(&id.to_string());
+        let before = crate::music::get_track(&f.conn, "u", &track_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            before.bits_per_sample, None,
+            "existing rows wait for a rescan"
+        );
+
+        let mut rescanned = scanned_track(&f.library_id, path, "Hi");
+        rescanned.bits_per_sample = Some(24);
+        upsert_scanned_track(&f.conn, &rescanned).unwrap();
+        let after = crate::music::get_track(&f.conn, "u", &track_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.bits_per_sample, Some(24));
+        assert_eq!(after.file_path.as_deref(), Some(path));
     }
 
     #[test]

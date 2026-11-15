@@ -872,6 +872,10 @@ fn tracked_migrations() -> Vec<Migration> {
             id: "2026-11-08-user-saved-eq",
             apply: saved_eq::ensure_saved_eq_schema,
         },
+        Migration {
+            id: "2026-11-14-track-bits-per-sample",
+            apply: ensure_track_bits_per_sample_column,
+        },
     ]
 }
 
@@ -2986,6 +2990,16 @@ fn remove_auto_dj_crossfade_overrides(connection: &Connection) -> Result<(), rus
 fn ensure_artists_genres_column(connection: &Connection) -> Result<(), rusqlite::Error> {
     if table_exists(connection, "artists") && !column_exists(connection, "artists", "genres")? {
         connection.execute_batch("ALTER TABLE artists ADD COLUMN genres TEXT")?;
+    }
+    Ok(())
+}
+
+/// Source bit depth (lossless formats only; the native desktop engine picks its output container from it).
+fn ensure_track_bits_per_sample_column(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "tracks")
+        && !column_exists(connection, "tracks", "bits_per_sample")?
+    {
+        connection.execute_batch("ALTER TABLE tracks ADD COLUMN bits_per_sample INTEGER")?;
     }
     Ok(())
 }

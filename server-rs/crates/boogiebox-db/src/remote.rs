@@ -313,6 +313,8 @@ pub struct TrackMediaMeta {
     pub sample_rate: Option<i64>,
     /// Channel count from the scanner's technical metadata.
     pub channels: Option<i64>,
+    /// Source bit depth (lossless files), when known.
+    pub bits_per_sample: Option<i64>,
 }
 
 fn value_to_string(v: rusqlite::types::Value) -> Option<String> {
@@ -331,7 +333,7 @@ pub fn get_track_media_meta(
     let id = crate::music::coerce_entity_id(track_id);
     conn.query_row(
         "SELECT t.id, t.title, a.name, al.title, t.album_id, t.genre, t.track_number, t.duration,
-                t.file_path, t.file_size, t.sample_rate, t.channels
+                t.file_path, t.file_size, t.sample_rate, t.channels, t.bits_per_sample
          FROM tracks t
          LEFT JOIN artists a ON a.id = t.artist_id
          LEFT JOIN albums al ON al.id = t.album_id
@@ -351,6 +353,7 @@ pub fn get_track_media_meta(
                 file_size: r.get(9)?,
                 sample_rate: r.get(10)?,
                 channels: r.get(11)?,
+                bits_per_sample: r.get(12)?,
             })
         },
     )

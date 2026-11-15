@@ -34,6 +34,8 @@ describe('activity formatting', () => {
     expect(sourceLabel('dlna', 'Bedroom TV')).toBe('DLNA · Bedroom TV');
     expect(sourceLabel('dlna', '')).toBe('DLNA device');
     expect(sourceLabel('radio', null)).toBe('Radio');
+    expect(sourceLabel('desktop', 'STUDIO-PC')).toBe('Desktop app · STUDIO-PC');
+    expect(sourceLabel('desktop', ' ')).toBe('Desktop app');
   });
 
   it('describes delivery', () => {

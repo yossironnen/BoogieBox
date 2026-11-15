@@ -258,6 +258,7 @@ export default function TrackInfoModal({ trackId, onClose, onSaved }: Props) {
               <div style={kvGridStyle}>
                 <KV label="Bitrate" value={track.bitrate ? `${track.bitrate.toLocaleString()} kbps` : null} />
                 <KV label="Sample Rate" value={track.sample_rate ? `${(track.sample_rate / 1000).toFixed(1)} kHz` : null} />
+                <KV label="Bit Depth" value={track.bits_per_sample ? `${track.bits_per_sample}-bit` : null} />
                 <KV label="Channels" value={track.channels ? `${track.channels} (${track.channels === 2 ? 'Stereo' : track.channels === 1 ? 'Mono' : track.channels + 'ch'})` : null} />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
                   <span style={kvKeyStyle}>BPM</span>

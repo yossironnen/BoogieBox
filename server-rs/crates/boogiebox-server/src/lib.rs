@@ -51,6 +51,7 @@ pub mod loudness_analysis;
 pub mod media_serve;
 pub mod mix_priority_gate;
 pub mod mix_worker;
+pub mod native;
 pub mod plays;
 pub mod post_scan;
 pub mod providers;
@@ -157,6 +158,8 @@ pub struct AppState {
     pub activity: activity::ActivityHub,
     /// Running backup/restore and the maintenance flag a live restore raises.
     pub backup: backup::BackupHub,
+    /// Stream links for the desktop app's native audio engine; reset on a database switch.
+    pub native: native::NativeLinks,
 }
 
 impl Default for AppState {
@@ -207,6 +210,7 @@ impl Default for AppState {
             plays: plays::PlayHub::default(),
             activity,
             backup: backup::BackupHub::default(),
+            native: native::NativeLinks::default(),
         }
     }
 }
@@ -479,6 +483,7 @@ pub fn activate_db(s: &mut AppState, db_pool: DbPool, db_folder: PathBuf) {
     s.subsonic.reset();
     s.plays.reset();
     s.activity.reset();
+    s.native.reset();
     s.worker_cancel.cancel();
     let cancel = tokio_util::sync::CancellationToken::new();
     s.worker_cancel = cancel.clone();
@@ -637,6 +642,7 @@ pub fn build_app(state: AppState, client_build_dir: Option<PathBuf>) -> Router {
             shared_state.clone(),
         ))
         .merge(routes::dlna_routes::dlna_router(shared_state.clone()))
+        .merge(routes::native_routes::native_router(shared_state.clone()))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors_layer)
         // `/rest` brings its own body limit and non-credentialed CORS, so it is merged after the API layers.

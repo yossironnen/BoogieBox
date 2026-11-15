@@ -1,6 +1,6 @@
 /** Admin Activity page data (`GET /api/activity`, SSE `/api/activity/events`). See wip/activity-dashboard-plan.md. */
 
-export type ActivitySource = 'web' | 'subsonic' | 'playOn' | 'dlna' | 'radio' | 'mixFile';
+export type ActivitySource = 'web' | 'subsonic' | 'playOn' | 'dlna' | 'radio' | 'mixFile' | 'desktop';
 
 export interface DeliveryInfo {
   transcoded: boolean;
@@ -38,6 +38,8 @@ export interface PlayingRow {
   sampledAtMs: number;
   status: 'playing' | 'paused' | 'loading' | 'streaming';
   delivery: DeliveryInfo | null;
+  /** What the desktop app's native engine sends to the device (desktop rows only). */
+  outputFormat?: string;
 }
 
 export interface DownloadRow {

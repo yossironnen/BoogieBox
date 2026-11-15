@@ -78,6 +78,8 @@ pub enum Source {
     Dlna,
     Radio,
     MixFile,
+    /// The Windows desktop app's native audio engine (`/media/n/{token}`).
+    Desktop,
 }
 
 impl Source {
@@ -89,6 +91,7 @@ impl Source {
             Source::Dlna => "dlna",
             Source::Radio => "radio",
             Source::MixFile => "mixFile",
+            Source::Desktop => "desktop",
         }
     }
 }
@@ -239,6 +242,12 @@ struct WebPlayer {
     duration_sec: Option<f64>,
     paused: bool,
     sampled_ms: u64,
+    /// `Web`, or `Desktop` when the desktop app's native engine is playing.
+    source: Source,
+    /// Machine name sent by the desktop app (empty for browsers).
+    client: String,
+    /// e.g. "FLAC 24/192 → 24/192 exclusive" (desktop app only).
+    output_format: Option<String>,
 }
 
 /// Body of `POST /api/activity/heartbeat`.
@@ -256,6 +265,21 @@ pub struct Heartbeat {
     /// The tab is closing or playback stopped.
     #[serde(default)]
     pub stopped: bool,
+    /// `web` (default) or `native` (the desktop app's own audio engine).
+    #[serde(default)]
+    pub output: Option<String>,
+    /// What the native engine sends to the device, e.g. "FLAC 24/192 → 24/192 exclusive".
+    #[serde(default)]
+    pub output_format: Option<String>,
+    /// The desktop app's machine name.
+    #[serde(default)]
+    pub client: Option<String>,
+}
+
+/// Trims a client-supplied label and caps its length (characters, not bytes).
+pub fn short_label(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let trimmed = value?.trim();
+    (!trimmed.is_empty()).then(|| trimmed.chars().take(max_chars).collect())
 }
 
 #[derive(Debug)]
@@ -438,6 +462,7 @@ impl ActivityHub {
             user_id.to_owned(),
             beat.player_id.chars().take(64).collect(),
         );
+        let native = beat.output.as_deref() == Some("native");
         let mut players = lock(&self.0.web_players);
         match beat.track_id.filter(|t| !t.is_empty() && !beat.stopped) {
             Some(track_id) => {
@@ -451,6 +476,15 @@ impl ActivityHub {
                         duration_sec: beat.duration_sec.filter(|d| d.is_finite() && *d > 0.0),
                         paused: beat.paused,
                         sampled_ms: now_ms(),
+                        source: if native { Source::Desktop } else { Source::Web },
+                        client: if native {
+                            short_label(beat.client.as_deref(), 64).unwrap_or_default()
+                        } else {
+                            String::new()
+                        },
+                        output_format: native
+                            .then(|| short_label(beat.output_format.as_deref(), 120))
+                            .flatten(),
                     },
                 );
             }
@@ -732,6 +766,9 @@ pub struct PlayingRow {
     /// `playing`, `paused`, `loading` or `streaming` (bytes flowing, no player report).
     pub status: &'static str,
     pub delivery: Option<DeliveryInfo>,
+    /// What the desktop app's native engine sends to the device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
 }
 
 /// One row of "Downloads".
@@ -1076,22 +1113,30 @@ fn assemble(
             estimated: false,
             sampled_at_ms: s.sampled_at_ms,
             status,
+            output_format: None,
         });
     }
 
-    // 2. Web players that report their position.
+    // 2. Web players (and the desktop app's native engine) that report their position.
     let web_users: HashSet<&str> = live
         .web_players
         .iter()
         .map(|p| p.user_id.as_str())
         .collect();
+    let reporting: HashSet<(Source, &str)> = live
+        .web_players
+        .iter()
+        .map(|p| (p.source, p.user_id.as_str()))
+        .collect();
     for p in &live.web_players {
         let info = item(&p.track_id);
+        let client = Some(p.client.clone()).filter(|c| !c.is_empty());
         playing.push(PlayingRow {
-            id: format!("web:{}:{}", p.user_id, p.track_id),
-            source: Source::Web,
+            id: format!("{}:{}:{}", p.source.as_str(), p.user_id, p.track_id),
+            source: p.source,
             user: Some(p.username.clone()),
-            client: None,
+            delivery: delivery_for(p.source, Some(&p.user_id), client.as_deref(), &p.track_id),
+            client,
             item_id: p.track_id.clone(),
             title: info.map(|i| i.title.clone()),
             artist: info.and_then(|i| i.artist.clone()),
@@ -1101,7 +1146,7 @@ fn assemble(
             estimated: false,
             sampled_at_ms: p.sampled_ms,
             status: if p.paused { "paused" } else { "playing" },
-            delivery: delivery_for(Source::Web, Some(&p.user_id), None, &p.track_id),
+            output_format: p.output_format.clone(),
         });
     }
 
@@ -1136,14 +1181,17 @@ fn assemble(
             estimated: true,
             sampled_at_ms: now,
             status: "playing",
+            output_format: None,
         });
     }
 
-    // 4. Streams no player reported: DLNA, radio, web streams without a heartbeat.
+    // 4. Streams no player reported: DLNA, radio, web and desktop-app streams without a heartbeat.
     for t in live.transfers.iter().filter(|t| t.open && !t.is_download) {
         let m = &t.meta;
-        if !matches!(m.source, Source::Dlna | Source::Radio | Source::Web)
-            || m.kind != TransferKind::Stream
+        if !matches!(
+            m.source,
+            Source::Dlna | Source::Radio | Source::Web | Source::Desktop
+        ) || m.kind != TransferKind::Stream
         {
             continue;
         }
@@ -1152,10 +1200,12 @@ fn assemble(
                 && p.item_id == m.item_id
                 && p.user.as_deref() == m.username.as_deref()
         });
-        if claimed
-            || (m.source == Source::Web
-                && m.user_id.as_deref().is_some_and(|u| web_users.contains(u)))
-        {
+        // A player that reports its position owns its streams (prefetch of the next song included).
+        let reported = matches!(m.source, Source::Web | Source::Desktop)
+            && m.user_id
+                .as_deref()
+                .is_some_and(|u| reporting.contains(&(m.source, u)));
+        if claimed || reported {
             continue;
         }
         let info = item(&m.item_id);
@@ -1180,6 +1230,7 @@ fn assemble(
             sampled_at_ms: now,
             status: "streaming",
             delivery: m.delivery.clone(),
+            output_format: None,
         });
     }
 
@@ -1620,6 +1671,9 @@ mod tests {
             duration_sec: Some(200.0),
             paused: true,
             stopped,
+            output: None,
+            output_format: None,
+            client: None,
         };
         hub.heartbeat("u1", "alice", beat(Some("t1"), false));
         hub.heartbeat("u1", "alice", beat(Some("t2"), false));
@@ -1633,6 +1687,118 @@ mod tests {
         hub.heartbeat("u1", "alice", beat(Some("t3"), false));
         assert!(hub.sweep(now_ms() + WEB_PLAYER_TTL_MS + 1, &[]));
         assert!(hub.live(now_ms(), &[]).web_players.is_empty());
+    }
+
+    #[test]
+    fn native_heartbeats_become_desktop_rows_with_the_machine_name_and_output() {
+        let hub = ActivityHub::default();
+        hub.heartbeat(
+            "u1",
+            "alice",
+            Heartbeat {
+                player_id: "desk".into(),
+                track_id: Some("t1".into()),
+                position_sec: 3.0,
+                duration_sec: Some(200.0),
+                paused: false,
+                stopped: false,
+                output: Some("native".into()),
+                output_format: Some("  FLAC 24/192 → 24/192 exclusive ".into()),
+                client: Some(format!("STUDIO-PC{}", "x".repeat(100))),
+            },
+        );
+        let players = hub.live(now_ms(), &[]).web_players;
+        assert_eq!(players[0].source, Source::Desktop);
+        assert_eq!(players[0].client.chars().count(), 64, "machine name capped");
+        assert_eq!(
+            players[0].output_format.as_deref(),
+            Some("FLAC 24/192 → 24/192 exclusive")
+        );
+
+        // A browser can't claim an output format or a machine name.
+        hub.heartbeat(
+            "u2",
+            "bob",
+            Heartbeat {
+                player_id: "tab".into(),
+                track_id: Some("t1".into()),
+                position_sec: 0.0,
+                duration_sec: None,
+                paused: false,
+                stopped: false,
+                output: None,
+                output_format: Some("fake".into()),
+                client: Some("fake".into()),
+            },
+        );
+        let players = hub.live(now_ms(), &[]).web_players;
+        let web = players.iter().find(|p| p.user_id == "u2").unwrap();
+        assert_eq!(
+            (
+                web.source,
+                web.client.as_str(),
+                web.output_format.as_deref()
+            ),
+            (Source::Web, "", None)
+        );
+    }
+
+    #[test]
+    fn desktop_streams_show_once_and_unreported_ones_stream() {
+        let now = now_ms();
+        let transfer = |item: &str| LiveTransfer {
+            meta: meta(
+                Source::Desktop,
+                TransferKind::Stream,
+                "u1",
+                "STUDIO-PC",
+                item,
+            ),
+            started_ms: now,
+            total_bytes: None,
+            bytes: 10,
+            open: true,
+            is_download: false,
+        };
+        let player = WebPlayer {
+            user_id: "u1".into(),
+            username: "u1".into(),
+            track_id: "t1".into(),
+            position_sec: 5.0,
+            duration_sec: None,
+            paused: false,
+            sampled_ms: now,
+            source: Source::Desktop,
+            client: "STUDIO-PC".into(),
+            output_format: Some("FLAC 24/96 → 24/96 exclusive".into()),
+        };
+        // Playing t1 and prefetching t2 for gapless: one row, the reported one.
+        let live = Live {
+            transfers: vec![transfer("t1"), transfer("t2")],
+            sessions: Vec::new(),
+            web_players: vec![player],
+        };
+        let snap = assemble(now, Vec::new(), live, Vec::new(), db_part());
+        assert_eq!(snap.playing.len(), 1);
+        let row = &snap.playing[0];
+        assert_eq!(row.source, Source::Desktop);
+        assert_eq!(row.client.as_deref(), Some("STUDIO-PC"));
+        assert_eq!(row.status, "playing");
+        assert_eq!(
+            row.output_format.as_deref(),
+            Some("FLAC 24/96 → 24/96 exclusive")
+        );
+
+        // No heartbeat yet: the stream still shows.
+        let live = Live {
+            transfers: vec![transfer("t1")],
+            sessions: Vec::new(),
+            web_players: Vec::new(),
+        };
+        let snap = assemble(now, Vec::new(), live, Vec::new(), db_part());
+        assert_eq!(snap.playing.len(), 1);
+        assert_eq!(snap.playing[0].status, "streaming");
+        assert_eq!(snap.playing[0].client.as_deref(), Some("STUDIO-PC"));
     }
 
     #[test]
@@ -1714,6 +1880,9 @@ mod tests {
                 duration_sec: None,
                 paused: false,
                 sampled_ms: now,
+                source: Source::Web,
+                client: String::new(),
+                output_format: None,
             }],
         };
         let snap = assemble(

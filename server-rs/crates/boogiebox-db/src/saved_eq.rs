@@ -529,6 +529,7 @@ mod tests {
             bitrate: None,
             sample_rate: None,
             channels: None,
+            bits_per_sample: None,
             loudness: None,
         };
         crate::jobs::upsert_scanned_track(&f.conn, &input).unwrap();

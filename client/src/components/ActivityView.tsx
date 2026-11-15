@@ -14,8 +14,8 @@ import ConfirmModal from './ConfirmModal';
 import { RadioIcon } from './FavouriteIcons';
 import { BrowserIcon, PhoneIcon, RendererIcon } from '../remote/OutputIcon';
 import {
-  ActivityIcon, CancelIcon, ClockIcon, DownloadIcon, MixJobIcon, PauseIcon, PlayIcon, ServerJobsIcon,
-  TranscodeIcon, TvIcon, UsersIcon,
+  ActivityIcon, CancelIcon, ClockIcon, DesktopIcon, DownloadIcon, MixJobIcon, PauseIcon, PlayIcon,
+  ServerJobsIcon, TranscodeIcon, TvIcon, UsersIcon,
 } from './activityIcons';
 import type { ActivityFeed } from '../activity/useActivityFeed';
 import type {
@@ -53,6 +53,7 @@ function SourceIcon({ source, size = 13 }: { source: ActivitySource; size?: numb
     case 'playOn': return <RendererIcon size={size} />;
     case 'dlna': return <TvIcon size={size} />;
     case 'radio': return <RadioIcon size={size} />;
+    case 'desktop': return <DesktopIcon size={size} />;
     default: return <BrowserIcon size={size} />;
   }
 }

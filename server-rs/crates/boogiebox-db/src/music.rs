@@ -2264,6 +2264,10 @@ pub struct TrackRow {
     pub sample_rate: Option<i64>,
     /// Documents the Channels public API surface.
     pub channels: Option<i64>,
+    /// Source bit depth (lossless files). Like `file_path`, only populated by `get_track`;
+    /// left out of list payloads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bits_per_sample: Option<i64>,
     /// Documents the Title public API surface.
     pub title: Option<String>,
     /// Documents the Track Number public API surface.
@@ -2320,6 +2324,7 @@ pub(crate) fn map_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackRow> {
         bitrate: row.get(5)?,
         sample_rate: row.get(6)?,
         channels: row.get(7)?,
+        bits_per_sample: None,
         title: row.get(8)?,
         track_number: row.get(9)?,
         disc_number: row.get(10)?,
@@ -2444,13 +2449,17 @@ pub fn get_track(
         .query_row(&sql, rusqlite::params![user_id, track_id], map_track)
         .optional()?;
     if let Some(row) = track.as_mut() {
-        row.file_path = conn
+        if let Some((file_path, bits)) = conn
             .query_row(
-                "SELECT file_path FROM tracks WHERE id = ?",
+                "SELECT file_path, bits_per_sample FROM tracks WHERE id = ?",
                 rusqlite::params![track_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?;
+            .optional()?
+        {
+            row.file_path = Some(file_path);
+            row.bits_per_sample = bits;
+        }
     }
     Ok(track)
 }
@@ -3360,6 +3369,7 @@ mod tests {
                 bitrate INTEGER,
                 sample_rate INTEGER,
                 channels INTEGER,
+                bits_per_sample INTEGER,
                 file_path TEXT,
                 file_size INTEGER,
                 track_number INTEGER,
@@ -3432,6 +3442,7 @@ mod tests {
                 bitrate INTEGER,
                 sample_rate INTEGER,
                 channels INTEGER,
+                bits_per_sample INTEGER,
                 file_path TEXT,
                 file_size INTEGER,
                 track_number INTEGER,

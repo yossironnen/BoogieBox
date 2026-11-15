@@ -46,6 +46,8 @@ struct AudioTechnical {
     bitrate: Option<i64>,
     sample_rate: Option<i64>,
     channels: Option<i64>,
+    /// Source bit depth for lossless formats (FLAC, WAV, AIFF, ALAC).
+    bits_per_sample: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -515,6 +517,7 @@ fn build_track_input(
         bitrate: technical.bitrate,
         sample_rate: technical.sample_rate,
         channels: technical.channels,
+        bits_per_sample: technical.bits_per_sample,
         loudness: crate::tag_bag::loudness_tags(&tags.raw),
     })
 }
@@ -685,6 +688,7 @@ fn read_mp3_technical(path: &Path) -> Option<AudioTechnical> {
         bitrate: Some(bitrate_kbps),
         sample_rate: Some(sample_rate),
         channels: Some(channels),
+        bits_per_sample: None,
     })
 }
 
@@ -725,6 +729,7 @@ fn read_flac_technical(path: &Path) -> Option<AudioTechnical> {
             let sr =
                 ((block[10] as u32) << 12) | ((block[11] as u32) << 4) | ((block[12] as u32) >> 4);
             let channels = (((block[12] >> 1) & 0x07) + 1) as i64;
+            let bits = ((((block[12] & 0x01) << 4) | (block[13] >> 4)) + 1) as i64;
             let total_hi = (block[13] & 0x0f) as u64;
             let total_lo = ((block[14] as u64) << 24)
                 | ((block[15] as u64) << 16)
@@ -741,6 +746,7 @@ fn read_flac_technical(path: &Path) -> Option<AudioTechnical> {
                 bitrate: None, // lossless - omit per-track bitrate
                 sample_rate: Some(sample_rate),
                 channels: Some(channels),
+                bits_per_sample: Some(bits),
             });
         }
         if is_last {
@@ -797,6 +803,7 @@ fn read_ogg_technical(path: &Path) -> Option<AudioTechnical> {
         bitrate,
         sample_rate: Some(sample_rate_for_dur),
         channels: Some(channels),
+        bits_per_sample: None,
     })
 }
 
@@ -840,12 +847,97 @@ fn read_ogg_last_granule(path: &Path, sample_rate: i64) -> Option<f64> {
 fn read_m4a_technical(path: &Path) -> Option<AudioTechnical> {
     let data = read_mp4_metadata_region(path).ok()?;
     let duration = parse_m4a_duration(&data, 0)?;
+    let audio = parse_m4a_audio_entry(&data).unwrap_or_default();
     Some(AudioTechnical {
         duration: Some(duration),
         bitrate: None,
-        sample_rate: None,
-        channels: None,
+        sample_rate: audio.sample_rate,
+        channels: audio.channels,
+        bits_per_sample: audio.bits_per_sample,
     })
+}
+
+/// Sample rate, channels and (ALAC only) bit depth from the first audio sample entry in
+/// `moov/trak/mdia/minf/stbl/stsd`.
+#[derive(Debug, Default, PartialEq)]
+struct M4aAudioEntry {
+    sample_rate: Option<i64>,
+    channels: Option<i64>,
+    bits_per_sample: Option<i64>,
+}
+
+/// Direct child boxes of an MP4 box payload, as (type, payload).
+fn mp4_children(data: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        let (kind, start, end) = read_mp4_atom(data, offset)?;
+        offset = end;
+        let kind: [u8; 4] = kind.as_slice().try_into().ok()?;
+        Some((kind, &data[start..end]))
+    })
+}
+
+/// Payload of the first direct child box named `name`.
+fn mp4_child<'a>(data: &'a [u8], name: &[u8; 4]) -> Option<&'a [u8]> {
+    mp4_children(data)
+        .find(|(kind, _)| kind == name)
+        .map(|(_, payload)| payload)
+}
+
+fn parse_m4a_audio_entry(data: &[u8]) -> Option<M4aAudioEntry> {
+    // `data` is the whole moov atom (or the file head when moov wasn't found up front).
+    let moov = mp4_child(data, b"moov")?;
+    mp4_children(moov)
+        .filter(|(kind, _)| kind == b"trak")
+        .find_map(|(_, trak)| {
+            let minf = mp4_child(mp4_child(trak, b"mdia")?, b"minf")?;
+            let stsd = mp4_child(mp4_child(minf, b"stbl")?, b"stsd")?;
+            // FullBox header (4) + entry_count (4), then the sample entries.
+            let (kind, entry) = mp4_children(stsd.get(8..)?).next()?;
+            parse_audio_sample_entry(&kind, entry)
+        })
+}
+
+fn parse_audio_sample_entry(kind: &[u8; 4], entry: &[u8]) -> Option<M4aAudioEntry> {
+    if kind != b"alac" && kind != b"mp4a" {
+        return None;
+    }
+    // reserved(6) data_ref(2) version(2) revision(2) vendor(4) channels(2) sample_size(2)
+    // compression_id(2) packet_size(2) sample_rate(4, 16.16) = 28 bytes.
+    let version = u16::from_be_bytes(entry.get(8..10)?.try_into().ok()?);
+    let channels = i64::from(u16::from_be_bytes(entry.get(16..18)?.try_into().ok()?));
+    let rate = u32::from_be_bytes(entry.get(24..28)?.try_into().ok()?) >> 16;
+    let mut out = M4aAudioEntry {
+        sample_rate: (rate > 0).then_some(i64::from(rate)),
+        channels: (channels > 0).then_some(channels),
+        bits_per_sample: None,
+    };
+    if kind == b"alac" {
+        // A QuickTime sound description v1 adds 16 bytes and v2 adds 36 before the child boxes.
+        let extra = match version {
+            1 => 16,
+            2 => 36,
+            _ => 0,
+        };
+        // `alac` FullBox (4) + ALACSpecificConfig: frameLength(4) compatibleVersion(1) bitDepth(1)
+        // pb(1) mb(1) kb(1) numChannels(1) maxRun(2) maxFrameBytes(4) avgBitRate(4) sampleRate(4).
+        let config = entry
+            .get(28 + extra..)
+            .and_then(|children| mp4_child(children, b"alac"))
+            .and_then(|alac| alac.get(4..28));
+        if let Some(config) = config {
+            out.bits_per_sample = Some(i64::from(config[5])).filter(|b| *b > 0);
+            out.channels = Some(i64::from(config[9]))
+                .filter(|c| *c > 0)
+                .or(out.channels);
+            let config_rate = i64::from(u32::from_be_bytes(config[20..24].try_into().ok()?));
+            if config_rate > 0 {
+                // The 16.16 entry field can't hold rates above 65535 Hz; the ALAC config can.
+                out.sample_rate = Some(config_rate);
+            }
+        }
+    }
+    Some(out)
 }
 
 fn parse_m4a_duration(data: &[u8], depth: usize) -> Option<f64> {
@@ -921,6 +1013,7 @@ fn read_wav_technical(path: &Path) -> Option<AudioTechnical> {
     let mut channels: Option<i64> = None;
     let mut sample_rate: Option<i64> = None;
     let mut byte_rate: Option<i64> = None;
+    let mut bits_per_sample: Option<i64> = None;
     let mut data_size: Option<u64> = None;
 
     loop {
@@ -931,13 +1024,21 @@ fn read_wav_technical(path: &Path) -> Option<AudioTechnical> {
         let chunk_id = &chunk_hdr[0..4];
         let chunk_size = u32::from_le_bytes(chunk_hdr[4..8].try_into().ok()?) as usize;
         if chunk_id == b"fmt " {
-            let read_len = chunk_size.min(16);
+            let read_len = chunk_size.min(24);
             let mut fmt = vec![0u8; read_len];
             file.read_exact(&mut fmt).ok()?;
             if fmt.len() >= 16 {
                 channels = Some(u16::from_le_bytes(fmt[2..4].try_into().ok()?) as i64);
                 sample_rate = Some(u32::from_le_bytes(fmt[4..8].try_into().ok()?) as i64);
                 byte_rate = Some(u32::from_le_bytes(fmt[8..12].try_into().ok()?) as i64);
+                let container = i64::from(u16::from_le_bytes(fmt[14..16].try_into().ok()?));
+                // WAVE_FORMAT_EXTENSIBLE carries the valid bit depth (e.g. 24 in a 32-bit container).
+                let valid = (fmt[0..2] == [0xFE, 0xFF])
+                    .then(|| fmt.get(18..20))
+                    .flatten()
+                    .map(|v| i64::from(u16::from_le_bytes([v[0], v[1]])))
+                    .filter(|v| *v > 0);
+                bits_per_sample = valid.or(Some(container)).filter(|b| *b > 0);
             }
             let skip = chunk_size.saturating_sub(read_len) as i64;
             if skip > 0 {
@@ -960,6 +1061,7 @@ fn read_wav_technical(path: &Path) -> Option<AudioTechnical> {
         bitrate: Some(br * 8 / 1000),
         sample_rate,
         channels,
+        bits_per_sample,
     })
 }
 
@@ -987,6 +1089,7 @@ fn read_aiff_technical(path: &Path) -> Option<AudioTechnical> {
             if comm.len() >= 18 {
                 let ch = i16::from_be_bytes(comm[0..2].try_into().ok()?) as i64;
                 let num_frames = u32::from_be_bytes(comm[2..6].try_into().ok()?) as f64;
+                let bits = i64::from(i16::from_be_bytes(comm[6..8].try_into().ok()?));
                 let sr = parse_ieee_extended(&comm[8..18]);
                 let sample_rate = sr as i64;
                 let duration = if sr > 0.0 {
@@ -999,6 +1102,7 @@ fn read_aiff_technical(path: &Path) -> Option<AudioTechnical> {
                     bitrate: None,
                     sample_rate: Some(sample_rate),
                     channels: Some(ch),
+                    bits_per_sample: (bits > 0).then_some(bits),
                 });
             }
             break;
@@ -1845,6 +1949,149 @@ mod tests {
         assert_eq!(tech.sample_rate, Some(44100));
         assert_eq!(tech.channels, Some(2));
         assert_eq!(tech.duration, Some(1.0));
+        assert_eq!(tech.bits_per_sample, Some(16));
+    }
+
+    #[test]
+    fn wav_extensible_reports_the_valid_bits_not_the_container() {
+        let dir = temp_dir("wav-ext");
+        let path = dir.join("t.wav");
+        // 24-bit audio in 32-bit containers, WAVE_FORMAT_EXTENSIBLE (fmt chunk of 40 bytes).
+        let (rate, channels, container, frames) = (96_000u32, 2u16, 32u16, 960u32);
+        let block_align = channels * container / 8;
+        let data_size = frames * u32::from(block_align);
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        fmt.extend_from_slice(&channels.to_le_bytes());
+        fmt.extend_from_slice(&rate.to_le_bytes());
+        fmt.extend_from_slice(&(rate * u32::from(block_align)).to_le_bytes());
+        fmt.extend_from_slice(&block_align.to_le_bytes());
+        fmt.extend_from_slice(&container.to_le_bytes());
+        fmt.extend_from_slice(&22u16.to_le_bytes()); // cbSize
+        fmt.extend_from_slice(&24u16.to_le_bytes()); // wValidBitsPerSample
+        fmt.extend_from_slice(&3u32.to_le_bytes()); // channel mask
+        fmt.extend_from_slice(&[0u8; 16]); // sub-format GUID
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(4 + 8 + fmt.len() as u32 + 8 + data_size).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        out.extend_from_slice(&fmt);
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_size.to_le_bytes());
+        out.extend(std::iter::repeat_n(0u8, data_size as usize));
+        fs::write(&path, out).unwrap();
+
+        let tech = read_wav_technical(&path).expect("wav parse");
+        assert_eq!(tech.sample_rate, Some(96_000));
+        assert_eq!(tech.bits_per_sample, Some(24));
+        assert_eq!(tech.duration, Some(0.01));
+    }
+
+    #[test]
+    fn alac_sample_entry_reads_bit_depth_and_rates_above_65535() {
+        // `alac` FullBox (4) + ALACSpecificConfig (24): 24-bit, 2 channels, 192 kHz.
+        let mut config = vec![0u8; 4];
+        config.extend_from_slice(&4096u32.to_be_bytes()); // frameLength
+        config.extend_from_slice(&[0, 24, 40, 10, 14, 2]); // version, bitDepth, pb, mb, kb, channels
+        config.extend_from_slice(&255u16.to_be_bytes()); // maxRun
+        config.extend_from_slice(&0u32.to_be_bytes()); // maxFrameBytes
+        config.extend_from_slice(&0u32.to_be_bytes()); // avgBitRate
+        config.extend_from_slice(&192_000u32.to_be_bytes());
+        let mut entry = vec![0u8; 28];
+        entry[17] = 2; // channels
+        entry[19] = 24; // sample size
+                        // 192000 doesn't fit the 16.16 field; writers put 0 (or a truncated value) there.
+        entry.extend_from_slice(&mp4_atom(b"alac", &config));
+        let parsed = parse_audio_sample_entry(b"alac", &entry).unwrap();
+        assert_eq!(
+            parsed,
+            M4aAudioEntry {
+                sample_rate: Some(192_000),
+                channels: Some(2),
+                bits_per_sample: Some(24),
+            }
+        );
+
+        // AAC: rate from the 16.16 field, no bit depth.
+        let mut aac = vec![0u8; 28];
+        aac[17] = 2;
+        aac[24..28].copy_from_slice(&(44_100u32 << 16).to_be_bytes());
+        let parsed = parse_audio_sample_entry(b"mp4a", &aac).unwrap();
+        assert_eq!(
+            parsed,
+            M4aAudioEntry {
+                sample_rate: Some(44_100),
+                channels: Some(2),
+                bits_per_sample: None,
+            }
+        );
+        assert!(parse_audio_sample_entry(b"text", &aac).is_none());
+    }
+
+    /// Real files from the bundled FFmpeg: the bit depth the native desktop engine relies on.
+    #[test]
+    fn reads_bit_depth_from_files_ffmpeg_writes() {
+        let ffmpeg = crate::ffmpeg::resolve_ffmpeg();
+        let dir = temp_dir("bit-depth");
+        let cases: [(&str, &[&str], u32, Option<i64>); 7] = [
+            (
+                "f16.flac",
+                &["-c:a", "flac", "-sample_fmt", "s16"],
+                44_100,
+                Some(16),
+            ),
+            (
+                "f24.flac",
+                &["-c:a", "flac", "-sample_fmt", "s32"],
+                96_000,
+                Some(24),
+            ),
+            (
+                "a24.m4a",
+                &["-c:a", "alac", "-sample_fmt", "s32p"],
+                192_000,
+                Some(24),
+            ),
+            (
+                "a16.m4a",
+                &["-c:a", "alac", "-sample_fmt", "s16p"],
+                44_100,
+                Some(16),
+            ),
+            ("c.m4a", &["-c:a", "aac", "-b:a", "128k"], 48_000, None),
+            ("w24.wav", &["-c:a", "pcm_s24le"], 96_000, Some(24)),
+            ("i24.aiff", &["-c:a", "pcm_s24be"], 88_200, Some(24)),
+        ];
+        for (name, codec, rate, bits) in cases {
+            let path = dir.join(name);
+            let made = std::process::Command::new(&ffmpeg) // nosemgrep: boogiebox-rust-dynamic-command
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                ])
+                .arg(format!("sine=frequency=440:duration=1:sample_rate={rate}"))
+                .args(["-ac", "2"])
+                .args(codec)
+                .arg(&path)
+                .status();
+            if !matches!(made, Ok(status) if status.success()) {
+                eprintln!("ffmpeg not available; skipping the bit depth check");
+                return;
+            }
+            let tech = read_audio_technical(&path);
+            assert_eq!(tech.bits_per_sample, bits, "{name} bit depth");
+            assert_eq!(
+                tech.sample_rate,
+                Some(i64::from(rate)),
+                "{name} sample rate"
+            );
+            assert_eq!(tech.channels, Some(2), "{name} channels");
+        }
     }
 
     #[test]
@@ -1886,6 +2133,7 @@ mod tests {
         let tech = read_aiff_technical(&path).expect("aiff parse");
         assert_eq!(tech.channels, Some(2));
         assert_eq!(tech.sample_rate, Some(44100));
+        assert_eq!(tech.bits_per_sample, Some(16));
         assert!((tech.duration.unwrap() - 1.0).abs() < 0.01);
     }
 
