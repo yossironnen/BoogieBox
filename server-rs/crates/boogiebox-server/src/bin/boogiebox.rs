@@ -115,7 +115,10 @@ mod tray {
 
     struct Tray {
         hwnd: HWND,
+        /// Shown while the server runs.
         icon: HICON,
+        /// Grey, shown while the server starts or stops.
+        idle_icon: HICON,
         server: Child,
         shutdown_event: HANDLE,
         stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -161,7 +164,8 @@ mod tray {
 
         let tray = Tray {
             hwnd,
-            icon: load_icon(),
+            icon: load_icon(ICON_RUNNING),
+            idle_icon: load_icon(ICON_IDLE),
             server,
             shutdown_event,
             stderr_tail,
@@ -195,7 +199,7 @@ mod tray {
             let mut data = self.notify_data();
             data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
             data.uCallbackMessage = WM_TRAY;
-            data.hIcon = self.icon;
+            data.hIcon = self.current_icon();
             copy_into(&mut data.szTip, TOOLTIP);
             unsafe {
                 if Shell_NotifyIconW(NIM_ADD, &data) == 0
@@ -214,6 +218,22 @@ mod tray {
             }
         }
 
+        fn current_icon(&self) -> HICON {
+            if self.state == ServerState::Running {
+                self.icon
+            } else {
+                self.idle_icon
+            }
+        }
+
+        /// Shows the icon that matches the server state.
+        fn update_icon(&self) {
+            let mut data = self.notify_data();
+            data.uFlags = NIF_ICON;
+            data.hIcon = self.current_icon();
+            unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+        }
+
         fn remove_icon(&self) {
             unsafe {
                 KillTimer(self.hwnd, ICON_RETRY_TIMER);
@@ -227,6 +247,7 @@ mod tray {
                 return;
             }
             self.state = ServerState::Stopping;
+            self.update_icon();
             unsafe {
                 if self.shutdown_event.is_null() || SetEvent(self.shutdown_event) == 0 {
                     let _ = self.server.kill();
@@ -273,6 +294,7 @@ mod tray {
                 with_tray(|tray| {
                     if tray.state == ServerState::Starting {
                         tray.state = ServerState::Running;
+                        tray.update_icon();
                     }
                 });
                 0
@@ -527,12 +549,16 @@ mod tray {
     }
 
     /// The icon embedded by build.rs (resource id 1), at the small-icon size for this DPI.
-    fn load_icon() -> HICON {
+    /// Icon resource ids embedded by `build.rs`.
+    const ICON_RUNNING: usize = 1;
+    const ICON_IDLE: usize = 2;
+
+    fn load_icon(id: usize) -> HICON {
         unsafe {
             let icon = LoadImageW(
                 GetModuleHandleW(null()),
-                // MAKEINTRESOURCEW(1)
-                std::ptr::without_provenance(1),
+                // MAKEINTRESOURCEW(id)
+                std::ptr::without_provenance(id),
                 IMAGE_ICON,
                 GetSystemMetrics(SM_CXSMICON),
                 GetSystemMetrics(SM_CYSMICON),

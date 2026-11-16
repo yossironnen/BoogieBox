@@ -102,6 +102,7 @@ impl From<PlaySource> for Source {
             PlaySource::Web => Source::Web,
             PlaySource::PlayOn => Source::PlayOn,
             PlaySource::Subsonic => Source::Subsonic,
+            PlaySource::Desktop => Source::Desktop,
         }
     }
 }
@@ -1153,7 +1154,8 @@ fn assemble(
     // 3. Now-playing notices without a position (Subsonic apps, older web clients): estimated.
     for n in &now_playing {
         if n.source == PlaySource::PlayOn
-            || (n.source == PlaySource::Web && web_users.contains(n.user_id.as_str()))
+            || (matches!(n.source, PlaySource::Web | PlaySource::Desktop)
+                && web_users.contains(n.user_id.as_str()))
             || play_on_users.contains(&(n.user_id.clone(), n.client.clone()))
         {
             continue;

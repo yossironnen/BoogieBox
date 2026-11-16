@@ -63,6 +63,29 @@ struct StreamParams {
     no_transcode: Option<String>,
 }
 
+/// `POST /api/tracks/{id}/played?output=native&client=NAME`: the desktop app's own engine played it.
+#[derive(Debug, Default, Deserialize)]
+struct PlayedParams {
+    output: Option<String>,
+    client: Option<String>,
+}
+
+impl PlayedParams {
+    /// Who played it: the web player, or the desktop app's engine on the named PC.
+    fn player(&self) -> (plays::PlaySource, String) {
+        if self.output.as_deref() != Some("native") {
+            return (plays::PlaySource::Web, plays::WEB_CLIENT.to_owned());
+        }
+        let client = self.client.as_deref().map(str::trim).unwrap_or_default();
+        let client = if client.is_empty() {
+            "Desktop app"
+        } else {
+            client
+        };
+        (plays::PlaySource::Desktop, client.to_owned())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct UserHistoryParams {
     limit: Option<i64>,
@@ -241,6 +264,7 @@ async fn track_played_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
+    Query(params): Query<PlayedParams>,
 ) -> impl IntoResponse {
     let db = match get_db(&state) {
         Some(d) => d,
@@ -262,14 +286,8 @@ async fn track_played_handler(
     match result {
         Ok(Ok(true)) => {
             if let Some(env) = plays::PlayEnv::from_state(&state) {
-                plays::play_started(
-                    &env,
-                    plays::PlaySource::Web,
-                    &user.id,
-                    &user.username,
-                    &track_id,
-                    plays::WEB_CLIENT,
-                );
+                let (source, client) = params.player();
+                plays::play_started(&env, source, &user.id, &user.username, &track_id, &client);
             }
             (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
         }
@@ -1119,6 +1137,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn played_params_name_the_desktop_engine() {
+        use crate::plays;
+        let p = |output: Option<&str>, client: Option<&str>| {
+            super::PlayedParams {
+                output: output.map(str::to_owned),
+                client: client.map(str::to_owned),
+            }
+            .player()
+        };
+        assert_eq!(
+            p(None, None),
+            (plays::PlaySource::Web, plays::WEB_CLIENT.to_owned())
+        );
+        assert_eq!(
+            p(None, Some("PC")),
+            (plays::PlaySource::Web, plays::WEB_CLIENT.to_owned())
+        );
+        assert_eq!(
+            p(Some("native"), Some(" STUDIO-PC ")),
+            (plays::PlaySource::Desktop, "STUDIO-PC".to_owned())
+        );
+        assert_eq!(
+            p(Some("native"), Some("")),
+            (plays::PlaySource::Desktop, "Desktop app".to_owned())
+        );
     }
 
     #[tokio::test]

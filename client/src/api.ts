@@ -591,7 +591,12 @@ export const api = {
     source: result.source,
     synced: Array.isArray(result.synced) ? result.synced : result.syncedLyrics,
   })),
-  markTrackPlayed: (id: ApiEntityId) => post<{ ok: boolean }>(`/tracks/${id}/played`),
+  /** `nativeClient`: the PC name when the desktop app's own engine plays it (Activity shows "Desktop app"). */
+  markTrackPlayed: (id: ApiEntityId, nativeClient?: string) => post<{ ok: boolean }>(
+    nativeClient == null
+      ? `/tracks/${id}/played`
+      : `/tracks/${id}/played?output=native&client=${encodeURIComponent(nativeClient)}`,
+  ),
   /** The track played long enough to count; queued for the user's Last.fm / ListenBrainz accounts. */
   scrobbleTrack: (id: ApiEntityId, startedAt: number) =>
     post<{ ok: boolean }>(`/tracks/${id}/scrobble`, { startedAt: Math.floor(startedAt) }),

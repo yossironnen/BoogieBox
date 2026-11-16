@@ -11,8 +11,8 @@ import { RADIO_TRACK_PREFIX } from '../radioStations';
 import { platform } from '../platform';
 
 let machineName: string | null = null;
-/** The desktop app's machine name, fetched once. */
-function nativeClient(): string {
+/** The desktop app's machine name, fetched once ('' until it arrives). */
+export function nativeClient(): string {
   if (machineName == null && platform.audio) {
     machineName = '';
     platform.audio.machineName().then((name) => { machineName = name; }).catch(() => {});

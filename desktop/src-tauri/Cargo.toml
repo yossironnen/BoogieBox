@@ -3,7 +3,7 @@ members = [".", "crates/boogiebox-audio"]
 
 [package]
 name = "boogiebox-desktop"
-version = "0.9.101"
+version = "0.9.103"
 edition = "2021"
 
 [lib]
@@ -29,7 +29,6 @@ directories = "6"
 url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-libloading = "0.9"
 boogiebox-audio = { path = "crates/boogiebox-audio" }
 
 [features]

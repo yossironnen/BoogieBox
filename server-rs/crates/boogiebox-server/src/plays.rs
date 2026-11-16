@@ -33,6 +33,8 @@ pub enum PlaySource {
     PlayOn,
     /// A Subsonic app.
     Subsonic,
+    /// The Windows desktop app's own audio engine ("This PC · Hi-Res").
+    Desktop,
 }
 
 /// Someone's player reporting what it is playing.

@@ -32,9 +32,10 @@ import HomeView from './components/HomeView';
 import SetupView from './components/SetupView';
 import LoginScreen from './components/LoginScreen';
 import SidebarStatusPanel from './components/SidebarStatusPanel';
+import BoogieBoxLogo from './components/BoogieBoxLogo';
 import { ActivityIcon } from './components/activityIcons';
 import { useActivityFeed } from './activity/useActivityFeed';
-import { useWebPlayerHeartbeat } from './activity/useWebPlayerHeartbeat';
+import { nativeClient, useWebPlayerHeartbeat } from './activity/useWebPlayerHeartbeat';
 import { activeCount } from './activity/activityTypes';
 import { ContextMenuRoot, KebabButton, TRACK_INFO_EVENT, type ContextMenuAction } from './components/ContextMenu';
 import TrackInfoModal from './components/TrackInfoModal';
@@ -1464,8 +1465,11 @@ export default function App() {
     const key = `${playerState.playToken}:${playerState.currentIndex}:${current.id}`;
     if (lastRecordedPlayKeyRef.current === key) return;
     lastRecordedPlayKeyRef.current = key;
-    api.markTrackPlayed(current.id).catch(() => {});
-  }, [playsHere, playerState.playToken, playerState.currentIndex, playerState.queue]);
+    const recorded = playOn.target.kind === 'native'
+      ? api.markTrackPlayed(current.id, nativeClient())
+      : api.markTrackPlayed(current.id);
+    recorded.catch(() => {});
+  }, [playsHere, playOn.target.kind, playerState.playToken, playerState.currentIndex, playerState.queue]);
 
   // Radio plays in this browser or the desktop app's engine (speakers get library tracks, not station relays).
   const playRadioStation = (station: RadioStation) => {
@@ -1749,7 +1753,7 @@ export default function App() {
             }}
             title={`BoogieBox v${serverVersion ?? APP_VERSION}`}
           >
-            <img src="/boogiebox.png" alt="BoogieBox logo" style={S.logoImage} />
+            <BoogieBoxLogo size={40} style={S.logoMark} />
             {!sidebarCollapsed && (
               <div>
                 <div style={activeVintage ? activeVintage.styles.logoText : undefined}>BoogieBox</div>
@@ -2190,10 +2194,8 @@ const S: Record<string, React.CSSProperties> = {
     height: 13,
     objectFit: 'contain',
   },
-  logoImage: {
-    width: 46,
-    height: 46,
-    objectFit: 'contain',
+  logoMark: {
+    color: 'var(--accent)',
     flexShrink: 0,
   },
   nav: { padding: '18px 12px', flex: 1 },

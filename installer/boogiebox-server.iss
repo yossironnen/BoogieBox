@@ -27,7 +27,7 @@ OutputBaseFilename=boogiebox-{#AppVersion}-win-nomodels-setup
 #else
 OutputBaseFilename=boogiebox-{#AppVersion}-win-setup
 #endif
-SetupIconFile=..\desktop\src-tauri\icons\icon.ico
+SetupIconFile=..\server-rs\crates\boogiebox-server\icons\boogiebox-server.ico
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible

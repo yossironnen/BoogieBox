@@ -111,9 +111,13 @@ if not exist "src-tauri\icons\icon.ico" (
 )
 
 echo.
-echo -- Step 3: Rust check ---------------------------------------
-call npm run rust:check
-if errorlevel 1 ( echo [ERROR] Rust check failed & exit /b 1 )
+echo -- Step 3: Rust checks (shell + audio engine) ---------------
+cargo fmt --manifest-path src-tauri\Cargo.toml --all --check
+if errorlevel 1 ( echo [ERROR] Rust formatting check failed & exit /b 1 )
+cargo clippy --manifest-path src-tauri\Cargo.toml --workspace --all-targets -- -D warnings
+if errorlevel 1 ( echo [ERROR] Rust clippy failed & exit /b 1 )
+cargo test --manifest-path src-tauri\Cargo.toml --workspace
+if errorlevel 1 ( echo [ERROR] Rust tests failed & exit /b 1 )
 
 echo.
 echo -- Step 4: Build Tauri desktop app --------------------------
