@@ -8,6 +8,17 @@ import { useEffect, useRef } from 'react';
 import { api } from '../api';
 import type { PlaybackSnapshot } from '../components/Player';
 import { RADIO_TRACK_PREFIX } from '../radioStations';
+import { platform } from '../platform';
+
+let machineName: string | null = null;
+/** The desktop app's machine name, fetched once. */
+function nativeClient(): string {
+  if (machineName == null && platform.audio) {
+    machineName = '';
+    platform.audio.machineName().then((name) => { machineName = name; }).catch(() => {});
+  }
+  return machineName ?? '';
+}
 
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 
@@ -71,6 +82,9 @@ export function useWebPlayerHeartbeat(snapshot: PlaybackSnapshot | null, active:
         positionSec: Math.max(0, latest?.currentTime ?? 0),
         durationSec: duration,
         paused: !latest?.isPlaying,
+        ...(latest?.nativeOutput
+          ? { output: 'native' as const, client: nativeClient(), outputFormat: latest.nativeOutput }
+          : {}),
       });
       sentRef.current = true;
     };

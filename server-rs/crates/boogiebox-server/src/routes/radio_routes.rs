@@ -305,10 +305,31 @@ async fn stream_handler(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Response {
+    relay_station(
+        &state,
+        id,
+        &user.id,
+        &user.username,
+        crate::activity::Source::Radio,
+        String::new(),
+    )
+    .await
+}
+
+/// Relays a station's stream (the web player's `/api/radio-stations/{id}/stream`, and the desktop app's native
+/// link for a station). `source` and `client` label it on the Activity page.
+pub async fn relay_station(
+    state: &SharedState,
+    id: String,
+    user_id: &str,
+    username: &str,
+    source: crate::activity::Source,
+    client: String,
+) -> Response {
     if !valid_id(&id) {
         return error(StatusCode::NOT_FOUND, "Station not found");
     }
-    let Some(db) = db_of(&state) else {
+    let Some(db) = db_of(state) else {
         return not_ready();
     };
     let station = match run(db, move |conn| rdb::get_station(conn, &id)).await {
@@ -335,15 +356,15 @@ async fn stream_handler(
         chunk
     });
     let tracked = crate::activity::TransferMeta {
-        source: crate::activity::Source::Radio,
+        source,
         kind: crate::activity::TransferKind::Stream,
-        user_id: Some(user.id.clone()),
-        username: Some(user.username.clone()),
-        client: String::new(),
+        user_id: Some(user_id.to_owned()),
+        username: Some(username.to_owned()),
+        client,
         item_id: format!("st-{}", station.id),
         delivery: None,
     };
-    let mut resp = crate::activity::hub_of(&state).track_response(
+    let mut resp = crate::activity::hub_of(state).track_response(
         tracked,
         Response::new(Body::from_stream(body)),
         false,

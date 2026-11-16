@@ -94,6 +94,20 @@ import type { ActivitySnapshot, PlayerHeartbeat } from './activity/activityTypes
 type ApiEntityId = ClientEntityId;
 
 const BASE = import.meta.env.VITE_API_URL || '';
+
+/** One link from `POST /api/native/stream-tokens`. */
+export interface NativeStreamLink {
+  id: string;
+  url?: string;
+  expiresAt?: number;
+  format?: string;
+  sampleRate?: number;
+  bitsPerSample?: number;
+  channels?: number;
+  duration?: number;
+  decode?: 'native' | 'server_wav' | 'live';
+  error?: 'not_found' | 'file_missing' | 'unsupported';
+}
 /** Supported server-generated album artwork thumbnail sizes. */
 export type AlbumArtSize = 300 | 800;
 
@@ -629,6 +643,11 @@ export const api = {
   generateTrackWaveform: (id: ApiEntityId) => post<TrackWaveformLookupResponse>(`/tracks/${id}/waveform/generate`),
   /** Levelling gains for up to 200 tracks or `boogiemix:` mixes; ids without data are left out. */
   trackLoudness: (ids: string[]) => post<Record<string, TrackLoudness>>('/tracks/loudness', { ids }),
+  /** Stream links for the desktop app's Hi-Res engine (1-50 track ids or `boogiemix:` mixes, or `radio:` stations). */
+  nativeStreamTokens: (ids: string[], client: string) =>
+    post<{ tokens: NativeStreamLink[] }>('/native/stream-tokens', { ids, client }),
+  /** Absolute URL for a server path (the engine runs outside the page). */
+  absoluteUrl: (path: string) => new URL(`${BASE}${path}`, window.location.origin).toString(),
   trackStreamUrl: (id: ApiEntityId) => {
     const base = `${BASE}/api/tracks/${id}/stream`;
     return getStreamDirect() ? `${base}?noTranscode=1` : base;

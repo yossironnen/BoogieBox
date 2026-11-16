@@ -173,7 +173,7 @@ impl Shared {
         prefetch: bool,
     ) -> Result<TrackDecoder, DecodeError> {
         let me = Arc::downgrade(self);
-        let mut source = HttpRangeSource::open(SourceOptions {
+        let options = SourceOptions {
             track_id: item.track_id.clone(),
             url: self.slot(item),
             on_expired: Arc::new(move |id: &str| {
@@ -185,8 +185,12 @@ impl Shared {
             }),
             cancel: cancel.clone(),
             backoff: self.backoff,
-        })
-        .map_err(DecodeError::Io)?;
+        };
+        if item.live {
+            let stream = crate::source::open_live(&options).map_err(DecodeError::Io)?;
+            return TrackDecoder::open(Box::new(stream), item.format_hint.as_deref());
+        }
+        let mut source = HttpRangeSource::open(options).map_err(DecodeError::Io)?;
         if prefetch {
             let bytes = item
                 .duration_sec
@@ -339,6 +343,8 @@ struct ProducerCtx {
     to_control: Sender<Msg>,
     /// Exclusive formats of the device (exclusive mode only).
     caps: Option<Arc<DeviceCaps>>,
+    /// D9: resample to the nearest supported rate (else play such items in shared mode).
+    nearest_rate: bool,
     cancel: Arc<AtomicBool>,
     next: Arc<Mutex<Option<PlayItem>>>,
     prepared: Prepared,
@@ -413,7 +419,10 @@ impl ProducerCtx {
 
     /// The exclusive format for a stream (`None`: shared mode, or nothing usable on the device).
     fn want(&self, info: &StreamInfo) -> Option<DeviceFormat> {
-        self.caps.as_ref().and_then(|c| negotiate::choose(c, info))
+        self.caps
+            .as_ref()
+            .and_then(|c| negotiate::choose(c, info))
+            .filter(|f| self.nearest_rate || f.sample_rate == info.sample_rate)
     }
 
     /// Asks the control thread for the device; `None` when the session ended or the device can't open.
@@ -506,7 +515,7 @@ fn run_producer(mut ctx: ProducerCtx) {
         Err(e) => return ctx.fail(&item.track_id, e.code(), e.to_string(), 0),
     };
     let mut start_sec = 0.0;
-    if ctx.start_sec > 0.0 {
+    if ctx.start_sec > 0.0 && !item.live {
         match dec.seek(ctx.start_sec) {
             Ok(at) => start_sec = at,
             Err(e) => return ctx.fail(&item.track_id, e.code(), e.to_string(), 0),
@@ -683,6 +692,7 @@ struct Control {
     device_id: Option<String>,
     mode: OutputMode,
     buffer_ms: u32,
+    nearest_rate: bool,
     caps: Option<Result<Arc<DeviceCaps>, OutputError>>,
     generation: u64,
     session: Option<Arc<AtomicBool>>,
@@ -726,6 +736,7 @@ impl Control {
             device_id: None,
             mode: OutputMode::Shared,
             buffer_ms: DEFAULT_BUFFER_MS,
+            nearest_rate: true,
             caps: None,
             generation: 0,
             session: None,
@@ -862,6 +873,7 @@ impl Control {
             generation: self.generation,
             to_control: self.to_control.clone(),
             caps,
+            nearest_rate: self.nearest_rate,
             cancel: cancel.clone(),
             next: self.next.clone(),
             prepared: self.prepared.clone(),
@@ -1120,11 +1132,17 @@ impl Control {
                 device_id,
                 mode,
                 buffer_ms,
+                nearest_rate,
             } => {
                 let buffer_ms = buffer_ms.clamp(20, 200);
-                if device_id == self.device_id && mode == self.mode && buffer_ms == self.buffer_ms {
+                if device_id == self.device_id
+                    && mode == self.mode
+                    && buffer_ms == self.buffer_ms
+                    && nearest_rate == self.nearest_rate
+                {
                     return true;
                 }
+                self.nearest_rate = nearest_rate;
                 let resume = self.session.is_some();
                 let at = self.position;
                 self.end_session();

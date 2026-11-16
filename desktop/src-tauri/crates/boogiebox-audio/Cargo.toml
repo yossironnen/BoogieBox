@@ -1,6 +1,6 @@
 [package]
 name = "boogiebox-audio"
-version = "0.9.100"
+version = "0.9.101"
 edition = "2021"
 publish = false
 description = "Native Hi-Res playback engine for the BoogieBox desktop app (HTTP range source, symphonia decode, WASAPI output)"
@@ -22,3 +22,6 @@ windows = { version = "0.62", features = ["Win32_System_Threading", "Win32_Syste
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+[dev-dependencies]
+serde_json = "1"

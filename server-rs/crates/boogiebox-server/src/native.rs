@@ -27,6 +27,8 @@ pub enum NativeDelivery {
     Original,
     /// Lossless 24-bit PCM WAV at the source rate (byte-exact seeking; needs a known duration).
     Wav,
+    /// An internet radio station through the server's relay (live: no seeking, no length).
+    Radio,
 }
 
 impl NativeDelivery {
@@ -35,6 +37,7 @@ impl NativeDelivery {
         match self {
             NativeDelivery::Original => "native",
             NativeDelivery::Wav => "server_wav",
+            NativeDelivery::Radio => "live",
         }
     }
 }
@@ -50,7 +53,7 @@ pub struct NativeLink {
     pub username: String,
     /// Machine name the desktop app sent (may be empty).
     pub client: String,
-    /// Track id, or `mx-{outputId}` for a BoogieMix (Activity item id).
+    /// Track id, `mx-{outputId}` for a BoogieMix (Activity item id), or the station id for radio.
     pub item_id: String,
     /// Absolute file path (authorized when the link was issued).
     pub file_path: PathBuf,

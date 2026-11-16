@@ -158,4 +158,5 @@ export type RemoteQueueOp =
   | { op: 'clear' };
 
 /** Where playback happens, per browser. */
-export type PlaybackTarget = { kind: 'local' } | { kind: 'renderer'; udn: string };
+/** Where playback happens: this page, the desktop app's own Hi-Res engine, or a speaker. */
+export type PlaybackTarget = { kind: 'local' } | { kind: 'native' } | { kind: 'renderer'; udn: string };

@@ -351,6 +351,49 @@ impl MediaSource for HttpRangeSource {
     }
 }
 
+/// A live stream (internet radio): one plain GET read from the start, not seekable, no length. Reads fail
+/// fast once the engine drops the item.
+pub struct LiveStream {
+    body: Box<dyn Read + Send + Sync>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Read for LiveStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(io_err(SourceError::Cancelled));
+        }
+        self.body.read(buf)
+    }
+}
+
+/// Opens a live stream for symphonia (no `Range`; the connection stays open while playing).
+pub fn open_live(
+    opts: &SourceOptions,
+) -> io::Result<symphonia::core::io::ReadOnlySource<LiveStream>> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(None)
+        .build()
+        .map_err(|e| io_err(SourceError::Network(e.to_string())))?;
+    let (url, _) = opts.url.get();
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| io_err(SourceError::Network(e.to_string())))?;
+    let status = resp.status().as_u16();
+    if status == 401 || status == 410 {
+        return Err(io_err(SourceError::TokenExpired));
+    }
+    if !resp.status().is_success() {
+        return Err(io_err(SourceError::Status(status)));
+    }
+    Ok(symphonia::core::io::ReadOnlySource::new(LiveStream {
+        body: Box::new(resp),
+        cancel: opts.cancel.clone(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

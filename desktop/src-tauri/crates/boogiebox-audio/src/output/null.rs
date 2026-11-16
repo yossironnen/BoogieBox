@@ -144,6 +144,9 @@ impl NullFactory {
                 id: "null".into(),
                 name: "Null output".into(),
                 is_default: true,
+                max_rate: None,
+                max_bits: None,
+                single_rate: false,
             }])),
             notify: Arc::default(),
         }

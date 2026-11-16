@@ -177,12 +177,13 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-audio"
-version = "0.9.100"
+version = "0.9.101"
 dependencies = [
  "reqwest",
  "rtrb",
  "rubato",
  "serde",
+ "serde_json",
  "symphonia",
  "thiserror 2.0.19",
  "tracing",
@@ -192,8 +193,9 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-desktop"
-version = "0.9.100"
+version = "0.9.101"
 dependencies = [
+ "boogiebox-audio",
  "directories",
  "libloading 0.9.0",
  "reqwest",

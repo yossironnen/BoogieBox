@@ -217,6 +217,29 @@ describe('usePlayOn', () => {
     expect(result.current.playOn.notice?.action).toBeUndefined();
   });
 
+  it('moves between this page and the desktop engine at the same spot', async () => {
+    const queue = [track('a'), track('b')];
+    const { result } = setup({ queue, currentIndex: 1, isPlaying: true, playToken: 3 });
+    act(() => result.current.playOn.selectTarget({ kind: 'native' }));
+    expect(result.current.playOn.target).toEqual({ kind: 'native' });
+    expect(result.current.local.playToken).toBe(4);
+    expect(result.current.local.resumeAt).toEqual({ playToken: 4, trackId: 'b', sec: 42 });
+    expect(localOptions[localOptions.length - 1]).toEqual({ alreadyRecorded: true });
+    // Choosing it again changes nothing.
+    act(() => result.current.playOn.selectTarget({ kind: 'native' }));
+    expect(result.current.local.playToken).toBe(4);
+    act(() => result.current.playOn.selectTarget({ kind: 'local' }));
+    expect(result.current.playOn.target).toEqual({ kind: 'local' });
+    expect(result.current.local.resumeAt).toEqual({ playToken: 5, trackId: 'b', sec: 42 });
+  });
+
+  it('plays here when "This PC · Hi-Res" is remembered but the page runs in a browser', async () => {
+    localStorage.setItem(PLAYBACK_TARGET_STORAGE_KEY, JSON.stringify({ kind: 'native' }));
+    const { result } = setup();
+    expect(result.current.playOn.target).toEqual({ kind: 'native' });
+    await waitFor(() => expect(result.current.playOn.target).toEqual({ kind: 'local' }));
+  });
+
   it('plays here when the stored renderer is offline at startup', async () => {
     localStorage.setItem(PLAYBACK_TARGET_STORAGE_KEY, JSON.stringify({ kind: 'renderer', udn: 'uuid:wiim' }));
     vi.mocked(api.remote.renderers).mockResolvedValue({ running: true, renderers: [{ ...wiim, online: false }] });

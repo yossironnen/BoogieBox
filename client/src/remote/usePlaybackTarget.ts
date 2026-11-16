@@ -13,6 +13,7 @@ export function readStoredPlaybackTarget(): PlaybackTarget {
     const raw = localStorage.getItem(PLAYBACK_TARGET_STORAGE_KEY);
     if (!raw) return LOCAL;
     const parsed = JSON.parse(raw) as Partial<{ kind: string; udn: unknown }>;
+    if (parsed?.kind === 'native') return { kind: 'native' };
     return parsed?.kind === 'renderer' && typeof parsed.udn === 'string' && parsed.udn
       ? { kind: 'renderer', udn: parsed.udn }
       : LOCAL;

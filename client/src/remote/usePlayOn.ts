@@ -31,6 +31,7 @@ import type {
   RendererInfo,
   SessionInUseInfo,
 } from './remoteTypes';
+import { nativeAudioAvailable } from '../platform';
 import { usePlaybackTarget } from './usePlaybackTarget';
 
 const LOCAL: PlaybackTarget = { kind: 'local' };
@@ -115,6 +116,8 @@ export interface PlayOnApi {
   takeover: PlayOnTakeoverPrompt | null;
   /** Opens Settings → Advanced → Play On; null when the user can't change those settings. */
   openSettings: (() => void) | null;
+  /** Opens Settings → User Settings → Audio output (desktop app). */
+  openAudioSettings: (() => void) | null;
 }
 
 export const PlayOnContext = createContext<PlayOnApi | null>(null);
@@ -134,17 +137,21 @@ export interface UsePlayOnOptions {
   getLocalPosition: () => number;
   /** Admin-only navigation to the Play On settings. */
   onOpenSettings?: (() => void) | null;
+  /** Navigation to the desktop app's Audio output settings. */
+  onOpenAudioSettings?: (() => void) | null;
 }
 
 function errorText(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'Play On request failed';
 }
 
-export function usePlayOn({ enabled, currentUserId, localState, setLocalState, getLocalPosition, onOpenSettings = null }: UsePlayOnOptions): PlayOnApi {
+export function usePlayOn({ enabled, currentUserId, localState, setLocalState, getLocalPosition, onOpenSettings = null, onOpenAudioSettings = null }: UsePlayOnOptions): PlayOnApi {
   const [target, setTargetState] = usePlaybackTarget();
   const targetUdn = target.kind === 'renderer' ? target.udn : null;
   const targetUdnRef = useRef(targetUdn);
   targetUdnRef.current = targetUdn;
+  const targetKindRef = useRef(target.kind);
+  targetKindRef.current = target.kind;
 
   const [available, setAvailable] = useState(true);
   const [renderers, setRenderers] = useState<RendererInfo[]>([]);
@@ -179,6 +186,7 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
 
   const setTarget = useCallback((next: PlaybackTarget) => {
     targetUdnRef.current = next.kind === 'renderer' ? next.udn : null;
+    targetKindRef.current = next.kind;
     setTargetState(next);
   }, [setTargetState]);
 
@@ -191,6 +199,16 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
       setTransient((current) => (current?.key === key ? null : current));
     }, ms);
   }, []);
+
+  // A remembered "This PC · Hi-Res" in a plain browser (or a desktop app without the engine): play here instead.
+  useEffect(() => {
+    if (target.kind !== 'native') return;
+    let cancelled = false;
+    void nativeAudioAvailable().then((ok) => {
+      if (!ok && !cancelled) setTarget(LOCAL);
+    });
+    return () => { cancelled = true; };
+  }, [setTarget, target.kind]);
 
   useEffect(() => () => {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
@@ -455,13 +473,31 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
 
   const selectTarget = useCallback((next: PlaybackTarget) => {
     const currentUdn = targetUdnRef.current;
-    if (next.kind === 'local') {
-      if (currentUdn) toLocal();
+    if (next.kind === 'local' || next.kind === 'native') {
+      if (currentUdn) {
+        // Back from a speaker: its queue and position come here, then play on the chosen output.
+        toLocal();
+        if (next.kind === 'native') setTarget(next);
+        return;
+      }
+      if (targetKindRef.current === next.kind) return;
+      // Between this page and the desktop engine: same queue, carry on from the same spot.
+      const local = localStateRef.current;
+      const track = local.queue[local.currentIndex];
+      if (track) {
+        const token = local.playToken + 1;
+        setLocalState({
+          ...local,
+          playToken: token,
+          resumeAt: { playToken: token, trackId: track.id, sec: getLocalPosition() },
+        }, { alreadyRecorded: true });
+      }
+      setTarget(next);
       return;
     }
     if (next.udn === currentUdn || pendingUdn) return;
     void toRenderer(next.udn, false);
-  }, [pendingUdn, toLocal, toRenderer]);
+  }, [getLocalPosition, pendingUdn, setLocalState, setTarget, toLocal, toRenderer]);
 
   // ─── Events ─────────────────────────────────────────────────────────────
   const copyQueueHere = useCallback((snapshot: RemoteSessionState) => {
@@ -647,5 +683,6 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
     notify: showNotice,
     takeover,
     openSettings: onOpenSettings,
+    openAudioSettings: onOpenAudioSettings,
   };
 }

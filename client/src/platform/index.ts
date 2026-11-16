@@ -18,3 +18,13 @@ export function isTauriDesktop(): boolean {
  * branching on `isTauriDesktop()` in feature components.
  */
 export const platform: Platform = isTauriDesktop() ? desktopPlatform : browserPlatform;
+
+let nativeProbe: Promise<boolean> | null = null;
+
+/** True when the desktop app's Hi-Res engine answers (checked once). */
+export function nativeAudioAvailable(): Promise<boolean> {
+  const audio = platform.audio;
+  if (!audio) return Promise.resolve(false);
+  nativeProbe ??= audio.devices().then(() => true, () => false);
+  return nativeProbe;
+}

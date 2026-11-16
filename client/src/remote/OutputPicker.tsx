@@ -7,6 +7,9 @@ import React, { useEffect, useRef } from 'react';
 import { hybridAudioPanelStyles, hybridControlStyles } from '../hybridPreview';
 import { BrowserIcon, CheckIcon, PhoneIcon, RendererIcon, UserIcon } from './OutputIcon';
 import type { PlayOnApi } from './usePlayOn';
+import { DacIcon } from '../native/NativeIcons';
+import { deviceRateShort } from '../native/nativeFormat';
+import { useNativeAudio, useNativeBitPerfect, type NativeAudioState } from '../native/useNativeAudio';
 import type { RendererInfo } from './remoteTypes';
 
 /** Renderers shown in the picker (admins also get hidden ones from the API; the picker never shows them). */
@@ -121,11 +124,88 @@ function rendererRow(renderer: RendererInfo, playOn: PlayOnApi, variant: OutputP
   );
 }
 
+/** The desktop app's own engine: "This PC · Hi-Res", with the device list under it when chosen. */
+function NativeRows({
+  native,
+  playOn,
+  onPicked,
+  onOpenAudioSettings,
+}: {
+  native: NativeAudioState;
+  playOn: PlayOnApi;
+  onPicked?: () => void;
+  onOpenAudioSettings?: () => void;
+}) {
+  const bitPerfect = useNativeBitPerfect();
+  const active = playOn.target.kind === 'native';
+  const deviceName = native.device?.name ?? null;
+  const mode = native.settings?.mode === 'shared' ? 'Shared' : bitPerfect ? 'Bit-perfect' : 'Exclusive';
+  return (
+    <>
+      <OutputRow
+        icon={<DacIcon />}
+        name="This PC · Hi-Res"
+        detail={deviceName ? `${deviceName} · ${mode}` : mode}
+        active={active}
+        variant="desktop"
+        onSelect={() => {
+          playOn.selectTarget({ kind: 'native' });
+          onPicked?.();
+        }}
+      />
+      {active && native.settings ? (
+        <div role="group" aria-label="Output device" style={{ margin: '2px 0 6px 40px', paddingLeft: 10, borderLeft: '1px solid var(--border)', display: 'grid', gap: 2 }}>
+          {native.devices.map((device) => {
+            const chosen = native.device?.id === device.id;
+            const rate = deviceRateShort(device);
+            return (
+              <button
+                key={device.id}
+                type="button"
+                role="radio"
+                aria-checked={chosen}
+                onClick={() => {
+                  if (native.settings) void native.save({ ...native.settings, deviceId: device.id });
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px', borderRadius: 10, border: 0,
+                  background: chosen ? 'var(--surface-subtle, var(--bg))' : 'transparent', color: 'var(--text)',
+                  textAlign: 'left', font: 'inherit', cursor: 'pointer',
+                }}
+              >
+                <span aria-hidden="true" style={{
+                  width: 14, height: 14, borderRadius: '50%', flexShrink: 0, boxSizing: 'border-box',
+                  border: `2px solid ${chosen ? 'var(--accent)' : 'var(--text-muted)'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {chosen ? <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }} /> : null}
+                </span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: chosen ? 650 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{device.name}</span>
+                {rate ? <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{rate}</span> : null}
+              </button>
+            );
+          })}
+          {onOpenAudioSettings ? (
+            <button
+              type="button"
+              onClick={() => { onOpenAudioSettings(); onPicked?.(); }}
+              style={{ justifySelf: 'start', padding: '5px 8px', border: 0, background: 'transparent', color: 'var(--accent)', textDecoration: 'underline', font: 'inherit', fontSize: 12, cursor: 'pointer' }}
+            >
+              Audio output settings
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function OutputPickerList({
   playOn,
   variant = 'desktop',
   onPicked,
   onOpenSettings,
+  onOpenAudioSettings,
 }: {
   playOn: PlayOnApi;
   /** `mobile` = touch-sized rows and "This phone". */
@@ -134,8 +214,11 @@ export function OutputPickerList({
   onPicked?: () => void;
   /** Admin deep link for the empty state. */
   onOpenSettings?: () => void;
+  /** Settings › Audio output (desktop app). */
+  onOpenAudioSettings?: () => void;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
+  const native = useNativeAudio();
   const visible = pickerRenderers(playOn.renderers);
   const mobile = variant === 'mobile';
 
@@ -165,6 +248,9 @@ export function OutputPickerList({
       onKeyDown={onKeyDown}
       style={mobile ? { display: 'grid', gap: 6 } : hybridAudioPanelStyles.list}
     >
+      {!mobile && native.available ? (
+        <NativeRows native={native} playOn={playOn} onPicked={onPicked} onOpenAudioSettings={onOpenAudioSettings} />
+      ) : null}
       <OutputRow
         icon={mobile ? <PhoneIcon size={22} /> : <BrowserIcon />}
         name={mobile ? 'This phone' : 'This browser'}

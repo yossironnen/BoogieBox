@@ -2,7 +2,8 @@
  * Defines Desktop Platform behavior for BoogieBox.
  */
 
-import type { DesktopConfig, Platform, ServerDiscoveryResult, ServerProbeResult } from './types';
+import type { NativeAudioSettings, NativeCommand, NativeDevice, NativeEvent } from '../native/nativeTypes';
+import type { DesktopConfig, NativeAudioApi, Platform, ServerDiscoveryResult, ServerProbeResult } from './types';
 
 // Tauri injects __TAURI__ into the webview. We use the core invoke function
 // and the event system directly so this module has no hard build-time dependency
@@ -25,7 +26,21 @@ function invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promi
   return window.__TAURI__.core.invoke<T>(cmd, args);
 }
 
+const nativeAudio: NativeAudioApi = {
+  command: (command: NativeCommand) => invoke<void>('audio_command', { command }),
+  devices: () => invoke<NativeDevice[]>('audio_devices'),
+  settings: () => invoke<NativeAudioSettings>('audio_settings'),
+  saveSettings: (settings: NativeAudioSettings) => invoke<void>('audio_save_settings', { settings }),
+  machineName: () => invoke<string>('machine_name'),
+  async onEvent(handler: (event: NativeEvent) => void) {
+    if (!window.__TAURI__) throw new Error('Tauri not available');
+    return window.__TAURI__.event.listen<NativeEvent>('audio-event', (evt) => handler(evt.payload));
+  },
+};
+
 export const desktopPlatform: Platform = {
+  audio: nativeAudio,
+
   isDesktop: true,
 
   async getConfig(): Promise<DesktopConfig | null> {

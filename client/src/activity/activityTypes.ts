@@ -129,6 +129,12 @@ export interface PlayerHeartbeat {
   durationSec: number | null;
   paused: boolean;
   stopped?: boolean;
+  /** `native`: the desktop app's own engine plays (the server shows it as "Desktop app · <client>"). */
+  output?: 'web' | 'native';
+  /** Machine name (desktop app). */
+  client?: string;
+  /** What the engine sends to the device. */
+  outputFormat?: string;
 }
 
 /** Number shown on the sidebar indicator and nav badge. */

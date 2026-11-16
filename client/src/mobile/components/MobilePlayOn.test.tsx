@@ -52,6 +52,7 @@ function playOnApi(over: Partial<PlayOnApi> = {}): PlayOnApi {
     dispatch: vi.fn(),
     notice: null,
     takeover: null,
+    openAudioSettings: null,
     openSettings: null,
     ...over,
   };

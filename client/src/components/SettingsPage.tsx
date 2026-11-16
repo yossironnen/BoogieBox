@@ -31,6 +31,7 @@ import ScrobblingPanel, { AccountRow, ScrobbleIcon, useScrobbleAccounts } from '
 import { plausibleListenBrainzToken } from '../scrobbling';
 import { InlineStatus, ToggleRow } from './settingsControls';
 import { ServerLevellingCard, VolumeLevellingCard } from './LoudnessSettings';
+import AudioOutputSettings from '../native/AudioOutputSettings';
 import { DEFAULT_LOUDNESS_PREFS, type LoudnessPrefs } from '../audio/loudness';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1541,6 +1542,8 @@ export default function SettingsPage({
 
       {activeTab === 'theme' && (
         <div style={P.section}>
+          <AudioOutputSettings />
+
           <SettingsPanel
             title="Theme mode"
             description="Light and Dark use supported New-design defaults. Custom keeps your own saved palette. Vintage restyles the desktop app after classic hi-fi gear."

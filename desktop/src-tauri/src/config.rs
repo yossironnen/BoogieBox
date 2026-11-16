@@ -23,6 +23,34 @@ pub struct DesktopConfig {
     pub server_exe_path: Option<String>,
     /// Whether the desktop shell should auto-start the configured packaged server.
     pub auto_start_packaged_server: Option<bool>,
+    /// The Hi-Res engine's output settings (Settings › Audio output). Saved on this PC, not per user.
+    #[serde(default)]
+    pub audio: AudioSettings,
+}
+
+/// Output settings for the native audio engine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioSettings {
+    /// Output device id; `None` follows the Windows default.
+    pub device_id: Option<String>,
+    /// `exclusive` or `shared`.
+    pub mode: boogiebox_audio::OutputMode,
+    /// Exclusive buffer: 20 (Low), 50 (Normal) or 150 (Safe) ms.
+    pub buffer_ms: u32,
+    /// D9: resample to the nearest rate the DAC takes (off: such files play in shared mode).
+    pub nearest_rate: bool,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            device_id: None,
+            mode: boogiebox_audio::OutputMode::Exclusive,
+            buffer_ms: 50,
+            nearest_rate: true,
+        }
+    }
 }
 
 impl Default for DesktopConfig {
@@ -34,6 +62,7 @@ impl Default for DesktopConfig {
             start_maximized: None,
             server_exe_path: None,
             auto_start_packaged_server: Some(false),
+            audio: AudioSettings::default(),
         }
     }
 }

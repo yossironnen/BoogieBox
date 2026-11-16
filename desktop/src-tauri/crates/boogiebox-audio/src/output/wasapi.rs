@@ -71,13 +71,42 @@ pub fn list_devices() -> Result<Vec<Device>, OutputError> {
         let (Ok(id), Ok(name)) = (dev.get_id(), dev.get_friendlyname()) else {
             continue;
         };
+        let summary = caps_summary(&id);
         out.push(Device {
             is_default: default_id.as_deref() == Some(id.as_str()),
             id,
             name,
+            max_rate: summary.map(|s| s.0),
+            max_bits: summary.map(|s| s.1),
+            single_rate: summary.is_some_and(|s| s.2),
         });
     }
     Ok(out)
+}
+
+/// (highest rate, highest bits, one rate only) per device id, kept once probed: a device this engine holds in
+/// exclusive mode can't be probed again, but its formats haven't changed.
+/// Highest rate, highest bits, one rate only.
+type CapsSummary = (u32, u16, bool);
+
+fn caps_summary(id: &str) -> Option<CapsSummary> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, CapsSummary>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Mutex::default);
+    if let Some(s) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(id) {
+        return Some(*s);
+    }
+    let caps = exclusive_caps(Some(id)).ok()?;
+    let max_rate = caps.formats.iter().map(|f| f.sample_rate).max()?;
+    let max_bits = caps.formats.iter().map(|f| f.kind.bits()).max()?;
+    let single = caps.formats.iter().all(|f| f.sample_rate == max_rate);
+    let summary = (max_rate, max_bits, single);
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id.to_owned(), summary);
+    Some(summary)
 }
 
 fn kind_of(fmt: &WaveFormat) -> Option<SampleKind> {

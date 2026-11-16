@@ -168,6 +168,7 @@ mod windows_main {
                 .map(|e| e.to_string_lossy().into_owned()),
             duration_sec: None,
             server_decoded: false,
+            live: false,
         };
         engine.send(Command::SetOutput {
             device_id,
@@ -177,6 +178,7 @@ mod windows_main {
                 OutputMode::Shared
             },
             buffer_ms: 50,
+            nearest_rate: true,
         });
         engine.send(Command::SetVolume { linear: a.volume });
         engine.send(Command::Load {

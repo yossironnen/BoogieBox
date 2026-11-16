@@ -66,6 +66,22 @@ describe('useWebPlayerHeartbeat', () => {
     expect(last[1]).toEqual({ closing: true });
   });
 
+  it("tells the server when the desktop app's own engine plays", () => {
+    const snap = { ...playback('t1'), nativeOutput: 'FLAC · 24-bit · 192 kHz → 24-bit · 192 kHz · exclusive' };
+    renderHook(() => useWebPlayerHeartbeat(snap, true));
+    expect(heartbeat.mock.calls[0][0]).toMatchObject({
+      trackId: 't1',
+      output: 'native',
+      outputFormat: 'FLAC · 24-bit · 192 kHz → 24-bit · 192 kHz · exclusive',
+    });
+    expect(typeof heartbeat.mock.calls[0][0].client).toBe('string');
+  });
+
+  it('sends no output fields for the web player', () => {
+    renderHook(() => useWebPlayerHeartbeat(playback('t1'), true));
+    expect(heartbeat.mock.calls[0][0]).not.toHaveProperty('output');
+  });
+
   it('stays quiet with nothing loaded', () => {
     renderHook(() => useWebPlayerHeartbeat(playback(null), true));
     vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS * 2);

@@ -19,6 +19,9 @@ pub struct PlayItem {
     /// The server decoded the source (`decode: "server_wav"`: Opus, WMA).
     #[serde(default)]
     pub server_decoded: bool,
+    /// A live stream (internet radio): read once from the start, no seeking, no length.
+    #[serde(default)]
+    pub live: bool,
 }
 
 /// How the engine shares the device with other apps.
@@ -31,8 +34,13 @@ pub enum OutputMode {
     Exclusive,
 }
 
-/// Something for the engine to do.
-#[derive(Debug, Clone, PartialEq)]
+/// Something for the engine to do. The host page sends these as JSON (`{"type": "load", ...}`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Command {
     /// Replace what is playing.
     Load {
@@ -72,6 +80,10 @@ pub enum Command {
         mode: OutputMode,
         /// Exclusive-mode buffer (ms), 20..=200; plan §12.1 Low/Normal/Safe = 20/50/150.
         buffer_ms: u32,
+        /// A file the device can't play at its own rate is resampled to the nearest rate it takes (D9);
+        /// off: such files play in shared mode.
+        #[serde(default = "default_true")]
+        nearest_rate: bool,
     },
     /// A fresh link for an item whose link expired ([`Event::TokenExpired`]).
     RefreshUrl {
@@ -82,6 +94,10 @@ pub enum Command {
     },
     /// End the engine's threads.
     Shutdown,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Transport state.
@@ -116,7 +132,11 @@ pub struct Format {
 
 /// What happens to the samples on their way to the device (the badge in the UI).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub enum PathKind {
     /// Samples reach the device unchanged.
     BitPerfect,
@@ -159,7 +179,11 @@ pub enum ErrorCode {
 
 /// Something the host should know.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
 pub enum Event {
     /// Transport state and position (~4 Hz while playing, and on every change).
     State {
@@ -233,4 +257,13 @@ pub struct Device {
     pub name: String,
     /// The system default output.
     pub is_default: bool,
+    /// Highest exclusive-mode rate (Hz), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rate: Option<u32>,
+    /// Highest exclusive-mode bit depth, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bits: Option<u16>,
+    /// Exclusive mode takes one rate only (e.g. an HDMI monitor at 48 kHz).
+    #[serde(default)]
+    pub single_rate: bool,
 }

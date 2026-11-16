@@ -118,6 +118,7 @@ fn item(server: &TestServer, path: &str, id: &str) -> PlayItem {
         format_hint: Some("wav".into()),
         duration_sec: None,
         server_decoded: false,
+        live: false,
     }
 }
 
@@ -486,6 +487,7 @@ fn errors_become_events_and_stop_playback() {
         device_id: None,
         mode: OutputMode::Exclusive,
         buffer_ms: 50,
+        nearest_rate: true,
     });
     run.until("exclusive refused", |e| {
         matches!(
@@ -528,6 +530,7 @@ fn exclusive_run(caps: Option<DeviceCaps>) -> Run {
         device_id: None,
         mode: OutputMode::Exclusive,
         buffer_ms: 50,
+        nearest_rate: true,
     });
     run
 }
@@ -905,4 +908,143 @@ fn stop_silences_and_mono_fills_both_channels() {
     assert!(frames.len() < 44_100 * 4, "stopped before the end");
     let after: Vec<u8> = run.recording()[len..].to_vec();
     assert!(after.iter().all(|b| *b == 0), "silence after stop");
+}
+
+#[test]
+fn commands_come_from_the_page_as_json() {
+    let load: Command = serde_json::from_str(
+        r#"{"type":"load","item":{"trackId":"t1","url":"http://s/media/n/x","formatHint":"flac"},"startSec":1.5,"autoplay":true}"#,
+    )
+    .unwrap();
+    assert!(
+        matches!(load, Command::Load { ref item, start_sec, autoplay: true } if item.track_id == "t1" && start_sec == 1.5 && !item.live)
+    );
+    let out: Command = serde_json::from_str(
+        r#"{"type":"setOutput","deviceId":null,"mode":"exclusive","bufferMs":150}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        out,
+        Command::SetOutput {
+            device_id: None,
+            mode: OutputMode::Exclusive,
+            buffer_ms: 150,
+            nearest_rate: true
+        }
+    );
+    let next: Command = serde_json::from_str(r#"{"type":"setNext","item":null}"#).unwrap();
+    assert_eq!(next, Command::SetNext { item: None });
+    assert!(serde_json::from_str::<Command>(r#"{"type":"bogus"}"#).is_err());
+}
+
+#[test]
+fn without_the_nearest_rate_a_rate_the_device_lacks_plays_shared() {
+    let server = TestServer::start();
+    server.put(
+        "/hi",
+        wav_bytes(176_400, 2, 24, &pattern24(17_640, 1)),
+        Behaviour::Normal,
+    );
+    let mut run = exclusive_run(Some(fiio_caps(&[44_100, 48_000, 88_200, 96_000, 192_000])));
+    run.send(Command::SetOutput {
+        device_id: None,
+        mode: OutputMode::Exclusive,
+        buffer_ms: 50,
+        nearest_rate: false,
+    });
+    run.send(Command::Load {
+        item: item(&server, "/hi", "H"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    let started = run.until("started", |e| matches!(e, Event::TrackStarted { .. }));
+    let Event::TrackStarted { path, .. } = started else {
+        unreachable!()
+    };
+    assert_eq!(path[0], PathKind::SharedMixer, "{path:?}");
+    run.until_stopped();
+    assert!(
+        !run.factory.opened.lock().unwrap()[0].1,
+        "opened in shared mode"
+    );
+}
+
+#[test]
+fn a_live_stream_plays_from_a_plain_get() {
+    let server = TestServer::start();
+    let samples = ramp(2, 22_050, 1);
+    server.put(
+        "/live",
+        wav_bytes(44_100, 2, 16, &samples),
+        Behaviour::Normal,
+    );
+    let mut run = Run::new(factory(SampleKind::I16, 44_100, 2));
+    let mut live = item(&server, "/live", "R");
+    live.live = true;
+    run.send(Command::Load {
+        item: live,
+        start_sec: 3.0,
+        autoplay: true,
+    });
+    let started = run.until("started", |e| matches!(e, Event::TrackStarted { .. }));
+    assert!(matches!(started, Event::TrackStarted { ref track_id, .. } if track_id == "R"));
+    run.until_stopped();
+    assert_eq!(
+        trimmed_i16_frames(&run.recording()),
+        expected_i16(&samples),
+        "from the start, all of it"
+    );
+}
+
+#[test]
+fn events_reach_the_page_in_camel_case() {
+    let started = Event::TrackStarted {
+        track_id: "t#1".into(),
+        source: crate::Format {
+            sample_rate: 96_000,
+            bits: Some(24),
+            channels: 2,
+            codec: "FLAC".into(),
+        },
+        output: crate::Format {
+            sample_rate: 96_000,
+            bits: Some(24),
+            channels: 2,
+            codec: "s24in32".into(),
+        },
+        path: vec![PathKind::Resampled { to_hz: 88_200 }],
+    };
+    let json = serde_json::to_value(&started).unwrap();
+    assert_eq!(json["type"], "trackStarted");
+    assert_eq!(json["trackId"], "t#1");
+    assert_eq!(json["source"]["sampleRate"], 96_000);
+    assert_eq!(json["path"][0]["kind"], "resampled");
+    assert_eq!(json["path"][0]["toHz"], 88_200);
+    let state = serde_json::to_value(Event::State {
+        status: Status::Playing,
+        track_id: None,
+        position_sec: 1.5,
+        duration_sec: Some(3.0),
+    })
+    .unwrap();
+    assert_eq!(state["positionSec"], 1.5);
+    assert_eq!(state["status"], "playing");
+    let err = serde_json::to_value(Event::Error {
+        track_id: None,
+        code: ErrorCode::ExclusiveNotAllowed,
+        message: "x".into(),
+    })
+    .unwrap();
+    assert_eq!(err["code"], "exclusive_not_allowed");
+    let device = serde_json::to_value(crate::Device {
+        id: "d".into(),
+        name: "FiiO".into(),
+        is_default: true,
+        max_rate: Some(384_000),
+        max_bits: Some(32),
+        single_rate: false,
+    })
+    .unwrap();
+    assert_eq!(device["isDefault"], true);
+    assert_eq!(device["maxRate"], 384_000);
 }

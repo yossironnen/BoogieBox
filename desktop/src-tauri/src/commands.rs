@@ -77,6 +77,7 @@ pub fn set_server_url(app: AppHandle, url: String) -> Result<(), String> {
     config::save(&app, &cfg)?;
 
     if !url.is_empty() {
+        crate::audio::allow_page(&app, &url);
         if let Some(window) = app.get_webview_window("main") {
             let nav_url: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
             window.navigate(nav_url).map_err(|e| e.to_string())?;
@@ -107,4 +108,3 @@ pub async fn select_folder(app: AppHandle, initial_dir: Option<String>) -> Optio
         .and_then(|folder| folder.into_path().ok())
         .map(|path| path.to_string_lossy().to_string())
 }
-

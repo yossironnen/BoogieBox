@@ -94,6 +94,8 @@ struct Resolved {
     sample_rate: Option<u32>,
     bits: Option<u16>,
     channels: Option<u16>,
+    /// An internet radio station (relayed live, no file).
+    station: bool,
 }
 
 fn bad_request(error: &str) -> Response {
@@ -132,6 +134,20 @@ fn resolve(
             sample_rate: None,
             bits: None,
             channels: None,
+            station: false,
+        }));
+    }
+    if let Some(station_id) = id.strip_prefix("radio:") {
+        let station = boogiebox_db::radio_stations::get_station(conn, station_id)?;
+        return Ok(station.map(|st| Resolved {
+            id: id.to_owned(),
+            item_id: st.id,
+            file_path: PathBuf::new(),
+            duration: None,
+            sample_rate: None,
+            bits: None,
+            channels: None,
+            station: true,
         }));
     }
     let meta = boogiebox_db::remote::get_track_media_meta(conn, id)?;
@@ -143,6 +159,7 @@ fn resolve(
         sample_rate: m.sample_rate.and_then(|r| u32::try_from(r).ok()),
         bits: m.bits_per_sample.and_then(|b| u16::try_from(b).ok()),
         channels: m.channels.and_then(|c| u16::try_from(c).ok()),
+        station: false,
     }))
 }
 
@@ -186,8 +203,9 @@ async fn issue_handler(
                 .into_iter()
                 .map(|(id, r)| {
                     let checked = r.map(|r| {
-                        let present = r.file_path.is_file();
-                        let server = present && native::needs_server_decode(&r.file_path);
+                        let present = r.station || r.file_path.is_file();
+                        let server =
+                            !r.station && present && native::needs_server_decode(&r.file_path);
                         (r, present, server)
                     });
                     (id, checked)
@@ -211,7 +229,9 @@ async fn issue_handler(
             // A server WAV needs the duration up front (its length is in the header).
             Some((r, true, true)) if r.duration.is_none() => IssuedLink::failed(id, "unsupported"),
             Some((r, true, server)) => {
-                let delivery = if server {
+                let delivery = if r.station {
+                    NativeDelivery::Radio
+                } else if server {
                     NativeDelivery::Wav
                 } else {
                     NativeDelivery::Original
@@ -238,6 +258,8 @@ async fn issue_handler(
                             Some(layout.channels),
                         )
                     }
+                    // The station decides (MP3 or AAC); the app probes the stream.
+                    NativeDelivery::Radio => (String::new(), None, None, None),
                 };
                 let token = links.issue(NativeLink {
                     session: session.clone(),
@@ -257,7 +279,7 @@ async fn issue_handler(
                     id: r.id,
                     url: Some(format!("/media/n/{token}")),
                     expires_at: Some(epoch_ms() + ttl.as_millis() as u64),
-                    format: Some(format),
+                    format: Some(format).filter(|f| !f.is_empty()),
                     sample_rate,
                     bits_per_sample: bits,
                     channels,
@@ -305,6 +327,17 @@ async fn media_handler(
         Lookup::Expired => return StatusCode::GONE.into_response(),
         Lookup::Missing => return StatusCode::NOT_FOUND.into_response(),
     };
+    if link.delivery == NativeDelivery::Radio {
+        return crate::routes::radio_routes::relay_station(
+            &state,
+            link.item_id.clone(),
+            &link.user_id,
+            &link.username,
+            crate::activity::Source::Desktop,
+            link.client.clone(),
+        )
+        .await;
+    }
     if !link.file_path.is_file() {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -321,9 +354,12 @@ async fn media_handler(
             NativeDelivery::Wav => {
                 crate::activity::DeliveryInfo::transcode(&link.file_path, "WAV", None)
             }
+            // Relayed above.
+            NativeDelivery::Radio => return StatusCode::NOT_FOUND.into_response(),
         }),
     };
     let resp = match link.delivery {
+        NativeDelivery::Radio => return StatusCode::NOT_FOUND.into_response(),
         NativeDelivery::Original => {
             media_serve::serve_file(&link.file_path, link.mime, &headers, head_only, &[]).await
         }
@@ -598,6 +634,52 @@ mod tests {
             send(f.app.clone(), get(&theirs, &[])).await.0,
             StatusCode::OK
         );
+    }
+
+    /// A station link is live and relays the station's stream, labelled as the desktop app.
+    #[tokio::test]
+    async fn radio_station_links_relay_the_live_stream() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "audio/mpeg")
+                    .set_body_bytes(b"ID3radio-bytes".to_vec()),
+            )
+            .mount(&upstream)
+            .await;
+        let f = fixture("native-radio");
+        let station = {
+            let conn = f.db.lock().unwrap();
+            boogiebox_db::radio_stations::create_station(
+                &conn,
+                &boogiebox_db::radio_stations::StationInput {
+                    name: "Test FM".into(),
+                    stream_url: format!("{}/live", upstream.uri()),
+                    homepage_url: None,
+                },
+            )
+            .unwrap()
+        };
+        let cookie = crate::test_support::seed_user_session(&f.db, "u1");
+        let id = format!("radio:{}", station.id);
+        let (_, body) = f
+            .issue(
+                Some(&cookie),
+                serde_json::json!({ "ids": [id, "radio:nope"], "client": "STUDIO-PC" }),
+            )
+            .await;
+        let tokens = json_body(&body)["tokens"].clone();
+        assert_eq!(tokens[0]["decode"], "live");
+        assert!(tokens[0].get("format").is_none(), "the station decides");
+        assert_eq!(tokens[1]["error"], "not_found");
+        let url = tokens[0]["url"].as_str().unwrap();
+        let (status, headers, body) = send_full(f.app.clone(), get(url, &[])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["content-type"], "audio/mpeg");
+        assert_eq!(body, b"ID3radio-bytes");
     }
 
     /// Opus is decoded by the server into a 24-bit WAV at the source rate (needs FFmpeg).

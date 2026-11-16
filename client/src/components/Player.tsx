@@ -41,6 +41,10 @@ import { OutputIcon, RefreshIcon } from '../remote/OutputIcon';
 import { isLibraryTrackId, isLiveTrack } from '../radioStations';
 import { RadioIcon } from './FavouriteIcons';
 import { OutputPickerList, pickerRenderers } from '../remote/OutputPicker';
+import { useNativePlayer } from '../native/useNativePlayer';
+import { setNativeBitPerfect, useNativeAudio } from '../native/useNativeAudio';
+import { BADGE_ICONS } from '../native/NativeIcons';
+import type { NativeBadge } from '../native/nativeFormat';
 import { useMediaSession } from '../platform/mediaSession';
 import { METADATA_SAVED_EVENT } from '../metadataEvents';
 import {
@@ -77,6 +81,9 @@ export interface PlaybackSnapshot {
   muted: boolean;
   loading: boolean;
   audioError: string | null;
+  /** The desktop app's Hi-Res engine is playing: what goes to the device, e.g. "FLAC · 24-bit · 192 kHz → 24-bit ·
+   *  192 kHz · exclusive" (for the server's Activity page). */
+  nativeOutput?: string | null;
 }
 /** Player EQ Controls exposes the active audio graph's EQ state to alternate control surfaces. */
 export interface PlayerEqControls {
@@ -1997,8 +2004,59 @@ function OutputPanel({ playOn, onClose, anchorRef, popupVars, bottom = DESKTOP_P
         playOn={playOn}
         onPicked={onClose}
         onOpenSettings={playOn.openSettings ? () => { onClose(); playOn.openSettings?.(); } : undefined}
+        onOpenAudioSettings={playOn.openAudioSettings ? () => { onClose(); playOn.openAudioSettings?.(); } : undefined}
       />
     </div>
+  );
+}
+
+/** The Hi-Res output's format badge, left of the time; its tooltip lists File, To the DAC and Device. */
+function NativeFormatBadge({ badge }: { badge: NativeBadge }) {
+  const [open, setOpen] = useState(false);
+  const Icon = BADGE_ICONS[badge.icon];
+  const tipId = 'native-format-tip';
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+      <button
+        type="button"
+        aria-describedby={open ? tipId : undefined}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999, font: 'inherit',
+          fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', cursor: 'default',
+          border: badge.accent ? '1px solid color-mix(in srgb, var(--accent) 55%, transparent)' : '1px solid var(--border)',
+          background: badge.accent ? 'var(--accent-soft, color-mix(in srgb, var(--accent) 14%, transparent))' : 'transparent',
+          color: badge.accent ? 'var(--accent)' : 'var(--text-muted)',
+        }}
+      >
+        <Icon size={13} />
+        {badge.label}
+      </button>
+      {open ? (
+        <span
+          id={tipId}
+          role="tooltip"
+          style={{
+            position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 50, width: 280, padding: '10px 12px',
+            borderRadius: 10, background: 'var(--surface, #18181b)', border: '1px solid var(--border)',
+            boxShadow: '0 10px 24px rgba(0,0,0,0.35)', fontSize: 12, color: 'var(--text)', display: 'grid', gap: 6,
+          }}
+        >
+          <span style={{ display: 'grid', gridTemplateColumns: '78px 1fr', rowGap: 4 }}>
+            {badge.rows.map(([k, v]) => (
+              <React.Fragment key={k}>
+                <span style={{ color: 'var(--text-muted)' }}>{k}</span>
+                <span>{v}</span>
+              </React.Fragment>
+            ))}
+          </span>
+          <span style={{ color: badge.accent ? 'var(--accent)' : 'var(--text-muted)' }}>{badge.note}</span>
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -2274,7 +2332,7 @@ export default function Player({
     };
     const useSaved = savedEqEnabledRef.current && typeof api.savedEq?.get === 'function';
     const useAuto = autoEqEnabledRef.current && typeof (api as any).trackEqProfile === 'function';
-    if (!track || (!useSaved && !useAuto) || isRemoteRef.current || isSyntheticTrackId(track.id)) {
+    if (!track || (!useSaved && !useAuto) || offBrowserRef.current || isSyntheticTrackId(track.id)) {
       settle(null);
       return;
     }
@@ -2412,6 +2470,13 @@ export default function Player({
   const remoteActions = playOn?.remoteActions ?? null;
   const isRemoteRef = useRef(isRemote);
   isRemoteRef.current = isRemote;
+  // The desktop app's own Hi-Res engine plays: the <audio> elements stay silent too, but the queue stays here.
+  const isNative = playOn?.target.kind === 'native';
+  const offBrowser = isRemote || isNative;
+  const offBrowserRef = useRef(offBrowser);
+  offBrowserRef.current = offBrowser;
+  const nativeSeekRef = useRef<(sec: number) => void>(() => {});
+  const nativeAudio = useNativeAudio();
   const [outputOpen, setOutputOpen] = useState(false);
   const outputButtonRef = useRef<HTMLButtonElement | null>(null);
   const closeOutput = useCallback(() => setOutputOpen(false), []);
@@ -2422,7 +2487,7 @@ export default function Player({
   // Always-fresh saveProgress — avoids stale closures in useCallback handlers
   const saveProgressRef = useRef<(idx: number) => void>(() => {});
   saveProgressRef.current = (idx: number) => {
-    if (isRemoteRef.current) return;
+    if (offBrowserRef.current) return;
     if (queueSource?.type !== 'playlist' || !queueSource.rememberProgress) return;
     const track = queue[idx];
     if (!track) return;
@@ -2466,7 +2531,7 @@ export default function Player({
   }, [autoEqEnabled, savedEqEnabled, currentTrack?.id, playToken, showActiveSlotEq]);
 
   // While the Equalizer is open: does the song playing now, or its album, have a saved curve?
-  const savedEqTrackId = currentTrack && !isRemote && !liveTrack && isLibraryTrackId(currentTrack.id)
+  const savedEqTrackId = currentTrack && !offBrowser && !liveTrack && isLibraryTrackId(currentTrack.id)
     ? String(currentTrack.id)
     : null;
   const savedEqWatched = savedEqWatchers > 0;
@@ -2504,6 +2569,8 @@ export default function Player({
     setCurrentTime(target);
     if (isRemote) {
       if (commit && Number.isFinite(target)) remoteActions?.seek(target);
+    } else if (isNative) {
+      if (commit && Number.isFinite(target)) nativeSeekRef.current(target);
     } else {
       const active = getActiveAudio();
       if (active && Number.isFinite(target)) {
@@ -2513,7 +2580,7 @@ export default function Player({
     if (commit) {
       setSeeking(false);
     }
-  }, [duration, getActiveAudio, isRemote, isVinylMode, remote?.canSeek, remoteActions, vinylHardcore]);
+  }, [duration, getActiveAudio, isNative, isRemote, isVinylMode, remote?.canSeek, remoteActions, vinylHardcore]);
 
   const shouldRunVinylFx = isVinylMode && vinylNeedleDrop && !vinylAnalogFxDisabled;
   const userSettingsApi = (api as { userSettings?: { get?: () => Promise<Record<string, string>>; update?: (updates: Record<string, string>) => Promise<{ ok: boolean }> } }).userSettings;
@@ -2611,8 +2678,8 @@ export default function Player({
     edited: !!slotEqPlaying?.edited,
     canSave: canUseSavedEq && !!savedEqTrackId,
     canSaveAlbum: canUseSavedEq && !!savedEqTrackId && !!savedEqAlbumId,
-    browserOnly: isRemote,
-  }), [canUseSavedEq, isRemote, savedEqAlbumId, savedEqTrackId, savedEqView, slotEqPlaying]);
+    browserOnly: offBrowser,
+  }), [canUseSavedEq, offBrowser, savedEqAlbumId, savedEqTrackId, savedEqView, slotEqPlaying]);
 
   /** After a save or remove: asks again about the song playing now, then both slots choose again. */
   const refreshSavedEq = useCallback(async (trackId: string) => {
@@ -3189,7 +3256,7 @@ export default function Player({
   // every explicit play action (Play, Play All, queue click), so even clicking
   // play on the same track forces a fresh load + play.
   useEffect(() => {
-    if (isRemote) return;
+    if (offBrowser) return;
     const audio = activeSlotRef.current === 'A' ? audioRef.current : audioBRef.current;
     if (!audio || !currentTrack) return;
     const url = getPreferredTrackStreamUrl(currentTrack);
@@ -3252,11 +3319,11 @@ export default function Player({
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playToken, currentTrack?.id, isVinylMode, isRemote]);
+  }, [playToken, currentTrack?.id, isVinylMode, offBrowser]);
 
   // Handle pause/resume toggling (user clicks pause then play without changing track).
   useEffect(() => {
-    if (isRemote) return;
+    if (offBrowser) return;
     const audio = getActiveAudio();
     if (!audio || !currentTrack) return;
     if (isPlaying) {
@@ -3307,11 +3374,11 @@ export default function Player({
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, ensureEqForElement, ensureEqContextsRunning, isRemote]);
+  }, [isPlaying, ensureEqForElement, ensureEqContextsRunning, offBrowser]);
 
-  // Entering Play On: silence and unload both slots; the renderer plays now.
+  // Entering Play On or the desktop engine: silence and unload both slots; something else plays now.
   useEffect(() => {
-    if (!isRemote) return;
+    if (!offBrowser) return;
     cancelCrossfade();
     for (const audio of [audioRef.current, audioBRef.current]) {
       if (!audio) continue;
@@ -3323,7 +3390,7 @@ export default function Player({
     setLoading(false);
     setAudioError(null);
     setEqOpen(false);
-  }, [cancelCrossfade, isRemote]);
+  }, [cancelCrossfade, offBrowser]);
 
   // Renderer position, interpolated between server ticks (paused while the user drags a seek bar).
   useEffect(() => {
@@ -3351,6 +3418,38 @@ export default function Player({
   useEffect(() => {
     if (isRemote) cancelLocalSleep();
   }, [cancelLocalSleep, isRemote]);
+
+  // Desktop engine: the queue stays here; the engine plays the current song and the next one (gapless).
+  const native = useNativePlayer({
+    enabled: isNative,
+    queue,
+    currentIndex,
+    isPlaying,
+    playToken,
+    resumeAt: state.resumeAt,
+    volume: muted ? 0 : volume * localSleep.fade,
+    repeatMode: repeatMode as 'off' | 'one' | 'all',
+    deviceName: nativeAudio.device?.name ?? null,
+    onAdvance: (index) => onStateChange({ ...state, currentIndex: index, isPlaying: true }),
+    onFinished: () => onStateChange({ ...state, isPlaying: false }),
+    notify: (text, tone) => playOn?.notify({ text, tone }),
+  });
+  nativeSeekRef.current = native.seek;
+  const nativeOutputLine = isNative && native.badge
+    ? `${native.badge.rows[0]?.[1] ?? ''} → ${native.badge.rows[1]?.[1] ?? ''}`
+    : null;
+  useEffect(() => {
+    setNativeBitPerfect(Boolean(isNative && native.badge?.accent));
+  }, [isNative, native.badge?.accent]);
+  useEffect(() => {
+    if (!isNative || seeking) return;
+    currentTimeRef.current = native.positionSec;
+    setCurrentTime(native.positionSec);
+    setDuration(native.durationSec ?? currentTrack?.duration ?? 0);
+  }, [currentTrack?.duration, isNative, native.durationSec, native.positionSec, seeking]);
+  useEffect(() => {
+    if (isNative) setAudioError(native.error);
+  }, [isNative, native.error]);
   const [sleepOpen, setSleepOpen] = useState(false);
   const sleepButtonRef = useRef<HTMLButtonElement | null>(null);
   const sleepPopupRef = useRef<HTMLDivElement | null>(null);
@@ -3389,10 +3488,10 @@ export default function Player({
   useEffect(() => {
     const transitionedToPlaying = !wasPlayingRef.current && isPlaying;
     wasPlayingRef.current = isPlaying;
-    if (!transitionedToPlaying || !isVinylMode || isRemote) return;
+    if (!transitionedToPlaying || !isVinylMode || offBrowser) return;
     const audio = getActiveAudio();
     triggerVinylNeedleDrop(audio, 0.8 * vinylNeedleDropIntensity);
-  }, [getActiveAudio, isPlaying, isRemote, isVinylMode, triggerVinylNeedleDrop, vinylNeedleDropIntensity]);
+  }, [getActiveAudio, isPlaying, offBrowser, isVinylMode, triggerVinylNeedleDrop, vinylNeedleDropIntensity]);
 
   const playIndex = (i: number) => { saveProgressRef.current(currentIndex); onStateChange({ ...state, currentIndex: i, isPlaying: true, playToken: playToken + 1 }); };
   const playNext  = useCallback(() => {
@@ -3469,7 +3568,7 @@ export default function Player({
   const shownRepeat = remote ? remote.repeat : repeatMode;
   const shownVolume = remote ? remote.volume ?? 0 : volume;
   const shownMuted = remote ? remote.muted : muted;
-  const shownLoading = isRemote ? remote?.status === 'loading' : loading;
+  const shownLoading = isRemote ? remote?.status === 'loading' : isNative ? native.status === 'loading' : loading;
   const volumeLocked = isRemote && !(remote?.canSetVolume && remote.volume != null);
   const volumeLockedTitle = `${remote?.deviceName ?? 'This speaker'}'s volume is fixed`;
   const playNextClick = () => {
@@ -3605,8 +3704,9 @@ export default function Player({
       muted: shownMuted,
       loading: shownLoading,
       audioError,
+      nativeOutput: nativeOutputLine,
     });
-  }, [audioError, currentTime, currentTrack, duration, isPlaying, onPlaybackSnapshotChange, shownLoading, shownMuted, shownVolume]);
+  }, [audioError, currentTime, currentTrack, duration, isPlaying, nativeOutputLine, onPlaybackSnapshotChange, shownLoading, shownMuted, shownVolume]);
 
   useMediaSession(
     {
@@ -3873,7 +3973,7 @@ export default function Player({
         {/* Track info */}
         <div style={P.trackInfo}>
           <div style={P.trackTitle}>{currentTrackTitle}</div>
-          {!isRemote && getTranscodeWarning(currentTrack, ffmpegAvailable)
+          {!offBrowser && getTranscodeWarning(currentTrack, ffmpegAvailable)
             ? <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>⚠ {getTranscodeWarning(currentTrack, ffmpegAvailable)}</div>
             : (
               <div style={P.trackSub}>
@@ -3955,7 +4055,7 @@ export default function Player({
               onSeekStart={() => setSeeking(true)}
               onSeekEnd={(seconds) => {
                 seekToTime(seconds, true);
-                if (isPlaying && !isRemote) {
+                if (isPlaying && !offBrowser) {
                   const active = getActiveAudio();
                   if (active) {
                     if (!vinylHardcore) {
@@ -4074,6 +4174,7 @@ export default function Player({
                 ? <span style={{ color: '#ef4444', fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>? {audioError}</span>
                 : playOn?.notice ? <PlayOnNoticeLine notice={playOn.notice} />
                 : <>
+                    {isNative && native.badge ? <NativeFormatBadge badge={native.badge} /> : null}
                     <span style={P.timeLabel}>{fmt(currentTime)}</span>
                     {liveTrack ? (
                       <div style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
@@ -4102,7 +4203,7 @@ export default function Player({
                         onChange={v => { seekValueRef.current = v; setCurrentTime(v); }}
                         onSeekStart={() => setSeeking(true)}
                         onSeekEnd={() => {
-                          if (isRemote) { seekToTime(seekValueRef.current, true); return; }
+                          if (offBrowser) { seekToTime(seekValueRef.current, true); return; }
                           setSeeking(false);
                           const a = getActiveAudio();
                           if (a) a.currentTime = seekValueRef.current;
@@ -4119,8 +4220,8 @@ export default function Player({
           {/* Visualizer */}
           {audioReady && showMeters && (
             // Play On: the meters can't hear the renderer, so they rest in their idle state, dimmed.
-            <div style={{ display: 'flex', alignItems: 'center', ...(isRemote ? { opacity: hybridControlStyles.disabled.opacity } : {}) }}>
-              <StereoVU analyser={isRemote ? null : analyserForVu} isPlaying={isRemote ? false : isPlaying} mode={vizMode} onSelectMode={selectVizMode} />
+            <div style={{ display: 'flex', alignItems: 'center', ...(offBrowser ? { opacity: hybridControlStyles.disabled.opacity } : {}) }}>
+              <StereoVU analyser={offBrowser ? null : analyserForVu} isPlaying={offBrowser ? false : isPlaying} mode={vizMode} onSelectMode={selectVizMode} />
             </div>
           )}
 
@@ -4168,10 +4269,10 @@ export default function Player({
                   ...ctrlBtn,
                   color: eqOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted,
                   ...(eqOpen ? P.ctrlBtnActive : {}),
-                  ...(isRemote ? hybridControlStyles.disabled : {}),
+                  ...(offBrowser ? hybridControlStyles.disabled : {}),
                 }}
-                disabled={isRemote}
-                title={isRemote ? 'EQ applies to this browser only' : 'Equalizer'}
+                disabled={offBrowser}
+                title={offBrowser ? 'EQ applies to this browser only' : 'Equalizer'}
                 aria-label="Equalizer"
                 onClick={() => setEqOpen((open) => !open)}
               >

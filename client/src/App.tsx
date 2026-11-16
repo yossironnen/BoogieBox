@@ -1151,6 +1151,10 @@ export default function App() {
     setSettingsSectionRequest({ tab: 'advanced', anchor: 'advanced-play-on', token: Date.now() });
     setView('settings');
   }, []);
+  const openAudioSettings = useCallback(() => {
+    setSettingsSectionRequest({ tab: 'theme', anchor: 'user-audio-output', token: Date.now() });
+    setView('settings');
+  }, []);
   const openBackupSettings = useCallback(() => {
     setSettingsSectionRequest({ tab: 'advanced', anchor: 'advanced-backup', token: Date.now() });
     setView('settings');
@@ -1171,10 +1175,13 @@ export default function App() {
     getLocalPosition: () => localPositionRef.current,
     // The desktop shell navigates; the mobile Now Playing sheet opens its own settings panel instead.
     onOpenSettings: isAdminUser && !isMobileShell ? openPlayOnSettings : null,
+    onOpenAudioSettings: isMobileShell ? null : openAudioSettings,
   });
+  // This page (or the desktop app's own engine) plays: it records plays and scrobbles itself.
+  const playsHere = playOn.target.kind !== 'renderer';
   const dispatchPlayerState = playOn.dispatch;
   const handlePlaybackSnapshot = useCallback((snapshot: PlaybackSnapshot) => {
-    if (playOn.target.kind === 'local') {
+    if (playsHere) {
       localPositionRef.current = snapshot.currentTime;
       // Scrobble once the track has played long enough (a speaker's session does this on the server).
       const track = snapshot.currentTrack;
@@ -1190,10 +1197,10 @@ export default function App() {
       }
     }
     setPlaybackSnapshot(snapshot);
-  }, [playOn.target.kind]);
+  }, [playsHere]);
   const handleMobilePlaybackPosition = useCallback((seconds: number) => {
-    if (playOn.target.kind === 'local') localPositionRef.current = seconds;
-  }, [playOn.target.kind]);
+    if (playsHere) localPositionRef.current = seconds;
+  }, [playsHere]);
   const themeSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Apply the approved Hybrid foundation without overwriting saved Custom values.
@@ -1451,18 +1458,18 @@ export default function App() {
 
   useEffect(() => {
     // On a renderer the server records plays itself.
-    if (playOn.target.kind !== 'local') return;
+    if (!playsHere) return;
     const current = playerState.queue[playerState.currentIndex];
     if (!shouldRecordTrackPlay(current)) return;
     const key = `${playerState.playToken}:${playerState.currentIndex}:${current.id}`;
     if (lastRecordedPlayKeyRef.current === key) return;
     lastRecordedPlayKeyRef.current = key;
     api.markTrackPlayed(current.id).catch(() => {});
-  }, [playOn.target.kind, playerState.playToken, playerState.currentIndex, playerState.queue]);
+  }, [playsHere, playerState.playToken, playerState.currentIndex, playerState.queue]);
 
-  // Radio plays in this browser only (speakers get library tracks, not station relays).
+  // Radio plays in this browser or the desktop app's engine (speakers get library tracks, not station relays).
   const playRadioStation = (station: RadioStation) => {
-    if (playOn.target.kind !== 'local') {
+    if (!playsHere) {
       playOn.notify({
         text: 'Radio plays in this browser',
         tone: 'muted',
@@ -1551,7 +1558,7 @@ export default function App() {
   // Every desktop web player reports its position so admins see real progress and pauses.
   useWebPlayerHeartbeat(
     isMobileShell ? null : playbackSnapshot,
-    signedIn && !isMobileShell && !setupRequired && playOn.target.kind === 'local',
+    signedIn && !isMobileShell && !setupRequired && playsHere,
   );
   useEffect(() => {
     if (view === 'activity' && (!isAdminUser || isMobileShell) && currentUser !== 'loading') setView('home');
