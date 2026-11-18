@@ -200,7 +200,7 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
     }, ms);
   }, []);
 
-  // A remembered "This PC · Hi-Res" in a plain browser (or a desktop app without the engine): play here instead.
+  // A remembered "This PC" (desktop engine) in a plain browser (or a desktop app without the engine): play here instead.
   useEffect(() => {
     if (target.kind !== 'native') return;
     let cancelled = false;

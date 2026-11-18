@@ -119,6 +119,8 @@ fn item(server: &TestServer, path: &str, id: &str) -> PlayItem {
         duration_sec: None,
         server_decoded: false,
         live: false,
+        gain_db: 0.0,
+        eq: None,
     }
 }
 
@@ -1047,4 +1049,354 @@ fn events_reach_the_page_in_camel_case() {
     .unwrap();
     assert_eq!(device["isDefault"], true);
     assert_eq!(device["maxRate"], 384_000);
+}
+
+// ---- Phase 5: sound processing ------------------------------------------------------------------
+
+use crate::dsp::{BandKind, EqBand};
+use crate::SoundSettings;
+
+fn bell(hz: f64, gain_db: f64) -> EqBand {
+    EqBand {
+        kind: BandKind::Peaking,
+        frequency_hz: hz,
+        gain_db,
+        q: 1.1,
+        enabled: true,
+    }
+}
+
+fn set_sound(run: &Run, sound: SoundSettings) {
+    run.send(Command::SetSound { sound });
+}
+
+/// Interleaved float samples from a recording of an `f32` device.
+fn floats(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// A 16-bit stereo sine (left-justified samples).
+fn sine16(rate: u32, hz: f64, frames: usize, amp: f64) -> Vec<i32> {
+    (0..frames)
+        .flat_map(|i| {
+            let v = (amp
+                * (std::f64::consts::TAU * hz * i as f64 / f64::from(rate)).sin()
+                * 32_767.0) as i32;
+            [v << 16, v << 16]
+        })
+        .collect()
+}
+
+fn rms(v: &[f32]) -> f64 {
+    (v.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / v.len().max(1) as f64).sqrt()
+}
+
+#[test]
+fn levelling_scales_each_item_and_says_so() {
+    let server = TestServer::start();
+    let samples = pattern24(96_000, 3);
+    server.put("/a", wav_bytes(96_000, 2, 24, &samples), Behaviour::Normal);
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    set_sound(
+        &run,
+        SoundSettings {
+            levelling: true,
+            ..SoundSettings::default()
+        },
+    );
+    let mut a = item(&server, "/a", "A");
+    a.gain_db = -6.020_6;
+    run.send(Command::Load {
+        item: a,
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    let started = run.until("A", |e| matches!(e, Event::TrackStarted { .. }));
+    let Event::TrackStarted { path, .. } = started else {
+        unreachable!()
+    };
+    assert_eq!(path, [PathKind::Levelled], "not bit-perfect any more");
+    run.until_stopped();
+    let rec = words(&run.recording());
+    let got = sound(&rec);
+    // Half the level, give or take the dither (one 24-bit step, left-justified: 256).
+    let start = got.len() / 4;
+    for (g, s) in got[start..start + 2_000].iter().zip(&samples[start..]) {
+        assert!(
+            (i64::from(*g) - i64::from(*s) / 2).abs() <= 2 * 256 + 2,
+            "{g} vs {s}"
+        );
+    }
+}
+
+#[test]
+fn pure_mode_and_unchanged_items_stay_bit_perfect() {
+    let server = TestServer::start();
+    let samples = pattern24(48_000, 5);
+    server.put("/a", wav_bytes(96_000, 2, 24, &samples), Behaviour::Normal);
+    // Pure mode: the EQ is set but nothing touches the samples.
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    set_sound(
+        &run,
+        SoundSettings {
+            pure: true,
+            eq: vec![bell(1_000.0, 6.0)],
+            levelling: true,
+            crossfade_sec: 3.0,
+            ..SoundSettings::default()
+        },
+    );
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.until(
+        "bit-perfect",
+        |e| matches!(e, Event::TrackStarted { path, .. } if path == &[PathKind::BitPerfect]),
+    );
+    run.until_stopped();
+    assert_eq!(sound(&words(&run.recording())), &samples[..]);
+    drop(run);
+
+    // Processing on, but this item has no gain and the EQ is flat: floats carry 24 bits exactly.
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    set_sound(
+        &run,
+        SoundSettings {
+            levelling: true,
+            eq: vec![bell(1_000.0, 0.0)],
+            ..SoundSettings::default()
+        },
+    );
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.until(
+        "still bit-perfect",
+        |e| matches!(e, Event::TrackStarted { path, .. } if path == &[PathKind::BitPerfect]),
+    );
+    run.until_stopped();
+    assert_eq!(sound(&words(&run.recording())), &samples[..]);
+}
+
+#[test]
+fn the_eq_shapes_the_sound_and_follows_changes() {
+    let server = TestServer::start();
+    server.put(
+        "/sine",
+        wav_bytes(48_000, 2, 16, &sine16(48_000, 1_000.0, 48_000 * 3, 0.25)),
+        Behaviour::Normal,
+    );
+    let mut run = Run::new(paced(SampleKind::F32, 48_000, 2, Duration::from_millis(5)));
+    set_sound(
+        &run,
+        SoundSettings {
+            eq: vec![bell(1_000.0, 6.0)],
+            ..SoundSettings::default()
+        },
+    );
+    run.send(Command::Load {
+        item: item(&server, "/sine", "S"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    let started = run.until("S", |e| matches!(e, Event::TrackStarted { .. }));
+    let Event::TrackStarted { path, .. } = started else {
+        unreachable!()
+    };
+    assert_eq!(path, [PathKind::SharedMixer, PathKind::EqApplied]);
+    run.until_stopped();
+    let rec = floats(&run.recording());
+    let first = rec.iter().position(|v| v.abs() > 1e-6).unwrap();
+    let mid = &rec[first + 48_000..first + 96_000];
+    let gain = 20.0 * (rms(mid) / (0.25 / std::f64::consts::SQRT_2)).log10();
+    assert!((gain - 6.0).abs() < 0.2, "+6 dB at 1 kHz: {gain}");
+
+    // A flat curve while playing: the badge follows at once.
+    run.send(Command::Load {
+        item: item(&server, "/sine", "S2"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.until(
+        "S2",
+        |e| matches!(e, Event::TrackStarted { track_id, .. } if track_id == "S2"),
+    );
+    set_sound(
+        &run,
+        SoundSettings {
+            item_eq: true,
+            ..SoundSettings::default()
+        },
+    );
+    run.until(
+        "EQ gone from the path",
+        |e| matches!(e, Event::PathChanged { path, .. } if path == &[PathKind::SharedMixer]),
+    );
+    run.send(Command::Stop);
+    run.until_stopped();
+}
+
+#[test]
+fn songs_crossfade_with_equal_power() {
+    let server = TestServer::start();
+    let rate = 48_000;
+    // Constant levels make the curve easy to read: A at 0.5, B at 0.25.
+    let a: Vec<i32> = vec![16_384 << 16; rate as usize * 2 * 2];
+    let b: Vec<i32> = vec![8_192 << 16; rate as usize * 2 * 2];
+    server.put("/a", wav_bytes(rate, 2, 16, &a), Behaviour::Normal);
+    server.put("/b", wav_bytes(rate, 2, 16, &b), Behaviour::Normal);
+    let mut run = Run::new(paced(SampleKind::F32, rate, 2, Duration::from_millis(5)));
+    set_sound(
+        &run,
+        SoundSettings {
+            crossfade_sec: 1.0,
+            ..SoundSettings::default()
+        },
+    );
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.send(Command::SetNext {
+        item: Some(item(&server, "/b", "B")),
+    });
+    run.until_stopped();
+    assert_eq!(run.track_events(), ["start A", "end A", "start B", "end B"]);
+    let rec = floats(&run.recording());
+    let left: Vec<f32> = rec.iter().step_by(2).copied().collect();
+    let first = left.iter().position(|v| v.abs() > 1e-6).unwrap();
+    let last = left.iter().rposition(|v| v.abs() > 1e-6).unwrap();
+    let length = last + 1 - first;
+    // The fade starts on a decoded block, so it can be up to a block shorter than asked.
+    assert!(
+        (0..4_096).contains(&(length as i64 - 3 * i64::from(rate))),
+        "2 s + 2 s overlapping by about 1 s: {length}"
+    );
+    let at = |sec: f64| left[first + (sec * f64::from(rate)) as usize];
+    assert!((at(0.5) - 0.5).abs() < 1e-3, "A alone");
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(
+        (at(1.5) - (0.5 * half + 0.25 * half)).abs() < 5e-3,
+        "the middle: both at -3 dB, {}",
+        at(1.5)
+    );
+    assert!((at(2.5) - 0.25).abs() < 1e-3, "B alone");
+}
+
+#[test]
+fn an_exclusive_rate_change_skips_the_crossfade() {
+    let server = TestServer::start();
+    let a = ramp(2, 44_100 * 2, 1);
+    let b = pattern24(96_000 * 2, 9);
+    server.put("/a", wav_bytes(44_100, 2, 16, &a), Behaviour::Normal);
+    server.put("/b", wav_bytes(96_000, 2, 24, &b), Behaviour::Normal);
+    let mut run = exclusive_run(Some(fiio_caps(&RATES)));
+    set_sound(
+        &run,
+        SoundSettings {
+            crossfade_sec: 1.0,
+            ..SoundSettings::default()
+        },
+    );
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.send(Command::SetNext {
+        item: Some(item(&server, "/b", "B")),
+    });
+    let b_started = run.until(
+        "B",
+        |e| matches!(e, Event::TrackStarted { track_id, .. } if track_id == "B"),
+    );
+    let Event::TrackStarted { output, path, .. } = b_started else {
+        unreachable!()
+    };
+    assert_eq!(output.sample_rate, 96_000, "the device switched rate");
+    assert_eq!(path, [PathKind::BitPerfect, PathKind::Crossfade]);
+    run.until_stopped();
+    assert_eq!(
+        sound(&words(&run.recording())),
+        &b[..],
+        "B whole and untouched"
+    );
+}
+
+#[test]
+fn levels_reach_the_host_while_playing() {
+    let server = TestServer::start();
+    server.put(
+        "/sine",
+        wav_bytes(48_000, 2, 16, &sine16(48_000, 440.0, 48_000 * 2, 0.5)),
+        Behaviour::Normal,
+    );
+    let mut run = Run::new(paced(SampleKind::F32, 48_000, 2, Duration::from_millis(5)));
+    run.send(Command::Load {
+        item: item(&server, "/sine", "S"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    let levels = run.until(
+        "levels",
+        |e| matches!(e, Event::Levels { peak, .. } if *peak > 0.3),
+    );
+    let Event::Levels { peak, rms, wave } = levels else {
+        unreachable!()
+    };
+    assert!(peak <= 0.51 && rms > 0.2, "{peak} {rms}");
+    assert_eq!(wave.len(), 512);
+    assert!(wave.iter().any(|v| *v > 40) && wave.iter().any(|v| *v < -40));
+    let json = serde_json::to_string(&Event::Levels {
+        peak: 0.5,
+        rms: 0.25,
+        wave: vec![1, -2],
+    })
+    .unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"levels","peak":0.5,"rms":0.25,"wave":[1,-2]}"#
+    );
+    run.send(Command::Stop);
+    run.until_stopped();
+}
+
+#[test]
+fn sound_commands_come_from_the_page_as_json() {
+    let set: Command = serde_json::from_str(
+        r#"{"type":"setSound","sound":{"pure":false,"eq":[{"type":"low_shelf","frequencyHz":80,"gainDb":3,"q":0.7,"enabled":true}],"itemEq":true,"levelling":true,"crossfadeSec":4}}"#,
+    )
+    .unwrap();
+    let Command::SetSound { sound } = set else {
+        panic!("not setSound")
+    };
+    assert_eq!(sound.eq[0].kind, BandKind::LowShelf);
+    assert!(sound.item_eq && sound.levelling && !sound.pure);
+    assert_eq!(sound.crossfade_sec, 4.0);
+    let item: Command =
+        serde_json::from_str(r#"{"type":"setItemSound","trackId":"t1#2","gainDb":-3.5,"eq":null}"#)
+            .unwrap();
+    assert_eq!(
+        item,
+        Command::SetItemSound {
+            track_id: "t1#2".into(),
+            gain_db: -3.5,
+            eq: None
+        }
+    );
+    let path =
+        serde_json::to_string(&[PathKind::EqApplied, PathKind::Levelled, PathKind::Crossfade])
+            .unwrap();
+    assert_eq!(
+        path,
+        r#"[{"kind":"eqApplied"},{"kind":"levelled"},{"kind":"crossfade"}]"#
+    );
 }

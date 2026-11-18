@@ -12,6 +12,7 @@
 
 pub mod convert;
 pub mod decode;
+pub mod dsp;
 pub mod engine;
 pub mod negotiate;
 pub mod output;

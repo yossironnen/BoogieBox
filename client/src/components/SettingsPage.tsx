@@ -31,6 +31,7 @@ import ScrobblingPanel, { AccountRow, ScrobbleIcon, useScrobbleAccounts } from '
 import { plausibleListenBrainzToken } from '../scrobbling';
 import { InlineStatus, ToggleRow } from './settingsControls';
 import { ServerLevellingCard, VolumeLevellingCard } from './LoudnessSettings';
+import PureModeNote from '../native/PureModeNote';
 import AudioOutputSettings from '../native/AudioOutputSettings';
 import { DEFAULT_LOUDNESS_PREFS, type LoudnessPrefs } from '../audio/loudness';
 
@@ -2143,6 +2144,7 @@ export default function SettingsPage({
             <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
               Control how tracks transition during playback. Override per-album or per-playlist via their context menus.
             </div>
+            <PureModeNote style={{ marginBottom: 12 }} />
 
             {/* Mode picker */}
             <div style={{ marginBottom: 16 }}>

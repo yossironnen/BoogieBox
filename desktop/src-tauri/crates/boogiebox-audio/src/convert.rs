@@ -1,5 +1,6 @@
 //! Device sample formats and the conversions between decoded samples and device bytes.
 
+use crate::dsp::Dither;
 use crate::types::Format;
 
 /// How the device stores one sample.
@@ -173,7 +174,8 @@ fn push_int(v: i32, kind: SampleKind, out: &mut Vec<u8>) {
     }
 }
 
-fn read_sample(b: &[u8], kind: SampleKind) -> f32 {
+/// One device sample as float in -1..1.
+pub fn read_sample(b: &[u8], kind: SampleKind) -> f32 {
     match kind {
         SampleKind::F32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
         SampleKind::I16 => f32::from(i16::from_le_bytes([b[0], b[1]])) / 32_768.0,
@@ -184,16 +186,53 @@ fn read_sample(b: &[u8], kind: SampleKind) -> f32 {
     }
 }
 
-/// Scales device bytes in place, ramping linearly from `from` to `to` across the buffer (no clicks).
-/// Unity gain throughout leaves the bytes untouched (bit-perfect).
-pub fn apply_volume(bytes: &mut [u8], format: &DeviceFormat, from: f32, to: f32) {
+/// Writes one float sample (-1..1, clamped) into `out` (one sample's bytes) without dither: exact for
+/// values on the device's grid.
+pub fn write_float(sample: f32, kind: SampleKind, out: &mut [u8]) {
+    let s = sample.clamp(-1.0, 1.0);
+    if kind == SampleKind::F32 {
+        out.copy_from_slice(&s.to_le_bytes());
+        return;
+    }
+    let v = (f64::from(s) * 2_147_483_648.0).clamp(-2_147_483_648.0, 2_147_483_647.0) as i32;
+    write_int(v, kind, out);
+}
+
+/// Writes one changed sample with TPDF dither at the device's bit depth (floats need none).
+pub fn write_dithered(sample: f32, kind: SampleKind, dither: &mut Dither, out: &mut [u8]) {
+    if kind == SampleKind::F32 {
+        write_float(sample, kind, out);
+        return;
+    }
+    write_int(dither.quantize(sample, kind.bits()), kind, out);
+}
+
+fn write_int(v: i32, kind: SampleKind, out: &mut [u8]) {
+    let le = v.to_le_bytes();
+    match kind {
+        SampleKind::I16 => out.copy_from_slice(&le[2..4]),
+        SampleKind::I24Packed => out.copy_from_slice(&le[1..4]),
+        SampleKind::I24In32 => out.copy_from_slice(&[0, le[1], le[2], le[3]]),
+        SampleKind::I32 => out.copy_from_slice(&le),
+        SampleKind::F32 => out.copy_from_slice(&i32_to_f32(v).to_le_bytes()),
+    }
+}
+
+/// Scales device bytes in place, ramping linearly from `from` to `to` across the buffer (no clicks), with
+/// TPDF dither (D7). Unity gain throughout leaves the bytes untouched (bit-perfect).
+pub fn apply_volume(
+    bytes: &mut [u8],
+    format: &DeviceFormat,
+    from: f32,
+    to: f32,
+    dither: &mut Dither,
+) {
     if from == 1.0 && to == 1.0 {
         return;
     }
     let fb = format.frame_bytes();
     let sb = format.kind.bytes();
     let frames = bytes.len() / fb.max(1);
-    let mut scratch = Vec::with_capacity(4);
     for (i, frame) in bytes.chunks_exact_mut(fb).enumerate() {
         let g = if frames > 1 {
             from + (to - from) * (i as f32 / (frames - 1) as f32)
@@ -202,9 +241,7 @@ pub fn apply_volume(bytes: &mut [u8], format: &DeviceFormat, from: f32, to: f32)
         };
         for sample in frame.chunks_exact_mut(sb) {
             let v = read_sample(sample, format.kind) * g;
-            scratch.clear();
-            encode_f32(&[v], format.kind, &mut scratch);
-            sample.copy_from_slice(&scratch);
+            write_dithered(v, format.kind, dither, sample);
         }
     }
 }
@@ -281,6 +318,24 @@ mod tests {
     }
 
     #[test]
+    fn single_samples_write_in_place() {
+        let mut b = [0u8; 4];
+        write_float(0.5, SampleKind::I24In32, &mut b);
+        assert_eq!(b, [0, 0, 0, 0x40]);
+        write_float(0.25, SampleKind::F32, &mut b);
+        assert_eq!(f32::from_le_bytes(b), 0.25);
+        let mut d = Dither::default();
+        let mut two = [0u8; 2];
+        write_dithered(0.5, SampleKind::I16, &mut d, &mut two);
+        assert!((i32::from(i16::from_le_bytes(two)) - 16_384).abs() <= 1);
+        write_dithered(-0.5, SampleKind::F32, &mut d, &mut b);
+        assert_eq!(f32::from_le_bytes(b), -0.5);
+        let mut three = [0u8; 3];
+        write_float(-1.0, SampleKind::I24Packed, &mut three);
+        assert_eq!(three, [0, 0, 0x80]);
+    }
+
+    #[test]
     fn volume_ramps_and_unity_is_untouched() {
         let fmt = DeviceFormat {
             sample_rate: 48_000,
@@ -290,12 +345,17 @@ mod tests {
         let mut b = Vec::new();
         encode_f32(&[0.5; 5], SampleKind::I16, &mut b);
         let orig = b.clone();
-        apply_volume(&mut b, &fmt, 1.0, 1.0);
+        let mut d = Dither::default();
+        apply_volume(&mut b, &fmt, 1.0, 1.0, &mut d);
         assert_eq!(b, orig);
-        apply_volume(&mut b, &fmt, 1.0, 0.0);
+        apply_volume(&mut b, &fmt, 1.0, 0.0, &mut d);
         let first = i16::from_le_bytes([b[0], b[1]]);
         let last = i16::from_le_bytes([b[8], b[9]]);
-        assert_eq!((first, last), (16_384, 0));
+        assert!(
+            (i32::from(first) - 16_384).abs() <= 1,
+            "dithered by at most one step"
+        );
+        assert!(last.abs() <= 1);
         assert_eq!(fmt.frame_bytes(), 2);
         assert_eq!(fmt.to_format().codec, "s16");
     }

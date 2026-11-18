@@ -169,6 +169,8 @@ mod windows_main {
             duration_sec: None,
             server_decoded: false,
             live: false,
+            gain_db: 0.0,
+            eq: None,
         };
         engine.send(Command::SetOutput {
             device_id,

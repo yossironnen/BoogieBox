@@ -8,8 +8,9 @@ import {
   khz,
   nativeBadge,
   resampledNotice,
+  thisPcLabel,
 } from './nativeFormat';
-import type { NativeFormat, NativePathKind } from './nativeTypes';
+import { pureModeOn, type NativeFormat, type NativePathKind } from './nativeTypes';
 
 const flac = (rate: number, bits: number | null = 24, channels = 2): NativeFormat => ({ sampleRate: rate, bits, channels, codec: 'FLAC' });
 const out = (rate: number, codec = 's24in32', bits = 24): NativeFormat => ({ sampleRate: rate, bits, channels: 2, codec });
@@ -86,6 +87,40 @@ describe('native format wording', () => {
     expect(deviceGoneNotice('FiiO Q series')).toBe(
       "The FiiO Q series didn't come back. Playback stopped. Press Play to carry on with another device.",
     );
+  });
+
+  it('names the sound changes on the badge and in the tooltip', () => {
+    const badge = (path: NativePathKind[]) => nativeBadge({ source: flac(96_000), output: out(96_000), path, deviceName: 'FiiO Q series' });
+    const eq = badge([{ kind: 'eqApplied' }]);
+    expect(eq.label).toBe('24/96 · EQ applied');
+    expect(eq.accent).toBe(false);
+    expect(eq.icon).toBe('sound');
+    expect(eq.note).toBe('Turn on Pure mode for bit-perfect playback.');
+    expect(eq.rows[3]).toEqual(['Changes', 'EQ']);
+    expect(badge([{ kind: 'levelled' }]).label).toBe('24/96 · Levelling applied');
+    const both = badge([{ kind: 'eqApplied' }, { kind: 'levelled' }, { kind: 'crossfade' }]);
+    expect(both.label).toBe('24/96 · EQ + levelling');
+    expect(both.rows[3]).toEqual(['Changes', 'EQ · Volume levelling · Crossfade']);
+    // Crossfade alone keeps the badge; it only shows in the tooltip.
+    const fade = badge([{ kind: 'bitPerfect' }, { kind: 'crossfade' }]);
+    expect(fade.label).toBe('24/96 · Bit-perfect');
+    expect(fade.rows[3]).toEqual(['Changes', 'Crossfade']);
+    // Shared mode stays "Shared", with the changes listed.
+    const shared = badge([{ kind: 'sharedMixer' }, { kind: 'eqApplied' }]);
+    expect(shared.label).toBe('24/96 · Shared');
+    expect(shared.rows[3]).toEqual(['Changes', 'EQ']);
+  });
+
+  it('names the output and works out Pure mode', () => {
+    expect(thisPcLabel('YOSSI-AWR16')).toBe('This PC (YOSSI-AWR16)');
+    expect(thisPcLabel('  ')).toBe('This PC');
+    expect(thisPcLabel(null)).toBe('This PC');
+    const base = { deviceId: null, bufferMs: 50, nearestRate: true };
+    expect(pureModeOn({ ...base, mode: 'exclusive' })).toBe(true);
+    expect(pureModeOn({ ...base, mode: 'shared' })).toBe(false);
+    expect(pureModeOn({ ...base, mode: 'exclusive', pure: false })).toBe(false);
+    expect(pureModeOn({ ...base, mode: 'shared', pure: true })).toBe(true);
+    expect(pureModeOn(null)).toBe(true);
   });
 
   it('describes device rates', () => {

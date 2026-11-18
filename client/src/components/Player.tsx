@@ -41,9 +41,11 @@ import { OutputIcon, RefreshIcon } from '../remote/OutputIcon';
 import { isLibraryTrackId, isLiveTrack } from '../radioStations';
 import { RadioIcon } from './FavouriteIcons';
 import { OutputPickerList, pickerRenderers } from '../remote/OutputPicker';
-import { useNativePlayer } from '../native/useNativePlayer';
+import { nextIndexAfter, useNativePlayer, type NativeSound } from '../native/useNativePlayer';
 import { setNativeBitPerfect, useNativeAudio } from '../native/useNativeAudio';
-import { BADGE_ICONS } from '../native/NativeIcons';
+import { pureModeOn, type NativeItemSound } from '../native/nativeTypes';
+import { isNativeAnalyser, NativeAnalyser } from '../native/nativeAnalyser';
+import { BADGE_ICONS, InfoCircleIcon } from '../native/NativeIcons';
 import type { NativeBadge } from '../native/nativeFormat';
 import { useMediaSession } from '../platform/mediaSession';
 import { METADATA_SAVED_EVENT } from '../metadataEvents';
@@ -1681,6 +1683,11 @@ function StereoVU({
   const mergedAnalyserRef = useRef<AnalyserNode | null>(null);
   useEffect(() => {
     if (!analyserL || !analyserR) return;
+    if (isNativeAnalyser(analyserL)) {
+      // The desktop engine's stand-in is already a mono mix.
+      mergedAnalyserRef.current = analyserL;
+      return () => { mergedAnalyserRef.current = null; };
+    }
     const audioCtx = analyserL.context;
     const merger   = audioCtx.createChannelMerger(2);
     analyserL.connect(merger, 0, 0);
@@ -2228,6 +2235,8 @@ export default function Player({
     B: { track: null, albumContext: false },
   });
   const slotGainDbRef = useRef<Record<'A' | 'B', number>>({ A: 0, B: 0 });
+  /** Called when a slot's gain or curve changes (the desktop engine follows them). */
+  const slotSoundChangedRef = useRef<() => void>(() => {});
   const [slotGainDb, setSlotGainDb] = useState<Record<'A' | 'B', number>>({ A: 0, B: 0 });
   const loudnessPrefsRef = useRef({ mode: loudnessMode, preampDb: loudnessPreampDb });
   loudnessPrefsRef.current = { mode: loudnessMode, preampDb: loudnessPreampDb };
@@ -2304,6 +2313,7 @@ export default function Player({
   }, []);
 
   const applySlotEq = useCallback((slot: 'A' | 'B') => {
+    slotSoundChangedRef.current();
     const filters = slot === 'A' ? eqParametricFiltersARef.current : eqParametricFiltersBRef.current;
     if (!filters) return;
     const ctx = slot === 'A' ? eqCtxARef.current : eqCtxBRef.current;
@@ -2332,7 +2342,7 @@ export default function Player({
     };
     const useSaved = savedEqEnabledRef.current && typeof api.savedEq?.get === 'function';
     const useAuto = autoEqEnabledRef.current && typeof (api as any).trackEqProfile === 'function';
-    if (!track || (!useSaved && !useAuto) || offBrowserRef.current || isSyntheticTrackId(track.id)) {
+    if (!track || (!useSaved && !useAuto) || isRemoteRef.current || isSyntheticTrackId(track.id)) {
       settle(null);
       return;
     }
@@ -2415,6 +2425,7 @@ export default function Player({
     const { mode, preampDb } = loudnessPrefsRef.current;
     const db = pickGainDb(mode, preampDb, data, albumContext);
     slotGainDbRef.current[slot] = db;
+    slotSoundChangedRef.current();
     const node = slot === 'A' ? loudnessGainARef.current : loudnessGainBRef.current;
     const ctx = slot === 'A' ? eqCtxARef.current : eqCtxBRef.current;
     // A 50 ms time constant moves to the new gain without a click.
@@ -2523,7 +2534,7 @@ export default function Player({
   useEffect(() => {
     resolveSlotEq('A', slotLoudnessRef.current.A.track);
     resolveSlotEq('B', slotLoudnessRef.current.B.track);
-  }, [autoEqEnabled, savedEqEnabled, isRemote, resolveSlotEq]);
+  }, [autoEqEnabled, savedEqEnabled, isRemote, isNative, resolveSlotEq]);
 
   // The active slot changes with the song; the panel follows it.
   useEffect(() => {
@@ -2531,7 +2542,7 @@ export default function Player({
   }, [autoEqEnabled, savedEqEnabled, currentTrack?.id, playToken, showActiveSlotEq]);
 
   // While the Equalizer is open: does the song playing now, or its album, have a saved curve?
-  const savedEqTrackId = currentTrack && !offBrowser && !liveTrack && isLibraryTrackId(currentTrack.id)
+  const savedEqTrackId = currentTrack && !isRemote && !liveTrack && isLibraryTrackId(currentTrack.id)
     ? String(currentTrack.id)
     : null;
   const savedEqWatched = savedEqWatchers > 0;
@@ -2678,8 +2689,8 @@ export default function Player({
     edited: !!slotEqPlaying?.edited,
     canSave: canUseSavedEq && !!savedEqTrackId,
     canSaveAlbum: canUseSavedEq && !!savedEqTrackId && !!savedEqAlbumId,
-    browserOnly: offBrowser,
-  }), [canUseSavedEq, offBrowser, savedEqAlbumId, savedEqTrackId, savedEqView, slotEqPlaying]);
+    browserOnly: isRemote,
+  }), [canUseSavedEq, isRemote, savedEqAlbumId, savedEqTrackId, savedEqView, slotEqPlaying]);
 
   /** After a save or remove: asks again about the song playing now, then both slots choose again. */
   const refreshSavedEq = useCallback(async (trackId: string) => {
@@ -3419,6 +3430,46 @@ export default function Player({
     if (isRemote) cancelLocalSleep();
   }, [cancelLocalSleep, isRemote]);
 
+  // Desktop engine: slot A stands for the song playing and slot B for the next one, so levelling and saved/Auto EQ
+  // work out each song's gain and curve just as they do in the browser.
+  const [slotSoundRev, setSlotSoundRev] = useState(0);
+  slotSoundChangedRef.current = () => {
+    if (offBrowserRef.current) setSlotSoundRev((n) => n + 1);
+  };
+  useEffect(() => {
+    if (!isNative) return;
+    activeSlotRef.current = 'A';
+    assignSlotTrack('A', queue, currentIndex);
+    const next = nextIndexAfter(currentIndex, queue.length, repeatMode);
+    if (next != null) assignSlotTrack('B', queue, next);
+    showActiveSlotEq();
+  }, [isNative, queue, currentIndex, repeatMode, assignSlotTrack, showActiveSlotEq]);
+  const nativePure = pureModeOn(nativeAudio.settings);
+  const nativeSound = useMemo<NativeSound | undefined>(() => {
+    if (!isNative) return undefined;
+    const items: Record<string, NativeItemSound> = {};
+    for (const slot of ['A', 'B'] as const) {
+      const track = slotLoudnessRef.current[slot].track;
+      if (!track) continue;
+      const eq = slotEqRef.current[slot];
+      const allowed = !!eq && (eq.source === 'auto' ? autoEqEnabled : savedEqEnabled);
+      items[String(track.id)] = { gainDb: slotGainDbRef.current[slot], eq: allowed && eq ? eq.bands : null };
+    }
+    return {
+      settings: {
+        pure: nativePure,
+        eq: parametricBands,
+        itemEq: autoEqEnabled || savedEqEnabled,
+        levelling: loudnessMode !== 'off',
+        crossfadeSec: crossfadeConfig.mode === 'crossfade' ? crossfadeConfig.duration : 0,
+      },
+      items,
+    };
+  // slotSoundRev: a slot's gain or curve changed (kept in refs).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNative, slotSoundRev, nativePure, parametricBands, autoEqEnabled, savedEqEnabled, loudnessMode, crossfadeConfig.mode, crossfadeConfig.duration]);
+  const nativeAnalyser = useMemo(() => new NativeAnalyser(), []);
+
   // Desktop engine: the queue stays here; the engine plays the current song and the next one (gapless).
   const native = useNativePlayer({
     enabled: isNative,
@@ -3433,6 +3484,8 @@ export default function Player({
     onAdvance: (index) => onStateChange({ ...state, currentIndex: index, isPlaying: true }),
     onFinished: () => onStateChange({ ...state, isPlaying: false }),
     notify: (text, tone) => playOn?.notify({ text, tone }),
+    sound: nativeSound,
+    onLevels: (wave) => nativeAnalyser.push(wave),
   });
   nativeSeekRef.current = native.seek;
   const nativeOutputLine = isNative && native.badge
@@ -4219,9 +4272,15 @@ export default function Player({
         <div style={P.rightCluster} data-testid="player-right-cluster">
           {/* Visualizer */}
           {audioReady && showMeters && (
-            // Play On: the meters can't hear the renderer, so they rest in their idle state, dimmed.
-            <div style={{ display: 'flex', alignItems: 'center', ...(offBrowser ? { opacity: hybridControlStyles.disabled.opacity } : {}) }}>
-              <StereoVU analyser={offBrowser ? null : analyserForVu} isPlaying={offBrowser ? false : isPlaying} mode={vizMode} onSelectMode={selectVizMode} />
+            // Play On: the meters can't hear the renderer, so they rest in their idle state, dimmed. The desktop
+            // engine sends its levels, so they move as usual.
+            <div style={{ display: 'flex', alignItems: 'center', ...(isRemote ? { opacity: hybridControlStyles.disabled.opacity } : {}) }}>
+              <StereoVU
+                analyser={isRemote ? null : isNative ? (nativeAnalyser as unknown as AnalyserNode) : analyserForVu}
+                isPlaying={isRemote ? false : isPlaying}
+                mode={vizMode}
+                onSelectMode={selectVizMode}
+              />
             </div>
           )}
 
@@ -4269,10 +4328,10 @@ export default function Player({
                   ...ctrlBtn,
                   color: eqOpen ? PLAYER_THEME_TOKENS.accent : PLAYER_THEME_TOKENS.textMuted,
                   ...(eqOpen ? P.ctrlBtnActive : {}),
-                  ...(offBrowser ? hybridControlStyles.disabled : {}),
+                  ...(isRemote ? hybridControlStyles.disabled : {}),
                 }}
-                disabled={offBrowser}
-                title={offBrowser ? 'EQ applies to this browser only' : 'Equalizer'}
+                disabled={isRemote}
+                title={isRemote ? 'EQ applies to this browser only' : 'Equalizer'}
                 aria-label="Equalizer"
                 onClick={() => setEqOpen((open) => !open)}
               >
@@ -4329,6 +4388,26 @@ export default function Player({
                   </label>
                   <button style={P.eqCloseBtn} onClick={() => setEqOpen(false)} aria-label="Close equalizer"><CloseIcon /></button>
                 </div>
+                {isNative && nativePure && (
+                  <div role="note" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, padding: '8px 10px', borderRadius: 8, background: 'var(--accent-soft, color-mix(in srgb, var(--accent) 16%, transparent))', color: PLAYER_THEME_TOKENS.text }}>
+                    <InfoCircleIcon />
+                    <span>
+                      Pure mode is on, so the EQ is off for This PC.
+                      {playOn?.openAudioSettings ? (
+                        <>
+                          {' '}
+                          <button
+                            type="button"
+                            onClick={() => { setEqOpen(false); playOn.openAudioSettings?.(); }}
+                            style={{ padding: 0, border: 0, background: 'none', font: 'inherit', color: PLAYER_THEME_TOKENS.accent, textDecoration: 'underline', cursor: 'pointer' }}
+                          >
+                            Audio output settings
+                          </button>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                )}
                 {eqLocked && (
                   <div style={{ fontSize: 12, color: PLAYER_THEME_TOKENS.textMuted }}>
                     Auto EQ active - preset: <strong style={{ color: PLAYER_THEME_TOKENS.text }}>{autoEqCurrentPreset}</strong>

@@ -40,6 +40,9 @@ pub struct AudioSettings {
     pub buffer_ms: u32,
     /// D9: resample to the nearest rate the DAC takes (off: such files play in shared mode).
     pub nearest_rate: bool,
+    /// Pure mode: EQ, levelling and crossfade off. `None` follows the mode (on in Exclusive). The page reads it
+    /// and sends it with the sound settings.
+    pub pure: Option<bool>,
 }
 
 impl Default for AudioSettings {
@@ -49,6 +52,7 @@ impl Default for AudioSettings {
             mode: boogiebox_audio::OutputMode::Exclusive,
             buffer_ms: 50,
             nearest_rate: true,
+            pure: None,
         }
     }
 }

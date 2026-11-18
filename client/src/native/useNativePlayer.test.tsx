@@ -148,6 +148,42 @@ describe('useNativePlayer', () => {
     expect(notify).toHaveBeenLastCalledWith("This DAC can't play 96 kHz. Playing at 88.2 kHz instead.", 'muted');
   });
 
+  it('sends the sound settings first and each song\'s gain and curve with it', async () => {
+    const bell = { type: 'peaking' as const, frequencyHz: 1_000, gainDb: 4, q: 1.1, enabled: true };
+    const settings = { pure: false, eq: [bell], itemEq: true, levelling: true, crossfadeSec: 4 };
+    const levels = vi.fn();
+    const { hook, initial } = setup({
+      sound: { settings, items: { a: { gainDb: -3.5, eq: null }, b: { gainDb: 1, eq: [bell] } } },
+      onLevels: levels,
+    });
+    await waitFor(() => expect(of('setNext')).toHaveLength(1));
+    expect(engine.commands[0]).toEqual({ type: 'setSound', sound: settings });
+    const load = of('load')[0] as Extract<NativeCommand, { type: 'load' }>;
+    expect(load.item).toMatchObject({ gainDb: -3.5, eq: null });
+    const next = of('setNext')[0] as Extract<NativeCommand, { type: 'setNext' }>;
+    expect(next.item).toMatchObject({ gainDb: 1, eq: [bell] });
+    expect(of('setItemSound')).toHaveLength(0);
+
+    // The loudness values for "a" change: only that song is told again.
+    hook.rerender({
+      ...initial,
+      sound: { settings, items: { a: { gainDb: -6, eq: null }, b: { gainDb: 1, eq: [bell] } } },
+      onLevels: levels,
+    });
+    expect(of('setItemSound')).toEqual([{ type: 'setItemSound', trackId: load.item.trackId, gainDb: -6, eq: null }]);
+    expect(of('setSound')).toHaveLength(1);
+    // Pure mode on: new settings go out.
+    hook.rerender({
+      ...initial,
+      sound: { settings: { ...settings, pure: true }, items: { a: { gainDb: -6, eq: null }, b: { gainDb: 1, eq: [bell] } } },
+      onLevels: levels,
+    });
+    expect(of('setSound')).toHaveLength(2);
+
+    await emit({ type: 'levels', peak: 0.5, rms: 0.2, wave: [1, -1] });
+    expect(levels).toHaveBeenCalledWith([1, -1]);
+  });
+
   it('says when a song has no link', async () => {
     const { hook } = setup({ queue: [track('missing')] });
     await waitFor(() => expect(hook.result.current.error).toBe("This song can't be played."));

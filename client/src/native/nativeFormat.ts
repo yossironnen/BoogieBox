@@ -1,9 +1,15 @@
 /**
- * Wording for the desktop app's Hi-Res output: the dock badge, its tooltip and the notices. Every string comes
- * from `wip/native-hires-approved-copy.md` (approved 2026-11-15).
+ * Wording for the desktop app's own output ("This PC"): the dock badge, its tooltip and the notices. Every string
+ * comes from `wip/native-hires-approved-copy.md` (approved 2026-11-15; phase 5 additions 2026-11-17).
  */
 
 import type { NativeErrorCode, NativeFormat, NativePathKind } from './nativeTypes';
+
+/** The output's name in the Play on list: "This PC (<machine name>)", or "This PC" until the name is known. */
+export function thisPcLabel(machineName: string | null | undefined): string {
+  const name = machineName?.trim();
+  return name ? `This PC (${name})` : 'This PC';
+}
 
 /** `44.1`, `96`, `176.4` from a rate in Hz. */
 export function khz(rate: number): string {
@@ -37,8 +43,8 @@ export interface NativeBadge {
   label: string;
   /** Bit-perfect: shown in the accent colour. */
   accent: boolean;
-  icon: 'bitPerfect' | 'volume' | 'resampled' | 'shared' | 'server' | 'downmix';
-  /** Tooltip rows: File, To the DAC, Device. */
+  icon: 'bitPerfect' | 'volume' | 'resampled' | 'shared' | 'server' | 'downmix' | 'sound';
+  /** Tooltip rows: File, To the DAC, Device, and Changes when EQ, levelling or crossfade are in use. */
   rows: Array<[string, string]>;
   /** Tooltip last line. */
   note: string;
@@ -81,6 +87,11 @@ export function nativeBadge(input: BadgeInput): NativeBadge {
     ['To the DAC', dacRow(output, shared)],
     ['Device', input.deviceName ?? 'System default'],
   ];
+  const eq = has(path, 'eqApplied');
+  const levelled = has(path, 'levelled');
+  const changes = [eq && 'EQ', levelled && 'Volume levelling', has(path, 'crossfade') && 'Crossfade']
+    .filter((c): c is string => Boolean(c));
+  if (changes.length) rows.push(['Changes', changes.join(' · ')]);
   const fmt = formatPart(source);
   const sharedNote = 'Windows mixes and may resample it.';
   if (input.radio) {
@@ -113,6 +124,15 @@ export function nativeBadge(input: BadgeInput): NativeBadge {
       icon: 'resampled',
       rows,
       note: `This DAC can't play ${khz(source.sampleRate)} kHz.`,
+    };
+  }
+  if (eq || levelled) {
+    return {
+      label: `${fmt} · ${eq && levelled ? 'EQ + levelling' : eq ? 'EQ applied' : 'Levelling applied'}`,
+      accent: false,
+      icon: 'sound',
+      rows,
+      note: 'Turn on Pure mode for bit-perfect playback.',
     };
   }
   if (has(path, 'bitPerfect')) {

@@ -6,10 +6,10 @@
 import React from 'react';
 import { hybridSettingsStyles } from '../hybridPreview';
 import { ToggleRow } from '../components/settingsControls';
-import { deviceRateLong } from './nativeFormat';
-import { LockIcon, SharedIcon, SineIcon, SpeakerIcon, TimerIcon, WaveIcon } from './NativeIcons';
+import { deviceRateLong, thisPcLabel } from './nativeFormat';
+import { LockIcon, SharedIcon, SineIcon, SlidersIcon, SpeakerIcon, TimerIcon, WaveIcon } from './NativeIcons';
 import { activeDevice, useNativeAudio } from './useNativeAudio';
-import type { NativeAudioSettings, NativeOutputMode } from './nativeTypes';
+import { pureModeOn, type NativeAudioSettings, type NativeOutputMode } from './nativeTypes';
 
 const BUFFERS: Array<{ ms: number; label: string }> = [
   { ms: 20, label: 'Low · 20 ms' },
@@ -55,7 +55,7 @@ export default function AudioOutputSettings() {
       <div style={hybridSettingsStyles.panelHeader}>
         <div>
           <div style={hybridSettingsStyles.sectionTitle}>Audio output</div>
-          <div style={hybridSettingsStyles.panelDescription}>How this PC plays when "This PC · Hi-Res" is the output.</div>
+          <div style={hybridSettingsStyles.panelDescription}>How this PC plays when &quot;{thisPcLabel(native.machineName)}&quot; is the output.</div>
         </div>
       </div>
 
@@ -127,6 +127,17 @@ export default function AudioOutputSettings() {
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>Choose Safe if you hear dropouts.</div>
       </div>
 
+      <div style={{ display: 'flex', gap: 8 }}>
+        <SlidersIcon size={16} style={{ flexShrink: 0, marginTop: 3, color: 'var(--text)' }} />
+        <div style={{ flex: 1 }}>
+          <ToggleRow
+            title="Pure mode"
+            description="Turns off EQ, volume levelling and crossfade, so nothing changes the sound. On by default in Exclusive mode."
+            checked={pureModeOn(settings)}
+            onChange={() => update({ pure: !pureModeOn(settings) })}
+          />
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <SineIcon size={16} style={{ flexShrink: 0, marginTop: 3, color: 'var(--text)' }} />
         <div style={{ flex: 1 }}>

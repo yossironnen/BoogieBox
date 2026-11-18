@@ -4,6 +4,7 @@
  * The mode icons are shared with the mobile settings sheet.
  */
 
+import PureModeNote from '../native/PureModeNote';
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { LOUDNESS_MODES, type LoudnessMode, type LoudnessPrefs } from '../audio/loudness';
@@ -148,6 +149,7 @@ export function VolumeLevellingCard({ prefs, onChange }: {
 
       <ModeChips value={prefs.mode} modes={LOUDNESS_MODES} onChange={mode => onChange({ mode })} />
       <div style={styles.hint}>{LOUDNESS_MODE_HINTS[prefs.mode]}</div>
+      <PureModeNote style={{ marginTop: 6 }} />
 
       <div style={styles.preampRow}>
         <label htmlFor="loudness-preamp" style={styles.preampLabel}>Pre-amp</label>

@@ -8,7 +8,7 @@ import { hybridAudioPanelStyles, hybridControlStyles } from '../hybridPreview';
 import { BrowserIcon, CheckIcon, PhoneIcon, RendererIcon, UserIcon } from './OutputIcon';
 import type { PlayOnApi } from './usePlayOn';
 import { DacIcon } from '../native/NativeIcons';
-import { deviceRateShort } from '../native/nativeFormat';
+import { deviceRateShort, thisPcLabel } from '../native/nativeFormat';
 import { useNativeAudio, useNativeBitPerfect, type NativeAudioState } from '../native/useNativeAudio';
 import type { RendererInfo } from './remoteTypes';
 
@@ -124,7 +124,7 @@ function rendererRow(renderer: RendererInfo, playOn: PlayOnApi, variant: OutputP
   );
 }
 
-/** The desktop app's own engine: "This PC · Hi-Res", with the device list under it when chosen. */
+/** The desktop app's own engine: "This PC (<machine name>)", with the device list under it when chosen. */
 function NativeRows({
   native,
   playOn,
@@ -144,7 +144,7 @@ function NativeRows({
     <>
       <OutputRow
         icon={<DacIcon />}
-        name="This PC · Hi-Res"
+        name={thisPcLabel(native.machineName)}
         detail={deviceName ? `${deviceName} · ${mode}` : mode}
         active={active}
         variant="desktop"

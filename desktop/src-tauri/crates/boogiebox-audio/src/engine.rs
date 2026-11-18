@@ -16,8 +16,13 @@
 //! Positions come from frames that reached the device, so `TrackStarted`/`TrackEnded` fire when the sound
 //! changes, not when decoding moves on. A lost device pauses playback and resumes it if the device comes back
 //! within 30 s (unplugged DAC, sleep).
+//!
+//! **Sound processing** (phase 5, off in Pure mode): with EQ, levelling or crossfade on, a session's ring holds
+//! floats. The decoder thread applies each item's levelling gain and mixes crossfades (equal-power); the output
+//! thread applies each item's EQ from the [`PlanTable`] this thread keeps up to date, so EQ changes are heard
+//! at once. Without processing the ring holds device bytes, bit for bit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -26,13 +31,17 @@ use std::time::{Duration, Instant};
 
 use crate::convert::{encode_f32, encode_i32_exact, i32_to_f32, map_channels, DeviceFormat};
 use crate::decode::{DecodeError, StreamInfo, TrackDecoder};
+use crate::dsp::{crossfade_gains, db_to_linear, EqBand, EqPlan};
 use crate::negotiate::{self, DeviceCaps};
 use crate::output::{
-    Output, OutputError, OutputFactory, OutputRequest, OutputShared, WatchGuard, DEFAULT_BUFFER_MS,
+    Output, OutputError, OutputFactory, OutputRequest, OutputShared, PlanTable, RingKind,
+    WatchGuard, DEFAULT_BUFFER_MS, MAX_PLANS,
 };
 use crate::resample::StreamResampler;
 use crate::source::{HttpRangeSource, SourceOptions, UrlSlot};
-use crate::types::{Command, ErrorCode, Event, Format, OutputMode, PathKind, PlayItem, Status};
+use crate::types::{
+    Command, ErrorCode, Event, Format, OutputMode, PathKind, PlayItem, SoundSettings, Status,
+};
 
 /// Ring buffer length.
 pub const RING_SECONDS: f64 = 2.0;
@@ -47,6 +56,64 @@ pub const RESUME_WITHIN: Duration = Duration::from_secs(30);
 const RESUME_RETRY: Duration = Duration::from_secs(2);
 const TICK: Duration = Duration::from_millis(20);
 const STATE_EVERY: Duration = Duration::from_millis(250);
+const LEVELS_EVERY: Duration = Duration::from_millis(50);
+/// Waveform points per `Levels` event (~21 ms at the meter's ~24 kHz).
+const LEVEL_POINTS: usize = 512;
+/// A crossfade needs at least this much of the outgoing item left (s).
+const MIN_FADE_SEC: f64 = 0.5;
+/// Rate used to decide whether a curve changes anything before the device rate is known.
+const NOMINAL_RATE: u32 = 48_000;
+
+/// An item's levelling gain and own curve.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ItemSound {
+    gain_db: f64,
+    eq: Option<Vec<EqBand>>,
+}
+
+/// The sound settings and every known item's gain and curve, shared with decoder threads.
+#[derive(Debug, Default)]
+struct SoundTable {
+    settings: SoundSettings,
+    items: HashMap<String, ItemSound>,
+}
+
+impl SoundTable {
+    /// Something may change the samples (EQ, levelling or crossfade on, Pure mode off).
+    fn processing(&self) -> bool {
+        let s = &self.settings;
+        !s.pure
+            && (s.levelling
+                || s.crossfade_sec > 0.0
+                || s.item_eq
+                || !EqPlan::new(&s.eq, NOMINAL_RATE).is_identity())
+    }
+
+    fn gain_db(&self, track_id: &str) -> f64 {
+        if self.settings.pure || !self.settings.levelling {
+            return 0.0;
+        }
+        self.items.get(track_id).map_or(0.0, |i| i.gain_db)
+    }
+
+    fn eq(&self, track_id: &str) -> &[EqBand] {
+        if self.settings.pure {
+            return &[];
+        }
+        match self.items.get(track_id).and_then(|i| i.eq.as_deref()) {
+            Some(own) if self.settings.item_eq => own,
+            _ => &self.settings.eq,
+        }
+    }
+
+    fn crossfade_sec(&self) -> f64 {
+        if self.settings.pure {
+            0.0
+        } else {
+            self.settings.crossfade_sec.clamp(0.0, 30.0)
+        }
+    }
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -214,8 +281,16 @@ struct Segment {
     source: Format,
     output: Format,
     path: Vec<PathKind>,
-    /// Samples reach an exclusive device unchanged (before the volume).
+    /// Samples reach an exclusive device unchanged (before the volume and any processing).
     bit_exact: bool,
+    /// The ring holds floats (sound processing on).
+    float: bool,
+    /// Nothing but processing touches the samples (no resampling, channel mapping or lost bits).
+    passthrough: bool,
+    /// The item fades in over the previous one.
+    faded: bool,
+    /// Where this item's EQ takes over (the middle of a crossfade).
+    eq_start: u64,
 }
 
 #[derive(Debug, Default)]
@@ -241,6 +316,8 @@ struct Pipeline {
     resampled: Vec<f32>,
     /// Source frames fed since the pipeline was made.
     fed: u64,
+    /// Float ring: the levelling gain now (linear).
+    gain: f32,
 }
 
 impl Pipeline {
@@ -262,7 +339,66 @@ impl Pipeline {
             mapped: Vec::new(),
             resampled: Vec::new(),
             fed: 0,
+            gain: 1.0,
         })
+    }
+
+    /// In a float ring: no resampling or channel mapping, and floats keep every source bit (≤ 24).
+    fn passthrough(&self) -> bool {
+        self.resampler.is_none()
+            && self.channels == self.device.channels
+            && self.device.kind.is_int()
+            && self.bits.is_none_or(|b| b <= 24)
+    }
+
+    /// Float ring: decoded samples to device-rate floats, the levelling gain ramped to `gain`.
+    fn process_floats(
+        &mut self,
+        block: &[i32],
+        gain: f32,
+        out: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        out.clear();
+        self.fed += (block.len() / usize::from(self.channels)) as u64;
+        self.floats.clear();
+        self.floats.extend(block.iter().map(|s| i32_to_f32(*s)));
+        map_channels(
+            &self.floats,
+            self.channels,
+            self.device.channels,
+            &mut self.mapped,
+        );
+        match self.resampler.as_mut() {
+            Some(r) => r.push(&self.mapped, out)?,
+            None => out.extend_from_slice(&self.mapped),
+        }
+        self.apply_gain(out, gain);
+        Ok(())
+    }
+
+    fn flush_floats(&mut self, gain: f32, out: &mut Vec<f32>) -> Result<(), String> {
+        out.clear();
+        if let Some(r) = self.resampler.as_mut() {
+            r.flush(out)?;
+        }
+        self.apply_gain(out, gain);
+        Ok(())
+    }
+
+    fn apply_gain(&mut self, out: &mut [f32], gain: f32) {
+        let (from, to) = (self.gain, gain);
+        self.gain = gain;
+        if from == 1.0 && to == 1.0 {
+            return;
+        }
+        let ch = usize::from(self.device.channels.max(1));
+        let frames = (out.len() / ch).max(1);
+        for (i, f) in out.chunks_exact_mut(ch).enumerate() {
+            let g = from + (to - from) * (i as f32 / frames as f32);
+            for s in f {
+                *s *= g;
+            }
+        }
     }
 
     fn compatible(&self, info: &StreamInfo) -> bool {
@@ -345,6 +481,9 @@ struct ProducerCtx {
     caps: Option<Arc<DeviceCaps>>,
     /// D9: resample to the nearest supported rate (else play such items in shared mode).
     nearest_rate: bool,
+    /// The ring holds floats: levelling, crossfade and EQ may change the sound.
+    float: bool,
+    sounds: Arc<Mutex<SoundTable>>,
     cancel: Arc<AtomicBool>,
     next: Arc<Mutex<Option<PlayItem>>>,
     prepared: Prepared,
@@ -356,26 +495,36 @@ struct Ring {
     producer: rtrb::Producer<u8>,
     capacity: usize,
     grant: Grant,
+    kind: RingKind,
     pushed: u64,
 }
 
 impl Ring {
-    fn new(generation: u64, grant: Grant) -> Self {
-        let fb = grant.format.frame_bytes().max(1);
+    fn new(generation: u64, grant: Grant, kind: RingKind) -> Self {
+        let fb = ring_frame_bytes(&grant.format, kind);
         let capacity =
             ((f64::from(grant.format.sample_rate) * RING_SECONDS) as usize).max(4096) * fb;
         let (producer, consumer) = rtrb::RingBuffer::<u8>::new(capacity);
-        grant.shared.set_source(generation, consumer);
+        grant.shared.set_source(generation, consumer, kind);
         Self {
             producer,
             capacity,
             grant,
+            kind,
             pushed: 0,
         }
     }
 
     fn fb(&self) -> usize {
-        self.grant.format.frame_bytes().max(1)
+        ring_frame_bytes(&self.grant.format, self.kind)
+    }
+
+    fn rate(&self) -> f64 {
+        f64::from(self.grant.format.sample_rate)
+    }
+
+    fn channels(&self) -> usize {
+        usize::from(self.grant.format.channels.max(1))
     }
 
     /// Pushes all of `bytes`, waiting while the ring is full; false when the session ended.
@@ -397,6 +546,77 @@ impl Ring {
 
     fn buffered(&self) -> usize {
         self.capacity - self.producer.slots()
+    }
+}
+
+fn ring_frame_bytes(format: &DeviceFormat, kind: RingKind) -> usize {
+    match kind {
+        RingKind::Device => format.frame_bytes().max(1),
+        RingKind::Float => 4 * usize::from(format.channels.max(1)),
+    }
+}
+
+fn floats_to_bytes(floats: &[f32], out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(floats.len() * 4);
+    for f in floats {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+}
+
+/// The next item fading in over the end of the current one.
+struct Fade {
+    item: PlayItem,
+    dec: TrackDecoder,
+    pipe: Pipeline,
+    /// Its samples not mixed in yet.
+    queue: VecDeque<f32>,
+    /// Fade length and frames done (device frames).
+    len: u64,
+    pos: u64,
+    /// Its device frames so far.
+    produced: u64,
+    /// Its decoder has nothing more (a very short item).
+    ended: bool,
+    scratch: Vec<f32>,
+}
+
+impl Fade {
+    /// Mixes the incoming item into `out` (the outgoing item's frames, or silence once it ended).
+    fn mix(&mut self, out: &mut [f32], channels: usize, gain: f32) -> Result<(), DecodeError> {
+        let want = out.len();
+        while self.queue.len() < want && !self.ended {
+            match self.dec.next_block()? {
+                Some(block) => {
+                    self.pipe
+                        .process_floats(block, gain, &mut self.scratch)
+                        .map_err(DecodeError::Broken)?;
+                    self.queue.extend(self.scratch.iter().copied());
+                }
+                None => {
+                    self.pipe
+                        .flush_floats(gain, &mut self.scratch)
+                        .map_err(DecodeError::Broken)?;
+                    self.queue.extend(self.scratch.iter().copied());
+                    self.ended = true;
+                }
+            }
+        }
+        for frame in out.chunks_exact_mut(channels) {
+            let p = if self.len == 0 {
+                1.0
+            } else {
+                self.pos as f64 / self.len as f64
+            };
+            let (go, gi) = crossfade_gains(p);
+            for s in frame.iter_mut() {
+                let incoming = self.queue.pop_front().unwrap_or(0.0);
+                *s = *s * go + incoming * gi;
+            }
+            self.pos += 1;
+            self.produced += 1;
+        }
+        Ok(())
     }
 }
 
@@ -444,11 +664,62 @@ impl ProducerCtx {
         }
     }
 
+    /// The item's levelling gain (linear) right now.
+    fn gain(&self, item: &PlayItem) -> f32 {
+        db_to_linear(lock(&self.sounds).gain_db(&item.track_id)) as f32
+    }
+
+    fn crossfade_sec(&self) -> f64 {
+        lock(&self.sounds).crossfade_sec()
+    }
+
+    /// Starts a crossfade into the next item when the current one is about to end: same device format only
+    /// (an exclusive rate change stays a clean switch), and a next item must be set.
+    fn start_fade(&self, dec: &TrackDecoder, ring: &Ring, item_frames: u64) -> Option<Fade> {
+        let fade_sec = self.crossfade_sec();
+        let total = dec.info.duration_sec()? * ring.rate();
+        let left = total - item_frames as f64;
+        if fade_sec <= 0.0 || left > fade_sec * ring.rate() || left < MIN_FADE_SEC * ring.rate() {
+            return None;
+        }
+        let next = lock(&self.next).take()?;
+        let next_dec = match self.open(&next) {
+            Ok(d) => d,
+            Err(_) => {
+                // Leave it for the normal join, which reports the failure.
+                *lock(&self.next) = Some(next);
+                return None;
+            }
+        };
+        let fits = !ring.grant.exclusive || self.want(&next_dec.info) == Some(ring.grant.format);
+        let pipe = Pipeline::new(&next_dec.info, ring.grant.format)
+            .ok()
+            .filter(|_| fits);
+        let Some(pipe) = pipe else {
+            // Another rate: no fade. Give the opened decoder to the normal join.
+            *lock(&self.prepared) = Some((next.track_id.clone(), next_dec));
+            *lock(&self.next) = Some(next);
+            return None;
+        };
+        Some(Fade {
+            item: next,
+            dec: next_dec,
+            pipe,
+            queue: VecDeque::new(),
+            len: left.max(0.0) as u64,
+            pos: 0,
+            produced: 0,
+            ended: false,
+            scratch: Vec::new(),
+        })
+    }
+
     fn timeline(&self) -> Option<MutexGuard<'_, Timeline>> {
         let tl = lock(&self.timeline);
         (tl.generation == self.generation).then_some(tl)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_segment(
         &self,
         item: &PlayItem,
@@ -457,13 +728,20 @@ impl ProducerCtx {
         ring: &Ring,
         start: u64,
         start_sec: f64,
+        fade_len: Option<u64>,
     ) {
         let mut path = ring.grant.path.clone();
         path.extend(pipe.path());
         if item.server_decoded {
             path.push(PathKind::ServerConverted);
         }
-        let bit_exact = ring.grant.exclusive && pipe.exact && pipe.keeps_all_bits();
+        let float = ring.kind == RingKind::Float;
+        let passthrough = if float {
+            pipe.passthrough()
+        } else {
+            pipe.exact && pipe.keeps_all_bits()
+        };
+        let bit_exact = ring.grant.exclusive && passthrough;
         if let Some(mut tl) = self.timeline() {
             tl.switching = false;
             tl.segments.push(Segment {
@@ -480,6 +758,10 @@ impl ProducerCtx {
                 output: ring.grant.format.to_format(),
                 path,
                 bit_exact,
+                float,
+                passthrough,
+                faded: fade_len.is_some(),
+                eq_start: start + fade_len.unwrap_or(0) / 2,
             });
         }
     }
@@ -525,22 +807,67 @@ fn run_producer(mut ctx: ProducerCtx) {
         return;
     };
     ctx.generation = grant.generation;
-    let mut ring = Ring::new(ctx.generation, grant);
+    let kind = if ctx.float {
+        RingKind::Float
+    } else {
+        RingKind::Device
+    };
+    let mut ring = Ring::new(ctx.generation, grant, kind);
     let mut pipe = match Pipeline::new(&dec.info, ring.grant.format) {
         Ok(p) => p,
         Err(e) => return ctx.fail(&item.track_id, ErrorCode::FormatUnsupported, e, 0),
     };
-    ctx.add_segment(&item, &dec.info, &pipe, &ring, 0, start_sec);
+    ctx.add_segment(&item, &dec.info, &pipe, &ring, 0, start_sec, None);
     let mut pipe_base = 0u64;
     let mut bytes = Vec::new();
+    let mut floats = Vec::new();
+    let channels = ring.channels();
+    // Device frames of the current item from its start (the seek point counts), for the crossfade.
+    let mut item_frames = (start_sec * ring.rate()) as u64;
+    let mut fade: Option<Fade> = None;
 
     loop {
         if ctx.cancelled() {
             return;
         }
+        if ctx.float && fade.is_none() && !item.live {
+            if let Some(f) = ctx.start_fade(&dec, &ring, item_frames) {
+                ctx.add_segment(
+                    &f.item,
+                    &f.dec.info,
+                    &f.pipe,
+                    &ring,
+                    ring.pushed,
+                    0.0,
+                    Some(f.len),
+                );
+                fade = Some(f);
+            }
+        }
         match dec.next_block() {
             Ok(Some(block)) => {
-                if let Err(e) = pipe.process(block, &mut bytes) {
+                if ctx.float {
+                    let gain = ctx.gain(&item);
+                    if let Err(e) = pipe.process_floats(block, gain, &mut floats) {
+                        return ctx.fail(&item.track_id, ErrorCode::Decode, e, ring.pushed);
+                    }
+                    item_frames += (floats.len() / channels) as u64;
+                    if let Some(f) = fade.as_mut() {
+                        let gain = ctx.gain(&f.item);
+                        if let Err(e) = f.mix(&mut floats, channels, gain) {
+                            if e.cancelled() {
+                                return;
+                            }
+                            return ctx.fail(
+                                &f.item.track_id,
+                                e.code(),
+                                e.to_string(),
+                                ring.pushed,
+                            );
+                        }
+                    }
+                    floats_to_bytes(&floats, &mut bytes);
+                } else if let Err(e) = pipe.process(block, &mut bytes) {
                     return ctx.fail(&item.track_id, ErrorCode::Decode, e, ring.pushed);
                 }
                 if !ring.push(&bytes, &ctx.cancel) {
@@ -551,14 +878,71 @@ fn run_producer(mut ctx: ProducerCtx) {
                 // Get the resampler's last frames out first, so the item is whole even if no next one comes.
                 let flushed = pipe.resampler.is_some();
                 if flushed {
-                    let _ = pipe.flush(&mut bytes);
+                    if ctx.float {
+                        let gain = ctx.gain(&item);
+                        let _ = pipe.flush_floats(gain, &mut floats);
+                        if let Some(f) = fade.as_mut() {
+                            let gain = ctx.gain(&f.item);
+                            let _ = f.mix(&mut floats, channels, gain);
+                        }
+                        floats_to_bytes(&floats, &mut bytes);
+                    } else {
+                        let _ = pipe.flush(&mut bytes);
+                    }
                     if !ring.push(&bytes, &ctx.cancel) {
                         return;
                     }
                 }
+                if let Some(mut f) = fade.take() {
+                    // The outgoing item ended: finish the fade-in on its own, then carry on with it.
+                    while f.pos < f.len {
+                        let frames = (f.len - f.pos).min(4096) as usize;
+                        floats.clear();
+                        floats.resize(frames * channels, 0.0);
+                        let gain = ctx.gain(&f.item);
+                        if let Err(e) = f.mix(&mut floats, channels, gain) {
+                            if e.cancelled() {
+                                return;
+                            }
+                            return ctx.fail(
+                                &f.item.track_id,
+                                e.code(),
+                                e.to_string(),
+                                ring.pushed,
+                            );
+                        }
+                        floats_to_bytes(&floats, &mut bytes);
+                        if !ring.push(&bytes, &ctx.cancel) {
+                            return;
+                        }
+                    }
+                    // Whatever it decoded beyond the fade goes out as it is.
+                    floats.clear();
+                    floats.extend(f.queue.drain(..));
+                    if !floats.is_empty() {
+                        f.produced += (floats.len() / channels) as u64;
+                        floats_to_bytes(&floats, &mut bytes);
+                        if !ring.push(&bytes, &ctx.cancel) {
+                            return;
+                        }
+                    }
+                    let Fade {
+                        item: next_item,
+                        dec: next_dec,
+                        pipe: next_pipe,
+                        produced,
+                        ..
+                    } = f;
+                    // Its segment and pipeline started where the fade began.
+                    pipe_base = ring.pushed.saturating_sub(produced);
+                    item_frames = produced;
+                    pipe = next_pipe;
+                    dec = next_dec;
+                    item = next_item;
+                    continue;
+                }
                 // A next item may still arrive while the ring has sound left in it.
-                let low =
-                    (f64::from(ring.grant.format.sample_rate) * END_WAIT_SEC) as usize * ring.fb();
+                let low = (ring.rate() * END_WAIT_SEC) as usize * ring.fb();
                 let next = loop {
                     if let Some(n) = lock(&ctx.next).take() {
                         break Some(n);
@@ -607,7 +991,7 @@ fn run_producer(mut ctx: ProducerCtx) {
                         return;
                     };
                     ctx.generation = grant.generation;
-                    ring = Ring::new(ctx.generation, grant);
+                    ring = Ring::new(ctx.generation, grant, kind);
                     pipe = match Pipeline::new(&next_dec.info, ring.grant.format) {
                         Ok(p) => p,
                         Err(e) => {
@@ -638,9 +1022,10 @@ fn run_producer(mut ctx: ProducerCtx) {
                 // Where the next item starts: after the frames already fed (resampled ones counted at the
                 // output rate, the resampler's delay already trimmed).
                 let start = pipe_base + (pipe.fed as f64 * pipe.ratio()).round() as u64;
-                ctx.add_segment(&next_item, &next_dec.info, &pipe, &ring, start, 0.0);
+                ctx.add_segment(&next_item, &next_dec.info, &pipe, &ring, start, 0.0, None);
                 dec = next_dec;
                 item = next_item;
+                item_frames = 0;
             }
             Err(e) if e.cancelled() => return,
             Err(e) => {
@@ -704,8 +1089,14 @@ struct Control {
     paused: bool,
     volume: f32,
     current: Option<String>,
-    /// The current item's path without the volume part, and whether it is bit-exact.
-    current_path: Option<(Vec<PathKind>, bool)>,
+    /// The segment playing now and the path last reported for it.
+    current_seg: Option<Segment>,
+    last_path: Option<Vec<PathKind>>,
+    sounds: Arc<Mutex<SoundTable>>,
+    /// The ring generation and segment count the output's EQ table was built from.
+    published: (u64, usize),
+    wave: Vec<f32>,
+    last_levels: Instant,
     position: f64,
     duration: Option<f64>,
     need_next_sent: Option<String>,
@@ -748,7 +1139,12 @@ impl Control {
             paused: false,
             volume: 1.0,
             current: None,
-            current_path: None,
+            current_seg: None,
+            last_path: None,
+            sounds: Arc::default(),
+            published: (u64::MAX, 0),
+            wave: Vec::with_capacity(LEVEL_POINTS),
+            last_levels: Instant::now(),
             position: 0.0,
             duration: None,
             need_next_sent: None,
@@ -874,6 +1270,8 @@ impl Control {
             to_control: self.to_control.clone(),
             caps,
             nearest_rate: self.nearest_rate,
+            float: lock(&self.sounds).processing(),
+            sounds: self.sounds.clone(),
             cancel: cancel.clone(),
             next: self.next.clone(),
             prepared: self.prepared.clone(),
@@ -890,9 +1288,11 @@ impl Control {
             return;
         }
         self.session = Some(cancel);
-        self.items.insert(item.track_id.clone(), item);
+        self.remember(&item);
         self.current = None;
-        self.current_path = None;
+        self.current_seg = None;
+        self.last_path = None;
+        self.published = (u64::MAX, 0);
         self.need_next_sent = None;
         self.position = start_sec;
         self.duration = None;
@@ -1044,9 +1444,46 @@ impl Control {
         self.items.get(&next.track_id).cloned()
     }
 
-    fn full_path(&self, base: &[PathKind], bit_exact: bool) -> Vec<PathKind> {
-        let mut path = base.to_vec();
-        if bit_exact {
+    /// Keeps an item and its levelling gain and own curve.
+    fn remember(&mut self, item: &PlayItem) {
+        self.items.insert(item.track_id.clone(), item.clone());
+        lock(&self.sounds).items.insert(
+            item.track_id.clone(),
+            ItemSound {
+                gain_db: item.gain_db,
+                eq: item.eq.clone(),
+            },
+        );
+    }
+
+    /// The device rate now (the nominal rate before a device is open).
+    fn rate(&self) -> u32 {
+        self.output
+            .as_ref()
+            .map_or(NOMINAL_RATE, |o| o.format().sample_rate)
+    }
+
+    /// What happens to a segment's samples: the format path, then the sound processing in use, else
+    /// bit-perfect (or the volume) when nothing changes them.
+    fn full_path(&self, seg: &Segment) -> Vec<PathKind> {
+        let mut changes = Vec::new();
+        if seg.float {
+            let sounds = lock(&self.sounds);
+            if !EqPlan::new(sounds.eq(&seg.track_id), self.rate()).is_identity() {
+                changes.push(PathKind::EqApplied);
+            }
+            if sounds.gain_db(&seg.track_id).abs() > 1e-6 {
+                changes.push(PathKind::Levelled);
+            }
+            if sounds.crossfade_sec() > 0.0 {
+                changes.push(PathKind::Crossfade);
+            }
+        }
+        let mut path = seg.path.clone();
+        let audible = changes
+            .iter()
+            .any(|c| matches!(c, PathKind::EqApplied | PathKind::Levelled));
+        if seg.bit_exact && !audible {
             path.insert(
                 0,
                 if self.volume >= 1.0 {
@@ -1056,7 +1493,76 @@ impl Control {
                 },
             );
         }
+        path.extend(changes);
         path
+    }
+
+    /// Tells the host when the current item's path changed (volume, EQ, levelling).
+    fn update_path(&mut self) {
+        let (Some(id), Some(seg)) = (self.current.clone(), self.current_seg.clone()) else {
+            return;
+        };
+        let path = self.full_path(&seg);
+        if self.last_path.as_ref() != Some(&path) {
+            self.last_path = Some(path.clone());
+            self.emit(Event::PathChanged { track_id: id, path });
+        }
+    }
+
+    /// Gives the output the EQ of the items in its ring (from the one playing on).
+    fn publish_plans(&mut self, force: bool) {
+        let Some(out) = self.output.as_ref() else {
+            return;
+        };
+        let rate = out.format().sample_rate;
+        let played = out.shared().played(self.generation).unwrap_or(0);
+        let tl = lock(&self.timeline);
+        if tl.generation != self.generation || tl.segments.is_empty() {
+            return;
+        }
+        if !tl.segments.iter().any(|s| s.float) {
+            return;
+        }
+        let key = (tl.generation, tl.segments.len());
+        if !force && self.published == key {
+            return;
+        }
+        let first = tl
+            .segments
+            .iter()
+            .rposition(|s| s.start <= played)
+            .unwrap_or(0);
+        let sounds = lock(&self.sounds);
+        let mut table = PlanTable::new(tl.generation);
+        for seg in tl.segments.iter().skip(first).take(MAX_PLANS) {
+            let plan = EqPlan::new(sounds.eq(&seg.track_id), rate);
+            let changed = !seg.passthrough || seg.faded || sounds.gain_db(&seg.track_id) != 0.0;
+            table.push(seg.eq_start, plan, changed);
+        }
+        out.shared().set_plans(table);
+        drop(sounds);
+        drop(tl);
+        self.published = key;
+    }
+
+    /// Sends the VU meter's levels while playing.
+    fn send_levels(&mut self) {
+        if self.status != Status::Playing || self.last_levels.elapsed() < LEVELS_EVERY {
+            return;
+        }
+        self.last_levels = Instant::now();
+        let Some(out) = self.output.as_ref() else {
+            return;
+        };
+        let Some((peak, rms)) = out.shared().take_levels(LEVEL_POINTS, &mut self.wave) else {
+            return;
+        };
+        let wave = self
+            .wave
+            .iter()
+            .map(|v| (v * 127.0).round().clamp(-127.0, 127.0) as i8)
+            .collect();
+        self.emit(Event::Levels { peak, rms, wave });
     }
 
     fn handle(&mut self, cmd: Command) -> bool {
@@ -1120,13 +1626,35 @@ impl Control {
                     out.shared().set_volume(self.volume);
                 }
                 if was_full != (self.volume >= 1.0) {
-                    if let (Some(id), Some((base, true))) =
-                        (self.current.clone(), self.current_path.clone())
-                    {
-                        let path = self.full_path(&base, true);
-                        self.emit(Event::PathChanged { track_id: id, path });
-                    }
+                    self.update_path();
                 }
+            }
+            Command::SetSound { sound } => {
+                let was = lock(&self.sounds).processing();
+                lock(&self.sounds).settings = sound;
+                let now = lock(&self.sounds).processing();
+                if was != now && self.session.is_some() {
+                    // The ring must switch between device bytes and floats: pick up from here.
+                    self.restart(self.position, None);
+                } else {
+                    self.publish_plans(true);
+                    self.update_path();
+                }
+            }
+            Command::SetItemSound {
+                track_id,
+                gain_db,
+                eq,
+            } => {
+                if let Some(item) = self.items.get_mut(&track_id) {
+                    item.gain_db = gain_db;
+                    item.eq = eq.clone();
+                }
+                lock(&self.sounds)
+                    .items
+                    .insert(track_id, ItemSound { gain_db, eq });
+                self.publish_plans(true);
+                self.update_path();
             }
             Command::SetOutput {
                 device_id,
@@ -1183,7 +1711,8 @@ impl Control {
         if let Some(out) = self.output.as_ref() {
             self.generation += 1;
             let (_p, c) = rtrb::RingBuffer::<u8>::new(4);
-            out.shared().set_source(self.generation, c);
+            out.shared()
+                .set_source(self.generation, c, RingKind::Device);
             let mut tl = lock(&self.timeline);
             *tl = Timeline {
                 generation: self.generation,
@@ -1194,7 +1723,7 @@ impl Control {
 
     fn set_next(&mut self, item: Option<PlayItem>) {
         if let Some(i) = item.as_ref() {
-            self.items.insert(i.track_id.clone(), i.clone());
+            self.remember(i);
         }
         let (committed, ended, switching) = {
             let tl = lock(&self.timeline);
@@ -1365,14 +1894,16 @@ impl Control {
             if let Some(prev) = self.current.take() {
                 self.emit(Event::TrackEnded { track_id: prev });
             }
+            let path = self.full_path(&seg);
+            self.last_path = Some(path.clone());
             self.emit(Event::TrackStarted {
                 track_id: seg.track_id.clone(),
                 source: seg.source.clone(),
                 output: seg.output.clone(),
-                path: self.full_path(&seg.path, seg.bit_exact),
+                path,
             });
             self.current = Some(seg.track_id.clone());
-            self.current_path = Some((seg.path.clone(), seg.bit_exact));
+            self.current_seg = Some(seg.clone());
             self.need_next_sent = None;
         }
         if self.current.as_deref() != Some(seg.track_id.as_str()) {
@@ -1415,6 +1946,8 @@ impl Control {
                 track_id: seg.track_id.clone(),
             });
         }
+        self.publish_plans(false);
+        self.send_levels();
         if self.status == Status::Playing && self.last_state.elapsed() >= STATE_EVERY {
             self.emit_state();
         }

@@ -180,6 +180,7 @@ mod tests {
             mode: boogiebox_audio::OutputMode::Shared,
             buffer_ms: 150,
             nearest_rate: false,
+            pure: Some(false),
         };
         assert_eq!(
             output_command(&s),
@@ -193,6 +194,9 @@ mod tests {
         let defaults: AudioSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(defaults, AudioSettings::default());
         assert_eq!(defaults.mode, boogiebox_audio::OutputMode::Exclusive);
+        assert_eq!(defaults.pure, None, "follows the mode until chosen");
+        let saved: AudioSettings = serde_json::from_str(r#"{"pure":true}"#).unwrap();
+        assert_eq!(saved.pure, Some(true));
     }
 
     #[test]

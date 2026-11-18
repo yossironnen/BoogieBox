@@ -3,7 +3,7 @@
  * engine's device events) and the saved Audio output settings.
  */
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { nativeAudioAvailable, platform } from '../platform';
 import type { NativeAudioSettings, NativeDevice } from './nativeTypes';
 
@@ -16,6 +16,8 @@ export interface NativeAudioState {
   save: (next: NativeAudioSettings) => Promise<void>;
   /** The device in use: the chosen one, else the Windows default. */
   device: NativeDevice | null;
+  /** This PC's name (the output is called "This PC (<name>)"). */
+  machineName: string | null;
 }
 
 export function activeDevice(devices: NativeDevice[], settings: NativeAudioSettings | null): NativeDevice | null {
@@ -23,40 +25,63 @@ export function activeDevice(devices: NativeDevice[], settings: NativeAudioSetti
   return chosen ?? devices.find((d) => d.isDefault) ?? null;
 }
 
+interface AudioStore {
+  available: boolean;
+  devices: NativeDevice[];
+  settings: NativeAudioSettings | null;
+  machineName: string | null;
+}
+
+// One copy for the whole page (the Player, the Play on list and Settings all read it), loaded once.
+let store: AudioStore = { available: false, devices: [], settings: null, machineName: null };
+let started = false;
+const storeListeners = new Set<() => void>();
+
+function setStore(change: Partial<AudioStore>): void {
+  store = { ...store, ...change };
+  storeListeners.forEach((l) => l());
+}
+
+function startStore(): void {
+  if (started) return;
+  started = true;
+  void nativeAudioAvailable().then(async (ok) => {
+    if (!ok || !platform.audio) return;
+    const audio = platform.audio;
+    setStore({ available: true });
+    const [list, saved] = await Promise.all([audio.devices(), audio.settings()]).catch(() => [[], null] as const);
+    setStore({ devices: [...list], settings: saved });
+    void audio.machineName().then((name) => setStore({ machineName: name || null })).catch(() => {});
+    void audio.onEvent((event) => {
+      if (event.type === 'deviceChanged') setStore({ devices: event.devices });
+    }).catch(() => {});
+  });
+}
+
+/** Saves and applies new Audio output settings. */
+export async function saveNativeAudioSettings(next: NativeAudioSettings): Promise<void> {
+  setStore({ settings: next });
+  await platform.audio?.saveSettings(next);
+}
+
+/** Test hook: forget the loaded state. */
+export function resetNativeAudioStore(): void {
+  store = { available: false, devices: [], settings: null, machineName: null };
+  started = false;
+}
+
 export function useNativeAudio(): NativeAudioState {
-  const [available, setAvailable] = useState(false);
-  const [devices, setDevices] = useState<NativeDevice[]>([]);
-  const [settings, setSettings] = useState<NativeAudioSettings | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let unsubscribe: (() => void) | null = null;
-    void nativeAudioAvailable().then(async (ok) => {
-      if (cancelled || !ok || !platform.audio) return;
-      setAvailable(true);
-      const audio = platform.audio;
-      const [list, saved] = await Promise.all([audio.devices(), audio.settings()]).catch(() => [[], null] as const);
-      if (cancelled) return;
-      setDevices([...list]);
-      setSettings(saved);
-      const off = await audio.onEvent((event) => {
-        if (event.type === 'deviceChanged') setDevices(event.devices);
-      }).catch(() => null);
-      if (cancelled) off?.();
-      else unsubscribe = off;
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, []);
-
-  const save = useCallback(async (next: NativeAudioSettings) => {
-    setSettings(next);
-    await platform.audio?.saveSettings(next);
-  }, []);
-
-  return { available, devices, settings, save, device: activeDevice(devices, settings) };
+  useEffect(() => { startStore(); }, []);
+  const current = useSyncExternalStore(
+    (l) => {
+      storeListeners.add(l);
+      return () => storeListeners.delete(l);
+    },
+    () => store,
+    () => store,
+  );
+  const save = useCallback((next: NativeAudioSettings) => saveNativeAudioSettings(next), []);
+  return { ...current, save, device: activeDevice(current.devices, current.settings) };
 }
 
 // The current badge's bit-perfect state, for the picker row (written by the Player's engine hook).

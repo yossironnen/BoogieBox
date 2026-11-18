@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::dsp::EqBand;
+
 /// One playable item: a library track or a BoogieMix, fetched from a native stream link.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +24,33 @@ pub struct PlayItem {
     /// A live stream (internet radio): read once from the start, no seeking, no length.
     #[serde(default)]
     pub live: bool,
+    /// Volume levelling gain (dB) the web UI worked out for this item (`audio/loudness.ts`).
+    #[serde(default)]
+    pub gain_db: f64,
+    /// This item's own EQ curve (saved for the song or album, or Auto EQ's); `None`: the user's EQ.
+    #[serde(default)]
+    pub eq: Option<Vec<EqBand>>,
+}
+
+/// How the engine may change the sound (the web player's settings; Pure mode turns all of it off).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundSettings {
+    /// Nothing changes the samples: EQ, levelling and crossfade are off.
+    #[serde(default)]
+    pub pure: bool,
+    /// The user's own EQ curve (empty: off).
+    #[serde(default)]
+    pub eq: Vec<EqBand>,
+    /// Items may bring their own curve (saved EQ, Auto EQ).
+    #[serde(default)]
+    pub item_eq: bool,
+    /// Volume levelling is on (items bring their gain).
+    #[serde(default)]
+    pub levelling: bool,
+    /// Crossfade length (s) between items; 0: gapless joins.
+    #[serde(default)]
+    pub crossfade_sec: f64,
 }
 
 /// How the engine shares the device with other apps.
@@ -85,6 +114,21 @@ pub enum Command {
         #[serde(default = "default_true")]
         nearest_rate: bool,
     },
+    /// EQ, levelling, crossfade and Pure mode.
+    SetSound {
+        /// The settings.
+        sound: SoundSettings,
+    },
+    /// An item's levelling gain or own EQ curve changed (e.g. its loudness values arrived).
+    SetItemSound {
+        /// Item id.
+        track_id: String,
+        /// Levelling gain (dB).
+        gain_db: f64,
+        /// Its own curve, or `None` for the user's EQ.
+        #[serde(default)]
+        eq: Option<Vec<EqBand>>,
+    },
     /// A fresh link for an item whose link expired ([`Event::TokenExpired`]).
     RefreshUrl {
         /// Item id.
@@ -142,8 +186,14 @@ pub enum PathKind {
     BitPerfect,
     /// Unchanged except for the volume.
     VolumeApplied,
-    /// EQ, levelling or crossfade change the samples.
+    /// The samples are changed on the way (e.g. a device narrower than the source cuts the low bits).
     DspApplied,
+    /// The EQ shapes the sound.
+    EqApplied,
+    /// Volume levelling changes the level.
+    Levelled,
+    /// Songs crossfade into each other.
+    Crossfade,
     /// Resampled by the engine.
     Resampled {
         /// Output rate.
@@ -235,6 +285,15 @@ pub enum Event {
     TokenExpired {
         /// Item id.
         track_id: String,
+    },
+    /// What is playing now, for the VU meter (~20 Hz while playing).
+    Levels {
+        /// Highest sample level since the last event (0..1).
+        peak: f32,
+        /// RMS level since the last event (0..1).
+        rms: f32,
+        /// The latest ~21 ms of the sound (mono, ~24 kHz), scaled to -127..127.
+        wave: Vec<i8>,
     },
     /// Something failed.
     Error {

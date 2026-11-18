@@ -3,7 +3,31 @@
  * JSON through the shell's `audio_command`; events come back on the `audio-event` Tauri event.
  */
 
+import type { ParametricEqBand } from '../audio/eq';
+
 export type NativeOutputMode = 'shared' | 'exclusive';
+
+/** An EQ band as the engine takes it (the web player's parametric band; extra fields are ignored). */
+export type NativeEqBand = Pick<ParametricEqBand, 'type' | 'frequencyHz' | 'gainDb' | 'q' | 'enabled'>;
+
+/** EQ, levelling, crossfade and Pure mode for the engine. */
+export interface NativeSoundSettings {
+  /** Nothing changes the samples. */
+  pure: boolean;
+  /** The user's own curve. */
+  eq: NativeEqBand[];
+  /** Songs may bring their own curve (saved EQ, Auto EQ). */
+  itemEq: boolean;
+  levelling: boolean;
+  /** 0: gapless. */
+  crossfadeSec: number;
+}
+
+/** One song's levelling gain and own curve. */
+export interface NativeItemSound {
+  gainDb: number;
+  eq: NativeEqBand[] | null;
+}
 
 export interface NativePlayItem {
   /** Unique per load: the engine reports starts and ends by this id. */
@@ -15,6 +39,10 @@ export interface NativePlayItem {
   serverDecoded?: boolean;
   /** Internet radio: no seeking, no length. */
   live?: boolean;
+  /** Volume levelling gain (dB). */
+  gainDb?: number;
+  /** The song's own curve (saved or Auto EQ); null: the user's EQ. */
+  eq?: NativeEqBand[] | null;
 }
 
 export type NativeCommand =
@@ -25,7 +53,9 @@ export type NativeCommand =
   | { type: 'stop' }
   | { type: 'seek'; sec: number }
   | { type: 'setVolume'; linear: number }
-  | { type: 'refreshUrl'; trackId: string; url: string };
+  | { type: 'refreshUrl'; trackId: string; url: string }
+  | { type: 'setSound'; sound: NativeSoundSettings }
+  | { type: 'setItemSound'; trackId: string; gainDb: number; eq: NativeEqBand[] | null };
 
 export type NativeStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stopped';
 
@@ -41,6 +71,9 @@ export type NativePathKind =
   | { kind: 'bitPerfect' }
   | { kind: 'volumeApplied' }
   | { kind: 'dspApplied' }
+  | { kind: 'eqApplied' }
+  | { kind: 'levelled' }
+  | { kind: 'crossfade' }
   | { kind: 'resampled'; toHz: number }
   | { kind: 'sharedMixer' }
   | { kind: 'downmixed' }
@@ -74,7 +107,9 @@ export type NativeEvent =
   | { type: 'pathChanged'; trackId: string; path: NativePathKind[] }
   | { type: 'deviceChanged'; devices: NativeDevice[]; active: string | null }
   | { type: 'tokenExpired'; trackId: string }
-  | { type: 'error'; trackId: string | null; code: NativeErrorCode; message: string };
+  | { type: 'error'; trackId: string | null; code: NativeErrorCode; message: string }
+  /** ~20 Hz while playing: levels and the latest ~21 ms of sound (mono, ~24 kHz, -127..127). */
+  | { type: 'levels'; peak: number; rms: number; wave: number[] };
 
 /** Settings › Audio output (saved by the desktop app, not per user). */
 export interface NativeAudioSettings {
@@ -83,4 +118,12 @@ export interface NativeAudioSettings {
   /** 20 (Low), 50 (Normal) or 150 (Safe). */
   bufferMs: number;
   nearestRate: boolean;
+  /** Pure mode; null/absent: on in Exclusive mode, off in Shared mode. */
+  pure?: boolean | null;
+}
+
+/** Pure mode as it applies now (on by default in Exclusive mode). */
+export function pureModeOn(settings: NativeAudioSettings | null | undefined): boolean {
+  if (!settings) return true;
+  return settings.pure ?? settings.mode === 'exclusive';
 }

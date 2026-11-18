@@ -1,6 +1,6 @@
 /**
- * Icons for the desktop app's Hi-Res output (picker row, dock badge, Audio output settings), drawn as in the approved
- * mockup. Stroke icons inherit `currentColor`.
+ * Icons for the desktop app's own output (picker row, dock badge, Audio output settings), drawn as in the approved
+ * mockups. Stroke icons inherit `currentColor`.
  */
 
 import React from 'react';
@@ -17,7 +17,7 @@ const stroke = {
   'aria-hidden': true,
 };
 
-/** "This PC · Hi-Res": a monitor with level bars. */
+/** "This PC (<machine name>)": a monitor with level bars. */
 export function DacIcon({ size = 20, style }: IconProps) {
   return (
     <svg width={size} height={size} style={style} {...stroke}>
@@ -121,6 +121,25 @@ export function TimerIcon({ size = 16, style }: IconProps) {
   );
 }
 
+/** EQ or levelling changes the sound (the dock badge), and Pure mode in Audio output settings. */
+export function SlidersIcon({ size = 14, style }: IconProps) {
+  return (
+    <svg width={size} height={size} style={style} {...stroke}>
+      <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />
+    </svg>
+  );
+}
+
+/** A note in the EQ popup (Pure mode is on). */
+export function InfoCircleIcon({ size = 14, style }: IconProps) {
+  return (
+    <svg width={size} height={size} style={{ flexShrink: 0, marginTop: 1, ...style }} {...stroke}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4M12 8h.01" />
+    </svg>
+  );
+}
+
 export const BADGE_ICONS = {
   bitPerfect: WaveIcon,
   volume: VolumeIcon,
@@ -128,4 +147,5 @@ export const BADGE_ICONS = {
   shared: SharedIcon,
   server: ServerIcon,
   downmix: DownmixIcon,
+  sound: SlidersIcon,
 } as const;

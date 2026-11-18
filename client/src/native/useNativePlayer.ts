@@ -5,6 +5,9 @@
  *
  * Every load and every next item gets its own engine id (`<track id>#<n>`), so repeat-one and the same song twice
  * in a row are still told apart.
+ *
+ * Sound (phase 5): the user's EQ, levelling, crossfade and Pure mode go to the engine as `setSound`; each song's
+ * levelling gain and own curve ride on its play item and follow later changes with `setItemSound`.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -14,7 +17,16 @@ import type { ClientEntityId, Track } from '../types';
 import { platform } from '../platform';
 import { NativeLinks, type ResolvedLink } from './nativeLinks';
 import { errorNotice, nativeBadge, resampledNotice, deviceGoneNotice, type NativeBadge, type NoticeTone } from './nativeFormat';
-import type { NativeCommand, NativeEvent, NativeFormat, NativePathKind, NativePlayItem, NativeStatus } from './nativeTypes';
+import type {
+  NativeCommand,
+  NativeEvent,
+  NativeFormat,
+  NativeItemSound,
+  NativePathKind,
+  NativePlayItem,
+  NativeSoundSettings,
+  NativeStatus,
+} from './nativeTypes';
 
 /** Links are fetched for the current item and this many after it. */
 export const LINK_LOOKAHEAD = 10;
@@ -22,7 +34,7 @@ export const LINK_LOOKAHEAD = 10;
 export type RepeatMode = 'off' | 'one' | 'all';
 
 export interface NativePlayerOptions {
-  /** "This PC · Hi-Res" is the output and the engine is there. */
+  /** "This PC" (the desktop engine) is the output and the engine is there. */
   enabled: boolean;
   queue: Track[];
   currentIndex: number;
@@ -39,6 +51,15 @@ export interface NativePlayerOptions {
   /** The last item ended. */
   onFinished: () => void;
   notify: (text: string, tone: NoticeTone) => void;
+  /** EQ, levelling, crossfade, Pure mode, and each song's gain and own curve (by queue track id). */
+  sound?: NativeSound;
+  /** The engine's latest sound for the VU meter (~20 Hz while playing). */
+  onLevels?: (wave: number[]) => void;
+}
+
+export interface NativeSound {
+  settings: NativeSoundSettings;
+  items: Record<string, NativeItemSound>;
 }
 
 export interface NativePlayerView {
@@ -69,7 +90,12 @@ export function nextIndexAfter(index: number, length: number, repeat: RepeatMode
 }
 
 /** The engine's item for a track and its link. */
-export function playItemFor(engineId: string, track: Track, link: ResolvedLink): NativePlayItem {
+export function playItemFor(
+  engineId: string,
+  track: Track,
+  link: ResolvedLink,
+  sound?: NativeItemSound | null,
+): NativePlayItem {
   return {
     trackId: engineId,
     url: link.url,
@@ -77,8 +103,12 @@ export function playItemFor(engineId: string, track: Track, link: ResolvedLink):
     durationSec: link.durationSec ?? track.duration ?? null,
     serverDecoded: link.serverDecoded,
     live: link.live,
+    gainDb: sound?.gainDb ?? 0,
+    eq: sound?.eq ?? null,
   };
 }
+
+const soundKey = (sound: NativeItemSound | null | undefined) => JSON.stringify([sound?.gainDb ?? 0, sound?.eq ?? null]);
 
 const CANT_PLAY = "This song can't be played.";
 
@@ -114,6 +144,17 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
   const handoffRef = useRef<string | null>(null);
   const lostRef = useRef(false);
   const wasEnabledRef = useRef(false);
+  /** The engine id of the last load (before it starts, `currentEngineRef` still names the old one). */
+  const loadedEngineRef = useRef<string | null>(null);
+  /** What each engine id was last told about its gain and curve. */
+  const sentSoundRef = useRef(new Map<string, string>());
+
+  /** A song's gain and curve now, remembered as sent for `engineId`. */
+  const itemSound = useCallback((engineId: string, trackId: string): NativeItemSound | null => {
+    const sound = optionsRef.current.sound?.items[trackId] ?? null;
+    sentSoundRef.current.set(engineId, soundKey(sound));
+    return sound;
+  }, []);
 
   const links = useCallback((): NativeLinks => {
     if (!linksRef.current) {
@@ -154,8 +195,8 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
     const engineId = `${trackId}#${++seqRef.current}`;
     enginesRef.current.set(engineId, { trackId, index: index! });
     nextRef.current = { engineId, trackId, index: index! };
-    send({ type: 'setNext', item: playItemFor(engineId, track, link) });
-  }, [links]);
+    send({ type: 'setNext', item: playItemFor(engineId, track, link, itemSound(engineId, trackId)) });
+  }, [itemSound, links]);
 
   const handleEvent = useCallback((event: NativeEvent) => {
     const o = optionsRef.current;
@@ -206,6 +247,9 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
       case 'pathChanged':
         setPlaying((p) => (p ? { ...p, path: event.path } : p));
         return;
+      case 'levels':
+        o.onLevels?.(event.wave);
+        return;
       case 'tokenExpired': {
         const info = enginesRef.current.get(event.trackId);
         if (!info) return;
@@ -252,10 +296,19 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
     wasEnabledRef.current = false;
     send({ type: 'stop' });
     currentEngineRef.current = null;
+    loadedEngineRef.current = null;
     nextRef.current = null;
     setPlaying(null);
     setStatus('idle');
   }, [enabled]);
+
+  // The sound settings, before any load (effects run in order) and whenever they change.
+  const soundSettingsKey = JSON.stringify(options.sound?.settings ?? null);
+  useEffect(() => {
+    const settings = optionsRef.current.sound?.settings;
+    if (!enabled || !settings) return;
+    send({ type: 'setSound', sound: settings });
+  }, [enabled, soundSettingsKey]);
 
   // Load the current item on every explicit play (new playToken or another song), unless the engine already
   // moved on to it by itself.
@@ -301,9 +354,10 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
       }
       const engineId = `${trackId}#${seq}`;
       enginesRef.current.set(engineId, { trackId, index: currentIndex });
+      loadedEngineRef.current = engineId;
       send({
         type: 'load',
-        item: playItemFor(engineId, currentTrack, link),
+        item: playItemFor(engineId, currentTrack, link, itemSound(engineId, trackId)),
         startSec: link.live ? 0 : resume,
         autoplay: optionsRef.current.isPlaying,
       });
@@ -317,6 +371,24 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
     if (!enabled || !currentEngineRef.current) return;
     void sendNext();
   }, [enabled, queue, currentIndex, repeatMode, sendNext]);
+
+  // A song's gain or curve arrived or changed (loudness values, a saved curve, an edit in the EQ panel).
+  const itemsKey = JSON.stringify(options.sound?.items ?? {});
+  useEffect(() => {
+    if (!enabled) return;
+    const engineIds = new Set(
+      [loadedEngineRef.current, currentEngineRef.current, nextRef.current?.engineId].filter((id): id is string => !!id),
+    );
+    for (const engineId of engineIds) {
+      const info = enginesRef.current.get(engineId);
+      if (!info) continue;
+      const sound = optionsRef.current.sound?.items[info.trackId] ?? null;
+      const key = soundKey(sound);
+      if (sentSoundRef.current.get(engineId) === key) continue;
+      sentSoundRef.current.set(engineId, key);
+      send({ type: 'setItemSound', trackId: engineId, gainDb: sound?.gainDb ?? 0, eq: sound?.eq ?? null });
+    }
+  }, [enabled, itemsKey]);
 
   useEffect(() => {
     if (!enabled) return;

@@ -27,6 +27,8 @@ vi.mock('../platform', () => ({
 }));
 
 import AudioOutputSettings from './AudioOutputSettings';
+import PureModeNote from './PureModeNote';
+import { resetNativeAudioStore } from './useNativeAudio';
 import { OutputPickerList } from '../remote/OutputPicker';
 import type { PlayOnApi } from '../remote/usePlayOn';
 import type { PlaybackTarget } from '../remote/remoteTypes';
@@ -59,12 +61,13 @@ describe('desktop Hi-Res output UI', () => {
   beforeEach(() => {
     fake.saved = [];
     fake.settings = { deviceId: null, mode: 'exclusive', bufferMs: 50, nearestRate: true };
+    resetNativeAudioStore();
   });
 
-  it('offers "This PC · Hi-Res" first and picks it', async () => {
+  it('offers "This PC (<name>)" first and picks it', async () => {
     const select = vi.fn();
     render(<OutputPickerList playOn={playOn({ kind: 'local' }, select)} />);
-    const row = await screen.findByRole('option', { name: /This PC · Hi-Res/ });
+    const row = await screen.findByRole('option', { name: /This PC \(STUDIO-PC\)/ });
     expect(row).toHaveTextContent('FiiO Q series · Exclusive');
     expect(screen.getAllByRole('option')[0]).toBe(row);
     expect(screen.queryByRole('group', { name: 'Output device' })).toBeNull();
@@ -88,7 +91,7 @@ describe('desktop Hi-Res output UI', () => {
   it('saves every Audio output setting', async () => {
     render(<AudioOutputSettings />);
     await screen.findByText('Audio output');
-    expect(screen.getByText('How this PC plays when "This PC · Hi-Res" is the output.')).toBeInTheDocument();
+    expect(await screen.findByText('How this PC plays when "This PC (STUDIO-PC)" is the output.')).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /System default/ })).toHaveTextContent('Follows Windows (now FiiO Q series)');
     expect(screen.getByRole('radio', { name: /^FiiO Q series/ })).toHaveTextContent('Up to 384 kHz · 32-bit');
     expect(screen.getByRole('radio', { name: /Dell AW3821DW/ })).toHaveTextContent('48 kHz · 16-bit only');
@@ -99,5 +102,16 @@ describe('desktop Hi-Res output UI', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Use the nearest rate the DAC can play' }));
     await waitFor(() => expect(fake.saved[fake.saved.length - 1]).toMatchObject({ nearestRate: false }));
     expect(screen.getByText('Saved on this PC, not per user.')).toBeInTheDocument();
+  });
+
+  it('turns Pure mode off and on, and says what it turns off', async () => {
+    render(<><AudioOutputSettings /><PureModeNote /></>);
+    const pure = await screen.findByRole('switch', { name: 'Pure mode' });
+    expect(pure).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('Turns off EQ, volume levelling and crossfade, so nothing changes the sound. On by default in Exclusive mode.')).toBeInTheDocument();
+    expect(screen.getByText('Off for This PC while Pure mode is on.')).toBeInTheDocument();
+    fireEvent.click(pure);
+    await waitFor(() => expect(fake.saved[fake.saved.length - 1]).toMatchObject({ pure: false }));
+    expect(screen.queryByText('Off for This PC while Pure mode is on.')).toBeNull();
   });
 });

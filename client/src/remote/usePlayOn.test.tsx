@@ -233,7 +233,7 @@ describe('usePlayOn', () => {
     expect(result.current.local.resumeAt).toEqual({ playToken: 5, trackId: 'b', sec: 42 });
   });
 
-  it('plays here when "This PC · Hi-Res" is remembered but the page runs in a browser', async () => {
+  it('plays here when "This PC" is remembered but the page runs in a browser', async () => {
     localStorage.setItem(PLAYBACK_TARGET_STORAGE_KEY, JSON.stringify({ kind: 'native' }));
     const { result } = setup();
     expect(result.current.playOn.target).toEqual({ kind: 'native' });
