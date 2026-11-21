@@ -251,17 +251,20 @@ export function OutputPickerList({
       {!mobile && native.available ? (
         <NativeRows native={native} playOn={playOn} onPicked={onPicked} onOpenAudioSettings={onOpenAudioSettings} />
       ) : null}
-      <OutputRow
-        icon={mobile ? <PhoneIcon size={22} /> : <BrowserIcon />}
-        name={mobile ? 'This phone' : 'This browser'}
-        detail={mobile ? 'Plays here' : 'Plays here, with EQ and crossfade'}
-        active={playOn.target.kind === 'local'}
-        variant={variant}
-        onSelect={() => {
-          playOn.selectTarget({ kind: 'local' });
-          onPicked?.();
-        }}
-      />
+      {/* Desktop app with the engine: "This PC" replaces "This browser". */}
+      {!mobile && native.available ? null : (
+        <OutputRow
+          icon={mobile ? <PhoneIcon size={22} /> : <BrowserIcon />}
+          name={mobile ? 'This phone' : 'This browser'}
+          detail={mobile ? 'Plays here' : 'Plays here, with EQ and crossfade'}
+          active={playOn.target.kind === 'local'}
+          variant={variant}
+          onSelect={() => {
+            playOn.selectTarget({ kind: 'local' });
+            onPicked?.();
+          }}
+        />
+      )}
       {visible.map((renderer) => rendererRow(renderer, playOn, variant, onPicked))}
       {playOn.renderersLoaded && visible.length === 0 ? (
         <div style={{ ...hybridAudioPanelStyles.empty, padding: '20px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>

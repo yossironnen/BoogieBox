@@ -111,6 +111,25 @@ export type NativeEvent =
   /** ~20 Hz while playing: levels and the latest ~21 ms of sound (mono, ~24 kHz, -127..127). */
   | { type: 'levels'; peak: number; rms: number; wave: number[] };
 
+/** What Windows' media controls show while "This PC" plays (`media_controls.rs`). */
+export interface NativeNowPlaying {
+  title: string;
+  artist?: string | null;
+  album?: string | null;
+  albumArtist?: string | null;
+  /** Absolute album art URL (needs no sign-in). */
+  artUrl?: string | null;
+  durationSec?: number | null;
+  /** Internet radio: no timeline. */
+  live?: boolean;
+}
+
+/** A button pressed in Windows (media keys, the flyout, the lock screen, the taskbar thumbnail). */
+export interface NativeMediaAction {
+  action: 'play' | 'pause' | 'toggle' | 'next' | 'previous' | 'stop' | 'seek';
+  sec?: number;
+}
+
 /** Settings › Audio output (saved by the desktop app, not per user). */
 export interface NativeAudioSettings {
   deviceId: string | null;

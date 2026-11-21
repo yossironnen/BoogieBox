@@ -70,6 +70,7 @@ describe('desktop Hi-Res output UI', () => {
     const row = await screen.findByRole('option', { name: /This PC \(STUDIO-PC\)/ });
     expect(row).toHaveTextContent('FiiO Q series · Exclusive');
     expect(screen.getAllByRole('option')[0]).toBe(row);
+    expect(screen.queryByRole('option', { name: /This browser/ })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Output device' })).toBeNull();
     fireEvent.click(row);
     expect(select).toHaveBeenCalledWith({ kind: 'native' });

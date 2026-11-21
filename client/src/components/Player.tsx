@@ -45,10 +45,12 @@ import { nextIndexAfter, useNativePlayer, type NativeSound } from '../native/use
 import { setNativeBitPerfect, useNativeAudio } from '../native/useNativeAudio';
 import { pureModeOn, type NativeItemSound } from '../native/nativeTypes';
 import { isNativeAnalyser, NativeAnalyser } from '../native/nativeAnalyser';
+import { useNativeMediaControls } from '../native/useNativeMediaControls';
 import { BADGE_ICONS, InfoCircleIcon } from '../native/NativeIcons';
 import type { NativeBadge } from '../native/nativeFormat';
 import { useMediaSession } from '../platform/mediaSession';
 import { METADATA_SAVED_EVENT } from '../metadataEvents';
+import { CROSSFADE_SAVED_EVENT } from '../crossfadeEvents';
 import {
   sleepStopsAfterCurrent,
   sleepTimerBadge,
@@ -3044,14 +3046,19 @@ export default function Player({
     try { localStorage.setItem('vizMode', next); } catch {}
   }, []);
 
-  // ─── Fetch crossfade config when queue source changes ────────────────────
+  // ─── Fetch crossfade config when queue source changes, or the setting is saved ──
   useEffect(() => {
-    if (isRemote) return;
-    if (queueSource && (queueSource.type === 'album' || queueSource.type === 'playlist')) {
-      api.crossfade.config(queueSource.type, queueSource.id).then(setCrossfadeConfig).catch(() => {});
-    } else {
-      api.crossfade.config().then(setCrossfadeConfig).catch(() => {});
-    }
+    if (isRemote) return undefined;
+    const load = () => {
+      if (queueSource && (queueSource.type === 'album' || queueSource.type === 'playlist')) {
+        api.crossfade.config(queueSource.type, queueSource.id).then(setCrossfadeConfig).catch(() => {});
+      } else {
+        api.crossfade.config().then(setCrossfadeConfig).catch(() => {});
+      }
+    };
+    load();
+    window.addEventListener(CROSSFADE_SAVED_EVENT, load);
+    return () => window.removeEventListener(CROSSFADE_SAVED_EVENT, load);
   }, [isRemote, queueSource]);
 
   const stopWaveformPoll = useCallback(() => {
@@ -3761,26 +3768,37 @@ export default function Player({
     });
   }, [audioError, currentTime, currentTrack, duration, isPlaying, nativeOutputLine, onPlaybackSnapshotChange, shownLoading, shownMuted, shownVolume]);
 
+  const mediaActions = {
+    play: () => onStateChange({ ...state, isPlaying: true }),
+    pause: () => onStateChange({ ...state, isPlaying: false }),
+    stop: () => {
+      onStateChange({ ...state, isPlaying: false });
+      if (!liveTrack) seekToTime(0, true);
+    },
+    previous: playPrev,
+    next: playNextClick,
+    seekTo: (seconds: number) => seekToTime(seconds, true),
+  };
+  // On "This PC" the desktop app shows the song in Windows' media controls; the page's Media Session stays off.
+  useNativeMediaControls(
+    {
+      enabled: isNative,
+      track: currentTrack,
+      live: liveTrack,
+      albumOverride: isBoogieMixSyntheticTrackId(currentTrack?.id) ? 'BoogieMix' : null,
+    },
+    { ...mediaActions, toggle: () => onStateChange({ ...state, isPlaying: !isPlaying }) },
+  );
   useMediaSession(
     {
-      track: currentTrack,
+      track: isNative ? null : currentTrack,
       isPlaying,
       position: currentTime,
       duration,
       canSeek: !liveTrack && !(isVinylMode && vinylHardcore) && !(isRemote && !remote?.canSeek),
       albumOverride: isBoogieMixSyntheticTrackId(currentTrack?.id) ? 'BoogieMix' : null,
     },
-    {
-      play: () => onStateChange({ ...state, isPlaying: true }),
-      pause: () => onStateChange({ ...state, isPlaying: false }),
-      stop: () => {
-        onStateChange({ ...state, isPlaying: false });
-        if (!liveTrack) seekToTime(0, true);
-      },
-      previous: playPrev,
-      next: playNextClick,
-      seekTo: (seconds) => seekToTime(seconds, true),
-    },
+    mediaActions,
   );
 
   if (queue.length === 0) return null;

@@ -23,13 +23,18 @@ vi.mock('../platform', () => ({
   nativeAudioAvailable: async () => true,
 }));
 
+const tokens = vi.hoisted(() => ({ delayMs: 0 }));
+
 vi.mock('../api', () => ({
   api: {
-    nativeStreamTokens: vi.fn(async (ids: string[]) => ({
+    nativeStreamTokens: vi.fn(async (ids: string[]) => {
+      if (tokens.delayMs) await new Promise((r) => setTimeout(r, tokens.delayMs));
+      return {
       tokens: ids.map((id) => (id === 'missing'
         ? { id, error: 'file_missing' }
         : { id, url: `/media/n/${id}`, expiresAt: Date.now() + 6 * 3_600_000, format: 'FLAC', decode: 'native', duration: 180 })),
-    })),
+      };
+    }),
     absoluteUrl: (p: string) => `http://srv${p}`,
   },
 }));
@@ -182,6 +187,22 @@ describe('useNativePlayer', () => {
 
     await emit({ type: 'levels', peak: 0.5, rms: 0.2, wave: [1, -1] });
     expect(levels).toHaveBeenCalledWith([1, -1]);
+  });
+
+  it('loads the next song when Next is pressed during playback', async () => {
+    // A long queue: Next moves the link window on, so the load waits for the server while the next-item refresh
+    // is answered from the cache.
+    const queue = Array.from({ length: 14 }, (_, i) => track(`t${i}`));
+    const { hook, initial } = setup({ queue });
+    await waitFor(() => expect(of('setNext')).toHaveLength(1));
+    const first = of('load')[0] as Extract<NativeCommand, { type: 'load' }>;
+    await emit({ type: 'trackStarted', trackId: first.item.trackId, source: flac, output: dac, path: [] });
+    tokens.delayMs = 30;
+    hook.rerender({ ...initial, queue, currentIndex: 1, playToken: 2 });
+    await waitFor(() => expect(of('load')).toHaveLength(2));
+    expect((of('load')[1] as Extract<NativeCommand, { type: 'load' }>).item.url).toBe('http://srv/media/n/t1');
+    await waitFor(() => expect((of('setNext')[of('setNext').length - 1] as Extract<NativeCommand, { type: 'setNext' }>).item?.url).toBe('http://srv/media/n/t2'));
+    tokens.delayMs = 0;
   });
 
   it('says when a song has no link', async () => {

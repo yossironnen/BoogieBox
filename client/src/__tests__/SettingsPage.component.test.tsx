@@ -16,6 +16,7 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     schedules: { list: vi.fn(), upsert: vi.fn(), remove: vi.fn() },
     admin: { logs: { list: vi.fn(), lines: vi.fn(), followUrl: vi.fn(), downloadUrl: vi.fn() }, queues: vi.fn(), providerUsage: vi.fn(), cancelScanJob: vi.fn(), cancelPostScanJob: vi.fn(), failPostScanJob: vi.fn(), retryPostScanJob: vi.fn(), enqueuePostScanJob: vi.fn() },
     settings: { get: vi.fn(), update: vi.fn() },
+    crossfade: { config: vi.fn() },
     waveforms: { status: vi.fn(), runMap: vi.fn() },
     integrations: { spotifyTest: vi.fn(), geniusTest: vi.fn() },
     dlna: { status: vi.fn() },
@@ -927,6 +928,29 @@ describe('SettingsPage component flows', () => {
     await waitFor(() => expect(apiMock.schedules.remove).toHaveBeenCalledWith('1'));
     fireEvent.click(screen.getByRole('button', { name: 'Stop task' }));
     await waitFor(() => expect(apiMock.admin.failPostScanJob).toHaveBeenCalledWith('21'));
+  });
+
+  it('shows the saved crossfade setting on every visit and tells the player when it changes', async () => {
+    // The app's settings copy still says "off": the page reads the server's value.
+    apiMock.crossfade.config.mockResolvedValue({ mode: 'crossfade', duration: 7, source: 'global' });
+    apiMock.settings.update.mockResolvedValue({});
+    const saved = vi.fn();
+    window.addEventListener('boogiebox:crossfade-saved', saved);
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
+        onLogout={vi.fn()}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: /Advanced/i }));
+    expect(await screen.findByText('7s')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Zero-gap' }));
+    await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ crossfadeMode: 'zerogap' }));
+    await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
+    window.removeEventListener('boogiebox:crossfade-saved', saved);
+    apiMock.crossfade.config.mockReset();
   });
 
   it('reports advanced settings, waveform, and deep-analysis action failures', async () => {

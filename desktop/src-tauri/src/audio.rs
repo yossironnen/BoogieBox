@@ -53,10 +53,17 @@ pub fn start(app: &AppHandle, state: &AudioState) {
         let spawned = std::thread::Builder::new()
             .name("bb-audio-events".into())
             .spawn(move || {
+                use tauri::Manager;
                 for event in events {
                     if let Err(e) = app.emit(EVENT, &event) {
                         tracing::warn!("audio event not delivered: {e}");
                     }
+                    // Windows' media controls follow the engine (when "This PC" plays); never blocks.
+                    crate::media_controls::on_engine_event(
+                        &app,
+                        app.state::<crate::media_controls::MediaControls>().inner(),
+                        &event,
+                    );
                 }
             });
         if let Err(e) = spawned {
@@ -71,12 +78,14 @@ pub fn start(app: &AppHandle, state: &AudioState) {
 }
 
 /// Commands the server's page may call (everything else stays with the bundled connection screen).
-const PAGE_PERMISSIONS: [&str; 6] = [
+const PAGE_PERMISSIONS: [&str; 8] = [
     "allow-audio-command",
     "allow-audio-devices",
     "allow-audio-settings",
     "allow-audio-save-settings",
     "allow-machine-name",
+    "allow-media-now-playing",
+    "allow-media-clear",
     "core:event:default",
 ];
 

@@ -17,6 +17,8 @@ const COMMANDS: &[&str] = &[
     "audio_settings",
     "audio_save_settings",
     "machine_name",
+    "media_now_playing",
+    "media_clear",
 ];
 
 fn main() {

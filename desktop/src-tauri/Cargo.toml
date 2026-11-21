@@ -3,7 +3,7 @@ members = [".", "crates/boogiebox-audio"]
 
 [package]
 name = "boogiebox-desktop"
-version = "0.9.105"
+version = "0.9.109"
 edition = "2021"
 
 [lib]
@@ -30,6 +30,21 @@ url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 boogiebox-audio = { path = "crates/boogiebox-audio" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Foundation",
+  "Media",
+  "Storage_Streams",
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Com",
+  "Win32_System_Registry",
+  "Win32_System_WinRT",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 default = ["health-probe"]

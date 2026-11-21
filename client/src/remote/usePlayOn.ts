@@ -499,6 +499,16 @@ export function usePlayOn({ enabled, currentUserId, localState, setLocalState, g
     void toRenderer(next.udn, false);
   }, [getLocalPosition, pendingUdn, setLocalState, setTarget, toLocal, toRenderer]);
 
+  // Desktop app with the engine: "This browser" isn't offered, so playing here means "This PC".
+  useEffect(() => {
+    if (target.kind !== 'local') return;
+    let cancelled = false;
+    void nativeAudioAvailable().then((ok) => {
+      if (ok && !cancelled) selectTarget({ kind: 'native' });
+    });
+    return () => { cancelled = true; };
+  }, [selectTarget, target.kind]);
+
   // ─── Events ─────────────────────────────────────────────────────────────
   const copyQueueHere = useCallback((snapshot: RemoteSessionState) => {
     continueLocally(snapshot, snapshot.positionSec, false);

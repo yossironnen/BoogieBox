@@ -132,7 +132,13 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
 
   const linksRef = useRef<NativeLinks | null>(null);
   const clientRef = useRef('');
+  /** Numbers engine ids (`<track id>#<n>`). */
   const seqRef = useRef(0);
+  /** The latest load: an older one still waiting for its link gives up. Kept apart from `seqRef`, or a next-item
+   *  refresh finishing first would cancel the load (Next pressed: the song changed, the old one kept playing). */
+  const loadSeqRef = useRef(0);
+  /** A load is waiting for its link; the next item is sent once it's done. */
+  const loadingRef = useRef(false);
   /** Engine id → the queue item it stands for. */
   const enginesRef = useRef(new Map<string, { trackId: string; index: number }>());
   const currentEngineRef = useRef<string | null>(null);
@@ -321,7 +327,8 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
       return;
     }
     handoffRef.current = null;
-    const seq = ++seqRef.current;
+    const seq = ++loadSeqRef.current;
+    loadingRef.current = true;
     const o = optionsRef.current;
     const resume = o.resumeAt && o.resumeAt.playToken === playToken && String(o.resumeAt.trackId) === trackId
       ? o.resumeAt.sec
@@ -338,21 +345,23 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
       try {
         resolved = await links().get(upcoming);
       } catch {
-        if (seq === seqRef.current) {
+        if (seq === loadSeqRef.current) {
+          loadingRef.current = false;
           const notice = errorNotice('network', optionsRef.current.deviceName, currentTrack.title ?? null);
           if (notice) optionsRef.current.notify(notice.text, notice.tone);
           setStatus('stopped');
         }
         return;
       }
-      if (seq !== seqRef.current) return;
+      if (seq !== loadSeqRef.current) return;
+      loadingRef.current = false;
       const link = resolved.get(trackId);
       if (!link) {
         setError(CANT_PLAY);
         setStatus('stopped');
         return;
       }
-      const engineId = `${trackId}#${seq}`;
+      const engineId = `${trackId}#${++seqRef.current}`;
       enginesRef.current.set(engineId, { trackId, index: currentIndex });
       loadedEngineRef.current = engineId;
       send({
@@ -366,9 +375,9 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, playToken, currentTrack?.id]);
 
-  // Queue edits, repeat changes and moves: keep the engine's next item right.
+  // Queue edits, repeat changes and moves: keep the engine's next item right (a load sends its own).
   useEffect(() => {
-    if (!enabled || !currentEngineRef.current) return;
+    if (!enabled || !currentEngineRef.current || loadingRef.current) return;
     void sendNext();
   }, [enabled, queue, currentIndex, repeatMode, sendNext]);
 

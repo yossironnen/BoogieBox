@@ -32,6 +32,7 @@ import { plausibleListenBrainzToken } from '../scrobbling';
 import { InlineStatus, ToggleRow } from './settingsControls';
 import { ServerLevellingCard, VolumeLevellingCard } from './LoudnessSettings';
 import PureModeNote from '../native/PureModeNote';
+import { announceCrossfadeSaved } from '../crossfadeEvents';
 import AudioOutputSettings from '../native/AudioOutputSettings';
 import { DEFAULT_LOUDNESS_PREFS, type LoudnessPrefs } from '../audio/loudness';
 
@@ -1015,10 +1016,19 @@ export default function SettingsPage({
   const [switchDbResult, setSwitchDbResult] = useState<string | null>(null);
   const [showDbFolderPicker, setShowDbFolderPicker] = useState(false);
 
+  // The app's settings copy is from sign-in and isn't updated by saves here: read the crossfade setting fresh.
+  useEffect(() => {
+    let cancelled = false;
+    api.crossfade?.config?.()?.then((config) => {
+      if (cancelled || !config) return;
+      setCfMode(config.mode || 'off');
+      setCfDuration(Number(config.duration) || 2);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     setLocal(settings);
-    setCfMode(settings.crossfadeMode || 'off');
-    setCfDuration(Number(settings.crossfadeDuration) || 2);
     setTranscodeQuality(settings.transcodeQuality === 'high' ? 'high' : 'low');
     setWaveformGenerateOnMissing(settings.waveformGenerateOnMissing !== 'false');
     setWaveformBackgroundEnabled(settings.waveformBackgroundEnabled === 'true');
@@ -2166,6 +2176,7 @@ export default function SettingsPage({
                       setCfResult(null);
                       try {
                         await api.settings.update({ crossfadeMode: opt.value });
+                        announceCrossfadeSaved();
                         setCfResult('Saved');
                       } catch { setCfResult('Error'); }
                       setCfSaving(false);
@@ -2203,6 +2214,7 @@ export default function SettingsPage({
                       setCfResult(null);
                       try {
                         await api.settings.update({ crossfadeDuration: String(val) });
+                        announceCrossfadeSaved();
                         setCfResult('Saved');
                       } catch { setCfResult('Error'); }
                       setCfSaving(false);

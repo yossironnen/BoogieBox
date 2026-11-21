@@ -16,6 +16,12 @@ vi.mock('./remoteEvents', () => ({
   },
 }));
 
+const engine = vi.hoisted(() => ({ available: false }));
+vi.mock('../platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform')>()),
+  nativeAudioAvailable: async () => engine.available,
+}));
+
 function emit(event: RemoteEvent) {
   act(() => { for (const listener of [...events.listeners]) listener(event); });
 }
@@ -238,6 +244,17 @@ describe('usePlayOn', () => {
     const { result } = setup();
     expect(result.current.playOn.target).toEqual({ kind: 'native' });
     await waitFor(() => expect(result.current.playOn.target).toEqual({ kind: 'local' }));
+  });
+
+  it('plays on "This PC" instead of this page in the desktop app with the engine', async () => {
+    engine.available = true;
+    try {
+      const { result } = setup({ queue: [track('a')], currentIndex: 0, isPlaying: true, playToken: 1 });
+      await waitFor(() => expect(result.current.playOn.target).toEqual({ kind: 'native' }));
+      expect(result.current.local.resumeAt).toEqual({ playToken: 2, trackId: 'a', sec: 42 });
+    } finally {
+      engine.available = false;
+    }
   });
 
   it('plays here when the stored renderer is offline at startup', async () => {

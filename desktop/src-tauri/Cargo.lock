@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-audio"
-version = "0.9.105"
+version = "0.9.107"
 dependencies = [
  "reqwest",
  "rtrb",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-desktop"
-version = "0.9.105"
+version = "0.9.107"
 dependencies = [
  "boogiebox-audio",
  "directories",
@@ -212,6 +212,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "windows 0.62.2",
 ]
 
 [[package]]

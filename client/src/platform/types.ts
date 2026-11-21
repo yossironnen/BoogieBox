@@ -1,4 +1,4 @@
-import type { NativeAudioSettings, NativeCommand, NativeDevice, NativeEvent } from '../native/nativeTypes';
+import type { NativeAudioSettings, NativeCommand, NativeDevice, NativeEvent, NativeMediaAction, NativeNowPlaying } from '../native/nativeTypes';
 /**
  * Defines Types behavior for BoogieBox.
  */
@@ -37,6 +37,12 @@ export interface NativeAudioApi {
   machineName(): Promise<string>;
   /** Engine events; resolves to an unsubscribe function. */
   onEvent(handler: (event: NativeEvent) => void): Promise<() => void>;
+  /** Windows' media controls show this song (while "This PC" is the output). */
+  nowPlaying(now: NativeNowPlaying): Promise<void>;
+  /** Windows' media controls turn off. */
+  clearNowPlaying(): Promise<void>;
+  /** Buttons pressed in Windows; resolves to an unsubscribe function. */
+  onMediaControl(handler: (action: NativeMediaAction) => void): Promise<() => void>;
 }
 
 export interface Platform {

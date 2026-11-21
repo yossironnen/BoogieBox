@@ -7,6 +7,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Player, { type PlayerState } from '../components/Player';
 import type { ClientEntityId } from '../types';
+import { announceCrossfadeSaved } from '../crossfadeEvents';
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -82,6 +83,14 @@ describe('Player waveform integration', () => {
 
     await waitFor(() => expect(apiMock.trackWaveform).toHaveBeenCalledWith('7'));
     expect(await screen.findByTestId('waveform-bar')).toBeInTheDocument();
+  });
+
+  it('reads the crossfade setting again when it is saved', async () => {
+    apiMock.trackWaveform.mockResolvedValue({ status: 'missing' });
+    render(<Player state={BASE_STATE} onStateChange={() => {}} ffmpegAvailable={true} />);
+    await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledTimes(1));
+    announceCrossfadeSaved();
+    await waitFor(() => expect(apiMock.crossfade.config).toHaveBeenCalledTimes(2));
   });
 
   it('falls back when waveform data is missing', async () => {

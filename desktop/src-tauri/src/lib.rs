@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod commands;
 pub mod config;
+pub mod media_controls;
 pub mod server;
 pub mod server_process;
 pub mod windows;
@@ -30,12 +31,14 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(server_process::ServerProcessStore::default())
         .manage(audio::AudioState::default())
+        .manage(media_controls::MediaControls::default())
         .setup(|app| {
             config::init(app.handle());
             let cfg = config::load(app.handle());
             if let Some(url) = cfg.server_url.as_deref() {
                 audio::allow_page(app.handle(), url);
             }
+            media_controls::start(app.handle());
             audio::start(app.handle(), app.state::<audio::AudioState>().inner());
             tracing::info!(
                 server_url = cfg.server_url.as_deref().unwrap_or("(not configured)"),
@@ -71,6 +74,8 @@ pub fn run() {
             audio::audio_settings,
             audio::audio_save_settings,
             audio::machine_name,
+            media_controls::media_now_playing,
+            media_controls::media_clear,
         ])
         .build(tauri::generate_context!())
         .expect("error building BoogieBox desktop")

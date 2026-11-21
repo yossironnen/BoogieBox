@@ -2,7 +2,7 @@
  * Defines Desktop Platform behavior for BoogieBox.
  */
 
-import type { NativeAudioSettings, NativeCommand, NativeDevice, NativeEvent } from '../native/nativeTypes';
+import type { NativeAudioSettings, NativeCommand, NativeDevice, NativeEvent, NativeMediaAction, NativeNowPlaying } from '../native/nativeTypes';
 import type { DesktopConfig, NativeAudioApi, Platform, ServerDiscoveryResult, ServerProbeResult } from './types';
 
 // Tauri injects __TAURI__ into the webview. We use the core invoke function
@@ -35,6 +35,12 @@ const nativeAudio: NativeAudioApi = {
   async onEvent(handler: (event: NativeEvent) => void) {
     if (!window.__TAURI__) throw new Error('Tauri not available');
     return window.__TAURI__.event.listen<NativeEvent>('audio-event', (evt) => handler(evt.payload));
+  },
+  nowPlaying: (now: NativeNowPlaying) => invoke<void>('media_now_playing', { now }),
+  clearNowPlaying: () => invoke<void>('media_clear'),
+  async onMediaControl(handler: (action: NativeMediaAction) => void) {
+    if (!window.__TAURI__) throw new Error('Tauri not available');
+    return window.__TAURI__.event.listen<NativeMediaAction>('media-control', (evt) => handler(evt.payload));
   },
 };
 

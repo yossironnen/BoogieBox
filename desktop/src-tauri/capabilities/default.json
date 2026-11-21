@@ -18,6 +18,8 @@
     "allow-audio-settings",
     "allow-audio-save-settings",
     "allow-machine-name",
+    "allow-media-now-playing",
+    "allow-media-clear",
     "shell:allow-open",
     "shell:allow-spawn",
     "dialog:default",
