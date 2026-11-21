@@ -139,50 +139,61 @@ if not defined APP_VERSION (
 echo Current desktop version: %APP_VERSION%
 
 set BUNDLE_DIR=%ROOT_DIR%desktop\src-tauri\target\release\bundle
-if "%SKIP_INSTALLER%"=="1" (
-    set RELEASE_NAME=boogiebox-desktop-%APP_VERSION%-win
-    set RELEASE_DIR=%ROOT_DIR%Releases\!RELEASE_NAME!
-    set DESKTOP_EXE=%ROOT_DIR%desktop\src-tauri\target\release\boogiebox-desktop.exe
-    if not exist "!DESKTOP_EXE!" (
-        echo [ERROR] Tauri build did not produce !DESKTOP_EXE!
-        exit /b 1
-    )
-    if not exist "%ROOT_DIR%Releases" mkdir "%ROOT_DIR%Releases"
-    if exist "!RELEASE_DIR!" rmdir /s /q "!RELEASE_DIR!"
-    mkdir "!RELEASE_DIR!"
-    copy /y "!DESKTOP_EXE!" "!RELEASE_DIR!\boogiebox-desktop.exe" >nul
-    if errorlevel 1 ( echo [ERROR] Failed to copy desktop executable & exit /b 1 )
-    if exist "%ROOT_DIR%desktop\src-tauri\target\release\resources" (
-        xcopy /e /q /y "%ROOT_DIR%desktop\src-tauri\target\release\resources" "!RELEASE_DIR!\resources\" >nul
-        if errorlevel 1 ( echo [ERROR] Failed to copy desktop resources & exit /b 1 )
-    )
-    (
-        echo @echo off
-        echo cd /d "%%~dp0"
-        echo boogiebox-desktop.exe
-    ) > "!RELEASE_DIR!\start.bat"
-    (
-        echo # BoogieBox Desktop %APP_VERSION%
-        echo.
-        echo BoogieBox desktop client package for Windows.
-        echo.
-        echo Run start.bat or boogiebox-desktop.exe.
-    ) > "!RELEASE_DIR!\README.md"
-    echo [OK] Desktop release folder copied to Releases\!RELEASE_NAME!\
-) else (
-    set RELEASE_DIR=%ROOT_DIR%Releases\desktop
-    if not exist "!RELEASE_DIR!" mkdir "!RELEASE_DIR!"
-    del /q "!RELEASE_DIR!\*.exe" >nul 2>&1
-    del /q "!RELEASE_DIR!\*.msi" >nul 2>&1
+set "TARGET_DIR=%ROOT_DIR%desktop\src-tauri\target\release"
 
-    :: Copy installer/bundle output to Releases/desktop/
+:: App folder (always): the exe is self-contained (UI and engine built in); it needs only
+:: Windows' own DLLs and the WebView2 Runtime, which Windows 11 includes.
+set RELEASE_NAME=boogiebox-desktop-%APP_VERSION%-win
+set RELEASE_DIR=%ROOT_DIR%Releases\!RELEASE_NAME!
+set DESKTOP_EXE=!TARGET_DIR!\boogiebox-desktop.exe
+if not exist "!DESKTOP_EXE!" (
+    echo [ERROR] Tauri build did not produce !DESKTOP_EXE!
+    exit /b 1
+)
+if not exist "%ROOT_DIR%Releases" mkdir "%ROOT_DIR%Releases"
+if exist "!RELEASE_DIR!" rmdir /s /q "!RELEASE_DIR!"
+mkdir "!RELEASE_DIR!"
+copy /y "!DESKTOP_EXE!" "!RELEASE_DIR!\boogiebox-desktop.exe" >nul
+if errorlevel 1 ( echo [ERROR] Failed to copy desktop executable & exit /b 1 )
+:: Any DLL the exe ships next to it (none today; the crate's own cdylib is not used by the exe).
+for %%d in ("!TARGET_DIR!\*.dll") do (
+    if /i not "%%~nxd"=="boogiebox_desktop_lib.dll" (
+        copy /y "%%~fd" "!RELEASE_DIR!\" >nul
+        if errorlevel 1 ( echo [ERROR] Failed to copy %%~nxd & exit /b 1 )
+    )
+)
+if exist "!TARGET_DIR!\resources" (
+    xcopy /e /q /y "!TARGET_DIR!\resources" "!RELEASE_DIR!\resources\" >nul
+    if errorlevel 1 ( echo [ERROR] Failed to copy desktop resources & exit /b 1 )
+)
+(
+    echo @echo off
+    echo cd /d "%%~dp0"
+    echo start "" boogiebox-desktop.exe
+) > "!RELEASE_DIR!\start.bat"
+(
+    echo # BoogieBox Desktop %APP_VERSION%
+    echo.
+    echo BoogieBox desktop client for Windows, no install needed.
+    echo.
+    echo Run start.bat or boogiebox-desktop.exe. Needs the Microsoft Edge WebView2 Runtime
+    echo ^(included in Windows 11^).
+) > "!RELEASE_DIR!\README.md"
+echo [OK] Desktop app folder: Releases\!RELEASE_NAME!\
+
+:: Installers (unless --no-installer): Releases\desktop\
+if "%SKIP_INSTALLER%"=="0" (
+    set INSTALLER_DIR=%ROOT_DIR%Releases\desktop
+    if not exist "!INSTALLER_DIR!" mkdir "!INSTALLER_DIR!"
+    del /q "!INSTALLER_DIR!\*.exe" >nul 2>&1
+    del /q "!INSTALLER_DIR!\*.msi" >nul 2>&1
     if exist "%BUNDLE_DIR%\nsis" (
-        xcopy /y /q "%BUNDLE_DIR%\nsis\*%APP_VERSION%*.exe" "!RELEASE_DIR!\" >nul 2>&1
+        xcopy /y /q "%BUNDLE_DIR%\nsis\*%APP_VERSION%*.exe" "!INSTALLER_DIR!\" >nul 2>&1
         if errorlevel 1 ( echo [ERROR] Current-version NSIS installer not found & exit /b 1 )
         echo [OK] NSIS installer copied to Releases\desktop\
     )
     if exist "%BUNDLE_DIR%\msi" (
-        xcopy /y /q "%BUNDLE_DIR%\msi\*%APP_VERSION%*.msi" "!RELEASE_DIR!\" >nul 2>&1
+        xcopy /y /q "%BUNDLE_DIR%\msi\*%APP_VERSION%*.msi" "!INSTALLER_DIR!\" >nul 2>&1
         if errorlevel 1 ( echo [ERROR] Current-version MSI installer not found & exit /b 1 )
         echo [OK] MSI installer copied to Releases\desktop\
     )
@@ -191,10 +202,7 @@ if "%SKIP_INSTALLER%"=="1" (
 echo.
 echo ============================================================
 echo  BoogieBox Desktop build complete!
-if "%SKIP_INSTALLER%"=="1" (
-    echo  Artifacts: Releases\!RELEASE_NAME!\
-) else (
-    echo  Artifacts: Releases\desktop\
-)
+echo  App folder: Releases\!RELEASE_NAME!\
+if "%SKIP_INSTALLER%"=="0" echo  Installers: Releases\desktop\
 echo ============================================================
 cd /d "%~dp0"
