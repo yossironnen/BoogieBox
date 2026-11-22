@@ -205,6 +205,24 @@ describe('useNativePlayer', () => {
     tokens.delayMs = 0;
   });
 
+  it('starts a song where the Player says (remember progress) and names the song it plays', async () => {
+    const startAt = vi.fn((t: Track) => (t.id === 'a' ? 95 : null));
+    const { hook } = setup({ startAt });
+    await waitFor(() => expect(of('load')).toHaveLength(1));
+    const load = of('load')[0] as Extract<NativeCommand, { type: 'load' }>;
+    expect(load.startSec).toBe(95);
+    expect(startAt).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
+    expect(hook.result.current.trackId).toBeNull();
+    await emit({ type: 'trackStarted', trackId: load.item.trackId, source: flac, output: dac, path: [] });
+    expect(hook.result.current.trackId).toBe('a');
+  });
+
+  it('a hand-off position wins over the saved one', async () => {
+    setup({ startAt: () => 95, resumeAt: { playToken: 1, trackId: 'a', sec: 42 } });
+    await waitFor(() => expect(of('load')).toHaveLength(1));
+    expect((of('load')[0] as Extract<NativeCommand, { type: 'load' }>).startSec).toBe(42);
+  });
+
   it('says when a song has no link', async () => {
     const { hook } = setup({ queue: [track('missing')] });
     await waitFor(() => expect(hook.result.current.error).toBe("This song can't be played."));

@@ -50,6 +50,8 @@ export interface NativePlayerOptions {
   onAdvance: (index: number) => void;
   /** The last item ended. */
   onFinished: () => void;
+  /** Where a loaded song should start (a remember-progress playlist); null or absent: from the start. */
+  startAt?: (track: Track) => number | null;
   notify: (text: string, tone: NoticeTone) => void;
   /** EQ, levelling, crossfade, Pure mode, and each song's gain and own curve (by queue track id). */
   sound?: NativeSound;
@@ -69,6 +71,8 @@ export interface NativePlayerView {
   badge: NativeBadge | null;
   /** The current item can't be played (shown with the player's own error line). */
   error: string | null;
+  /** Queue track id the engine is playing (null while loading). */
+  trackId: string | null;
   seek: (sec: number) => void;
 }
 
@@ -332,7 +336,7 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
     const o = optionsRef.current;
     const resume = o.resumeAt && o.resumeAt.playToken === playToken && String(o.resumeAt.trackId) === trackId
       ? o.resumeAt.sec
-      : (currentTrack.startAtSec ?? 0);
+      : (o.startAt?.(currentTrack) ?? currentTrack.startAtSec ?? 0);
     setError(null);
     setPlaying(null);
     setPosition(resume);
@@ -425,5 +429,5 @@ export function useNativePlayer(options: NativePlayerOptions): NativePlayerView 
     })
     : null;
 
-  return { status, positionSec: position, durationSec: duration, badge, error, seek };
+  return { status, positionSec: position, durationSec: duration, badge, error, trackId: playing?.trackId ?? null, seek };
 }

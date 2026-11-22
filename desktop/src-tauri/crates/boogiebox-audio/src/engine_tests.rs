@@ -198,6 +198,33 @@ fn gapless_items_join_sample_exact_and_events_follow_the_sound() {
 }
 
 #[test]
+fn an_item_that_plays_out_between_ticks_still_starts_and_ends() {
+    let server = TestServer::start();
+    // 2 ms of sound: gone within one device period, long before the engine's next tick.
+    server.put(
+        "/a",
+        wav_bytes(44_100, 2, 16, &ramp(2, 100, 1)),
+        Behaviour::Normal,
+    );
+    server.put(
+        "/b",
+        wav_bytes(44_100, 2, 16, &ramp(2, 11_025, 101)),
+        Behaviour::Normal,
+    );
+    let mut run = Run::new(factory(SampleKind::I16, 44_100, 2));
+    run.send(Command::Load {
+        item: item(&server, "/a", "A"),
+        start_sec: 0.0,
+        autoplay: true,
+    });
+    run.send(Command::SetNext {
+        item: Some(item(&server, "/b", "B")),
+    });
+    run.until_stopped();
+    assert_eq!(run.track_events(), ["start A", "end A", "start B", "end B"]);
+}
+
+#[test]
 fn twenty_four_bit_audio_reaches_a_24_in_32_device_bit_for_bit() {
     let server = TestServer::start();
     let samples: Vec<i32> = (1..=4_800)

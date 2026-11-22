@@ -2498,21 +2498,33 @@ export default function Player({
   currentIndexRef.current = currentIndex;
 
   // Always-fresh saveProgress — avoids stale closures in useCallback handlers
-  const saveProgressRef = useRef<(idx: number) => void>(() => {});
-  saveProgressRef.current = (idx: number) => {
-    if (offBrowserRef.current) return;
+  // `atSec` overrides the position (the desktop engine moved on: the song before it finished).
+  const saveProgressRef = useRef<(idx: number, atSec?: number) => void>(() => {});
+  saveProgressRef.current = (idx: number, atSec?: number) => {
+    // Speakers keep no progress; the desktop engine does (its position arrives in currentTimeRef).
+    if (offBrowserRef.current && !isNative) return;
     if (queueSource?.type !== 'playlist' || !queueSource.rememberProgress) return;
     const track = queue[idx];
     if (!track) return;
     // Read directly from the audio element — always accurate even after a seek
     // that hasn't yet fired a timeupdate event.
     const activeAudio = activeSlotRef.current === 'A' ? audioRef.current : audioBRef.current;
-    const seconds = Math.floor(activeAudio?.currentTime ?? currentTimeRef.current);
+    const seconds = Math.floor(atSec ?? (isNative ? currentTimeRef.current : (activeAudio?.currentTime ?? currentTimeRef.current)));
     const trackDuration = track.duration ?? 0;
     const nearEnd = trackDuration > 0 && (trackDuration - seconds) < 10;
     const finalSeconds = (seconds <= 3 || nearEnd) ? 0 : seconds;
     progressMapRef.current.set(track.id, finalSeconds);
     api.playlists.saveTrackProgress(String(queueSource.id), track.id, finalSeconds).catch(() => {});
+  };
+
+  /** Where a remember-progress playlist left this song (null: from the start). */
+  const savedProgressRef = useRef<(track: Track) => number | null>(() => null);
+  savedProgressRef.current = (track: Track) => {
+    if (queueSource?.type !== 'playlist' || !queueSource.rememberProgress) return null;
+    const localSaved = progressMapRef.current.get(track.id);
+    const dbSaved = (track as any).progress_seconds ?? 0;
+    const saved = localSaved !== undefined ? localSaved : dbSaved;
+    return saved > 3 ? saved : null;
   };
 
   const currentTrack = queue[currentIndex] ?? null;
@@ -3306,10 +3318,7 @@ export default function Player({
       // Play On handoff back to this browser: continue where the renderer was.
       pendingSeekRef.current = resumeAt.sec;
     } else if (queueSource?.type === 'playlist' && queueSource.rememberProgress) {
-      const localSaved = progressMapRef.current.get(currentTrack.id);
-      const dbSaved = (currentTrack as any).progress_seconds ?? 0;
-      const saved = localSaved !== undefined ? localSaved : dbSaved;
-      pendingSeekRef.current = saved > 3 ? saved : null;
+      pendingSeekRef.current = savedProgressRef.current(currentTrack);
     } else if (currentTrack.startAtSec != null && currentTrack.startAtSec > 0) {
       // Mix Story timeline click-to-seek (MixStoryView.tsx): playTrack() is
       // called fresh for the clicked position, so this is really "start
@@ -3488,8 +3497,15 @@ export default function Player({
     volume: muted ? 0 : volume * localSleep.fade,
     repeatMode: repeatMode as 'off' | 'one' | 'all',
     deviceName: nativeAudio.device?.name ?? null,
-    onAdvance: (index) => onStateChange({ ...state, currentIndex: index, isPlaying: true }),
-    onFinished: () => onStateChange({ ...state, isPlaying: false }),
+    onAdvance: (index) => {
+      saveProgressRef.current(currentIndexRef.current, 0);
+      onStateChange({ ...state, currentIndex: index, isPlaying: true });
+    },
+    onFinished: () => {
+      saveProgressRef.current(currentIndexRef.current, 0);
+      onStateChange({ ...state, isPlaying: false });
+    },
+    startAt: (track) => savedProgressRef.current(track),
     notify: (text, tone) => playOn?.notify({ text, tone }),
     sound: nativeSound,
     onLevels: (wave) => nativeAnalyser.push(wave),
@@ -3507,6 +3523,27 @@ export default function Player({
     setCurrentTime(native.positionSec);
     setDuration(native.durationSec ?? currentTrack?.duration ?? 0);
   }, [currentTrack?.duration, isNative, native.durationSec, native.positionSec, seeking]);
+  // Remember-progress playlists: save every 5 s of play, as the browser player does. Only when the engine reports
+  // something new, and only for the song it is playing (a queue move must not file the last song's spot).
+  useEffect(() => {
+    const t = native.positionSec;
+    if (!isNative || seeking || !isPlaying || native.status !== 'playing' || t <= 0) return;
+    if (native.trackId == null || native.trackId !== String(queue[currentIndexRef.current]?.id)) return;
+    if (Math.abs(t - lastProgressSaveTimeRef.current) < 5) return;
+    lastProgressSaveTimeRef.current = t;
+    saveProgressRef.current(currentIndexRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [native.positionSec, native.status, native.trackId]);
+  // Paused on This PC: save where it stopped.
+  const nativeWasPlayingRef = useRef(false);
+  useEffect(() => {
+    if (!isNative) {
+      nativeWasPlayingRef.current = false;
+      return;
+    }
+    if (nativeWasPlayingRef.current && !isPlaying) saveProgressRef.current(currentIndexRef.current);
+    nativeWasPlayingRef.current = isPlaying;
+  }, [isNative, isPlaying]);
   useEffect(() => {
     if (isNative) setAudioError(native.error);
   }, [isNative, native.error]);

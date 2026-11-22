@@ -4,7 +4,7 @@
 //! the word, which the phase 0 spike measured, so the top bytes are the original samples; lossy float decoders
 //! are scaled to the same range). The bit-perfect path takes the top bytes; the DSP path converts to float.
 
-use std::io;
+use std::io::{self, Seek, SeekFrom};
 
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::well_known::{
@@ -18,6 +18,7 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::Time;
 
+use crate::gapless;
 use crate::source::SourceError;
 use crate::types::ErrorCode;
 
@@ -122,8 +123,14 @@ pub struct TrackDecoder {
     /// Format details.
     pub info: StreamInfo,
     samples: Vec<i32>,
-    /// Frames still to drop after an accurate seek landed early.
-    skip_frames: u64,
+    /// Frames the decoder has produced, counted from the stream start (or the frame a seek landed on).
+    pos: u64,
+    /// Frames before this one are dropped: AAC priming, or the part of a block before an accurate seek's target.
+    skip_until: u64,
+    /// Frames from this one on are dropped (AAC padding).
+    end_at: Option<u64>,
+    /// AAC priming frames: the stream's time 0 is this many frames into the decoded sound.
+    delay: u64,
 }
 
 impl std::fmt::Debug for TrackDecoder {
@@ -136,7 +143,16 @@ impl std::fmt::Debug for TrackDecoder {
 
 impl TrackDecoder {
     /// Probes `source` (with an extension hint) and opens its default audio track.
-    pub fn open(source: Box<dyn MediaSource>, hint: Option<&str>) -> Result<Self, DecodeError> {
+    pub fn open(mut source: Box<dyn MediaSource>, hint: Option<&str>) -> Result<Self, DecodeError> {
+        // An unreadable box only costs the trim; the probe below reports real read errors. Live streams can't
+        // seek (and aren't MP4 files).
+        let gap = if source.is_seekable() {
+            let gap = gapless::read(&mut source).ok().flatten();
+            source.seek(SeekFrom::Start(0)).map_err(DecodeError::Io)?;
+            gap
+        } else {
+            None
+        };
         let mss = MediaSourceStream::new(source, Default::default());
         let mut h = Hint::new();
         if let Some(ext) = hint {
@@ -174,8 +190,16 @@ impl TrackDecoder {
                     .flatten()
             })
             .filter(|_| codec != "MP3" && codec != "AAC" && codec != "Vorbis");
+        let sample_rate = params.sample_rate.unwrap_or(0);
+        // symphonia doesn't apply MP4 edit lists: cut AAC's priming and padding here (MP3 is trimmed by symphonia).
+        let (delay, valid) = gap
+            .filter(|_| codec == "AAC" && sample_rate > 0)
+            .map(|g| g.frames(sample_rate))
+            .filter(|(d, _)| frames.is_none_or(|n| *d < n))
+            .map(|(d, v)| (d, v.filter(|v| frames.is_none_or(|n| d + v <= n))))
+            .unwrap_or((0, None));
         let info = StreamInfo {
-            sample_rate: params.sample_rate.unwrap_or(0),
+            sample_rate,
             channels: params
                 .channels
                 .as_ref()
@@ -183,7 +207,7 @@ impl TrackDecoder {
                 .unwrap_or(0),
             bits,
             codec: codec.to_owned(),
-            frames,
+            frames: valid.or(frames.map(|n| n - delay)),
         };
         Ok(Self {
             format,
@@ -191,13 +215,19 @@ impl TrackDecoder {
             track_id,
             info,
             samples: Vec::new(),
-            skip_frames: 0,
+            pos: 0,
+            skip_until: delay,
+            end_at: valid.map(|v| delay + v),
+            delay,
         })
     }
 
     /// The next block of interleaved samples, or `None` at the end of the stream.
     pub fn next_block(&mut self) -> Result<Option<&[i32]>, DecodeError> {
         loop {
+            if self.end_at.is_some_and(|e| self.pos >= e) {
+                return Ok(None);
+            }
             let packet = match self.format.next_packet() {
                 Ok(Some(p)) => p,
                 Ok(None) => return Ok(None),
@@ -228,22 +258,29 @@ impl TrackDecoder {
                 self.info.sample_rate = buf.spec().rate();
             }
             copy_samples(&buf, &mut self.samples);
-            if self.skip_frames > 0 {
-                let frames = (self.samples.len() / channels) as u64;
-                let drop = self.skip_frames.min(frames);
-                self.skip_frames -= drop;
-                self.samples.drain(..drop as usize * channels);
-                if self.samples.is_empty() {
-                    continue;
+            let frames = (self.samples.len() / channels) as u64;
+            let start = self.pos;
+            self.pos += frames;
+            let keep_from = self.skip_until.saturating_sub(start).min(frames);
+            let keep_to = self
+                .end_at
+                .map_or(frames, |e| e.saturating_sub(start).min(frames));
+            if keep_to <= keep_from {
+                if self.end_at.is_some_and(|e| start >= e) {
+                    return Ok(None);
                 }
+                continue;
             }
+            self.samples.truncate(keep_to as usize * channels);
+            self.samples.drain(..keep_from as usize * channels);
             return Ok(Some(&self.samples));
         }
     }
 
     /// Seeks to `sec` (sample-accurate); returns the position reached.
     pub fn seek(&mut self, sec: f64) -> Result<f64, DecodeError> {
-        let time = Time::try_from_secs_f64(sec.max(0.0))
+        let rate = f64::from(self.info.sample_rate.max(1));
+        let time = Time::try_from_secs_f64(sec.max(0.0) + self.delay as f64 / rate)
             .ok_or_else(|| DecodeError::Broken(format!("bad seek time {sec}")))?;
         let seeked = self
             .format
@@ -261,9 +298,10 @@ impl TrackDecoder {
             .required_ts
             .get()
             .saturating_sub(seeked.actual_ts.get());
-        self.skip_frames = self.ts_to_frames(early.max(0) as u64);
-        let rate = f64::from(self.info.sample_rate.max(1));
-        Ok(self.ts_to_frames(seeked.required_ts.get().max(0) as u64) as f64 / rate)
+        let required = self.ts_to_frames(seeked.required_ts.get().max(0) as u64);
+        self.skip_until = required;
+        self.pos = required.saturating_sub(self.ts_to_frames(early.max(0) as u64));
+        Ok(required.saturating_sub(self.delay) as f64 / rate)
     }
 
     /// Track timestamps are in the track's time base; convert to frames at the sample rate.
@@ -348,6 +386,34 @@ mod tests {
         cut.truncate(cut.len() - 1001);
         let mut d = open_bytes(cut, "wav");
         while d.next_block().unwrap().is_some() {}
+    }
+
+    /// FFmpeg AAC, 0.5 s of a 440 Hz sine at 44.1 kHz stereo: 22,050 frames of sound in 23 packets (23,552
+    /// decoded frames), edit list starting at 1,024.
+    const AAC_SINE: &[u8] = include_bytes!("../testdata/sine-0.5s-aac.m4a");
+
+    fn decode_all(d: &mut TrackDecoder) -> Vec<i32> {
+        let mut all = Vec::new();
+        while let Some(b) = d.next_block().unwrap() {
+            all.extend_from_slice(b);
+        }
+        all
+    }
+
+    #[test]
+    fn aac_priming_and_padding_are_cut_for_gapless() {
+        let mut d = open_bytes(AAC_SINE.to_vec(), "m4a");
+        assert_eq!(d.info.codec, "AAC");
+        assert_eq!(d.info.frames, Some(22_050));
+        let all = decode_all(&mut d);
+        assert_eq!(all.len() / 2, 22_050);
+        // The sine starts at once, not after a block of near-silent priming.
+        let peak = |s: &[i32]| s.iter().map(|v| (*v >> 16).unsigned_abs()).max().unwrap();
+        assert!(peak(&all[..2 * 64]) > 500, "{}", peak(&all[..2 * 64]));
+        // Seeking counts from the real start, and the end is cut there too.
+        let at = d.seek(0.25).unwrap();
+        assert!((at - 0.25).abs() < 1e-6, "{at}");
+        assert_eq!(decode_all(&mut d).len() / 2, 11_025);
     }
 
     #[test]

@@ -47,14 +47,50 @@ Desktop settings are persisted in:
 Fields:
 
 - `serverUrl` - BoogieBox server base URL (default: `http://localhost:3001`)
+- `audio` - output settings for the Hi-Res audio engine (set in Settings › User Settings › Audio output):
+  - `deviceId` - output device id; `null` follows the Windows default device
+  - `mode` - `exclusive` (default) or `shared`
+  - `bufferMs` - 20 (Low), 50 (Normal, default) or 150 (Safe); clamped to 20–200
+  - `nearestRate` - when the DAC can't play a file's rate, resample to the nearest rate it takes (default `true`);
+    `false` plays such files in shared mode
+  - `pure` - Pure mode (EQ, volume levelling and crossfade off); `null` means on in Exclusive mode, off in Shared
 
 Example:
 
 ```json
 {
-  "serverUrl": "http://localhost:3001"
+  "serverUrl": "http://localhost:3001",
+  "audio": {
+    "deviceId": null,
+    "mode": "exclusive",
+    "bufferMs": 50,
+    "nearestRate": true,
+    "pure": null
+  }
 }
 ```
+
+## Hi-Res audio engine
+
+In the desktop app, the "This PC (<machine name>)" output plays through a native engine
+(`src-tauri/crates/boogiebox-audio`) instead of the WebView's `<audio>` element:
+
+- Asks the server for a link per track (`POST /api/native/stream-tokens`) and reads the original file from
+  `/media/n/{token}` with `Range` requests. Opus and WMA are decoded on the server to 24-bit WAV; internet radio
+  goes through the server's relay.
+- Decodes FLAC, ALAC, WAV, AIFF, MP3 and AAC locally and plays through WASAPI.
+- **Exclusive mode** opens the device at each file's own rate and bit depth. At 100% volume with Pure mode on,
+  playback is bit-perfect. Other apps are silent on that device while BoogieBox plays.
+- Exclusive mode needs Windows to allow it: Sound settings › the device › Advanced › "Allow applications to take
+  exclusive control". When it's off, or another app holds the device, the engine plays in shared mode and the
+  dock says so.
+- **Shared mode** goes through the Windows mixer; files are resampled to the mixer rate.
+- Same-format tracks join gaplessly. A rate change in exclusive mode reopens the device (a short pause while
+  the DAC re-locks) and skips the crossfade.
+- With Pure mode off, the engine applies the EQ, volume levelling and crossfade itself (equal-power fade, TPDF
+  dither when reducing bit depth or volume).
+- Windows media controls, the taskbar thumbnail buttons and taskbar progress follow the engine.
+- If the device disappears it pauses, and resumes within 30 seconds if the device comes back.
 
 ## Building a Release
 

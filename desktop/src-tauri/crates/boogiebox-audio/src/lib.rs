@@ -14,6 +14,7 @@ pub mod convert;
 pub mod decode;
 pub mod dsp;
 pub mod engine;
+mod gapless;
 pub mod negotiate;
 pub mod output;
 pub mod resample;

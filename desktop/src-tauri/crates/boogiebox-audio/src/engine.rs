@@ -1091,6 +1091,8 @@ struct Control {
     current: Option<String>,
     /// The segment playing now and the path last reported for it.
     current_seg: Option<Segment>,
+    /// Ring generation and timeline index of the segment last announced with `TrackStarted`.
+    announced: Option<(u64, usize)>,
     last_path: Option<Vec<PathKind>>,
     sounds: Arc<Mutex<SoundTable>>,
     /// The ring generation and segment count the output's EQ table was built from.
@@ -1140,6 +1142,7 @@ impl Control {
             volume: 1.0,
             current: None,
             current_seg: None,
+            announced: None,
             last_path: None,
             sounds: Arc::default(),
             published: (u64::MAX, 0),
@@ -1856,13 +1859,21 @@ impl Control {
         }
         let rate = f64::from(out.format().sample_rate.max(1));
         let played = out.shared().played(self.generation);
-        let (seg, is_last, end, empty_end, switching) = {
+        let (seg, idx, skipped, is_last, end, empty_end, switching) = {
             let tl = lock(&self.timeline);
             if tl.generation != self.generation {
                 return;
             }
             if tl.segments.is_empty() {
-                (None, true, tl.end, tl.end.is_some(), tl.switching)
+                (
+                    None,
+                    0,
+                    Vec::new(),
+                    true,
+                    tl.end,
+                    tl.end.is_some(),
+                    tl.switching,
+                )
             } else {
                 let Some(played) = played else { return };
                 let idx = tl
@@ -1870,8 +1881,18 @@ impl Control {
                     .iter()
                     .rposition(|s| s.start <= played)
                     .unwrap_or(0);
+                // Items that played out entirely between two ticks (a stalled engine thread, very short items).
+                let from = match self.announced {
+                    Some((g, i)) if g == self.generation => i + 1,
+                    _ => 0,
+                };
                 (
                     tl.segments.get(idx).cloned(),
+                    idx,
+                    tl.segments
+                        .get(from.min(idx)..idx)
+                        .map(<[Segment]>::to_vec)
+                        .unwrap_or_default(),
                     idx + 1 == tl.segments.len(),
                     tl.end,
                     false,
@@ -1894,6 +1915,18 @@ impl Control {
             if let Some(prev) = self.current.take() {
                 self.emit(Event::TrackEnded { track_id: prev });
             }
+            for s in &skipped {
+                let path = self.full_path(s);
+                self.emit(Event::TrackStarted {
+                    track_id: s.track_id.clone(),
+                    source: s.source.clone(),
+                    output: s.output.clone(),
+                    path,
+                });
+                self.emit(Event::TrackEnded {
+                    track_id: s.track_id.clone(),
+                });
+            }
             let path = self.full_path(&seg);
             self.last_path = Some(path.clone());
             self.emit(Event::TrackStarted {
@@ -1904,6 +1937,7 @@ impl Control {
             });
             self.current = Some(seg.track_id.clone());
             self.current_seg = Some(seg.clone());
+            self.announced = Some((self.generation, idx));
             self.need_next_sent = None;
         }
         if self.current.as_deref() != Some(seg.track_id.as_str()) {
