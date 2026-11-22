@@ -404,6 +404,19 @@ pub fn defer(conn: &Connection, ids: &[i64], next_attempt_at: i64) -> rusqlite::
     )
 }
 
+/// Moves plays to a later attempt without counting a failure (a paused service).
+pub fn postpone(conn: &Connection, ids: &[i64], next_attempt_at: i64) -> rusqlite::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let (ph, mut values) = id_list(ids);
+    values.insert(0, Value::Integer(next_attempt_at));
+    conn.execute(
+        &format!("UPDATE scrobble_queue SET next_attempt_at = ? WHERE id IN ({ph})"),
+        params_from_iter(values),
+    )
+}
+
 /// Drops plays that are too old or failed too often.
 pub fn prune(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
     conn.execute(

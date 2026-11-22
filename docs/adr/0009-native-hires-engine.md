@@ -1,7 +1,7 @@
 # ADR-0009: Native Hi-Res audio engine in the Windows desktop app
 
 ## Status
-Proposed (decisions approved by the user 2026-11-14; plan `wip/native-hires-engine-plan.md` §3)
+Accepted (user, 2026-11-22, after the engine shipped in 0.9.98–0.9.114 and passed the hardware checks; decisions approved 2026-11-14; plan `wip/native-hires-engine-plan.md` §3)
 
 ## Context
 The desktop app (Tauri, Windows only) plays through WebView2 `<audio>`, which goes through the Windows mixer:

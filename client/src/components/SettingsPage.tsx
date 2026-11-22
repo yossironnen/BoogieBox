@@ -943,6 +943,14 @@ export default function SettingsPage({
   const [lastfmSaving, setLastfmSaving] = useState(false);
   const [lastfmResult, setLastfmResult] = useState<string | null>(null);
   const [lastfmConnected, setLastfmConnected] = useState<boolean | null>(null);
+  /** Last.fm refuses the saved key (no Pro subscription from 1 Dec 2026). */
+  const [lastfmRefused, setLastfmRefused] = useState(false);
+  const loadLastfmStatus = useCallback(() => {
+    Promise.resolve()
+      .then(() => api.integrations.lastfmStatus())
+      .then((status) => setLastfmRefused(!!status?.configured && status.health === 'rejected'))
+      .catch(() => {});
+  }, []);
   const [lastfmHelpOpen, setLastfmHelpOpen] = useState(false);
   const [streamDirect, setStreamDirectState] = useState(() => getStreamDirect());
   const [transcodeQuality, setTranscodeQuality] = useState<'low' | 'high'>(settings.transcodeQuality === 'high' ? 'high' : 'low');
@@ -1176,6 +1184,7 @@ export default function SettingsPage({
         if (s.lastfmKey) setLastfmKey(s.lastfmKey);
         if (s.lastfmSecret) setLastfmSecret(s.lastfmSecret);
       });
+      loadLastfmStatus();
       loadProviderUsage();
     }
     if (activeTab === 'advanced') {
@@ -1211,7 +1220,7 @@ export default function SettingsPage({
       }).catch(() => {});
       if (isAdmin) api.admin.logs.list().then(l => setLogFolder(l.folder)).catch(() => {});
     }
-  }, [activeTab, isAdmin, canManageLibraries, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
+  }, [activeTab, isAdmin, canManageLibraries, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage, loadLastfmStatus]);
 
   useEffect(() => {
     if (activeTab !== 'advanced') return;
@@ -1465,6 +1474,7 @@ export default function SettingsPage({
       onSettingsChange({ ...local, lastfmKey: lastfmKey.trim() } as any);
       setLastfmResult(lastfmSecret.trim() ? '✓ API key and shared secret saved' : '✓ API key saved');
       setTimeout(() => setLastfmResult(null), 3000);
+      loadLastfmStatus();
     } catch (e: any) {
       setLastfmResult('✗ ' + e.message);
     } finally {
@@ -1483,6 +1493,8 @@ export default function SettingsPage({
       if (data.error) {
         setLastfmResult(`✗ Last.fm error ${data.error}: ${data.message}`);
         setLastfmConnected(false);
+        // 10 invalid key, 26 suspended: what a key without Pro gets from 1 Dec 2026.
+        if (data.error === 10 || data.error === 26) setLastfmRefused(true);
       } else {
         setLastfmResult('✓ Key is valid — Last.fm connection OK');
         setLastfmConnected(true);
@@ -3178,6 +3190,12 @@ export default function SettingsPage({
             busy={lastfmSaving}
             errorMessage={connectorMessage(lastfmResult)}
             footer={
+              <>
+              {lastfmRefused && (
+                <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 12, fontSize: 13, color: 'var(--warning, #f59e0b)' }}>
+                  <ScrobbleIcon.Warning size={14} /> Last.fm no longer accepts this key. From 1 December 2026, Last.fm keys need a Pro subscription. BoogieBox keeps showing what it already fetched.
+                </div>
+              )}
               <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-muted)' }}>
                 Each user connects their own Last.fm account for scrobbling in User Settings → Scrobbling.{' '}
                 <button
@@ -3188,6 +3206,7 @@ export default function SettingsPage({
                   Open Scrobbling
                 </button>
               </div>
+              </>
             }
           >
             <input

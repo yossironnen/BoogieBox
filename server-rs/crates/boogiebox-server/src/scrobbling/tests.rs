@@ -116,6 +116,68 @@ async fn plays_queue_only_for_connected_accounts() {
 }
 
 #[tokio::test]
+async fn a_refused_lastfm_key_pauses_its_plays_without_spending_attempts() {
+    let env = env("scrobble-refused-key");
+    {
+        let conn = env.db.lock().unwrap();
+        conn.execute(
+            "UPDATE settings SET value = 'refused-app-key' WHERE key = 'lastfmKey'",
+            [],
+        )
+        .unwrap();
+    }
+    let lastfm = MockServer::start().await;
+    let lb = MockServer::start().await;
+    // A bare 403 (no error code): the key is refused. Asked once only.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&lastfm)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/1/submit-listens"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(&lb)
+        .await;
+    connect(&env, "u1", ScrobbleService::LastFm, "good-sk");
+    connect(&env, "u1", ScrobbleService::ListenBrainz, "lb-token-1234");
+    {
+        let conn = env.db.lock().unwrap();
+        assert_eq!(
+            enqueue_play(&conn, "u1", "t1", unix_now() - 300, unix_now()),
+            2
+        );
+    }
+    let report = deliver_due(&env, &endpoints(&lastfm, &lb)).await;
+    assert_eq!(
+        (report.sent, report.dropped, report.deferred),
+        (1, 0, 1),
+        "{report:?}"
+    );
+    assert_eq!(
+        queued(&env),
+        vec![("u1".to_owned(), "lastfm".to_owned(), 0)]
+    );
+    assert!(!crate::providers::lastfm_key_usable("refused-app-key"));
+    // Not due again for an hour, and never sent to Last.fm meanwhile.
+    assert_eq!(
+        deliver_due(&env, &endpoints(&lastfm, &lb)).await,
+        PassReport::default()
+    );
+    {
+        let conn = env.db.lock().unwrap();
+        conn.execute("UPDATE scrobble_queue SET next_attempt_at = 0", [])
+            .unwrap();
+    }
+    let report = deliver_due(&env, &endpoints(&lastfm, &lb)).await;
+    assert_eq!((report.sent, report.deferred), (0, 1));
+    assert_eq!(
+        queued(&env),
+        vec![("u1".to_owned(), "lastfm".to_owned(), 0)]
+    );
+}
+
+#[tokio::test]
 async fn delivery_sends_defers_and_flags_reconnects() {
     let env = env("scrobble-deliver");
     let lastfm = MockServer::start().await;

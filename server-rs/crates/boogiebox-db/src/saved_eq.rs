@@ -531,6 +531,7 @@ mod tests {
             channels: None,
             bits_per_sample: None,
             loudness: None,
+            musicbrainz: Default::default(),
         };
         crate::jobs::upsert_scanned_track(&f.conn, &input).unwrap();
         let view = saved_eq_for_track(&f.conn, &f.user, &f.track)

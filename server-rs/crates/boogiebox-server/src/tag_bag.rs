@@ -152,6 +152,80 @@ fn parse_ape_items(data: &[u8], count: u32, bag: &mut TagBag) {
 /// ReplayGain values from the tags, in any of the places taggers put them: Vorbis comments and
 /// APEv2 (`REPLAYGAIN_*`), ID3 `TXXX:REPLAYGAIN_*`, MP4 `----:com.apple.iTunes:replaygain_*`, and Opus
 /// `R128_*_GAIN` (Q7.8 relative to −23 LUFS). `None` when there is no usable track gain.
+/// MusicBrainz ids under each tag family's name: Vorbis/FLAC/APEv2 fields, ID3 `TXXX` (and `UFID` for the
+/// recording), MP4 freeform atoms. Picard's names throughout.
+const MB_ARTIST: &[&str] = &[
+    "MUSICBRAINZ_ARTISTID",
+    "TXXX:MUSICBRAINZ ARTIST ID",
+    "----:COM.APPLE.ITUNES:MUSICBRAINZ ARTIST ID",
+];
+const MB_ALBUM_ARTIST: &[&str] = &[
+    "MUSICBRAINZ_ALBUMARTISTID",
+    "TXXX:MUSICBRAINZ ALBUM ARTIST ID",
+    "----:COM.APPLE.ITUNES:MUSICBRAINZ ALBUM ARTIST ID",
+];
+const MB_RELEASE_GROUP: &[&str] = &[
+    "MUSICBRAINZ_RELEASEGROUPID",
+    "TXXX:MUSICBRAINZ RELEASE GROUP ID",
+    "----:COM.APPLE.ITUNES:MUSICBRAINZ RELEASE GROUP ID",
+];
+const MB_RELEASE: &[&str] = &[
+    "MUSICBRAINZ_ALBUMID",
+    "TXXX:MUSICBRAINZ ALBUM ID",
+    "----:COM.APPLE.ITUNES:MUSICBRAINZ ALBUM ID",
+];
+// Picard's MUSICBRAINZ_TRACKID / "MusicBrainz Track Id" is the recording; ID3 keeps it in UFID.
+const MB_RECORDING: &[&str] = &[
+    "MUSICBRAINZ_TRACKID",
+    "UFID:HTTP://MUSICBRAINZ.ORG",
+    "----:COM.APPLE.ITUNES:MUSICBRAINZ TRACK ID",
+];
+
+/// A MusicBrainz id: a UUID in its 8-4-4-4-12 form, returned lower-case.
+fn mbid(text: &str) -> Option<String> {
+    let t = text.trim();
+    let ok = t.len() == 36
+        && t.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    ok.then(|| t.to_ascii_lowercase())
+}
+
+/// Every distinct id under `keys`, in order (values may hold several, split by `/`, `;`, `,` or spaces).
+fn mbids(bag: &TagBag, keys: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for key in keys {
+        for value in bag.all(key) {
+            for part in value.split(|c: char| matches!(c, '/' | ';' | ',') || c.is_whitespace()) {
+                if let Some(id) = mbid(part) {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The MusicBrainz ids a file's tags carry. Artist ids only when exactly one artist is named, so a "feat."
+/// credit never lends the main artist's id to the combined name.
+pub fn musicbrainz_ids(bag: &TagBag) -> boogiebox_db::jobs::MusicBrainzIds {
+    let single = |keys: &[&str]| {
+        let ids = mbids(bag, keys);
+        (ids.len() == 1).then(|| ids[0].clone())
+    };
+    let first = |keys: &[&str]| mbids(bag, keys).into_iter().next();
+    boogiebox_db::jobs::MusicBrainzIds {
+        artist: single(MB_ARTIST),
+        album_artist: single(MB_ALBUM_ARTIST),
+        release_group: first(MB_RELEASE_GROUP),
+        release: first(MB_RELEASE),
+        recording: first(MB_RECORDING),
+    }
+}
+
 pub fn loudness_tags(bag: &TagBag) -> Option<boogiebox_db::loudness::LoudnessTags> {
     let find = |name: &str| {
         [
@@ -360,6 +434,71 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(opus.track_gain_db, Some(0.0)); // -5 dB vs -23 LUFS is 0 dB vs -18 LUFS
         assert_eq!(opus.album_gain_db, Some(6.0));
+    }
+
+    #[test]
+    fn reads_musicbrainz_ids_from_every_tag_family() {
+        let a = "B7FFD2AF-418F-4BE2-BDD1-22F8B48613DA";
+        let b = "0383dadf-2a4e-4d10-a46a-e9e041da8eb3";
+        let rg = "1dc4c347-a1db-32aa-b14f-bc9cc507b843";
+        let rel = "f4a31f0a-51dd-4fa7-986d-3095c40c5ed9";
+        let rec = "e8f9b188-f819-4e43-ab0f-4bd26ce9ff56";
+        let expected = boogiebox_db::jobs::MusicBrainzIds {
+            artist: Some(a.to_ascii_lowercase()),
+            album_artist: Some(a.to_ascii_lowercase()),
+            release_group: Some(rg.into()),
+            release: Some(rel.into()),
+            recording: Some(rec.into()),
+        };
+        let vorbis = bag(&[
+            ("MUSICBRAINZ_ARTISTID", a),
+            ("MUSICBRAINZ_ALBUMARTISTID", a),
+            ("MUSICBRAINZ_RELEASEGROUPID", rg),
+            ("MUSICBRAINZ_ALBUMID", rel),
+            ("MUSICBRAINZ_TRACKID", rec),
+        ]);
+        assert_eq!(musicbrainz_ids(&vorbis), expected);
+        let id3 = bag(&[
+            ("TXXX:MusicBrainz Artist Id", a),
+            ("TXXX:MusicBrainz Album Artist Id", a),
+            ("TXXX:MusicBrainz Release Group Id", rg),
+            ("TXXX:MusicBrainz Album Id", rel),
+            ("UFID:http://musicbrainz.org", rec),
+            // The release track id is not the recording.
+            ("TXXX:MusicBrainz Release Track Id", b),
+        ]);
+        assert_eq!(musicbrainz_ids(&id3), expected);
+        let mp4 = bag(&[
+            ("----:com.apple.iTunes:MusicBrainz Artist Id", a),
+            ("----:com.apple.iTunes:MusicBrainz Album Artist Id", a),
+            ("----:com.apple.iTunes:MusicBrainz Release Group Id", rg),
+            ("----:com.apple.iTunes:MusicBrainz Album Id", rel),
+            ("----:com.apple.iTunes:MusicBrainz Track Id", rec),
+        ]);
+        assert_eq!(musicbrainz_ids(&mp4), expected);
+    }
+
+    #[test]
+    fn a_shared_credit_or_a_broken_id_gives_no_artist() {
+        let a = "b7ffd2af-418f-4be2-bdd1-22f8b48613da";
+        let b = "0383dadf-2a4e-4d10-a46a-e9e041da8eb3";
+        let feat = bag(&[("MUSICBRAINZ_ARTISTID", &format!("{a}/{b}"))]);
+        assert_eq!(musicbrainz_ids(&feat).artist, None);
+        let two_values = bag(&[("MUSICBRAINZ_ARTISTID", a), ("MUSICBRAINZ_ARTISTID", b)]);
+        assert_eq!(musicbrainz_ids(&two_values).artist, None);
+        let same_twice = bag(&[
+            ("MUSICBRAINZ_ARTISTID", a),
+            ("TXXX:MusicBrainz Artist Id", a),
+        ]);
+        assert_eq!(musicbrainz_ids(&same_twice).artist.as_deref(), Some(a));
+        let broken = bag(&[
+            ("MUSICBRAINZ_ARTISTID", "not-an-id"),
+            ("MUSICBRAINZ_TRACKID", "b7ffd2af418f4be2bdd122f8b48613da"),
+        ]);
+        assert_eq!(
+            musicbrainz_ids(&broken),
+            boogiebox_db::jobs::MusicBrainzIds::default()
+        );
     }
 
     #[test]

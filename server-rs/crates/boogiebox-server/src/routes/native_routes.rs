@@ -464,6 +464,7 @@ mod tests {
                     channels: Some(2),
                     bits_per_sample: bits,
                     loudness: None,
+                    musicbrainz: Default::default(),
                 },
             )
             .unwrap();

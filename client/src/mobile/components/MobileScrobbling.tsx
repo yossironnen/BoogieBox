@@ -7,7 +7,7 @@ import React, { useState } from 'react';
 import { formatWhen } from '../../components/ConnectedAppsPanel';
 import { ScrobbleIcon, SERVICE_NAMES, useScrobbleAccounts } from '../../components/ScrobblingPanel';
 import { hybridMobileContentStyles } from '../../hybridPreview';
-import type { ScrobbleService } from '../../scrobbling';
+import { LASTFM_SCROBBLES_REFUSED, type ScrobbleService } from '../../scrobbling';
 import MobileConfirmationSheet from './MobileConfirmationSheet';
 
 /** Mobile Scrobbling is part of this module's public API. */
@@ -46,6 +46,7 @@ export default function MobileScrobbling() {
 
       {row('lastfm')}
       {lastfm?.needsReconnect ? <div role="alert" style={styles.error}>Last.fm stopped accepting this account. Reconnect to keep scrobbling.</div> : null}
+      {lastfm && s.lastfmKeyRefused ? <div role="status" style={styles.error}>{LASTFM_SCROBBLES_REFUSED}</div> : null}
       {!lastfm || lastfm.needsReconnect ? (
         s.lastfmAvailable ? (
           <button type="button" disabled={s.busy || s.waitingLastFm} style={{ ...styles.primary, ...(s.busy || s.waitingLastFm ? styles.disabled : null) }} onClick={() => void s.connectLastFm()}>

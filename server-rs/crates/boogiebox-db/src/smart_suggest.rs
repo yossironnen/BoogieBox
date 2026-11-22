@@ -1332,7 +1332,7 @@ mod tests {
         )
         .unwrap();
         let got = suggest(&conn, &definition(json!([]), 50));
-        assert_eq!(got.popular_source, "lastfm");
+        assert_eq!(got.popular_source, "external");
         let pill = got
             .pills
             .iter()

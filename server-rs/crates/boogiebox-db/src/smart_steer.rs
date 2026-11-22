@@ -38,7 +38,8 @@ pub(crate) const NEW_TRACK_DAYS: i64 = 30;
 /// The popular pill uses Last.fm scrobbles when this share of the pool has them, and local plays otherwise.
 /// Chosen per pool, never per track: 2 million scrobbles and 12 local plays aren't on one scale.
 const MIN_SCROBBLE_SHARE: f64 = 0.5;
-pub(crate) const POPULAR_FROM_LASTFM: &str = "lastfm";
+/// Counts from an outside service (ListenBrainz listens, or Last.fm scrobbles kept from before).
+pub(crate) const POPULAR_FROM_EXTERNAL: &str = "external";
 pub(crate) const POPULAR_FROM_PLAYS: &str = "local";
 
 /// The share of a playlist a rare signal aims for: see `rare_boost`.
@@ -607,7 +608,7 @@ pub(crate) fn popular_counts(
     )?;
     let known = scrobbles.iter().flatten().count();
     if known > 0 && known as f64 >= MIN_SCROBBLE_SHARE * index.len() as f64 {
-        return Ok((scrobbles, POPULAR_FROM_LASTFM));
+        return Ok((scrobbles, POPULAR_FROM_EXTERNAL));
     }
     let plays = pool_values(
         conn,

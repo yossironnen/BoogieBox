@@ -18,7 +18,11 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     settings: { get: vi.fn(), update: vi.fn() },
     crossfade: { config: vi.fn() },
     waveforms: { status: vi.fn(), runMap: vi.fn() },
-    integrations: { spotifyTest: vi.fn(), geniusTest: vi.fn() },
+    integrations: {
+      spotifyTest: vi.fn(),
+      geniusTest: vi.fn(),
+      lastfmStatus: vi.fn(async () => ({ configured: true, health: 'ok' })),
+    },
     dlna: { status: vi.fn() },
     boogiemix: {
       deepAnalysisStatus: vi.fn(),
@@ -665,6 +669,22 @@ describe('SettingsPage component flows', () => {
     expect(screen.getByDisplayValue('65535')).toBeInTheDocument();
   });
 
+  it('warns when Last.fm refuses the saved key', async () => {
+    apiMock.integrations.lastfmStatus.mockResolvedValueOnce({ configured: true, health: 'rejected' });
+    render(
+      <SettingsPage
+        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
+        onLogout={() => {}}
+        settings={DEFAULT_SETTINGS}
+        onSettingsChange={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByRole('tab', { name: /Integrations/i }));
+    expect(await screen.findByText(
+      /Last\.fm no longer accepts this key\. From 1 December 2026, Last\.fm keys need a Pro subscription\. BoogieBox keeps showing what it already fetched\./,
+    )).toBeInTheDocument();
+  });
+
   it('executes integrations test/save actions for Discogs, Spotify, and Last.fm', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
@@ -713,6 +733,7 @@ describe('SettingsPage component flows', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Last.fm credentials' }));
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ lastfmKey: 'lfm-2', lastfmSecret: '' }));
     expect(screen.getByText(/Each user connects their own Last\.fm account/)).toBeInTheDocument();
+    expect(screen.queryByText(/Last\.fm no longer accepts this key/)).not.toBeInTheDocument();
 
     const lastfmHeading = screen.getAllByText('Last.fm', { selector: 'div' })[0];
     const spotifyHeading = screen.getByText(/Artist Images: Deezer \+ Spotify Fallback/i);

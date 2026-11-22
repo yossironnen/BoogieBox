@@ -183,7 +183,7 @@ describe('SmartPlaylistEditor', () => {
     });
 
     it('names the popular pill after where its counts come from', async () => {
-      apiMock.playlists.steer.mockResolvedValue({ popularSource: 'lastfm' });
+      apiMock.playlists.steer.mockResolvedValue({ popularSource: 'external' });
       apiMock.playlists.smartDefinition.mockResolvedValue({ ...stored, definition: { ...stored.definition, steer } });
       render(<SmartPlaylistEditor playlist={smartPlaylist} existingNames={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
       const dialog = screen.getByRole('dialog', { name: 'Edit rules' });

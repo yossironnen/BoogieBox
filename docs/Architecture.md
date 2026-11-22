@@ -31,6 +31,7 @@ Important server modules:
 - `src/auth.rs`: PIN hashing, sessions, brute-force tracking, and Axum auth extractors.
 - `src/cors.rs`: local/LAN origin allowlist.
 - `src/media_serve.rs`: shared ranged file serving and MP3/WAV transcodes for browser playback, DLNA, and Play On.
+- `src/native.rs` + `routes/native_routes.rs`: links for the desktop Hi-Res engine (`POST /api/native/stream-tokens`, `/media/n/{token}`): the original file with Range, a 24-bit WAV for Opus/WMA, or the radio relay; tied to the sign-in, counted on the Activity page as `desktop`.
 - `src/dlna.rs`: optional DLNA MediaServer (SSDP + ContentDirectory).
 - `src/upnp/`: UPnP AV control point (XML parsing, device descriptions, SOAP, SSDP discovery, shared DIDL helpers).
 - `src/remote/`: Play On: `RemoteManager` (in `AppState`), renderer registry, short-lived media tokens (`/media/r/{token}`), pure queue logic, and one session actor per renderer.
@@ -85,6 +86,7 @@ Important client modules:
 - `client/src/components/`: desktop views and shared UI components.
 - `client/src/mobile/`: mobile shell and mobile-specific views.
 - `client/src/platform/`: browser and Tauri desktop platform abstractions, including OS media controls (Media Session).
+- `client/src/native/`: the desktop Hi-Res output ("This PC"): `useNativePlayer` sends the current and next song to the engine and follows its events, plus link cache, badge wording, Audio output settings and Windows media controls.
 - `client/src/remote/`: Play On: `usePlayOn` orchestration, per-browser playback target, shared SSE stream (`/api/remote/events`), `remoteBridge` mapping `PlayerState` changes to server actions, output picker, and takeover prompt.
 - `client/src/audio/`: Web Audio EQ model, Vinyl Mode effects engine, volume levelling gain, and the sleep timer.
 - `client/src/hooks/`: shared data hooks (Home data, deep-analysis status, scan activity, adaptive accent, keyboard shortcuts, backup health, smart playlist re-checks).
@@ -110,6 +112,9 @@ Important desktop modules:
 - `desktop/src-tauri/src/server.rs`: server probing and discovery helpers.
 - `desktop/src-tauri/src/server_process.rs`: optional packaged server process control.
 - `desktop/src-tauri/src/windows/`: Windows-specific helpers.
+- `desktop/src-tauri/src/audio.rs`: hosts the Hi-Res engine; the server page gets only the audio commands (a runtime capability for its origin); output settings live in `desktop-config.json`.
+- `desktop/src-tauri/src/media_controls.rs`: Windows media controls (SMTC flyout, media keys, lock screen) and taskbar thumbnail buttons + progress while "This PC" plays.
+- `desktop/src-tauri/crates/boogiebox-audio/`: the native engine (ADR-0009). The page keeps the queue and sends the current and next item; the engine reads each from `/media/n/{token}` with Range requests, decodes with symphonia (FLAC, ALAC, WAV, AIFF, MP3, AAC with gapless trim), resamples when needed, applies EQ, levelling, crossfade and dither unless Pure mode is on, and plays through WASAPI: exclusive mode at each file's own rate (bit-perfect at 100% volume), or shared mode through the Windows mixer. Same-format items join gaplessly; a lost device pauses and resumes within 30 s.
 
 ## Data Model
 

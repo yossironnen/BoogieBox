@@ -20,8 +20,13 @@ export interface ScrobbleAccount {
 export interface ScrobbleAccountsResponse {
   /** The admin entered the Last.fm API key and shared secret. */
   lastfmAvailable: boolean;
+  /** Last.fm refuses the admin's key (no Pro subscription): Last.fm scrobbles are paused. */
+  lastfmKeyRefused?: boolean;
   accounts: ScrobbleAccount[];
 }
+
+/** Shown on a connected Last.fm account while Last.fm refuses the server's key (approved copy, temporary). */
+export const LASTFM_SCROBBLES_REFUSED = "Last.fm isn't accepting scrobbles from this server.";
 
 /**
  * Seconds a track must play before it counts: half its length or 4 minutes, whichever is less. Tracks of

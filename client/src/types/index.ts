@@ -820,6 +820,12 @@ export interface QueueSource {
 
 // ─── Last.fm ───────────────────────────────────────────────────────────────
 
+/** `GET /api/artists/{id}/top-songs`: ListenBrainz listen counts, else Deezer's order. */
+export interface ArtistTopSongs {
+  source: 'listenbrainz' | 'deezer' | null;
+  tracks: { name: string; listens: number | null; url: string | null }[];
+}
+
 /** Last Fm Info is part of this module's public API. */
 export interface LastFmInfo {
   summary: string;

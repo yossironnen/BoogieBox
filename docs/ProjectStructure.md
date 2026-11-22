@@ -59,6 +59,7 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `client/src/components/` | Desktop views and shared React components. |
 | `client/src/mobile/` | Mobile shell and mobile-specific views. |
 | `client/src/platform/` | Browser and desktop platform abstraction. |
+| `client/src/native/` | Desktop Hi-Res output ("This PC"): engine driver hook, links, badge wording, Audio output settings, Windows media controls. |
 | `client/src/remote/` | Play On hooks, SSE stream, PlayerState bridge, output picker, and takeover prompt. |
 | `client/src/activity/` | Activity feed (SSE with polling fallback) and web player heartbeat. |
 | `client/src/smartPlaylistRules.ts` | Smart playlist rule model, validation, and wording (desktop and mobile). |
@@ -87,6 +88,7 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `server-rs/crates/boogiebox-server/src/mix_worker.rs` | BoogieMix planning and rendering. |
 | `server-rs/crates/boogiebox-server/src/deep_analysis.rs` | BoogieMix deep-analysis orchestration. |
 | `server-rs/crates/boogiebox-server/src/media_serve.rs` | Shared ranged serving and transcodes (browser, DLNA, Play On). |
+| `server-rs/crates/boogiebox-server/src/native.rs` | Desktop Hi-Res engine links (`/media/n/{token}`). |
 | `server-rs/crates/boogiebox-server/src/dlna.rs` | Optional DLNA MediaServer. |
 | `server-rs/crates/boogiebox-server/src/upnp/` | UPnP AV control point: XML, device descriptions, SOAP, SSDP discovery, DIDL helpers. |
 | `server-rs/crates/boogiebox-server/src/remote/` | Play On manager, renderer registry, media tokens, queue, and per-renderer session actors. |
@@ -114,6 +116,7 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `routes/crossfade_routes.rs` | Crossfade settings and overrides. |
 | `routes/remote_routes.rs` | Play On renderer list/refresh/admin edits, icons, diagnostics, and `/media/r/{token}`. |
 | `routes/remote_session_routes.rs` | Play On session load/command/queue/transfer/end and the `/api/remote/events` SSE stream. |
+| `routes/native_routes.rs` | Desktop engine stream links and `/media/n/{token}` serving. |
 | `routes/subsonic_routes.rs` | Subsonic password and API key management (the `/rest` API itself is in `src/subsonic/`). |
 | `routes/favourites_routes.rs` | Favourites (hearts). |
 | `routes/radio_routes.rs` | Internet radio stations and the stream relay. |
@@ -135,6 +138,9 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `desktop/src-tauri/src/server.rs` | Server probing and discovery. |
 | `desktop/src-tauri/src/server_process.rs` | Packaged server process control. |
 | `desktop/src-tauri/src/windows/` | Windows-specific helpers. |
+| `desktop/src-tauri/src/audio.rs` | Hosts the Hi-Res engine; audio commands and output settings. |
+| `desktop/src-tauri/src/media_controls.rs` | Windows media controls and taskbar buttons/progress. |
+| `desktop/src-tauri/crates/boogiebox-audio/` | Native playback engine (source, decode, resample, DSP, WASAPI output). |
 | `desktop/src-tauri/icons/` | Desktop application icons. |
 
 ## BoogieMix Python Assets

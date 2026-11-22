@@ -519,6 +519,7 @@ fn build_track_input(
         channels: technical.channels,
         bits_per_sample: technical.bits_per_sample,
         loudness: crate::tag_bag::loudness_tags(&tags.raw),
+        musicbrainz: crate::tag_bag::musicbrainz_ids(&tags.raw),
     })
 }
 
@@ -1453,6 +1454,15 @@ fn parse_mp4_freeform_atom(payload: &[u8]) -> Option<(String, String)> {
 /// Adds one ID3v2 frame to the tag bag: text frames under their id (v2.4 multi-values split on NUL),
 /// `TXXX` under `TXXX:<description>`. Other frames (comments, pictures, private data) are skipped here.
 fn collect_id3_raw(raw: &mut TagBag, id: &str, frame: &[u8], major: u8) {
+    // UFID: owner (Latin-1, NUL-ended) then the id; MusicBrainz keeps the recording id here.
+    if id == "UFID" {
+        if let Some(end) = frame.iter().position(|b| *b == 0) {
+            let owner = String::from_utf8_lossy(&frame[..end]);
+            let ident = String::from_utf8_lossy(&frame[end + 1..]);
+            raw.push(&format!("UFID:{}", owner.trim()), &ident);
+        }
+        return;
+    }
     if !id.starts_with('T') {
         return;
     }
@@ -3027,6 +3037,32 @@ mod tests {
             out.extend_from_slice(&unit.to_le_bytes());
         }
         out
+    }
+
+    #[test]
+    fn reads_the_musicbrainz_recording_id_from_ufid() {
+        let rec = "e8f9b188-f819-4e43-ab0f-4bd26ce9ff56";
+        let ufid = [b"http://musicbrainz.org\0".as_slice(), rec.as_bytes()].concat();
+        let artist = [
+            b"\x00MusicBrainz Artist Id\0".as_slice(),
+            b"b7ffd2af-418f-4be2-bdd1-22f8b48613da",
+        ]
+        .concat();
+        let frames = [
+            id3_frame(b"TIT2", 3, b"\x03Song"),
+            id3_frame(b"UFID", 3, &ufid),
+            id3_frame(b"UFID", 3, b"http://example.org\0other"),
+            id3_frame(b"TXXX", 3, &artist),
+        ];
+        let tags = read_audio_tags(&id3_file("ufid", 3, &frames, &[])).unwrap();
+        assert_eq!(tags.raw.first("UFID:http://musicbrainz.org"), Some(rec));
+        assert_eq!(tags.raw.first("UFID:http://example.org"), Some("other"));
+        let ids = crate::tag_bag::musicbrainz_ids(&tags.raw);
+        assert_eq!(ids.recording.as_deref(), Some(rec));
+        assert_eq!(
+            ids.artist.as_deref(),
+            Some("b7ffd2af-418f-4be2-bdd1-22f8b48613da")
+        );
     }
 
     #[test]

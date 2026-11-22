@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { hybridControlStyles, hybridSettingsStyles } from '../hybridPreview';
-import { plausibleListenBrainzToken, type ScrobbleAccount, type ScrobbleService } from '../scrobbling';
+import { LASTFM_SCROBBLES_REFUSED, plausibleListenBrainzToken, type ScrobbleAccount, type ScrobbleService } from '../scrobbling';
 import ConfirmModal from './ConfirmModal';
 import { formatWhen, SubsonicIcon } from './ConnectedAppsPanel';
 import { InlineStatus } from './settingsControls';
@@ -41,6 +41,7 @@ export const ScrobbleIcon = {
 export function useScrobbleAccounts() {
   const [accounts, setAccounts] = useState<ScrobbleAccount[]>([]);
   const [lastfmAvailable, setLastfmAvailable] = useState(false);
+  const [lastfmKeyRefused, setLastfmKeyRefused] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [waitingLastFm, setWaitingLastFm] = useState(false);
@@ -53,6 +54,7 @@ export function useScrobbleAccounts() {
       const res = await api.scrobble.accounts();
       setAccounts(res.accounts);
       setLastfmAvailable(res.lastfmAvailable);
+      setLastfmKeyRefused(!!res.lastfmKeyRefused);
       return res.accounts;
     } catch {
       return null;
@@ -142,6 +144,7 @@ export function useScrobbleAccounts() {
     accounts,
     account,
     lastfmAvailable,
+    lastfmKeyRefused,
     busy,
     waitingLastFm,
     result,
@@ -203,6 +206,9 @@ export default function ScrobblingPanel({ onOpenLastFmSetup }: { onOpenLastFmSet
         <AccountRow service="lastfm" account={lastfm} />
         {lastfm?.needsReconnect && (
           <div role="alert" style={S.warning}><ScrobbleIcon.Warning size={14} /> Last.fm stopped accepting this account. Reconnect to keep scrobbling.</div>
+        )}
+        {lastfm && s.lastfmKeyRefused && (
+          <div role="status" style={S.warning}><ScrobbleIcon.Warning size={14} /> {LASTFM_SCROBBLES_REFUSED}</div>
         )}
         <div style={S.actions}>
           {(!lastfm || lastfm.needsReconnect) && (

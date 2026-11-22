@@ -251,6 +251,21 @@ pub struct ClaimedPostScanJob {
     pub payload: Option<String>,
 }
 
+/// MusicBrainz ids a file's tags carry (Picard and other taggers), lower-case UUIDs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MusicBrainzIds {
+    /// The track artist, only when the tag names exactly one artist (a "feat." credit lists several).
+    pub artist: Option<String>,
+    /// The album artist, only when the tag names exactly one.
+    pub album_artist: Option<String>,
+    /// The release group (the album across its editions).
+    pub release_group: Option<String>,
+    /// The release (one edition).
+    pub release: Option<String>,
+    /// The recording (the song as recorded).
+    pub recording: Option<String>,
+}
+
 /// Public Scanned Track Input data shape used by BoogieBox.
 #[derive(Debug, Clone)]
 pub struct ScannedTrackInput {
@@ -298,6 +313,8 @@ pub struct ScannedTrackInput {
     pub bits_per_sample: Option<i64>,
     /// ReplayGain values from the file's tags, if it has any.
     pub loudness: Option<crate::loudness::LoudnessTags>,
+    /// MusicBrainz ids from the file's tags.
+    pub musicbrainz: MusicBrainzIds,
 }
 
 /// Documents the Create Library public API surface.
@@ -748,8 +765,9 @@ pub fn upsert_scanned_track(
             id, library_id, artist_id, album_id, title, file_name, album_artist,
             genre, composer, duration, bitrate, sample_rate, channels,
             file_path, file_size, format,
-            track_number, disc_number, year, comment, bpm, bits_per_sample, scanned_at, added_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,datetime('now'),datetime('now'))
+            track_number, disc_number, year, comment, bpm, bits_per_sample,
+            musicbrainz_recording_id, scanned_at, added_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,datetime('now'),datetime('now'))
          ON CONFLICT(file_path) DO UPDATE SET
             library_id=excluded.library_id,
             artist_id=excluded.artist_id,
@@ -771,6 +789,7 @@ pub fn upsert_scanned_track(
             year=excluded.year,
             comment=excluded.comment,
             bpm=excluded.bpm,
+            musicbrainz_recording_id=excluded.musicbrainz_recording_id,
             scanned_at=CASE
                 WHEN tracks.file_size IS excluded.file_size THEN tracks.scanned_at
                 ELSE datetime('now')
@@ -798,8 +817,10 @@ pub fn upsert_scanned_track(
             input.comment,
             input.bpm,
             input.bits_per_sample,
+            input.musicbrainz.recording,
         ],
     )?;
+    record_musicbrainz_ids(conn, &artist_id, &album_id, &input.musicbrainz)?;
     refresh_track_fts(conn, &track_id, input, &artist_id, &album_id)?;
     crate::loudness::record_scanned_tags(
         conn,
@@ -808,6 +829,52 @@ pub fn upsert_scanned_track(
         input.loudness.as_ref(),
     )?;
     Ok(track_id)
+}
+
+/// Fills the artist's and album's MusicBrainz ids from a file's tags. An id already stored is kept (the first file
+/// wins; an exact-name MusicBrainz search may have set it before), and the artist's search is marked done.
+fn record_musicbrainz_ids(
+    conn: &Connection,
+    artist_id: &EntityId,
+    album_id: &EntityId,
+    ids: &MusicBrainzIds,
+) -> rusqlite::Result<()> {
+    let set_artist = |artist: &EntityId, mbid: &str| {
+        conn.execute(
+            "UPDATE artists
+             SET musicbrainz_artist_id = ?1, musicbrainz_identity_checked_at = datetime('now')
+             WHERE id = ?2 AND musicbrainz_artist_id IS NULL",
+            params![mbid, artist],
+        )
+    };
+    if let Some(mbid) = ids.artist.as_deref() {
+        set_artist(artist_id, mbid)?;
+    }
+    if let Some(mbid) = ids.album_artist.as_deref() {
+        let owner: Option<EntityId> = conn
+            .query_row(
+                "SELECT artist_id FROM albums WHERE id = ?1",
+                [album_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(owner) = owner {
+            set_artist(&owner, mbid)?;
+        }
+    }
+    if ids.release_group.is_some() || ids.release.is_some() {
+        conn.execute(
+            "UPDATE albums
+             SET musicbrainz_release_group_id = COALESCE(musicbrainz_release_group_id, ?1),
+                 musicbrainz_release_id = COALESCE(musicbrainz_release_id, ?2)
+             WHERE id = ?3
+               AND ((?1 IS NOT NULL AND musicbrainz_release_group_id IS NULL)
+                 OR (?2 IS NOT NULL AND musicbrainz_release_id IS NULL))",
+            params![ids.release_group, ids.release, album_id],
+        )?;
+    }
+    Ok(())
 }
 
 /// A scan skips its prune when the tracks it would remove number more than this **and** more than
@@ -1928,6 +1995,7 @@ mod tests {
             channels: Some(2),
             bits_per_sample: None,
             loudness: None,
+            musicbrainz: Default::default(),
         }
     }
 
@@ -2041,6 +2109,67 @@ mod tests {
         // just pushed into the future.
         let queued_again = enqueue_due_scheduled_scans(&f.conn).unwrap();
         assert!(queued_again.is_empty());
+    }
+
+    #[test]
+    fn scanned_musicbrainz_ids_fill_artist_album_and_track_once() {
+        let f = fixture("upsert-mbids");
+        let ids = MusicBrainzIds {
+            artist: Some("b7ffd2af-418f-4be2-bdd1-22f8b48613da".into()),
+            album_artist: Some("b7ffd2af-418f-4be2-bdd1-22f8b48613da".into()),
+            release_group: Some("1dc4c347-a1db-32aa-b14f-bc9cc507b843".into()),
+            release: Some("f4a31f0a-51dd-4fa7-986d-3095c40c5ed9".into()),
+            recording: Some("e8f9b188-f819-4e43-ab0f-4bd26ce9ff56".into()),
+        };
+        let mut input = scanned_track(&f.library_id, "/music/mb1.flac", "One");
+        input.musicbrainz = ids.clone();
+        let track = upsert_scanned_track(&f.conn, &input).unwrap();
+        let stored = |f: &Fixture| -> (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+        ) {
+            f.conn
+                .query_row(
+                    "SELECT ar.musicbrainz_artist_id, al.musicbrainz_release_group_id, al.musicbrainz_release_id,
+                            t.musicbrainz_recording_id, ar.musicbrainz_identity_checked_at IS NOT NULL
+                     FROM tracks t JOIN artists ar ON ar.id = t.artist_id JOIN albums al ON al.id = t.album_id
+                     WHERE t.file_path = '/music/mb1.flac'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            stored(&f),
+            (
+                ids.artist.clone(),
+                ids.release_group.clone(),
+                ids.release.clone(),
+                ids.recording.clone(),
+                true
+            )
+        );
+
+        // Another file of the same artist and album with other ids: what's stored stays (first file wins).
+        let mut other = scanned_track(&f.library_id, "/music/mb2.flac", "Two");
+        other.musicbrainz = MusicBrainzIds {
+            artist: Some("0383dadf-2a4e-4d10-a46a-e9e041da8eb3".into()),
+            release_group: Some("00000000-0000-4000-8000-000000000000".into()),
+            ..MusicBrainzIds::default()
+        };
+        upsert_scanned_track(&f.conn, &other).unwrap();
+        assert_eq!(stored(&f).0, ids.artist);
+        assert_eq!(stored(&f).1, ids.release_group);
+
+        // The recording follows the file: a rescan without the tag clears it.
+        let mut rescanned = scanned_track(&f.library_id, "/music/mb1.flac", "One");
+        rescanned.musicbrainz = MusicBrainzIds::default();
+        assert_eq!(upsert_scanned_track(&f.conn, &rescanned).unwrap(), track);
+        assert_eq!(stored(&f).3, None);
+        assert_eq!(stored(&f).0, ids.artist, "artist and album ids stay");
     }
 
     #[test]

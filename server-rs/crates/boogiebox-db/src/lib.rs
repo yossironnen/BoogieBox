@@ -876,6 +876,14 @@ fn tracked_migrations() -> Vec<Migration> {
             id: "2026-11-14-track-bits-per-sample",
             apply: ensure_track_bits_per_sample_column,
         },
+        Migration {
+            id: "2026-11-22-musicbrainz-ids",
+            apply: ensure_musicbrainz_id_columns,
+        },
+        Migration {
+            id: "2026-11-22-popularity-source",
+            apply: popularity::ensure_popularity_source_column,
+        },
     ]
 }
 
@@ -3000,6 +3008,33 @@ fn ensure_track_bits_per_sample_column(connection: &Connection) -> Result<(), ru
         && !column_exists(connection, "tracks", "bits_per_sample")?
     {
         connection.execute_batch("ALTER TABLE tracks ADD COLUMN bits_per_sample INTEGER")?;
+    }
+    Ok(())
+}
+
+/// MusicBrainz ids from file tags: the recording per track, the release group and release per album (the artist's
+/// id has its own column already). Filled by the next scan.
+fn ensure_musicbrainz_id_columns(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if table_exists(connection, "tracks")
+        && !column_exists(connection, "tracks", "musicbrainz_recording_id")?
+    {
+        connection.execute_batch(
+            "ALTER TABLE tracks ADD COLUMN musicbrainz_recording_id TEXT;
+             CREATE INDEX IF NOT EXISTS idx_tracks_musicbrainz_recording_id
+               ON tracks(musicbrainz_recording_id) WHERE musicbrainz_recording_id IS NOT NULL;",
+        )?;
+    }
+    if table_exists(connection, "albums") {
+        for column in ["musicbrainz_release_group_id", "musicbrainz_release_id"] {
+            if !column_exists(connection, "albums", column)? {
+                connection
+                    .execute_batch(&format!("ALTER TABLE albums ADD COLUMN {column} TEXT"))?;
+            }
+        }
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_albums_musicbrainz_release_group_id
+               ON albums(musicbrainz_release_group_id) WHERE musicbrainz_release_group_id IS NOT NULL;",
+        )?;
     }
     Ok(())
 }

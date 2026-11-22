@@ -77,6 +77,8 @@ struct AccountView {
 struct AccountsResponse {
     /// The admin entered both the Last.fm key and shared secret.
     lastfm_available: bool,
+    /// Last.fm refuses the admin's key (no Pro subscription): Last.fm scrobbles are paused.
+    lastfm_key_refused: bool,
     accounts: Vec<AccountView>,
 }
 
@@ -87,12 +89,17 @@ async fn accounts_handler(State(state): State<SharedState>, user: AuthenticatedU
     let result = tokio::task::spawn_blocking(move || {
         let conn = env.db.lock().unwrap_or_else(|p| p.into_inner());
         let accounts = qdb::list_accounts(&conn, &user.id)?;
-        Ok::<_, rusqlite::Error>((scrobbling::lastfm_app(&conn).is_some(), accounts))
+        let app = scrobbling::lastfm_app(&conn);
+        let refused = app
+            .as_ref()
+            .is_some_and(|app| !crate::providers::lastfm_key_usable(&app.api_key));
+        Ok::<_, rusqlite::Error>((app.is_some(), refused, accounts))
     })
     .await;
     match result {
-        Ok(Ok((lastfm_available, accounts))) => Json(AccountsResponse {
+        Ok(Ok((lastfm_available, lastfm_key_refused, accounts))) => Json(AccountsResponse {
             lastfm_available,
+            lastfm_key_refused,
             accounts: accounts
                 .into_iter()
                 .map(|a| AccountView {

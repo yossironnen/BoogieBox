@@ -75,6 +75,10 @@ async fn call(
     app: &AppCredentials,
     mut params: Vec<(String, String)>,
 ) -> Result<Value, SendError> {
+    // A key Last.fm refuses (no Pro subscription): don't call; the forwarder keeps the plays.
+    if !crate::providers::lastfm_key_usable(&app.api_key) {
+        return Err(SendError::Temporary);
+    }
     params.push(("api_key".into(), app.api_key.clone()));
     let sig = api_sig(&params, &app.secret);
     params.push(("api_sig".into(), sig));
@@ -89,6 +93,10 @@ async fn call(
         .map_err(|_| SendError::Temporary)?;
     let status = response.status();
     let body: Value = response.json().await.unwrap_or(Value::Null);
+    // Checked before the codes below: a bare 403 must not drop the plays.
+    if crate::providers::lastfm_reply_rejects_key(&app.api_key, status.as_u16(), &body) {
+        return Err(SendError::Temporary);
+    }
     if let Some(code) = body.get("error").and_then(Value::as_i64) {
         return Err(classify(code));
     }

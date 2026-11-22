@@ -380,7 +380,8 @@ do not expose it to the internet. To listen away from home, download music to th
 | `GET` | `/api/admin/fs/browse` | List directory contents on the server filesystem. |
 | `GET` | `/api/admin/provider-usage` | Fetch provider usage statistics. |
 | `GET` | `/api/lastfm/info` | Fetch Last.fm artist information. |
-| `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist. |
+| `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist (no longer used by the client; goes with the Last.fm removal). |
+| `GET` | `/api/artists/{id}/top-songs` | Signed in. An artist's top songs, no key needed: ListenBrainz listen counts by the artist's MusicBrainz id, else Deezer's order. `{ source, tracks: [{ name, listens, url }] }`; `source` is `listenbrainz`, `deezer` or `null`; `listens` is `null` for Deezer. Cached a week (an empty answer a day). `404` unknown artist. |
 | `GET` | `/api/radio/metadata/status` | Artist Radio metadata collection mode, provider availability and progress (`tracksChecked`/`tracksTotal`, `artistsTagged`/`artistsTotal`). |
 
 Volume levelling settings: per user `loudnessMode` (`off` | `track` | `album` | `auto`) and `loudnessPreampDb`

@@ -46,6 +46,24 @@ describe('ScrobblingPanel', () => {
     expect(onOpenLastFmSetup).toHaveBeenCalledTimes(1);
   });
 
+  it('says when Last.fm refuses the server key', async () => {
+    scrobbleApi.accounts.mockResolvedValue({
+      lastfmAvailable: true,
+      lastfmKeyRefused: true,
+      accounts: [{ ...lbAccount, service: 'lastfm', accountName: 'fm_alice' }],
+    });
+    render(<ScrobblingPanel />);
+    const panel = await screen.findByRole('region', { name: 'Scrobbling' });
+    expect(within(panel).getByText("Last.fm isn't accepting scrobbles from this server.")).toBeInTheDocument();
+  });
+
+  it('says nothing about the key without a Last.fm account', async () => {
+    scrobbleApi.accounts.mockResolvedValue({ lastfmAvailable: true, lastfmKeyRefused: true, accounts: [] });
+    render(<ScrobblingPanel />);
+    const panel = await screen.findByRole('region', { name: 'Scrobbling' });
+    expect(within(panel).queryByText(/isn't accepting scrobbles/)).not.toBeInTheDocument();
+  });
+
   it('disconnects Last.fm after confirming', async () => {
     scrobbleApi.accounts.mockResolvedValue({
       lastfmAvailable: true,

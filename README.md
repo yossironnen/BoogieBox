@@ -170,7 +170,7 @@ Whether you're creating a workout mix, a party playlist, or a long background li
 - Scheduled backups and one-click restore, including moving to a new machine
 - Safe scans: an offline drive or NAS never wipes its tracks from your library
 - Admin tools: a live Activity page and a server log viewer in Settings
-- Optional Windows desktop application with automatic server discovery (in dev)
+- Windows desktop app with automatic server discovery and a Hi-Res output: bit-perfect playback to your DAC at each file's own sample rate and bit depth (WASAPI exclusive mode), gapless, with Windows media controls
 
 ---
 

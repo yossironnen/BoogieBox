@@ -20,6 +20,8 @@ const TICK: Duration = Duration::from_secs(30);
 const PASS_LIMIT: i64 = 500;
 /// Longest wait between retries.
 const MAX_BACKOFF_SECS: i64 = 6 * 3600;
+/// While Last.fm refuses the app key, its plays wait this long between checks (not counted as failures).
+const LASTFM_PAUSED_RETRY_SECS: i64 = 3600;
 /// Longest a "now playing" notice may take.
 const NOW_PLAYING_BUDGET: Duration = Duration::from_secs(5);
 
@@ -306,7 +308,14 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
     let mut sent_ids = Vec::new();
     let mut dropped_ids = Vec::new();
     let mut deferred: Vec<(i64, i64)> = Vec::new();
+    let mut postponed: Vec<i64> = Vec::new();
     let mut reconnect = Vec::new();
+    let lastfm_paused = || {
+        unlocked
+            .lastfm
+            .as_ref()
+            .is_some_and(|app| !crate::providers::lastfm_key_usable(&app.api_key))
+    };
     let mut delivered = Vec::new();
     for rows in groups.values() {
         let Some(first) = rows.first() else { continue };
@@ -318,6 +327,11 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
             // Secret unreadable (key replaced): the rows go when the account is cleared.
             continue;
         };
+        if first.service == ScrobbleService::LastFm && lastfm_paused() {
+            // Last.fm refuses the key: keep the plays, try again later, don't spend their attempts.
+            postponed.extend(rows.iter().map(|r| r.id));
+            continue;
+        }
         let batch_size = match first.service {
             ScrobbleService::LastFm => lastfm::MAX_BATCH,
             ScrobbleService::ListenBrainz => listenbrainz::MAX_BATCH,
@@ -343,6 +357,12 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
                     delivered.push((first.user_id.clone(), first.service));
                 }
                 Err(SendError::Rejected) => dropped_ids.extend(ids),
+                Err(SendError::Temporary)
+                    if first.service == ScrobbleService::LastFm && lastfm_paused() =>
+                {
+                    postponed.extend(ids);
+                    break;
+                }
                 Err(SendError::Temporary) => {
                     deferred.extend(chunk.iter().map(|r| (r.id, now + backoff_secs(r.attempts))))
                 }
@@ -355,7 +375,7 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
     }
     report.sent = sent_ids.len();
     report.dropped = dropped_ids.len();
-    report.deferred = deferred.len();
+    report.deferred = deferred.len() + postponed.len();
     report.reconnect = reconnect.len();
     let db = env.db.clone();
     let _ = tokio::task::spawn_blocking(move || {
@@ -365,6 +385,7 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
         for (id, next) in deferred {
             let _ = qdb::defer(&conn, &[id], next);
         }
+        let _ = qdb::postpone(&conn, &postponed, now + LASTFM_PAUSED_RETRY_SECS);
         for (user, service) in reconnect {
             let _ = qdb::mark_needs_reconnect(&conn, &user, service);
         }

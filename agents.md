@@ -78,6 +78,7 @@ post_scan.rs — async post-scan lanes (art caching, Last.fm, lyrics, artist sty
 mix_worker.rs — BoogieMix render + AI planner + deep-analysis Python orchestration  
 dlna.rs — SSDP + Axum DLNA server, ContentDirectory Browse, audio streaming  
 media_serve.rs — shared ranged serving + MP3/WAV transcodes (browser, DLNA, Play On)  
+native.rs — desktop Hi-Res engine links (`POST /api/native/stream-tokens`, `/media/n/{token}`: original file with Range, or 24-bit WAV for Opus/WMA)  
 upnp/ — UPnP AV control point (XML, device descriptions, SOAP, SSDP discovery, DIDL helpers)  
 remote/ — Play On: RemoteManager, renderer registry, media tokens (`/media/r/{token}`), queue, per-renderer session actors  
 subsonic/ — OpenSubsonic-compatible `/rest` API for third-party apps (auth via per-user Subsonic password or OpenSubsonic API key, XML/JSON rendering, browse/search/stream/scrobble, internet radio, jukebox via Play On, saved play queue, scan status/start, transcode offsets; LAN-only)  
@@ -114,7 +115,14 @@ routes/ — Axum route modules per domain (admin, auth, settings, library [libra
 `mobile/` — mobile shell and mobile-specific views  
 `platform/` — browser/desktop platform abstraction  
 `remote/` — Play On client (usePlayOn, SSE events, PlayerState bridge, output picker)  
+`native/` — desktop Hi-Res output ("This PC"): useNativePlayer drives the engine, links, badge wording, Audio output settings, Windows media controls  
 `version.ts` — app version
+
+### Desktop (`desktop/src-tauri`, Windows only)
+
+`src/audio.rs` — hosts the engine, audio commands for the server page, settings in `desktop-config.json`  
+`src/media_controls.rs` — Windows media controls (SMTC), taskbar buttons + progress  
+`crates/boogiebox-audio/` — native engine: HTTP Range source, symphonia decode (AAC gapless trim), resample, EQ/levelling/crossfade, WASAPI shared/exclusive output  
 
 ## UI Design Conventions (MANDATORY)
 

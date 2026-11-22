@@ -31,7 +31,7 @@ describe('pill wording', () => {
   });
 
   it('names the popular pill after where its counts come from', () => {
-    expect(pillLabel(signal('popular'), 'lastfm')).toBe('Popular');
+    expect(pillLabel(signal('popular'), 'external')).toBe('Popular');
     expect(pillLabel(signal('popular'), 'local')).toBe('Most played here');
     expect(pillLabel(signal('popular'))).toBe('Most played here');
   });
@@ -43,7 +43,7 @@ describe('pill wording', () => {
     expect(pillTip(pill(style('rock', 'deeper'), 132))).toBe('132 tracks in narrower kinds of rock');
     expect(pillTip(pill({ kind: 'mood', bucket: 'dark', direction: 'more' }, 20))).toBe('20 tracks');
     expect(pillTip(pill(signal('popular'), 25))).toBe('25 tracks played on this server');
-    expect(pillTip(pill(signal('popular'), 25), 'lastfm')).toBe('25 tracks');
+    expect(pillTip(pill(signal('popular'), 25), 'external')).toBe('25 tracks');
     expect(pillTip(pill(signal('favourites'), 12))).toBe('12 tracks');
     expect(pillTip(pill(signal('new')))).toBe('Tracks you have not played yet');
     expect(pillTip(pill(signal('energetic')))).toBe('Uses deep analysis energy');

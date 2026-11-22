@@ -23,7 +23,8 @@ export interface SteerPill extends SmartSteer {
   count: number;
 }
 
-export type PopularSource = 'lastfm' | 'local';
+/** `external`: ListenBrainz listens (or Last.fm scrobbles kept from before); `local`: plays on this server. */
+export type PopularSource = 'external' | 'local';
 
 /** `GET /api/playlists/{id}/steer`. */
 export interface SteerView {
@@ -73,7 +74,7 @@ export function pillLabel(steer: SmartSteer, popularSource: PopularSource = 'loc
   if (steer.kind === 'mood') return `${directionWord(steer.direction)} ${steer.bucket}`;
   switch (steer.signal) {
     case 'favourites': return 'My favourites';
-    case 'popular': return popularSource === 'lastfm' ? 'Popular' : 'Most played here';
+    case 'popular': return popularSource === 'external' ? 'Popular' : 'Most played here';
     case 'new': return 'Something new';
     case 'faster': return 'Faster';
     case 'slower': return 'Slower';
@@ -95,7 +96,7 @@ export function pillTip(pill: SteerPill, popularSource: PopularSource = 'local')
   if (pill.kind !== 'signal') return tracksWord(pill.count);
   switch (pill.signal) {
     case 'popular':
-      return popularSource === 'lastfm' ? tracksWord(pill.count) : `${tracksWord(pill.count)} played on this server`;
+      return popularSource === 'external' ? tracksWord(pill.count) : `${tracksWord(pill.count)} played on this server`;
     case 'favourites': return tracksWord(pill.count);
     case 'new': return 'Tracks you have not played yet';
     case 'energetic':

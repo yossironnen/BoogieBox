@@ -13,8 +13,8 @@ use crate::{
     mix_priority_gate,
     providers::{
         fetch_lastfm_artist_track_counts, fetch_lastfm_track_top_tags,
-        fetch_musicbrainz_artist_tags, is_valid_mbid, search_musicbrainz_artist,
-        ProviderFetchError,
+        fetch_listenbrainz_top_recordings, fetch_musicbrainz_artist_tags, is_valid_mbid,
+        search_musicbrainz_artist, ProviderFetchError,
     },
     tag_taxonomy::to_tag_inputs,
     DbPool,
@@ -22,7 +22,10 @@ use crate::{
 use boogiebox_db::{
     artwork::{get_setting, save_lastfm_cache},
     music::EntityId,
-    popularity::{list_artists_needing_popularity, store_artist_popularity},
+    popularity::{
+        list_artists_needing_listenbrainz_popularity, list_artists_needing_popularity,
+        store_artist_popularity, store_listenbrainz_popularity, PopularityEntry,
+    },
     radio::{
         insert_artist_tags_if_none, list_artists_needing_musicbrainz_id,
         list_artists_needing_musicbrainz_tags, list_tracks_needing_tags, list_untagged_among,
@@ -68,6 +71,11 @@ fn track_tag_delay() -> Duration {
     delay_from_env_or("BOOGIEBOX_TRACK_TAG_SYNC_DELAY_MS", 1000)
 }
 
+/// ListenBrainz asks for at most one request per second per application.
+fn listenbrainz_delay() -> Duration {
+    delay_from_env_or("BOOGIEBOX_LISTENBRAINZ_DELAY_MS", 1100)
+}
+
 /// MusicBrainz allows ~1 request/second; stay just under it.
 fn musicbrainz_delay() -> Duration {
     delay_from_env_or("BOOGIEBOX_MUSICBRAINZ_DELAY_MS", 1100)
@@ -105,7 +113,9 @@ pub struct MetadataSettings {
 pub fn read_settings(conn: &rusqlite::Connection) -> MetadataSettings {
     MetadataSettings {
         mode: SyncMode::parse(get_setting(conn, "radioTrackTagSync").as_deref()),
-        lastfm_key: get_setting(conn, "lastfmKey").filter(|k| !k.trim().is_empty()),
+        // A key Last.fm refuses (no Pro subscription) counts as none: nothing calls it or records a miss.
+        lastfm_key: get_setting(conn, "lastfmKey")
+            .filter(|k| !k.trim().is_empty() && crate::providers::lastfm_key_usable(k)),
         keyless: get_setting(conn, "radioKeylessProviders").is_none_or(|v| v != "false"),
     }
 }
@@ -181,6 +191,23 @@ pub async fn run_one_pass(db: &DbPool, http: &Client, cancel: &CancellationToken
             Err(error) => {
                 tracing::debug!("radio metadata: MusicBrainz pass stopped: {error}");
                 return Outcome::Backoff;
+            }
+        }
+    }
+
+    // Popularity for the "Popular" pill from ListenBrainz (no key), for artists with a MusicBrainz id.
+    if settings.keyless && settings.mode == SyncMode::Full {
+        let artists = blocking(db, |conn| {
+            list_artists_needing_listenbrainz_popularity(conn, ARTIST_BATCH)
+        })
+        .await
+        .and_then(Result::ok)
+        .unwrap_or_default();
+        if !artists.is_empty() {
+            let (done, stop) = process_listenbrainz_popularity(db, http, &artists, cancel).await;
+            progressed |= done > 0;
+            if let Some(outcome) = stop {
+                return outcome;
             }
         }
     }
@@ -327,6 +354,8 @@ async fn process_track_candidates(
             // A throttle must never be stamped as "no tags" — leave the track
             // unmarked so the next pass retries it.
             Err(ProviderFetchError::RateLimited) => return (done, Some(Outcome::Backoff)),
+            // The key was refused: stop, and the next pass skips Last.fm (see `read_settings`).
+            Err(ProviderFetchError::KeyRejected) => return (done, Some(Outcome::Backoff)),
             Err(ProviderFetchError::Failed(message)) => {
                 tracing::debug!("radio metadata: Last.fm track tags failed: {message}");
                 errors += 1;
@@ -368,6 +397,8 @@ async fn process_artist_popularity(
             }
             // Never recorded as "no data": the next pass retries the artist.
             Err(ProviderFetchError::RateLimited) => return (done, Some(Outcome::Backoff)),
+            // The key was refused: stop, and the next pass skips Last.fm (see `read_settings`).
+            Err(ProviderFetchError::KeyRejected) => return (done, Some(Outcome::Backoff)),
             Err(ProviderFetchError::Failed(message)) => {
                 tracing::debug!("radio metadata: Last.fm track counts failed: {message}");
                 errors += 1;
@@ -377,6 +408,57 @@ async fn process_artist_popularity(
             }
         }
         tokio::time::sleep(track_tag_delay()).await;
+    }
+    (done, None)
+}
+
+/// ListenBrainz listen counts for a batch of artists (`(artist id, MusicBrainz id)`), one request per artist.
+async fn process_listenbrainz_popularity(
+    db: &DbPool,
+    http: &Client,
+    artists: &[(EntityId, String)],
+    cancel: &CancellationToken,
+) -> (usize, Option<Outcome>) {
+    let mut done = 0;
+    let mut errors = 0;
+    for (artist_id, mbid) in artists {
+        if cancel.is_cancelled() {
+            return (done, Some(Outcome::Idle));
+        }
+        if mix_priority_gate::is_active() {
+            return (done, Some(Outcome::Gated));
+        }
+        match fetch_listenbrainz_top_recordings(http, mbid).await {
+            Ok(songs) => {
+                let entries: Vec<PopularityEntry> = songs
+                    .into_iter()
+                    .filter_map(|song| {
+                        Some(PopularityEntry {
+                            title: song.name,
+                            scrobbles: song.listens?,
+                            listeners: None,
+                            recording_mbid: song.recording_mbid,
+                        })
+                    })
+                    .collect();
+                let artist_id = artist_id.clone();
+                blocking(db, move |conn| {
+                    store_listenbrainz_popularity(conn, &artist_id, &entries)
+                })
+                .await;
+                done += 1;
+            }
+            // Never recorded as "no data": the next pass retries the artist.
+            Err(ProviderFetchError::RateLimited) => return (done, Some(Outcome::Backoff)),
+            Err(error) => {
+                tracing::debug!("radio metadata: ListenBrainz popularity failed: {error}");
+                errors += 1;
+                if errors >= ERRORS_BEFORE_BACKOFF {
+                    return (done, Some(Outcome::Backoff));
+                }
+            }
+        }
+        tokio::time::sleep(listenbrainz_delay()).await;
     }
     (done, None)
 }
@@ -534,6 +616,9 @@ mod tests {
     fn fast_delays() {
         std::env::set_var("BOOGIEBOX_TRACK_TAG_SYNC_DELAY_MS", "0");
         std::env::set_var("BOOGIEBOX_MUSICBRAINZ_DELAY_MS", "0");
+        std::env::set_var("BOOGIEBOX_LISTENBRAINZ_DELAY_MS", "0");
+        // Nothing here may reach the real ListenBrainz; tests that want it point this at their mock.
+        std::env::set_var("BOOGIEBOX_LISTENBRAINZ_API_BASE", "http://127.0.0.1:9");
     }
 
     fn quiet_musicbrainz(db: &DbPool) {
@@ -559,6 +644,21 @@ mod tests {
         assert_eq!(s.mode, SyncMode::Full);
         assert!(s.keyless);
         assert_eq!(s.lastfm_key, None);
+    }
+
+    #[test]
+    fn a_key_last_fm_refuses_counts_as_no_key() {
+        let db = temp_db();
+        set_setting(&db, "lastfmKey", "radio-refused-key");
+        assert_eq!(
+            read_settings(&db.lock().unwrap()).lastfm_key.as_deref(),
+            Some("radio-refused-key")
+        );
+        crate::providers::record_lastfm_key_health(
+            "radio-refused-key",
+            crate::providers::LastfmKeyHealth::Rejected,
+        );
+        assert_eq!(read_settings(&db.lock().unwrap()).lastfm_key, None);
     }
 
     fn scrobbles(db: &DbPool, track_id: &str) -> Option<i64> {
@@ -1022,6 +1122,74 @@ mod tests {
             Outcome::Idle
         );
         std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn listenbrainz_listen_counts_replace_last_fm_counts_by_recording_then_title() {
+        let _env = ENV_LOCK.lock().await;
+        let _gate = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
+        fast_delays();
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LISTENBRAINZ_API_BASE", server.uri());
+        // Keyless MusicBrainz calls find nothing new (the artist already has its id).
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
+        let rec = "e8f9b188-f819-4e43-ab0f-4bd26ce9ff56";
+        Mock::given(method("GET"))
+            .and(path(format!("/1/popularity/top-recordings-for-artist/{MBID}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "recording_mbid": rec, "recording_name": "Retitled On The Release", "total_listen_count": 900 },
+                { "recording_mbid": "0383dadf-2a4e-4d10-a46a-e9e041da8eb3", "recording_name": "Angel", "total_listen_count": 300 },
+                { "recording_name": "Never Played", "total_listen_count": 0 }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let db = temp_db();
+        let (_, teardrop) = seed(&db, "Massive Attack", "Teardrop");
+        let (_, angel) = seed(&db, "Massive Attack", "Angel (2012 Remaster)");
+        let (_, other) = seed(&db, "Massive Attack", "Obscure");
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "UPDATE artists SET musicbrainz_artist_id = ?1, musicbrainz_identity_checked_at = datetime('now')",
+                [MBID],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE tracks SET musicbrainz_recording_id = ?1 WHERE id = ?2",
+                params![rec, teardrop],
+            )
+            .unwrap();
+            // Last.fm counted "Obscure" before: ListenBrainz replaces the artist's counts.
+            conn.execute(
+                "INSERT INTO track_popularity(track_id, scrobbles, source) VALUES (?1, 50, 'lastfm')",
+                [&other],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            run_one_pass(&db, &Client::new(), &CancellationToken::new()).await,
+            Outcome::Progress
+        );
+        assert_eq!(
+            scrobbles(&db, &teardrop),
+            Some(900),
+            "matched by recording id"
+        );
+        assert_eq!(scrobbles(&db, &angel), Some(300), "matched by title");
+        assert_eq!(scrobbles(&db, &other), None);
+        let source: String = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT source FROM artist_popularity_sync", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(source, "listenbrainz");
+        // Done for this artist: the next pass doesn't ask again.
+        run_one_pass(&db, &Client::new(), &CancellationToken::new()).await;
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
+        std::env::remove_var("BOOGIEBOX_LISTENBRAINZ_API_BASE");
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
-//! Global popularity per track, for the "Popular" steering pill: Last.fm scrobble counts, filled artist by
-//! artist by the background metadata lane (`radio_metadata.rs`). One request covers all of an artist's tracks,
-//! so a library takes one request per artist instead of one per track.
+//! Global popularity per track, for the "Popular" steering pill: ListenBrainz listen counts (Last.fm scrobble
+//! counts before, kept until ListenBrainz replaces them), filled artist by artist by the background metadata lane
+//! (`radio_metadata.rs`). One request covers all of an artist's tracks, so a library takes one request per artist
+//! instead of one per track.
 
 use crate::music::EntityId;
 use rusqlite::{params, Connection};
@@ -11,6 +12,8 @@ pub const POPULARITY_OK_TTL_DAYS: i64 = 90;
 /// An artist Last.fm didn't know may appear there later.
 pub const POPULARITY_EMPTY_TTL_DAYS: i64 = 30;
 const SOURCE_LASTFM: &str = "lastfm";
+/// Counts from ListenBrainz (`total_listen_count` per recording).
+pub const SOURCE_LISTENBRAINZ: &str = "listenbrainz";
 
 /// Suffix words that mark another release of the same song ("Song - 2011 Remaster").
 const RELEASE_WORDS: [&str; 7] = [
@@ -42,12 +45,25 @@ pub fn ensure_track_popularity_schema(conn: &Connection) -> rusqlite::Result<()>
     Ok(())
 }
 
-/// One song in an artist's Last.fm list.
+/// One song in an artist's popularity list (Last.fm or ListenBrainz).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PopularityEntry {
     pub title: String,
+    /// Plays: Last.fm scrobbles or ListenBrainz listens.
     pub scrobbles: u64,
     pub listeners: Option<u64>,
+    /// The MusicBrainz recording, when the source knows it (ListenBrainz): matched before the title.
+    pub recording_mbid: Option<String>,
+}
+
+/// Migration `2026-11-22-popularity-source`: which source an artist's counts came from (`NULL` = Last.fm).
+pub fn ensure_popularity_source_column(conn: &Connection) -> rusqlite::Result<()> {
+    if crate::table_exists(conn, "artist_popularity_sync")
+        && !crate::column_exists(conn, "artist_popularity_sync", "source")?
+    {
+        conn.execute_batch("ALTER TABLE artist_popularity_sync ADD COLUMN source TEXT")?;
+    }
+    Ok(())
 }
 
 fn letters_and_digits(text: &str) -> String {
@@ -102,10 +118,42 @@ pub fn list_artists_needing_popularity(
          LEFT JOIN artist_popularity_sync s ON s.artist_id = ar.id
          WHERE TRIM(ar.name) <> ''
            AND EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = ar.id)
+           -- Counts ListenBrainz gave are never overwritten by Last.fm.
+           AND NOT (s.status = 'ok' AND s.source IS 'listenbrainz')
            AND (s.artist_id IS NULL
                 OR (s.status = 'ok' AND s.checked_at < datetime('now', ?1))
                 OR (s.status <> 'ok' AND s.checked_at < datetime('now', ?2)))
          ORDER BY s.artist_id IS NOT NULL, s.checked_at, ar.id
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            format!("-{POPULARITY_OK_TTL_DAYS} days"),
+            format!("-{POPULARITY_EMPTY_TTL_DAYS} days"),
+            limit
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    rows.collect()
+}
+
+/// Artists with a MusicBrainz id whose counts didn't come from ListenBrainz yet, or are due for another look;
+/// never-checked ones first.
+pub fn list_artists_needing_listenbrainz_popularity(
+    conn: &Connection,
+    limit: i64,
+) -> rusqlite::Result<Vec<(EntityId, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT ar.id, COALESCE(NULLIF(TRIM(ar.musicbrainz_artist_id), ''), NULLIF(TRIM(ar.lastfm_mbid), '')) AS mbid
+         FROM artists ar
+         LEFT JOIN artist_popularity_sync s ON s.artist_id = ar.id
+         WHERE COALESCE(NULLIF(TRIM(ar.musicbrainz_artist_id), ''), NULLIF(TRIM(ar.lastfm_mbid), '')) IS NOT NULL
+           AND EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = ar.id)
+           AND (s.artist_id IS NULL
+                OR s.source IS NOT 'listenbrainz'
+                OR (s.status = 'ok' AND s.checked_at < datetime('now', ?1))
+                OR (s.status <> 'ok' AND s.checked_at < datetime('now', ?2)))
+         ORDER BY s.artist_id IS NOT NULL, s.source IS 'listenbrainz', s.checked_at, ar.id
          LIMIT ?3",
     )?;
     let rows = stmt.query_map(
@@ -126,6 +174,42 @@ pub fn store_artist_popularity(
     artist_id: &EntityId,
     entries: &[PopularityEntry],
 ) -> rusqlite::Result<usize> {
+    store_counts(conn, artist_id, entries, SOURCE_LASTFM)
+}
+
+/// Replaces an artist's counts (from any source) with ListenBrainz's, matched by recording id, then title. An
+/// empty list keeps what is there (Last.fm counts stay until ListenBrainz has some) and only marks the check.
+pub fn store_listenbrainz_popularity(
+    conn: &Connection,
+    artist_id: &EntityId,
+    entries: &[PopularityEntry],
+) -> rusqlite::Result<usize> {
+    if entries.is_empty() {
+        conn.execute(
+            "INSERT OR REPLACE INTO artist_popularity_sync(artist_id, status, checked_at, source)
+             VALUES (?1, 'empty', datetime('now'), ?2)",
+            params![artist_id, SOURCE_LISTENBRAINZ],
+        )?;
+        return Ok(0);
+    }
+    store_counts(conn, artist_id, entries, SOURCE_LISTENBRAINZ)
+}
+
+fn store_counts(
+    conn: &Connection,
+    artist_id: &EntityId,
+    entries: &[PopularityEntry],
+    source: &str,
+) -> rusqlite::Result<usize> {
+    let mut by_recording: HashMap<&str, &PopularityEntry> = HashMap::new();
+    for entry in entries {
+        if let Some(mbid) = entry.recording_mbid.as_deref() {
+            let slot = by_recording.entry(mbid).or_insert(entry);
+            if entry.scrobbles > slot.scrobbles {
+                *slot = entry;
+            }
+        }
+    }
     // Several releases can reduce to one title; the biggest stands for the song.
     let mut by_title: HashMap<String, &PopularityEntry> = HashMap::new();
     for entry in entries {
@@ -137,14 +221,26 @@ pub fn store_artist_popularity(
         }
     }
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "DELETE FROM track_popularity WHERE source = ?1
-           AND track_id IN (SELECT id FROM tracks WHERE artist_id = ?2)",
-        params![SOURCE_LASTFM, artist_id],
-    )?;
-    let tracks: Vec<(EntityId, String)> = tx
-        .prepare("SELECT id, COALESCE(title, '') FROM tracks WHERE artist_id = ?1")?
-        .query_map([artist_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+    // Last.fm replaces only its own rows; ListenBrainz replaces every count of the artist, so one artist's songs
+    // never mix the two.
+    if source == SOURCE_LASTFM {
+        tx.execute(
+            "DELETE FROM track_popularity WHERE source = ?1
+               AND track_id IN (SELECT id FROM tracks WHERE artist_id = ?2)",
+            params![source, artist_id],
+        )?;
+    } else {
+        tx.execute(
+            "DELETE FROM track_popularity
+             WHERE track_id IN (SELECT id FROM tracks WHERE artist_id = ?1)",
+            params![artist_id],
+        )?;
+    }
+    let tracks: Vec<(EntityId, String, Option<String>)> = tx
+        .prepare(
+            "SELECT id, COALESCE(title, ''), musicbrainz_recording_id FROM tracks WHERE artist_id = ?1",
+        )?
+        .query_map([artist_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut matched = 0;
     {
@@ -152,22 +248,30 @@ pub fn store_artist_popularity(
             "INSERT OR REPLACE INTO track_popularity(track_id, scrobbles, listeners, source)
              VALUES (?1, ?2, ?3, ?4)",
         )?;
-        for (track_id, title) in &tracks {
-            if let Some(entry) = by_title.get(&normalize_title(title)) {
+        for (track_id, title, recording) in &tracks {
+            let entry = recording
+                .as_deref()
+                .and_then(|mbid| by_recording.get(mbid))
+                .or_else(|| by_title.get(&normalize_title(title)));
+            if let Some(entry) = entry {
                 insert.execute(params![
                     track_id,
                     entry.scrobbles as i64,
                     entry.listeners.map(|n| n as i64),
-                    SOURCE_LASTFM
+                    source
                 ])?;
                 matched += 1;
             }
         }
     }
     tx.execute(
-        "INSERT OR REPLACE INTO artist_popularity_sync(artist_id, status, checked_at)
-         VALUES (?1, ?2, datetime('now'))",
-        params![artist_id, if entries.is_empty() { "empty" } else { "ok" }],
+        "INSERT OR REPLACE INTO artist_popularity_sync(artist_id, status, checked_at, source)
+         VALUES (?1, ?2, datetime('now'), ?3)",
+        params![
+            artist_id,
+            if entries.is_empty() { "empty" } else { "ok" },
+            (source != SOURCE_LASTFM).then_some(source)
+        ],
     )?;
     tx.commit()?;
     Ok(matched)
@@ -199,6 +303,7 @@ mod tests {
 
     fn entry(title: &str, scrobbles: u64) -> PopularityEntry {
         PopularityEntry {
+            recording_mbid: None,
             title: title.to_owned(),
             scrobbles,
             listeners: Some(scrobbles / 10),

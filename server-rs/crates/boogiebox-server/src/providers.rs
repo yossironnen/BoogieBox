@@ -48,6 +48,129 @@ pub(crate) fn lastfm_api_base() -> String {
     )
 }
 
+// -- Last.fm key health (wip/lastfm-replacement-plan.md phase 0) ----------------
+//
+// From 2026-12-01 Last.fm only accepts the keys of Pro subscribers. A refused key (error 10 or 26, or HTTP 403) is
+// remembered here, so every lane and the scrobbler stop calling Last.fm, nothing is recorded as "no data", and
+// Settings can say why. Last.fm support is being removed; this only covers releases before that.
+
+/// What Last.fm last said about an API key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LastfmKeyHealth {
+    /// Not asked yet (or a refusal old enough to ask again).
+    Unknown,
+    Ok,
+    Rejected,
+}
+
+/// A refused key is tried once more after this long (its owner may have bought Pro).
+const LASTFM_REJECTED_RECHECK: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+/// Error text of a Last.fm call that was skipped or refused because of the key.
+pub const LASTFM_KEY_REJECTED: &str = "key-rejected";
+
+static LASTFM_KEY_HEALTH: std::sync::Mutex<Vec<(u64, LastfmKeyHealth, Instant)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn lastfm_key_hash(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.trim().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What Last.fm last said about `key`.
+pub fn lastfm_key_health(key: &str) -> LastfmKeyHealth {
+    let hash = lastfm_key_hash(key);
+    let known = LASTFM_KEY_HEALTH.lock().unwrap_or_else(|p| p.into_inner());
+    match known.iter().find(|(h, _, _)| *h == hash) {
+        Some((_, LastfmKeyHealth::Rejected, at)) if at.elapsed() >= LASTFM_REJECTED_RECHECK => {
+            LastfmKeyHealth::Unknown
+        }
+        Some((_, health, _)) => *health,
+        None => LastfmKeyHealth::Unknown,
+    }
+}
+
+/// False while Last.fm refuses `key`: callers skip Last.fm instead of calling it.
+pub fn lastfm_key_usable(key: &str) -> bool {
+    lastfm_key_health(key) != LastfmKeyHealth::Rejected
+}
+
+pub(crate) fn record_lastfm_key_health(key: &str, health: LastfmKeyHealth) {
+    let hash = lastfm_key_hash(key);
+    let mut known = LASTFM_KEY_HEALTH.lock().unwrap_or_else(|p| p.into_inner());
+    let before = known.iter().position(|(h, _, _)| *h == hash);
+    let was = before.map(|i| known[i].1);
+    if health == LastfmKeyHealth::Rejected && was != Some(LastfmKeyHealth::Rejected) {
+        tracing::warn!(
+            "Last.fm refused the API key (keys need a Pro subscription from 1 December 2026): \
+             Last.fm lookups and scrobbles are paused"
+        );
+    }
+    let entry = (hash, health, Instant::now());
+    match before {
+        Some(i) => known[i] = entry,
+        None => {
+            // Keys rarely change; keep the list small.
+            if known.len() >= 16 {
+                known.remove(0);
+            }
+            known.push(entry);
+        }
+    }
+}
+
+/// True when Last.fm's reply refuses the key itself: error 10 (invalid key) or 26 (suspended), or a 403 with no
+/// other error code (Last.fm also answers 403 for an expired user session, error 9). Recorded either way, so a
+/// working key clears an old refusal.
+pub(crate) fn lastfm_reply_rejects_key(key: &str, status: u16, body: &Value) -> bool {
+    let rejected = match body["error"].as_i64() {
+        Some(code) => matches!(code, 10 | 26),
+        None => status == 403,
+    };
+    if rejected {
+        record_lastfm_key_health(key, LastfmKeyHealth::Rejected);
+    } else if (200..300).contains(&status) {
+        record_lastfm_key_health(key, LastfmKeyHealth::Ok);
+    }
+    rejected
+}
+
+/// Status, JSON body (the parse error when it isn't JSON) and whether the key was refused.
+async fn read_lastfm_reply(
+    key: &str,
+    response: reqwest::Response,
+) -> (u16, Result<Value, String>, bool) {
+    let status = response.status().as_u16();
+    let body = response.json::<Value>().await.map_err(|e| e.to_string());
+    let rejected = lastfm_reply_rejects_key(key, status, body.as_ref().unwrap_or(&Value::Null));
+    (status, body, rejected)
+}
+
+/// Asks Last.fm once whether it takes `key` (Settings › Last.fm).
+pub async fn check_lastfm_key(client: &Client, key: &str) -> LastfmKeyHealth {
+    let url = format!(
+        "{}?method=chart.gettopartists&api_key={}&format=json&limit=1",
+        lastfm_api_base(),
+        urlencoding::encode(key.trim())
+    );
+    let t0 = log_request("lastfm", "key_check", "");
+    let Ok(response) = client.get(&url).timeout(PROVIDER_TIMEOUT).send().await else {
+        return LastfmKeyHealth::Unknown;
+    };
+    log_response("lastfm", "key_check", t0, response.status());
+    let (status, _, rejected) = read_lastfm_reply(key, response).await;
+    if rejected {
+        LastfmKeyHealth::Rejected
+    } else if (200..300).contains(&status) {
+        LastfmKeyHealth::Ok
+    } else {
+        LastfmKeyHealth::Unknown
+    }
+}
+
 /// Logs an outbound metadata-provider request. Only visible when scan debug
 /// logging is enabled — routed via this module's target to `scan-debug.log`.
 fn log_request(provider: &str, action: &str, detail: &str) -> Instant {
@@ -604,7 +727,7 @@ pub async fn search_metadata(
 ) -> (Vec<MetadataSearchResult>, Vec<ProviderSearchWarning>) {
     let mut warnings = Vec::new();
 
-    if let Some(key) = lastfm_key {
+    if let Some(key) = lastfm_key.filter(|key| lastfm_key_usable(key)) {
         match search_lastfm_metadata(client, key, artist, album).await {
             Ok(results) if !results.is_empty() => return (results, warnings),
             Ok(_) => {}
@@ -689,14 +812,11 @@ async fn search_lastfm_metadata(
     if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(ProviderSearchFailure::RateLimited);
     }
-    if !resp.status().is_success() {
+    let (status, body, rejected) = read_lastfm_reply(api_key, resp).await;
+    if rejected || !(200..300).contains(&status) {
         return Err(ProviderSearchFailure::Unavailable);
     }
-
-    let data: Value = resp
-        .json()
-        .await
-        .map_err(|_| ProviderSearchFailure::Unavailable)?;
+    let data = body.map_err(|_| ProviderSearchFailure::Unavailable)?;
 
     if let Some(album_name) = album {
         let node = &data["album"];
@@ -1292,11 +1412,17 @@ pub async fn fetch_lastfm_artist_info(
         urlencoding::encode(artist_name),
         api_key
     );
+    if !lastfm_key_usable(api_key) {
+        return None;
+    }
     let t0 = log_request("lastfm", "artist_info", artist_name);
     let resp = client.get(&url).send().await.ok()?;
     log_response("lastfm", "artist_info", t0, resp.status());
-    let data: Value = resp.json().await.ok()?;
-    parse_lastfm_artist_info(&data)
+    let (_, body, rejected) = read_lastfm_reply(api_key, resp).await;
+    if rejected {
+        return None;
+    }
+    parse_lastfm_artist_info(&body.ok()?)
 }
 
 fn parse_lastfm_similar_artists(data: &Value) -> Vec<RelatedArtistCandidate> {
@@ -1351,6 +1477,9 @@ pub async fn fetch_lastfm_similar_artists(
         urlencoding::encode(api_key),
         limit.clamp(1, 100)
     );
+    if !lastfm_key_usable(api_key) {
+        return Err(LASTFM_KEY_REJECTED.to_owned());
+    }
     let t0 = log_request("lastfm", "similar_artists", artist_name);
     let response = client
         .get(&url)
@@ -1358,10 +1487,14 @@ pub async fn fetch_lastfm_similar_artists(
         .await
         .map_err(|error| error.to_string())?;
     log_response("lastfm", "similar_artists", t0, response.status());
-    if !response.status().is_success() {
-        return Err(format!("Last.fm returned {}", response.status().as_u16()));
+    let (status, body, rejected) = read_lastfm_reply(api_key, response).await;
+    if rejected {
+        return Err(LASTFM_KEY_REJECTED.to_owned());
     }
-    let data: Value = response.json().await.map_err(|error| error.to_string())?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Last.fm returned {status}"));
+    }
+    let data = body?;
     if data["error"].is_number() {
         return Err(data["message"]
             .as_str()
@@ -1463,9 +1596,16 @@ pub async fn fetch_lastfm_album_info(
         "album_info",
         &format!("{artist_name} — {album_name}"),
     );
+    if !lastfm_key_usable(api_key) {
+        return None;
+    }
     let resp = client.get(&url).send().await.ok()?;
     log_response("lastfm", "album_info", t0, resp.status());
-    let data: Value = resp.json().await.ok()?;
+    let (_, body, rejected) = read_lastfm_reply(api_key, resp).await;
+    if rejected {
+        return None;
+    }
+    let data = body.ok()?;
     let album = &data["album"];
     if album.is_null() {
         return None;
@@ -1517,15 +1657,18 @@ pub async fn fetch_lastfm_artist_top_tags(
         urlencoding::encode(artist_name),
         api_key
     );
+    if !lastfm_key_usable(api_key) {
+        return vec![];
+    }
     let t0 = log_request("lastfm", "artist_top_tags", artist_name);
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(_) => return vec![],
     };
     log_response("lastfm", "artist_top_tags", t0, resp.status());
-    let data: Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return vec![],
+    let data: Value = match read_lastfm_reply(api_key, resp).await {
+        (_, Ok(v), false) => v,
+        _ => return vec![],
     };
     data["toptags"]["tag"]
         .as_array()
@@ -1553,10 +1696,17 @@ pub async fn fetch_lastfm_top_tracks(
         api_key,
         urlencoding::encode(artist_name),
     );
+    if !lastfm_key_usable(api_key) {
+        return Err(LASTFM_KEY_REJECTED.to_owned());
+    }
     let t0 = log_request("lastfm", "top_tracks", artist_name);
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     log_response("lastfm", "top_tracks", t0, resp.status());
-    let data: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let (_, body, rejected) = read_lastfm_reply(api_key, resp).await;
+    if rejected {
+        return Err(LASTFM_KEY_REJECTED.to_owned());
+    }
+    let data = body?;
     if data["error"].is_number() {
         return Err(data["message"].as_str().unwrap_or("Not found").to_owned());
     }
@@ -1608,6 +1758,8 @@ pub async fn fetch_lastfm_top_tracks(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderFetchError {
     RateLimited,
+    /// Last.fm refuses the API key (see [`lastfm_key_usable`]): stop, record nothing.
+    KeyRejected,
     Failed(String),
 }
 
@@ -1615,6 +1767,7 @@ impl std::fmt::Display for ProviderFetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ProviderFetchError::RateLimited => write!(f, "provider rate limit exceeded"),
+            ProviderFetchError::KeyRejected => write!(f, "Last.fm refused the API key"),
             ProviderFetchError::Failed(message) => write!(f, "{message}"),
         }
     }
@@ -1638,6 +1791,140 @@ fn musicbrainz_api_base() -> String {
         "BOOGIEBOX_MUSICBRAINZ_API_BASE",
         "https://musicbrainz.org/ws/2",
     )
+}
+
+fn listenbrainz_api_base() -> String {
+    provider_base_url(
+        "BOOGIEBOX_LISTENBRAINZ_API_BASE",
+        "https://api.listenbrainz.org",
+    )
+}
+
+/// One of an artist's most played songs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopSong {
+    pub name: String,
+    /// ListenBrainz listen count (Deezer gives an order, not a count).
+    pub listens: Option<u64>,
+    #[serde(skip)]
+    pub recording_mbid: Option<String>,
+    /// The song's page: the MusicBrainz recording, or the Deezer track.
+    pub url: Option<String>,
+}
+
+/// An artist's songs by ListenBrainz listen count, most listened first (all ListenBrainz has, no limit).
+pub async fn fetch_listenbrainz_top_recordings(
+    client: &Client,
+    artist_mbid: &str,
+) -> Result<Vec<TopSong>, ProviderFetchError> {
+    if !is_valid_mbid(artist_mbid) {
+        return Err(ProviderFetchError::Failed(
+            "invalid MusicBrainz id".to_owned(),
+        ));
+    }
+    let url = format!(
+        "{}/1/popularity/top-recordings-for-artist/{artist_mbid}",
+        listenbrainz_api_base()
+    );
+    let t0 = log_request("listenbrainz", "top_recordings", artist_mbid);
+    let response = client
+        .get(&url)
+        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("listenbrainz", "top_recordings", t0, response.status());
+    check_metabrainz_status(&response)?;
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let mut songs: Vec<TopSong> = data
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let name = optional_nonempty_json_string(&row["recording_name"])?;
+                    let listens = row["total_listen_count"].as_u64().filter(|n| *n > 0)?;
+                    let mbid = optional_nonempty_json_string(&row["recording_mbid"])
+                        .filter(|id| is_valid_mbid(id))
+                        .map(|id| id.to_ascii_lowercase());
+                    Some(TopSong {
+                        url: mbid
+                            .as_deref()
+                            .map(|id| format!("https://musicbrainz.org/recording/{id}")),
+                        name,
+                        listens: Some(listens),
+                        recording_mbid: mbid,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    songs.sort_by_key(|song| std::cmp::Reverse(song.listens));
+    Ok(songs)
+}
+
+/// Deezer's top songs for an artist, in Deezer's order.
+pub async fn fetch_deezer_artist_top(
+    client: &Client,
+    deezer_artist_id: &str,
+    limit: usize,
+) -> Result<Vec<TopSong>, ProviderFetchError> {
+    let url = format!(
+        "{}/artist/{}/top?limit={}",
+        deezer_api_base(),
+        urlencoding::encode(deezer_artist_id.trim()),
+        limit.clamp(1, 100)
+    );
+    let t0 = log_request("deezer", "artist_top", deezer_artist_id);
+    let response = client
+        .get(&url)
+        .header("User-Agent", USER_AGENT)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("deezer", "artist_top", t0, response.status());
+    if response.status().as_u16() == 429 {
+        return Err(ProviderFetchError::RateLimited);
+    }
+    if !response.status().is_success() {
+        return Err(ProviderFetchError::Failed(format!(
+            "Deezer returned {}",
+            response.status().as_u16()
+        )));
+    }
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    if data["error"].is_object() {
+        // Deezer's code 4 is its quota.
+        return Err(if data["error"]["code"].as_i64() == Some(4) {
+            ProviderFetchError::RateLimited
+        } else {
+            ProviderFetchError::Failed("Deezer request failed".to_owned())
+        });
+    }
+    Ok(data["data"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    Some(TopSong {
+                        name: optional_nonempty_json_string(&row["title"])?,
+                        listens: None,
+                        recording_mbid: None,
+                        url: optional_nonempty_json_string(&row["link"]),
+                    })
+                })
+                .take(limit)
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 fn listenbrainz_labs_api_base() -> String {
@@ -1690,6 +1977,9 @@ pub async fn fetch_lastfm_track_top_tags(
         urlencoding::encode(track_title),
         urlencoding::encode(api_key),
     );
+    if !lastfm_key_usable(api_key) {
+        return Err(ProviderFetchError::KeyRejected);
+    }
     let t0 = log_request(
         "lastfm",
         "track_top_tags",
@@ -1705,16 +1995,16 @@ pub async fn fetch_lastfm_track_top_tags(
     if response.status().as_u16() == 429 {
         return Err(ProviderFetchError::RateLimited);
     }
-    if !response.status().is_success() {
+    let (status, body, rejected) = read_lastfm_reply(api_key, response).await;
+    if rejected {
+        return Err(ProviderFetchError::KeyRejected);
+    }
+    if !(200..300).contains(&status) {
         return Err(ProviderFetchError::Failed(format!(
-            "Last.fm returned {}",
-            response.status().as_u16()
+            "Last.fm returned {status}"
         )));
     }
-    let data: Value = response
-        .json()
-        .await
-        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let data = body.map_err(ProviderFetchError::Failed)?;
     if let Some(code) = data["error"].as_i64() {
         return match code {
             29 => Err(ProviderFetchError::RateLimited),
@@ -1746,6 +2036,9 @@ pub async fn fetch_lastfm_artist_track_counts(
         urlencoding::encode(artist_name),
         urlencoding::encode(api_key),
     );
+    if !lastfm_key_usable(api_key) {
+        return Err(ProviderFetchError::KeyRejected);
+    }
     let t0 = log_request("lastfm", "artist_track_counts", artist_name);
     let response = client
         .get(&url)
@@ -1757,16 +2050,16 @@ pub async fn fetch_lastfm_artist_track_counts(
     if response.status().as_u16() == 429 {
         return Err(ProviderFetchError::RateLimited);
     }
-    if !response.status().is_success() {
+    let (status, body, rejected) = read_lastfm_reply(api_key, response).await;
+    if rejected {
+        return Err(ProviderFetchError::KeyRejected);
+    }
+    if !(200..300).contains(&status) {
         return Err(ProviderFetchError::Failed(format!(
-            "Last.fm returned {}",
-            response.status().as_u16()
+            "Last.fm returned {status}"
         )));
     }
-    let data: Value = response
-        .json()
-        .await
-        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let data = body.map_err(ProviderFetchError::Failed)?;
     if let Some(code) = data["error"].as_i64() {
         return match code {
             29 => Err(ProviderFetchError::RateLimited),
@@ -1798,6 +2091,7 @@ pub async fn fetch_lastfm_artist_track_counts(
             let scrobbles = count(&entry["playcount"])?;
             (!title.is_empty() && scrobbles > 0).then(|| {
                 boogiebox_db::popularity::PopularityEntry {
+                    recording_mbid: None,
                     title: title.to_owned(),
                     scrobbles,
                     listeners: count(&entry["listeners"]),
@@ -2783,10 +3077,115 @@ pub(crate) mod provider_fetch_tests {
             fetch("Broken").await.unwrap_err(),
             ProviderFetchError::Failed(_)
         ));
+        // A refused key gets its own name here: the refusal is remembered for the whole process.
         assert_eq!(
-            fetch("Bad Key").await.unwrap_err(),
-            ProviderFetchError::Failed("Invalid API key".to_owned())
+            fetch_lastfm_artist_track_counts(&client, "track-counts-refused-key", "Bad Key")
+                .await
+                .unwrap_err(),
+            ProviderFetchError::KeyRejected
         );
+        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn a_refused_lastfm_key_stops_every_lookup_after_one_answer() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        let client = Client::new();
+        // Each key is refused once, in a different way; nothing asks Last.fm again after that.
+        Mock::given(method("GET"))
+            .and(query_param("api_key", "dead-10"))
+            .respond_with(
+                ResponseTemplate::new(403).set_body_json(
+                    serde_json::json!({ "error": 10, "message": "Invalid API key" }),
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("api_key", "dead-403"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("api_key", "dead-26"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "error": 26, "message": "Suspended API key" }),
+                ),
+            )
+            // The lookup, then the Settings check (which always asks).
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("api_key", "live-key"))
+            .and(query_param("method", "chart.gettopartists"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artists": {} })),
+            )
+            .mount(&server)
+            .await;
+
+        assert!(fetch_lastfm_artist_info(&client, "dead-10", "Cher")
+            .await
+            .is_none());
+        assert_eq!(lastfm_key_health("dead-10"), LastfmKeyHealth::Rejected);
+        assert!(!lastfm_key_usable("dead-10"));
+        assert!(
+            fetch_lastfm_album_info(&client, "dead-10", "Cher", "Believe")
+                .await
+                .is_none()
+        );
+        assert!(fetch_lastfm_artist_top_tags(&client, "dead-10", "Cher")
+            .await
+            .is_empty());
+        let (results, warnings) =
+            search_metadata(&client, Some("dead-10"), None, None, None, "Cher", None).await;
+        assert!(
+            results.is_empty() && warnings.is_empty(),
+            "skipped, not a failure"
+        );
+
+        assert_eq!(
+            fetch_lastfm_track_top_tags(&client, "dead-403", "A", "B").await,
+            Err(ProviderFetchError::KeyRejected)
+        );
+        assert!(matches!(
+            fetch_lastfm_artist_track_counts(&client, "dead-403", "A").await,
+            Err(ProviderFetchError::KeyRejected)
+        ));
+
+        assert_eq!(
+            fetch_lastfm_top_tracks(&client, "dead-26", "A").await,
+            Err(LASTFM_KEY_REJECTED.to_owned())
+        );
+        assert_eq!(
+            fetch_lastfm_similar_artists(&client, "dead-26", "A", None, 10).await,
+            Err(LASTFM_KEY_REJECTED.to_owned())
+        );
+        assert_eq!(
+            check_lastfm_key(&client, "dead-26").await,
+            LastfmKeyHealth::Rejected
+        );
+
+        // A key nobody has asked about yet is usable; one Last.fm takes is Ok.
+        assert_eq!(lastfm_key_health("live-key"), LastfmKeyHealth::Unknown);
+        assert!(lastfm_key_usable("live-key"));
+        assert_eq!(
+            check_lastfm_key(&client, "live-key").await,
+            LastfmKeyHealth::Ok
+        );
+        // A user-session error (9) on a 403 is not the key.
+        assert!(!lastfm_reply_rejects_key(
+            "live-key",
+            403,
+            &serde_json::json!({ "error": 9 })
+        ));
+        assert!(lastfm_key_usable("live-key"));
         std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
     }
 

@@ -54,6 +54,7 @@ import type {
   ProviderUsageSnapshot,
   HistoryEntry,
   LastFmInfo,
+  ArtistTopSongs,
   Playlist,
   PlaylistSnapshot,
   PlaylistTrack,
@@ -706,6 +707,9 @@ export const api = {
   },
   integrations: {
     spotifyTest: () => get<{ ok: boolean }>('/integrations/spotify/test'),
+    /** Whether Last.fm takes the saved key (admin). */
+    lastfmStatus: () =>
+      get<{ configured: boolean; health: 'unknown' | 'ok' | 'rejected' }>('/integrations/lastfm/status'),
     geniusTest: (clientId?: string, clientSecret?: string) =>
       post<{ ok: boolean }>('/integrations/genius/test', { clientId, clientSecret }),
     lyrics: (params: { artist: string; title: string }) =>
@@ -947,6 +951,9 @@ export const api = {
     update: (updates: Record<string, string>) => put<{ ok: boolean }>('/user/settings', updates),
   },
   userHistory: (limit = 50) => get<HistoryEntry[]>('/user/history', { limit }),
+  /** An artist's most played songs: ListenBrainz listen counts, else Deezer's order (no key needed). */
+  artistTopSongs: (artistId: EntityId) =>
+    get<ArtistTopSongs>(`/artists/${encodeURIComponent(String(artistId))}/top-songs`),
   lastfm: {
     info: (artist: string, album?: string) => {
       const params = new URLSearchParams({ artist });

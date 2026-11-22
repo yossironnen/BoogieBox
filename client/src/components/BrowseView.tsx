@@ -8,7 +8,7 @@ import RadioStationsView from './RadioStationsView';
 import { HeartIcon, RadioIcon } from './FavouriteIcons';
 import type { RadioStation } from '../radioStations';
 import { api } from '../api';
-import type { Artist, ArtistRadioOptions, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
+import type { Artist, ArtistRadioOptions, ArtistTopSongs, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
 import type { EntityId } from '../entityId';
 import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
@@ -1246,8 +1246,11 @@ function AlbumCover({ albumId, title, refreshToken = 0, adaptiveAccentEnabled = 
 
 // ─── Last.fm Bio ──────────────────────────────────────────────────────────────
 
-type LastFmState = 'idle' | 'loading' | 'ok' | 'error' | 'no-key';
+type LastFmState = 'idle' | 'loading' | 'ok' | 'error' | 'no-key' | 'key-rejected';
 
+
+type ArtistTopSongsResponse = ArtistTopSongs;
+type TopSong = ArtistTopSongs['tracks'][number];
 
 interface LastFmTopTrack {
   name: string;
@@ -1315,7 +1318,7 @@ function LastFmBio({ artist, album, description }: {
         setState(data.summary || data.full ? 'ok' : 'error');
       })
       .catch((e: any) => {
-        setState(e?.message === 'no-key' ? 'no-key' : 'error');
+        setState(e?.message === 'no-key' ? 'no-key' : e?.message === 'key-rejected' ? 'key-rejected' : 'error');
       });
   }, [artist, album, hasCustomDesc]);
 
@@ -1324,6 +1327,9 @@ function LastFmBio({ artist, album, description }: {
       <div style={L.bioText}>{description!.trim()}</div>
     </div>
   );
+
+  // Last.fm refuses the key and nothing was cached: show nothing rather than "no info".
+  if (state === 'key-rejected') return null;
 
   if (state === 'no-key') return (
     <div style={L.bioWrap}>
@@ -1409,32 +1415,39 @@ function LastFmBio({ artist, album, description }: {
   );
 }
 
-function LastFmTopTracks({
-  artist, onPlayTopTracks, playLoading,
+const TOP_SONGS_SOURCE: Record<'listenbrainz' | 'deezer', string> = {
+  listenbrainz: 'Listens on ListenBrainz',
+  deezer: 'Ranked by Deezer',
+};
+
+/** An artist's "Top 5 Songs": ListenBrainz listen counts, else Deezer's order. */
+function ArtistTopSongs({
+  artistId, onPlayTopTracks, playLoading,
 }: {
-  artist: string;
-  onPlayTopTracks: (tracks: LastFmTopTrack[]) => void;
+  artistId: EntityId;
+  onPlayTopTracks: (tracks: TopSong[]) => void;
   playLoading: boolean;
 }) {
-  const [state, setState] = useState<LastFmState>('idle');
-  const [tracks, setTracks] = useState<LastFmTopTrack[]>([]);
+  const [state, setState] = useState<'loading' | 'ok' | 'empty'>('loading');
+  const [tracks, setTracks] = useState<TopSong[]>([]);
+  const [source, setSource] = useState<ArtistTopSongsResponse['source']>(null);
 
   useEffect(() => {
-    if (!artist) { setState('idle'); return; }
-
+    let current = true;
     setState('loading');
     setTracks([]);
-
-    api.lastfm.topTracks(artist)
+    setSource(null);
+    api.artistTopSongs(artistId)
       .then(data => {
-        const list = Array.isArray(data) ? data : [];
+        if (!current) return;
+        const list = Array.isArray(data?.tracks) ? data.tracks.filter(t => t?.name) : [];
         setTracks(list);
-        setState(list.length ? 'ok' : 'error');
+        setSource(list.length ? data.source : null);
+        setState(list.length ? 'ok' : 'empty');
       })
-      .catch((e: any) => {
-        setState(e?.message === 'no-key' ? 'no-key' : 'error');
-      });
-  }, [artist]);
+      .catch(() => { if (current) setState('empty'); });
+    return () => { current = false; };
+  }, [artistId]);
 
   return (
     <div style={L.topTracksWrap}>
@@ -1449,9 +1462,9 @@ function LastFmTopTracks({
           <PlayIcon /> {playLoading ? 'Building...' : 'Play Top 5'}
         </button>
       </div>
-      {state === 'no-key' && <div style={L.topTracksHint}>Add a Last.fm API key in Settings to load top songs.</div>}
-      {state === 'loading' && <div style={L.topTracksHint}>Loading Last.fm track data...</div>}
-      {(state === 'error' || state === 'idle') && <div style={L.topTracksHint}>No Last.fm track stats found.</div>}
+      {state === 'ok' && source && <div style={L.topTracksHint}>{TOP_SONGS_SOURCE[source]}</div>}
+      {state === 'loading' && <div style={L.topTracksHint}>Loading top songs…</div>}
+      {state === 'empty' && <div style={L.topTracksHint}>No top songs found.</div>}
       {state === 'ok' && (
         <div style={L.topTracksList}>
           {tracks.map((track, idx) => (
@@ -1464,7 +1477,7 @@ function LastFmTopTracks({
                   <div style={L.topTrackName}>{track.name}</div>
                 )}
               </div>
-              <div style={L.topTrackScrobbles}>{track.playcount.toLocaleString()} scrobbles</div>
+              {track.listens != null && <div style={L.topTrackScrobbles}>{track.listens.toLocaleString()} listens</div>}
             </div>
           ))}
         </div>
@@ -3117,7 +3130,7 @@ export default function BrowseView({
     }
   }, [playTrack]);
 
-  const playTopTracks = useCallback(async (artist: Artist, topTracks: LastFmTopTrack[]) => {
+  const playTopTracks = useCallback(async (artist: Artist, topTracks: { name: string }[]) => {
     if (!topTracks.length) return;
     setTopTracksPlayLoading(true);
     try {
@@ -3850,8 +3863,8 @@ export default function BrowseView({
               adaptiveAccentEnabled={adaptiveAccentEnabled}
               canEditMetadata={canEditMetadata}
             />
-            <LastFmTopTracks
-              artist={drill.artist.name}
+            <ArtistTopSongs
+              artistId={drill.artist.id}
               onPlayTopTracks={(tracks) => playTopTracks(drill.artist, tracks)}
               playLoading={topTracksPlayLoading}
             />

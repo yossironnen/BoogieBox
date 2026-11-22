@@ -233,6 +233,13 @@ async fn process_post_scan_job(
 
 // -- Helpers -------------------------------------------------------------------
 
+/// The Last.fm key, unless Last.fm refuses it (no Pro subscription): the lanes then leave Last.fm alone.
+async fn usable_lastfm_key(db: &DbPool) -> Option<String> {
+    get_setting_value(db, "lastfmKey")
+        .await
+        .filter(|key| !key.trim().is_empty() && crate::providers::lastfm_key_usable(key))
+}
+
 async fn get_setting_value(db: &DbPool, key: &str) -> Option<String> {
     let db = db.clone();
     let key = key.to_owned();
@@ -680,7 +687,7 @@ async fn run_warm_lastfm_artist_info(
     library_id: &EntityId,
     payload: Option<&str>,
 ) -> Result<(), JobError> {
-    let api_key = match get_setting_value(&state.db, "lastfmKey").await {
+    let api_key = match usable_lastfm_key(&state.db).await {
         Some(k) => k,
         None => return Ok(()),
     };
@@ -733,6 +740,10 @@ async fn run_warm_lastfm_artist_info(
         }
 
         let info = fetch_lastfm_artist_info(&state.http_client, &api_key, &artist.name).await;
+        if !crate::providers::lastfm_key_usable(&api_key) {
+            // Refused mid-run: stop here; nothing was recorded for this one.
+            break;
+        }
         tokio::time::sleep(provider_sweep_delay()).await;
         let Some(info) = info else { continue };
         persist_lastfm_identity(&state.db, artist_id, &info).await;
@@ -785,7 +796,7 @@ async fn run_enrich_artist_external_ids(
         .expect("targeted identity task")?
     };
 
-    let lastfm_key = get_setting_value(&state.db, "lastfmKey").await;
+    let lastfm_key = usable_lastfm_key(&state.db).await;
     let discogs_token = get_setting_value(&state.db, "discogsToken").await;
     let spotify_id = get_setting_value(&state.db, "spotifyClientId").await;
     let spotify_secret = get_setting_value(&state.db, "spotifyClientSecret").await;
@@ -890,7 +901,7 @@ async fn run_warm_lastfm_album_info(
     library_id: &EntityId,
     payload: Option<&str>,
 ) -> Result<(), JobError> {
-    let api_key = match get_setting_value(&state.db, "lastfmKey").await {
+    let api_key = match usable_lastfm_key(&state.db).await {
         Some(k) => k,
         None => return Ok(()),
     };
@@ -946,6 +957,10 @@ async fn run_warm_lastfm_album_info(
         let info =
             fetch_lastfm_album_info(&state.http_client, &api_key, &album.artist, &album.title)
                 .await;
+        if !crate::providers::lastfm_key_usable(&api_key) {
+            // Refused mid-run: stop here; nothing was recorded for this one.
+            break;
+        }
         tokio::time::sleep(provider_sweep_delay()).await;
         let Some(info) = info else { continue };
 
@@ -1063,7 +1078,7 @@ async fn run_sync_artist_styles(
     state: &PostScanState,
     library_id: &EntityId,
 ) -> Result<(), JobError> {
-    let api_key = match get_setting_value(&state.db, "lastfmKey").await {
+    let api_key = match usable_lastfm_key(&state.db).await {
         Some(k) => k,
         None => return Ok(()),
     };
@@ -1099,6 +1114,10 @@ async fn run_sync_artist_styles(
 
     for (artist_id, artist_name) in &artist_rows {
         let tags = fetch_lastfm_artist_top_tags(&state.http_client, &api_key, artist_name).await;
+        if !crate::providers::lastfm_key_usable(&api_key) {
+            // Refused mid-run: stop here; nothing was recorded for this one.
+            break;
+        }
         tokio::time::sleep(provider_sweep_delay()).await;
 
         // Normalized, classified (genre / mood / era) and weighted; junk such as
