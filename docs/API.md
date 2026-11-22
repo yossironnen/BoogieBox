@@ -381,6 +381,8 @@ do not expose it to the internet. To listen away from home, download music to th
 | `GET` | `/api/admin/provider-usage` | Fetch provider usage statistics. |
 | `GET` | `/api/lastfm/info` | Fetch Last.fm artist information. |
 | `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist (no longer used by the client; goes with the Last.fm removal). |
+| `GET` | `/api/artists/{id}/about` | Signed in. An artist's bio, no key needed: the English Wikipedia summary via MusicBrainz → Wikidata, else TheAudioDB (free key), else an old cached Last.fm answer. `{ source, summary, full, url, stats }`; `source` is `wikipedia`, `theaudiodb`, `lastfm` or `null` (nothing found); `stats` is `{ listens, listeners }` from ListenBrainz or `null`. Cached a week (nothing found: a day). `404` unknown artist. |
+| `GET` | `/api/albums/{id}/about` | Same for an album's description (Wikipedia via its release group, else TheAudioDB by release group or artist + title); `stats` is always `null`. |
 | `GET` | `/api/artists/{id}/top-songs` | Signed in. An artist's top songs, no key needed: ListenBrainz listen counts by the artist's MusicBrainz id, else Deezer's order. `{ source, tracks: [{ name, listens, url }] }`; `source` is `listenbrainz`, `deezer` or `null`; `listens` is `null` for Deezer. Cached a week (an empty answer a day). `404` unknown artist. |
 | `GET` | `/api/radio/metadata/status` | Artist Radio metadata collection mode, provider availability and progress (`tracksChecked`/`tracksTotal`, `artistsTagged`/`artistsTotal`). |
 

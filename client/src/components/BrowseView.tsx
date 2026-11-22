@@ -8,7 +8,7 @@ import RadioStationsView from './RadioStationsView';
 import { HeartIcon, RadioIcon } from './FavouriteIcons';
 import type { RadioStation } from '../radioStations';
 import { api } from '../api';
-import type { Artist, ArtistRadioOptions, ArtistTopSongs, Album, ClientEntityId, Track, Genre, Library, LastFmInfo, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
+import type { About, AboutSource, Artist, ArtistRadioOptions, ArtistTopSongs, Album, ClientEntityId, Track, Genre, Library, SimilarArtist, ArtistMergeInfo, UnmergeResult } from '../types';
 import type { EntityId } from '../entityId';
 import { KebabButton } from './ContextMenu';
 import MetadataRefreshModal from './MetadataRefreshModal';
@@ -1246,7 +1246,6 @@ function AlbumCover({ albumId, title, refreshToken = 0, adaptiveAccentEnabled = 
 
 // ─── Last.fm Bio ──────────────────────────────────────────────────────────────
 
-type LastFmState = 'idle' | 'loading' | 'ok' | 'error' | 'no-key' | 'key-rejected';
 
 
 type ArtistTopSongsResponse = ArtistTopSongs;
@@ -1294,33 +1293,41 @@ export function parseArtistPhotoPayload(data: any): { url: string; source: 'deez
   return { url: data.url, source };
 }
 
-function LastFmBio({ artist, album, description }: {
-  artist: string;
-  album?: string;
+const ABOUT_LINK: Record<AboutSource, string> = {
+  wikipedia: 'Wikipedia ↗',
+  theaudiodb: 'TheAudioDB ↗',
+  lastfm: 'Last.fm ↗',
+};
+
+/**
+ * An artist's bio or an album's description (Wikipedia, else TheAudioDB, else an old Last.fm answer) with the
+ * artist's ListenBrainz stats. Hidden when there's nothing to show.
+ */
+function AboutBlock({ kind, id, description }: {
+  kind: 'artist' | 'album';
+  id: EntityId;
   description?: string | null;
 }) {
-  const [state, setState] = useState<LastFmState>('idle');
-  const [info, setInfo]   = useState<LastFmInfo | null>(null);
+  const [state, setState] = useState<'loading' | 'ok' | 'empty'>('loading');
+  const [info, setInfo] = useState<About | null>(null);
   const [expanded, setExpanded] = useState(false);
   const hasCustomDesc = !!description?.trim();
 
   useEffect(() => {
-    if (hasCustomDesc) return;
-    if (!artist) { setState('idle'); return; }
-
+    if (hasCustomDesc) return undefined;
+    let current = true;
     setState('loading');
     setInfo(null);
     setExpanded(false);
-
-    api.lastfm.info(artist, album)
+    (kind === 'artist' ? api.artistAbout(id) : api.albumAbout(id))
       .then(data => {
+        if (!current) return;
         setInfo(data);
-        setState(data.summary || data.full ? 'ok' : 'error');
+        setState((data?.source && data.summary) || data?.stats ? 'ok' : 'empty');
       })
-      .catch((e: any) => {
-        setState(e?.message === 'no-key' ? 'no-key' : e?.message === 'key-rejected' ? 'key-rejected' : 'error');
-      });
-  }, [artist, album, hasCustomDesc]);
+      .catch(() => { if (current) setState('empty'); });
+    return () => { current = false; };
+  }, [kind, id, hasCustomDesc]);
 
   if (hasCustomDesc) return (
     <div style={L.bioWrap}>
@@ -1328,89 +1335,74 @@ function LastFmBio({ artist, album, description }: {
     </div>
   );
 
-  // Last.fm refuses the key and nothing was cached: show nothing rather than "no info".
-  if (state === 'key-rejected') return null;
-
-  if (state === 'no-key') return (
-    <div style={L.bioWrap}>
-      <div style={L.bioNoKey}>
-        Add a Last.fm API key in <strong>Settings</strong> to see artist & album info.
-      </div>
-    </div>
-  );
-
   if (state === 'loading') return (
     <div style={L.bioWrap}>
       <div style={L.bioLoading}>
         <span style={L.bioLoadingDot} />
-        Fetching from Last.fm…
+        Loading info…
       </div>
     </div>
   );
 
-  if (state === 'error' || !info) return (
-    <div style={L.bioWrap}>
-      <div style={L.bioEmpty}>No info found on Last.fm</div>
-    </div>
-  );
+  // Nothing anywhere: no block at all.
+  if (state === 'empty' || !info) return null;
 
-  const text = expanded ? info.full : info.summary;
+  const text = info.source ? (expanded && info.full ? info.full : info.summary) : '';
 
   return (
     <div style={L.bioWrap}>
-      {/* Stats row */}
-      {(info.listeners || info.playcount) && (
-        <div style={L.bioStats}>
-          {info.listeners && (
+      {info.stats && (
+        <>
+          <div style={L.bioStats}>
             <div style={L.bioStat}>
-              <span style={L.bioStatVal}>{info.listeners}</span>
+              <span style={L.bioStatVal}>{info.stats.listeners.toLocaleString()}</span>
               <span style={L.bioStatLbl}>listeners</span>
             </div>
-          )}
-          {info.playcount && (
             <div style={L.bioStat}>
-              <span style={L.bioStatVal}>{info.playcount}</span>
-              <span style={L.bioStatLbl}>scrobbles</span>
+              <span style={L.bioStatVal}>{info.stats.listens.toLocaleString()}</span>
+              <span style={L.bioStatLbl}>listens</span>
             </div>
+          </div>
+          <div style={{ ...L.bioCredit, marginTop: -6, marginBottom: 10 }}>Stats from ListenBrainz</div>
+        </>
+      )}
+
+      {text && <div style={L.bioText}>{text}</div>}
+
+      {info.source === 'wikipedia' && text && (
+        <div style={L.bioCredit}>
+          From{' '}
+          {info.url
+            ? <a href={info.url} target="_blank" rel="noreferrer" style={L.bioCreditLink}>Wikipedia</a>
+            : 'Wikipedia'}
+          ,{' '}
+          <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noreferrer" style={L.bioCreditLink}>CC BY-SA</a>
+        </div>
+      )}
+      {info.source === 'theaudiodb' && text && <div style={L.bioCredit}>From TheAudioDB</div>}
+
+      {info.source && text && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+          {info.full && info.full !== info.summary && (
+            <button
+              style={L.bioExpandBtn}
+              onClick={() => setExpanded(e => !e)}
+            >
+              {expanded ? 'Show less' : 'Read more'}
+            </button>
+          )}
+          {info.url && (
+            <a
+              href={info.url}
+              target="_blank"
+              rel="noreferrer"
+              style={L.bioLink}
+            >
+              {ABOUT_LINK[info.source]}
+            </a>
           )}
         </div>
       )}
-
-      {/* Tags */}
-      {info.tags && info.tags.length > 0 && (
-        <div style={L.bioTags}>
-          {info.tags.map(tag => (
-            <span key={tag} style={L.bioTag}>{tag}</span>
-          ))}
-        </div>
-      )}
-
-      {/* Bio text */}
-      {text && (
-        <div style={L.bioText}>{text}</div>
-      )}
-
-      {/* Expand / Last.fm link */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
-        {info.full && info.full !== info.summary && (
-          <button
-            style={L.bioExpandBtn}
-            onClick={() => setExpanded(e => !e)}
-          >
-            {expanded ? 'Show less' : 'Read more'}
-          </button>
-        )}
-        {info.url && (
-          <a
-            href={info.url}
-            target="_blank"
-            rel="noreferrer"
-            style={L.bioLink}
-          >
-            Last.fm ↗
-          </a>
-        )}
-      </div>
     </div>
   );
 }
@@ -2356,7 +2348,7 @@ function ArtistHeader({
           )}
         </div>
       </div>
-      <LastFmBio artist={artist.name} />
+      <AboutBlock kind="artist" id={artist.id} />
       {showMeta && (
         <MetadataRefreshModal
           mode="artist"
@@ -2478,8 +2470,8 @@ function TrackList({
             </div>
           </div>
         </div>
-        {/* Right pane: Last.fm review */}
-        <LastFmBio artist={artistName} album={album.title} />
+        {/* Right pane: album description */}
+        <AboutBlock kind="album" id={album.id} />
       </div>
       {showMeta && (
         <MetadataRefreshModal
@@ -4825,10 +4817,7 @@ const L: Record<string, React.CSSProperties> = {
     paddingLeft: 20, paddingRight: 4, display: 'flex', flexDirection: 'column', gap: 10,
     maxHeight: 280, overflowY: 'auto',
   },
-  bioNoKey: {
-    fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.6,
-    padding: '4px 0',
-  },
+
   bioLoading: {
     display: 'flex', alignItems: 'center', gap: 8,
     fontSize: 14, color: 'var(--text-muted)',
@@ -4838,7 +4827,8 @@ const L: Record<string, React.CSSProperties> = {
     backgroundColor: 'var(--accent)', opacity: 0.6,
     animation: 'pulse 1.2s ease-in-out infinite',
   },
-  bioEmpty: { fontSize: 14, color: 'var(--text-muted)', opacity: 0.5 },
+  bioCredit: { fontSize: 12, color: 'var(--text-muted)', marginTop: 6 },
+  bioCreditLink: { color: 'inherit', textDecoration: 'underline' },
   bioStats: { display: 'flex', gap: 20 },
   bioStat: { display: 'flex', flexDirection: 'column', gap: 1 },
   bioStatVal: {

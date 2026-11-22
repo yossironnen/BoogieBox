@@ -40,6 +40,8 @@ pub fn provider_router(state: SharedState) -> Router {
         .route("/api/lastfm/info", get(lastfm_info_handler))
         .route("/api/lastfm/top-tracks", get(lastfm_top_tracks_handler))
         .route("/api/artists/{id}/top-songs", get(artist_top_songs_handler))
+        .route("/api/artists/{id}/about", get(artist_about_handler))
+        .route("/api/albums/{id}/about", get(album_about_handler))
         .with_state(state)
 }
 
@@ -553,6 +555,50 @@ async fn lastfm_top_tracks_handler(
     }
 }
 
+/// An artist's bio: `{ source, summary, full, url, stats }` (see `about.rs`); `source` is `null` when no source
+/// had a text.
+async fn artist_about_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    about_response(&state, &id, true).await
+}
+
+/// An album's description, same shape as the artist bio (no stats).
+async fn album_about_handler(
+    State(state): State<SharedState>,
+    _user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    about_response(&state, &id, false).await
+}
+
+async fn about_response(state: &SharedState, id: &str, artist: bool) -> axum::response::Response {
+    let Some(db) = get_db(state) else {
+        return setup_required_response();
+    };
+    let http_client = state
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .http_client
+        .clone();
+    let entity = boogiebox_db::music::coerce_entity_id(id);
+    let about = if artist {
+        crate::about::artist_about(&db, &http_client, &entity).await
+    } else {
+        crate::about::album_about(&db, &http_client, &entity).await
+    };
+    match about {
+        Some(about) => (StatusCode::OK, Json(about)).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": if artist { "Artist not found" } else { "Album not found" } })),
+        )
+            .into_response(),
+    }
+}
+
 /// Songs shown in an artist's "Top 5 Songs".
 const TOP_SONGS: usize = 5;
 
@@ -964,6 +1010,170 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json_body(&body)["summary"], "cached summary");
+    }
+
+    #[tokio::test]
+    async fn about_comes_from_wikipedia_then_theaudiodb_then_old_last_fm_and_is_cached() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = MockServer::start().await;
+        for var in [
+            "BOOGIEBOX_MUSICBRAINZ_API_BASE",
+            "BOOGIEBOX_WIKIDATA_API_BASE",
+            "BOOGIEBOX_WIKIPEDIA_API_BASE",
+            "BOOGIEBOX_THEAUDIODB_API_BASE",
+            "BOOGIEBOX_LISTENBRAINZ_API_BASE",
+        ] {
+            std::env::set_var(var, server.uri());
+        }
+        let wiki_mbid = "10adbe5e-a2c0-4bf3-8249-2b4cbf6e6ca8";
+        let tadb_mbid = "0383dadf-2a4e-4d10-a46a-e9e041da8eb3";
+        Mock::given(method("GET"))
+            .and(path(format!("/artist/{wiki_mbid}")))
+            .and(query_param("inc", "url-rels"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "relations": [
+                    { "type": "discogs", "url": { "resource": "https://www.discogs.com/artist/1" } },
+                    { "type": "wikidata", "url": { "resource": "https://www.wikidata.org/wiki/Q187134" } }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/w/api.php"))
+            .and(query_param("ids", "Q187134"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entities": { "Q187134": { "sitelinks": { "enwiki": { "title": "Massive Attack" } } } }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/rest_v1/page/summary/Massive_Attack"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "standard",
+                "extract": "Massive Attack are an English trip hop collective.",
+                "content_urls": { "desktop": { "page": "https://en.wikipedia.org/wiki/Massive_Attack" } }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/1/popularity/artist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "artist_mbid": wiki_mbid, "total_listen_count": 12400, "total_user_count": 3100 }
+            ])))
+            .mount(&server)
+            .await;
+        // The second artist: MusicBrainz has no Wikipedia link, TheAudioDB knows it by its id.
+        Mock::given(method("GET"))
+            .and(path(format!("/artist/{tadb_mbid}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "relations": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/artist-mb.php"))
+            .and(query_param("i", tadb_mbid))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": [{ "idArtist": "111239", "strArtist": "Portishead",
+                              "strBiographyEN": "Portishead are a band from Bristol.\n\nThey formed in 1991." }]
+            })))
+            .mount(&server)
+            .await;
+        // An album found by artist and title.
+        Mock::given(method("GET"))
+            .and(path("/searchalbum.php"))
+            .and(query_param("s", "Portishead"))
+            .and(query_param("a", "Dummy"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "album": [{ "idAlbum": "2115", "strAlbum": "Dummy", "strDescriptionEN": "Dummy is the debut album." }]
+            })))
+            .mount(&server)
+            .await;
+        // Nothing for the third artist anywhere but an old Last.fm answer.
+        Mock::given(method("GET"))
+            .and(path("/search.php"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artists": null })),
+            )
+            .mount(&server)
+            .await;
+
+        let (app, pool) = new_test_app_with_pool("provider-about");
+        let cookie = seed_user_session(&pool, "u1");
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute_batch(&format!(
+                "INSERT INTO artists(id, name, musicbrainz_artist_id) VALUES ('ar-wiki', 'Massive Attack', '{wiki_mbid}');
+                 INSERT INTO artists(id, name, musicbrainz_artist_id) VALUES ('ar-tadb', 'Portishead', '{tadb_mbid}');
+                 INSERT INTO artists(id, name) VALUES ('ar-old', 'Old Band');
+                 INSERT INTO albums(id, title, album_artist, artist_id) VALUES ('al-1', 'Dummy', 'Portishead', 'ar-tadb');
+                 INSERT INTO lastfm_cache(cache_key, data, fetched_at, expires_at)
+                   VALUES ('artist:old band', '{{\"summary\":\"Old bio.\",\"full\":\"Old bio.\",\"url\":\"https://www.last.fm/music/Old+Band\"}}',
+                           datetime('now', '-60 days'), datetime('now', '-53 days'));"
+            ))
+            .unwrap();
+        }
+        let get = |uri: &str| {
+            Request::builder()
+                .uri(uri)
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let (status, body) = send(app.clone(), get("/api/artists/ar-wiki/about")).await;
+        assert_eq!(status, StatusCode::OK);
+        let body = json_body(&body);
+        assert_eq!(body["source"], "wikipedia");
+        assert_eq!(
+            body["summary"],
+            "Massive Attack are an English trip hop collective."
+        );
+        assert_eq!(body["url"], "https://en.wikipedia.org/wiki/Massive_Attack");
+        assert_eq!(body["stats"]["listens"], 12400);
+        assert_eq!(body["stats"]["listeners"], 3100);
+        // Cached: MusicBrainz is asked once (`expect(1)`).
+        let (_, again) = send(app.clone(), get("/api/artists/ar-wiki/about")).await;
+        assert_eq!(json_body(&again)["source"], "wikipedia");
+
+        let (_, body) = send(app.clone(), get("/api/artists/ar-tadb/about")).await;
+        let body = json_body(&body);
+        assert_eq!(body["source"], "theaudiodb");
+        assert_eq!(body["summary"], "Portishead are a band from Bristol.");
+        assert_eq!(
+            body["full"],
+            "Portishead are a band from Bristol.\n\nThey formed in 1991."
+        );
+        assert_eq!(body["url"], "https://www.theaudiodb.com/artist/111239");
+
+        let (_, body) = send(app.clone(), get("/api/albums/al-1/about")).await;
+        let body = json_body(&body);
+        assert_eq!(body["source"], "theaudiodb");
+        assert_eq!(body["summary"], "Dummy is the debut album.");
+        assert!(body["stats"].is_null());
+
+        let (_, body) = send(app.clone(), get("/api/artists/ar-old/about")).await;
+        let body = json_body(&body);
+        assert_eq!(body["source"], "lastfm");
+        assert_eq!(body["summary"], "Old bio.");
+        assert!(body["full"].is_null());
+
+        let (status, _) = send(app, get("/api/artists/missing/about")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        for var in [
+            "BOOGIEBOX_MUSICBRAINZ_API_BASE",
+            "BOOGIEBOX_WIKIDATA_API_BASE",
+            "BOOGIEBOX_WIKIPEDIA_API_BASE",
+            "BOOGIEBOX_THEAUDIODB_API_BASE",
+            "BOOGIEBOX_LISTENBRAINZ_API_BASE",
+        ] {
+            std::env::remove_var(var);
+        }
     }
 
     #[tokio::test]

@@ -131,13 +131,15 @@ pub async fn artist_info(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError>
     let id = required_id(&ctx.params, "id")?;
     let count = ctx.params.clamped("count", 20, 0, 50)? as usize;
     let lookup_id = id.clone();
-    let (description, mbid, lastfm) = ctx
+    let (description, mbid, lastfm, about) = ctx
         .db(move |conn| {
             let info = sdb::artist_info(conn, &lookup_id)
                 .map_err(db_err)?
                 .ok_or_else(|| SubsonicError::not_found("Artist"))?;
             let lastfm = cached_lastfm(conn, &format!("artist:{}", info.name.to_lowercase()));
-            Ok((info.description, info.musicbrainz_id, lastfm))
+            // The bio the artist page fetched (Wikipedia, TheAudioDB); no network here.
+            let about = crate::about::cached_artist_about(conn, &coerce_entity_id(&lookup_id));
+            Ok((info.description, info.musicbrainz_id, lastfm, about))
         })
         .await?;
 
@@ -184,7 +186,9 @@ pub async fn artist_info(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError>
         .db(move |conn| sdb::annotations(conn, &user, ItemKind::Artist, &ids).map_err(db_err))
         .await?;
 
-    let biography = description.or_else(|| lastfm.as_ref().and_then(|v| json_str(v, "summary")));
+    let biography = description
+        .or_else(|| about.map(|a| a.summary))
+        .or_else(|| lastfm.as_ref().and_then(|v| json_str(v, "summary")));
     let lastfm_url = lastfm.as_ref().and_then(|v| json_str(v, "url"));
     let articles = ctx.articles();
     let mut node = Node::new(if legacy { "artistInfo" } else { "artistInfo2" });

@@ -3,7 +3,7 @@ members = [".", "crates/boogiebox-audio"]
 
 [package]
 name = "boogiebox-desktop"
-version = "0.9.117"
+version = "0.9.118"
 edition = "2021"
 
 [lib]

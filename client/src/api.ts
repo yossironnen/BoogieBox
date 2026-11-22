@@ -55,6 +55,7 @@ import type {
   HistoryEntry,
   LastFmInfo,
   ArtistTopSongs,
+  About,
   Playlist,
   PlaylistSnapshot,
   PlaylistTrack,
@@ -954,6 +955,10 @@ export const api = {
   /** An artist's most played songs: ListenBrainz listen counts, else Deezer's order (no key needed). */
   artistTopSongs: (artistId: EntityId) =>
     get<ArtistTopSongs>(`/artists/${encodeURIComponent(String(artistId))}/top-songs`),
+  /** An artist's bio and ListenBrainz stats (Wikipedia, else TheAudioDB, else an old Last.fm answer). */
+  artistAbout: (artistId: EntityId) => get<About>(`/artists/${encodeURIComponent(String(artistId))}/about`),
+  /** An album's description, same sources. */
+  albumAbout: (albumId: EntityId) => get<About>(`/albums/${encodeURIComponent(String(albumId))}/about`),
   lastfm: {
     info: (artist: string, album?: string) => {
       const params = new URLSearchParams({ artist });

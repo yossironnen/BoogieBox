@@ -1359,7 +1359,7 @@ pub struct LastFmInfoPayload {
     pub tags: Vec<String>,
 }
 
-fn optional_nonempty_json_string(value: &Value) -> Option<String> {
+pub(crate) fn optional_nonempty_json_string(value: &Value) -> Option<String> {
     value
         .as_str()
         .map(str::trim)
@@ -1776,7 +1776,7 @@ impl std::fmt::Display for ProviderFetchError {
 const PROVIDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// MusicBrainz requires a descriptive User-Agent with contact information.
-const MUSICBRAINZ_USER_AGENT: &str = concat!(
+pub(crate) const MUSICBRAINZ_USER_AGENT: &str = concat!(
     "BoogieBox/",
     env!("CARGO_PKG_VERSION"),
     " ( https://github.com/yossironnen/BoogieBox )"
@@ -1786,14 +1786,14 @@ const MUSICBRAINZ_USER_AGENT: &str = concat!(
 const LISTENBRAINZ_SIMILAR_ALGORITHM: &str =
     "session_based_days_9000_session_300_contribution_5_threshold_15_limit_50_skip_30";
 
-fn musicbrainz_api_base() -> String {
+pub(crate) fn musicbrainz_api_base() -> String {
     provider_base_url(
         "BOOGIEBOX_MUSICBRAINZ_API_BASE",
         "https://musicbrainz.org/ws/2",
     )
 }
 
-fn listenbrainz_api_base() -> String {
+pub(crate) fn listenbrainz_api_base() -> String {
     provider_base_url(
         "BOOGIEBOX_LISTENBRAINZ_API_BASE",
         "https://api.listenbrainz.org",
@@ -2102,7 +2102,9 @@ pub async fn fetch_lastfm_artist_track_counts(
 }
 
 /// MusicBrainz and ListenBrainz signal throttling with HTTP 429/503.
-fn check_metabrainz_status(response: &reqwest::Response) -> Result<(), ProviderFetchError> {
+pub(crate) fn check_metabrainz_status(
+    response: &reqwest::Response,
+) -> Result<(), ProviderFetchError> {
     match response.status().as_u16() {
         429 | 503 => Err(ProviderFetchError::RateLimited),
         code if !response.status().is_success() => {

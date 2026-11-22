@@ -41,6 +41,8 @@ const { apiMock } = vi.hoisted(() => ({
       topTracks: vi.fn(),
     },
     artistTopSongs: vi.fn(),
+    artistAbout: vi.fn(),
+    albumAbout: vi.fn(),
     favourites: { ids: vi.fn(), list: vi.fn(), add: vi.fn(), remove: vi.fn() },
     radioStations: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), streamUrl: vi.fn() },
   },
@@ -130,6 +132,14 @@ describe('BrowseView component flows', () => {
       tags: ['rock'],
       url: 'https://last.fm/artist',
     });
+    apiMock.artistAbout.mockResolvedValue({
+      source: 'wikipedia',
+      summary: 'Artist summary',
+      full: null,
+      url: 'https://en.wikipedia.org/wiki/Artist_One',
+      stats: { listens: 12400, listeners: 3100 },
+    });
+    apiMock.albumAbout.mockResolvedValue({ source: null, summary: '', full: null, url: null, stats: null });
     apiMock.artistTopSongs.mockResolvedValue({
       source: 'listenbrainz',
       tracks: [{ name: 'Top Song', listens: 500, url: 'https://musicbrainz.org/recording/r1' }],
@@ -275,19 +285,58 @@ describe('BrowseView component flows', () => {
     }
   });
 
-  it('hides the Last.fm bio while Last.fm refuses the key; top songs need no key', async () => {
-    apiMock.lastfm.info.mockRejectedValue(new Error('key-rejected'));
+  it('shows the artist bio from Wikipedia with its credit and ListenBrainz stats, no Last.fm calls', async () => {
     render(
       <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="test-lastfm-key" />,
     );
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByText('Artist One'));
-    await waitFor(() => expect(apiMock.lastfm.info).toHaveBeenCalled());
-    await waitFor(() => expect(screen.queryByText(/Fetching from Last\.fm/)).not.toBeInTheDocument());
-    expect(screen.queryByText('No info found on Last.fm')).not.toBeInTheDocument();
+    expect(await screen.findByText('Artist summary')).toBeInTheDocument();
+    expect(apiMock.artistAbout).toHaveBeenCalledWith('1');
+    expect(screen.getByText('12,400')).toBeInTheDocument();
+    expect(screen.getByText('listens')).toBeInTheDocument();
+    expect(screen.getByText('3,100')).toBeInTheDocument();
+    expect(screen.getByText('Stats from ListenBrainz')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Wikipedia' })).toHaveAttribute('href', 'https://en.wikipedia.org/wiki/Artist_One');
+    expect(screen.getByRole('link', { name: 'CC BY-SA' })).toHaveAttribute('href', 'https://creativecommons.org/licenses/by-sa/4.0/');
+    expect(screen.getByRole('link', { name: 'Wikipedia ↗' })).toBeInTheDocument();
     expect(await screen.findByText('Listens on ListenBrainz')).toBeInTheDocument();
     expect(screen.getByText('500 listens')).toBeInTheDocument();
+    expect(apiMock.lastfm.info).not.toHaveBeenCalled();
     expect(apiMock.lastfm.topTracks).not.toHaveBeenCalled();
+  });
+
+  it('shows TheAudioDB bios with Read more, and hides the block when nothing was found', async () => {
+    apiMock.artistAbout.mockResolvedValueOnce({
+      source: 'theaudiodb',
+      summary: 'First paragraph.',
+      full: 'First paragraph.\n\nSecond paragraph.',
+      url: 'https://www.theaudiodb.com/artist/1',
+      stats: null,
+    });
+    const { unmount } = render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+    );
+    await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
+    fireEvent.click(screen.getByText('Artist One'));
+    expect(await screen.findByText('First paragraph.')).toBeInTheDocument();
+    expect(screen.getByText('From TheAudioDB')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TheAudioDB ↗' })).toHaveAttribute('href', 'https://www.theaudiodb.com/artist/1');
+    expect(screen.queryByText('Stats from ListenBrainz')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Read more' }));
+    expect(screen.getByText(/Second paragraph\./)).toBeInTheDocument();
+    unmount();
+
+    apiMock.artistAbout.mockResolvedValueOnce({ source: null, summary: '', full: null, url: null, stats: null });
+    render(
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+    );
+    await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
+    fireEvent.click(screen.getAllByText('Artist One')[0]);
+    await waitFor(() => expect(screen.queryByText('Loading info…')).not.toBeInTheDocument());
+    expect(screen.queryByText('Artist summary')).not.toBeInTheDocument();
+    expect(screen.queryByText(/No info found/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Read more/)).not.toBeInTheDocument();
   });
 
   it('shows Deezer top songs without counts, and says when there are none', async () => {
@@ -303,7 +352,7 @@ describe('BrowseView component flows', () => {
     expect(await screen.findByText('Ranked by Deezer')).toBeInTheDocument();
     expect(apiMock.artistTopSongs).toHaveBeenCalledWith('1');
     expect(screen.getByRole('link', { name: 'Top Song' })).toHaveAttribute('href', 'https://www.deezer.com/track/1');
-    expect(screen.queryByText(/listens/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^[\d,]+ listens$/)).not.toBeInTheDocument();
     unmount();
 
     apiMock.artistTopSongs.mockResolvedValueOnce({ source: null, tracks: [] });

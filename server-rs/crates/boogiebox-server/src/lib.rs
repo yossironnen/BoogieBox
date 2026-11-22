@@ -28,6 +28,7 @@ use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
 };
+pub mod about;
 pub mod activity;
 pub mod artist_radio;
 pub mod artwork_cache;

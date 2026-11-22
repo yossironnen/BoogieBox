@@ -820,6 +820,19 @@ export interface QueueSource {
 
 // ─── Last.fm ───────────────────────────────────────────────────────────────
 
+export type AboutSource = 'wikipedia' | 'theaudiodb' | 'lastfm';
+
+/** `GET /api/artists/{id}/about`, `/api/albums/{id}/about`: a bio or description and the artist's stats. */
+export interface About {
+  /** `null`: no source had a text. */
+  source: AboutSource | null;
+  summary: string;
+  full: string | null;
+  url: string | null;
+  /** ListenBrainz counts (artists only). */
+  stats: { listens: number; listeners: number } | null;
+}
+
 /** `GET /api/artists/{id}/top-songs`: ListenBrainz listen counts, else Deezer's order. */
 export interface ArtistTopSongs {
   source: 'listenbrainz' | 'deezer' | null;
