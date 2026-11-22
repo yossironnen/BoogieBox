@@ -2172,9 +2172,93 @@ pub async fn search_musicbrainz_artist(
         .map(str::to_owned))
 }
 
+/// The MusicBrainz recording of a song: a search hit scoring 90+ whose artist credit names `artist_name` and
+/// whose title is the same song (as [`boogiebox_db::popularity::normalize_title`] reduces both). `Ok(None)`
+/// when nothing fits.
+pub async fn search_musicbrainz_recording(
+    client: &Client,
+    artist_name: &str,
+    title: &str,
+) -> Result<Option<String>, ProviderFetchError> {
+    let clean = |text: &str| -> String {
+        text.chars()
+            .filter(|c| !matches!(c, '"' | '\\'))
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    };
+    let (artist, song) = (clean(artist_name), clean(title));
+    if artist.is_empty() || song.is_empty() {
+        return Ok(None);
+    }
+    let query = format!("artist:\"{artist}\" AND recording:\"{song}\"");
+    let url = format!(
+        "{}/recording/?query={}&fmt=json&limit=5",
+        musicbrainz_api_base(),
+        urlencoding::encode(&query)
+    );
+    let t0 = log_request(
+        "musicbrainz",
+        "recording_search",
+        &format!("{artist} — {song}"),
+    );
+    let response = client
+        .get(&url)
+        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    log_response("musicbrainz", "recording_search", t0, response.status());
+    check_metabrainz_status(&response)?;
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let wanted_artist = normalize_artist_name(&artist);
+    let wanted_title = boogiebox_db::popularity::normalize_title(&song);
+    Ok(data["recordings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|rec| {
+            rec["score"].as_i64().unwrap_or(0) >= 90
+                && rec["title"]
+                    .as_str()
+                    .is_some_and(|t| boogiebox_db::popularity::normalize_title(t) == wanted_title)
+                && rec["artist-credit"].as_array().is_some_and(|credits| {
+                    credits.iter().any(|c| {
+                        c["name"]
+                            .as_str()
+                            .or_else(|| c["artist"]["name"].as_str())
+                            .is_some_and(|n| normalize_artist_name(n) == wanted_artist)
+                    })
+                })
+        })
+        .and_then(|rec| rec["id"].as_str())
+        .filter(|id| is_valid_mbid(id))
+        .map(str::to_ascii_lowercase))
+}
+
+/// Fetches MusicBrainz's user-voted genres/tags for a recording as `(name, votes)`.
+pub async fn fetch_musicbrainz_recording_tags(
+    client: &Client,
+    mbid: &str,
+) -> Result<Vec<(String, u64)>, ProviderFetchError> {
+    fetch_musicbrainz_entity_tags(client, "recording", mbid).await
+}
+
 /// Fetches MusicBrainz's user-voted genres/tags for an artist as `(name, votes)`.
 pub async fn fetch_musicbrainz_artist_tags(
     client: &Client,
+    mbid: &str,
+) -> Result<Vec<(String, u64)>, ProviderFetchError> {
+    fetch_musicbrainz_entity_tags(client, "artist", mbid).await
+}
+
+async fn fetch_musicbrainz_entity_tags(
+    client: &Client,
+    entity: &str,
     mbid: &str,
 ) -> Result<Vec<(String, u64)>, ProviderFetchError> {
     if !is_valid_mbid(mbid) {
@@ -2183,10 +2267,10 @@ pub async fn fetch_musicbrainz_artist_tags(
         ));
     }
     let url = format!(
-        "{}/artist/{mbid}?inc=tags+genres&fmt=json",
+        "{}/{entity}/{mbid}?inc=tags+genres&fmt=json",
         musicbrainz_api_base()
     );
-    let t0 = log_request("musicbrainz", "artist_tags", mbid);
+    let t0 = log_request("musicbrainz", &format!("{entity}_tags"), mbid);
     let response = client
         .get(&url)
         .header("User-Agent", MUSICBRAINZ_USER_AGENT)
@@ -2194,7 +2278,12 @@ pub async fn fetch_musicbrainz_artist_tags(
         .send()
         .await
         .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
-    log_response("musicbrainz", "artist_tags", t0, response.status());
+    log_response(
+        "musicbrainz",
+        &format!("{entity}_tags"),
+        t0,
+        response.status(),
+    );
     if response.status().as_u16() == 404 {
         return Ok(Vec::new());
     }

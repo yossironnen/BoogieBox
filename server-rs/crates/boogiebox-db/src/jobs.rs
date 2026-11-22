@@ -789,7 +789,8 @@ pub fn upsert_scanned_track(
             year=excluded.year,
             comment=excluded.comment,
             bpm=excluded.bpm,
-            musicbrainz_recording_id=excluded.musicbrainz_recording_id,
+            -- A tag wins; without one, an id the metadata lane found stays.
+            musicbrainz_recording_id=COALESCE(excluded.musicbrainz_recording_id, tracks.musicbrainz_recording_id),
             scanned_at=CASE
                 WHEN tracks.file_size IS excluded.file_size THEN tracks.scanned_at
                 ELSE datetime('now')
@@ -2164,12 +2165,18 @@ mod tests {
         assert_eq!(stored(&f).0, ids.artist);
         assert_eq!(stored(&f).1, ids.release_group);
 
-        // The recording follows the file: a rescan without the tag clears it.
+        // A rescan without the tag keeps the recording id (the metadata lane may have found it); a tag wins.
         let mut rescanned = scanned_track(&f.library_id, "/music/mb1.flac", "One");
         rescanned.musicbrainz = MusicBrainzIds::default();
         assert_eq!(upsert_scanned_track(&f.conn, &rescanned).unwrap(), track);
-        assert_eq!(stored(&f).3, None);
+        assert_eq!(stored(&f).3, ids.recording);
         assert_eq!(stored(&f).0, ids.artist, "artist and album ids stay");
+        rescanned.musicbrainz.recording = Some("0383dadf-2a4e-4d10-a46a-e9e041da8eb3".into());
+        upsert_scanned_track(&f.conn, &rescanned).unwrap();
+        assert_eq!(
+            stored(&f).3.as_deref(),
+            Some("0383dadf-2a4e-4d10-a46a-e9e041da8eb3")
+        );
     }
 
     #[test]

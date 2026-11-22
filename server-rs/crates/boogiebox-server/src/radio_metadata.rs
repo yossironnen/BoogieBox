@@ -13,8 +13,9 @@ use crate::{
     mix_priority_gate,
     providers::{
         fetch_lastfm_artist_track_counts, fetch_lastfm_track_top_tags,
-        fetch_listenbrainz_top_recordings, fetch_musicbrainz_artist_tags, is_valid_mbid,
-        search_musicbrainz_artist, ProviderFetchError,
+        fetch_listenbrainz_top_recordings, fetch_musicbrainz_artist_tags,
+        fetch_musicbrainz_recording_tags, is_valid_mbid, search_musicbrainz_artist,
+        search_musicbrainz_recording, ProviderFetchError,
     },
     tag_taxonomy::to_tag_inputs,
     DbPool,
@@ -30,7 +31,7 @@ use boogiebox_db::{
         insert_artist_tags_if_none, list_artists_needing_musicbrainz_id,
         list_artists_needing_musicbrainz_tags, list_tracks_needing_tags, list_untagged_among,
         replace_track_tags, set_musicbrainz_identity, track_tag_progress, TagCandidate,
-        SOURCE_LASTFM,
+        SOURCE_LASTFM, SOURCE_MUSICBRAINZ,
     },
 };
 use reqwest::Client;
@@ -45,6 +46,8 @@ const TRACK_BATCH: i64 = 25;
 const ARTIST_BATCH: i64 = 20;
 /// Last.fm tag counts are 0–100 relative to the top tag; below this is noise.
 const MIN_TRACK_TAG_COUNT: u64 = 10;
+/// MusicBrainz recording tags carry a vote or two each (sampled on the dev library), so every tag counts.
+const MIN_MUSICBRAINZ_TRACK_TAG_COUNT: u64 = 1;
 const MAX_TRACK_TAGS: usize = 12;
 const MB_TAG_CACHE_DAYS: i64 = 30;
 const MB_ID_RECHECK_DAYS: i64 = 30;
@@ -205,6 +208,23 @@ pub async fn run_one_pass(db: &DbPool, http: &Client, cancel: &CancellationToken
         .unwrap_or_default();
         if !artists.is_empty() {
             let (done, stop) = process_listenbrainz_popularity(db, http, &artists, cancel).await;
+            progressed |= done > 0;
+            if let Some(outcome) = stop {
+                return outcome;
+            }
+        }
+    }
+
+    // Track tags from MusicBrainz (no key): find each track's recording, then its tags.
+    if settings.keyless && settings.mode == SyncMode::Full {
+        let candidates = blocking(db, |conn| {
+            list_tracks_needing_tags(conn, SOURCE_MUSICBRAINZ, TRACK_BATCH)
+        })
+        .await
+        .and_then(Result::ok)
+        .unwrap_or_default();
+        if !candidates.is_empty() {
+            let (done, stop) = process_musicbrainz_track_tags(db, http, &candidates, cancel).await;
             progressed |= done > 0;
             if let Some(outcome) = stop {
                 return outcome;
@@ -408,6 +428,96 @@ async fn process_artist_popularity(
             }
         }
         tokio::time::sleep(track_tag_delay()).await;
+    }
+    (done, None)
+}
+
+/// MusicBrainz tags for a batch of tracks: the recording from the track's tags, else a search by artist and
+/// title (the id found is kept on the track), then the recording's tags. Two requests per track at most.
+async fn process_musicbrainz_track_tags(
+    db: &DbPool,
+    http: &Client,
+    candidates: &[TagCandidate],
+    cancel: &CancellationToken,
+) -> (usize, Option<Outcome>) {
+    let mut done = 0;
+    let mut errors = 0;
+    for candidate in candidates {
+        if cancel.is_cancelled() {
+            return (done, Some(Outcome::Idle));
+        }
+        if mix_priority_gate::is_active() {
+            return (done, Some(Outcome::Gated));
+        }
+        let track_id = candidate.track_id.clone();
+        let known = blocking(db, move |conn| {
+            conn.query_row(
+                "SELECT musicbrainz_recording_id FROM tracks WHERE id = ?1",
+                [&track_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+        })
+        .await
+        .flatten()
+        .filter(|id| is_valid_mbid(id));
+        let recording = match known {
+            Some(id) => Ok(Some(id)),
+            None => {
+                let found =
+                    search_musicbrainz_recording(http, &candidate.artist, &candidate.title).await;
+                tokio::time::sleep(musicbrainz_delay()).await;
+                if let Ok(Some(id)) = &found {
+                    let (track_id, id) = (candidate.track_id.clone(), id.clone());
+                    blocking(db, move |conn| {
+                        conn.execute(
+                            "UPDATE tracks SET musicbrainz_recording_id = ?1
+                             WHERE id = ?2 AND musicbrainz_recording_id IS NULL",
+                            rusqlite::params![id, track_id],
+                        )
+                    })
+                    .await;
+                }
+                found
+            }
+        };
+        let tags = match recording {
+            Ok(Some(id)) => {
+                let tags = fetch_musicbrainz_recording_tags(http, &id).await;
+                tokio::time::sleep(musicbrainz_delay()).await;
+                tags
+            }
+            // No recording to be found: stamped empty, asked again after the negative-cache TTL.
+            Ok(None) => Ok(Vec::new()),
+            Err(error) => Err(error),
+        };
+        match tags {
+            Ok(raw) => {
+                let tags = to_tag_inputs(
+                    &raw,
+                    MIN_MUSICBRAINZ_TRACK_TAG_COUNT,
+                    0.0,
+                    MAX_TRACK_TAGS,
+                    &[candidate.artist.as_str(), candidate.title.as_str()],
+                );
+                let track_id = candidate.track_id.clone();
+                blocking(db, move |conn| {
+                    replace_track_tags(conn, &track_id, SOURCE_MUSICBRAINZ, &tags)
+                })
+                .await;
+                done += 1;
+            }
+            // A throttle is never stamped as "no tags": the next pass retries the track.
+            Err(ProviderFetchError::RateLimited) => return (done, Some(Outcome::Backoff)),
+            Err(error) => {
+                tracing::debug!("radio metadata: MusicBrainz track tags failed: {error}");
+                errors += 1;
+                if errors >= ERRORS_BEFORE_BACKOFF {
+                    return (done, Some(Outcome::Backoff));
+                }
+            }
+        }
     }
     (done, None)
 }
@@ -617,8 +727,10 @@ mod tests {
         std::env::set_var("BOOGIEBOX_TRACK_TAG_SYNC_DELAY_MS", "0");
         std::env::set_var("BOOGIEBOX_MUSICBRAINZ_DELAY_MS", "0");
         std::env::set_var("BOOGIEBOX_LISTENBRAINZ_DELAY_MS", "0");
-        // Nothing here may reach the real ListenBrainz; tests that want it point this at their mock.
+        // Nothing here may reach the real ListenBrainz or MusicBrainz; tests that want them point these at
+        // their mock after this.
         std::env::set_var("BOOGIEBOX_LISTENBRAINZ_API_BASE", "http://127.0.0.1:9");
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", "http://127.0.0.1:9");
     }
 
     fn quiet_musicbrainz(db: &DbPool) {
@@ -1188,6 +1300,123 @@ mod tests {
         assert_eq!(source, "listenbrainz");
         // Done for this artist: the next pass doesn't ask again.
         run_one_pass(&db, &Client::new(), &CancellationToken::new()).await;
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
+        std::env::remove_var("BOOGIEBOX_LISTENBRAINZ_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn musicbrainz_track_tags_find_the_recording_then_its_tags() {
+        let _env = ENV_LOCK.lock().await;
+        let _gate = crate::mix_priority_gate::GATE_TEST_LOCK.lock().await;
+        fast_delays();
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_LISTENBRAINZ_API_BASE", server.uri());
+        let found = "e8f9b188-f819-4e43-ab0f-4bd26ce9ff56";
+        let tagged = "0383dadf-2a4e-4d10-a46a-e9e041da8eb3";
+        Mock::given(method("GET"))
+            .and(path("/recording/"))
+            .and(query_param("query", "artist:\"Massive Attack\" AND recording:\"Teardrop\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "recordings": [
+                    { "id": "11111111-1111-4111-8111-111111111111", "score": 100, "title": "Teardrop",
+                      "artist-credit": [{ "name": "Someone Else" }] },
+                    { "id": found, "score": 100, "title": "Teardrop",
+                      "artist-credit": [{ "name": "Massive Attack" }] }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/recording/"))
+            .and(query_param(
+                "query",
+                "artist:\"Massive Attack\" AND recording:\"Unreleased\"",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "recordings": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/recording/{found}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "tags": [{ "name": "trip hop", "count": 1 }],
+                "genres": [{ "name": "downtempo", "count": 1 }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/recording/{tagged}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "genres": [{ "name": "electronic", "count": 2 }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/1/popularity/top-recordings-for-artist/{MBID}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        let db = temp_db();
+        let (artist, teardrop) = seed(&db, "Massive Attack", "Teardrop");
+        let (_, angel) = seed(&db, "Massive Attack", "Angel");
+        let (_, unreleased) = seed(&db, "Massive Attack", "Unreleased");
+        {
+            // The artist is done with MusicBrainz (id and tags), so only the track pass asks it.
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "UPDATE artists SET musicbrainz_artist_id = ?1, musicbrainz_identity_checked_at = datetime('now')",
+                [MBID],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO artist_styles(artist_id, style, kind, weight) VALUES (?1, 'trip-hop', 'genre', 1.0)",
+                [&artist],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE tracks SET musicbrainz_recording_id = ?1 WHERE id = ?2",
+                params![tagged, angel],
+            )
+            .unwrap();
+        }
+        run_one_pass(&db, &Client::new(), &CancellationToken::new()).await;
+
+        let conn = db.lock().unwrap();
+        let tags = |track: &str| -> Vec<String> {
+            let mut stmt = conn
+                .prepare("SELECT tag FROM track_tags WHERE track_id = ?1 AND source = 'musicbrainz' ORDER BY tag")
+                .unwrap();
+            stmt.query_map([track], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(tags(&teardrop).len(), 2, "{:?}", tags(&teardrop));
+        assert_eq!(tags(&angel).len(), 1, "{:?}", tags(&angel));
+        assert!(tags(&unreleased).is_empty());
+        let recording: Option<String> = conn
+            .query_row(
+                "SELECT musicbrainz_recording_id FROM tracks WHERE id = ?1",
+                [&teardrop],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recording.as_deref(), Some(found), "the id found is kept");
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM track_tag_sync WHERE track_id = ?1 AND source = 'musicbrainz'",
+                [&unreleased],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "empty");
+        drop(conn);
         std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
         std::env::remove_var("BOOGIEBOX_LISTENBRAINZ_API_BASE");
     }
