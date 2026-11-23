@@ -241,3 +241,20 @@ test('the Now Playing Sleep tool starts and cancels a timer', async ({ page }) =
   await page.getByRole('dialog', { name: 'Sleep timer' }).getByRole('button', { name: 'Cancel timer' }).click()
   await expect(page.getByRole('main').getByRole('button', { name: 'Sleep', exact: true })).toBeVisible()
 })
+
+test('Settings › Scrobbling offers Libre.fm, ListenBrainz and an own server, and no Last.fm', async ({ page }) => {
+  // Settings opens from Now Playing, which needs a track.
+  await tabs(page).getByRole('button', { name: 'Browse', exact: true }).click()
+  await page.getByLabel('Artists').getByRole('button', { name: /^The Velvet Owls/ }).click()
+  await page.getByLabel('Albums').getByRole('button', { name: /^Paper Moons/ }).click()
+  await page.getByLabel('Album tracks').getByRole('button', { name: /^Cardboard Comet/ }).click()
+  await expectAudioPlaying(page)
+  await tabs(page).getByRole('button', { name: 'Now', exact: true }).click()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  const section = page.getByRole('region', { name: 'Scrobbling' })
+  await section.scrollIntoViewIfNeeded()
+  await expect(section.getByRole('button', { name: 'Connect Libre.fm' })).toBeVisible()
+  await expect(section.getByRole('button', { name: 'Connect ListenBrainz' })).toBeVisible()
+  await expect(section.getByRole('button', { name: 'Connect server' })).toBeVisible()
+  await expect(section.getByText(/last\.fm/i)).toHaveCount(0)
+})

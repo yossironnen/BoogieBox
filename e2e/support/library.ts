@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { MOCK } from './providers.ts'
 
 export type FixtureTrack = {
   title: string
@@ -25,6 +26,8 @@ export type FixtureAlbum = {
   coverColor: string
   /** `folder` writes folder.jpg beside the tracks; `embedded` puts the cover inside each file. */
   art: 'folder' | 'embedded'
+  /** MusicBrainz ids written into every track (the mock providers know them). */
+  musicbrainz?: { artist: string; releaseGroup?: string }
   tracks: FixtureTrack[]
 }
 
@@ -39,6 +42,7 @@ export const ALBUMS: FixtureAlbum[] = [
     format: 'mp3',
     coverColor: '0x2a6fdb',
     art: 'folder',
+    musicbrainz: { artist: MOCK.auroraMbid, releaseGroup: MOCK.neonTidesReleaseGroup },
     tracks: [
       { title: 'Harbor Lights', frequency: 220, tags: { REPLAYGAIN_TRACK_GAIN: '-6.50 dB', REPLAYGAIN_TRACK_PEAK: '0.500000' } },
       { title: 'Glass Current', frequency: 262 },
@@ -53,6 +57,7 @@ export const ALBUMS: FixtureAlbum[] = [
     format: 'flac',
     coverColor: '0x7b2adb',
     art: 'folder',
+    musicbrainz: { artist: MOCK.auroraMbid },
     tracks: [
       { title: 'Antenna Bloom', frequency: 330, tags: { REPLAYGAIN_TRACK_GAIN: '+2.25 dB', REPLAYGAIN_ALBUM_GAIN: '-1.00 dB' } },
       { title: 'Static Lullaby', frequency: 349 },
@@ -96,12 +101,25 @@ const CODEC_ARGS: Record<FixtureAlbum['format'], string[]> = {
   m4a: ['-c:a', 'aac', '-b:a', '128k'],
 }
 
+/** MusicBrainz id tags as each format names them (ID3 TXXX descriptions, Vorbis comments). */
+function musicbrainzTags(album: FixtureAlbum): string[] {
+  const ids = album.musicbrainz
+  if (!ids) return []
+  const names = album.format === 'flac'
+    ? { artist: 'MUSICBRAINZ_ARTISTID', releaseGroup: 'MUSICBRAINZ_RELEASEGROUPID' }
+    : { artist: 'MusicBrainz Artist Id', releaseGroup: 'MusicBrainz Release Group Id' }
+  return [
+    '-metadata', `${names.artist}=${ids.artist}`,
+    ...(ids.releaseGroup ? ['-metadata', `${names.releaseGroup}=${ids.releaseGroup}`] : []),
+  ]
+}
+
 function safeName(value: string): string {
   return value.replace(/[^A-Za-z0-9 ._-]/g, '_')
 }
 
 function manifestHash(): string {
-  return crypto.createHash('sha256').update(JSON.stringify({ ALBUMS, TRACK_SECONDS, v: 3 })).digest('hex')
+  return crypto.createHash('sha256').update(JSON.stringify({ ALBUMS, TRACK_SECONDS, v: 4 })).digest('hex')
 }
 
 function generate(ffmpeg: string, outDir: string): void {
@@ -126,6 +144,7 @@ function generate(ffmpeg: string, outDir: string): void {
         ...coverArgs,
         ...(track.volumeDb ? ['-af', `volume=${track.volumeDb}dB`] : []),
         ...Object.entries(track.tags ?? {}).flatMap(([key, value]) => ['-metadata', `${key}=${value}`]),
+        ...musicbrainzTags(album),
         '-metadata', `title=${track.title}`,
         '-metadata', `artist=${album.artist}`,
         '-metadata', `album_artist=${album.artist}`,

@@ -11,6 +11,7 @@ import path from 'node:path'
 import {
   BASE_URL, CONFIG_PATH, E2E_PORT, IS_WINDOWS, LOG_DIR, RUN_DIR, SANDBOX_DIR, type ServerBuild,
 } from './paths.ts'
+import { providerEnv } from './providers.ts'
 
 function portIsFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -72,6 +73,8 @@ export async function startServer(build: ServerBuild, layout: ServerLayout = MAI
     BOOGIEBOX_LOG_DIR: layout.logDir,
     BOOGIEBOX_DATA_DIR: path.join(layout.sandboxDir, 'data'),
     BOOGIEBOX_LOAD_DEV_CONFIG: '',
+    // Every online provider is the local mock (providers.ts): no internet, the same answers every run.
+    ...providerEnv(),
     // Lets the 10-track fixture library trip the scan's mass-removal brake (library.spec.ts).
     BOOGIEBOX_PRUNE_BRAKE_MIN: process.env.BOOGIEBOX_PRUNE_BRAKE_MIN ?? '2',
     // The fallback locator paths (ProgramData / ~/.config) and the suggested data folder all derive from these.

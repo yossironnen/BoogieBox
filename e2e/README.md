@@ -49,12 +49,17 @@ Playwright and its Chromium browser are installed and prints the install command
    4 albums, `folder.jpg` covers and one album with only embedded covers. "Harbor Lights" (MP3) and "Antenna Bloom"
    (FLAC) carry ReplayGain tags; "Folded Orbit" is an untagged loud track for the loudness lane to measure. The audio
    is generated with FFmpeg once and cached in `tmp/e2e-fixtures/`.
-3. Starts the server on port 3917. Every place it could read a config locator or data folder from
+3. Starts a mock of every online provider on port 3919 (`support/providers.ts`: MusicBrainz, ListenBrainz, Wikidata,
+   Wikipedia, TheAudioDB, Deezer, Libre.fm, an own ListenBrainz-compatible server; lyrics, Discogs and Spotify answer
+   404) and points the server's `BOOGIEBOX_*_API_BASE` overrides at it, so a run never reaches the internet and
+   provider answers never change. The Aurora Static files carry MusicBrainz artist (and, for Neon Tides, release
+   group) ids the mock knows. Specs read the requests the server made at `GET /__requests`.
+4. Starts the server on port 3917. Every place it could read a config locator or data folder from
    (`BOOGIEBOX_CONFIG_PATH`, `PROGRAMDATA`, `LOCALAPPDATA`, `HOME`, the working directory) points into `tmp/e2e-run/`,
    so a run never touches a real database. It refuses to start if a `boogiebox-config.json` sits next to the exe.
-4. **setup** project: first-run setup through the UI, admin sign-in, add the library, scan.
-5. **desktop** (1440×900) and **mobile** (Pixel 7) projects reuse that signed-in session.
-6. Stops the server.
+5. **setup** project: first-run setup through the UI, admin sign-in, add the library, scan.
+6. **desktop** (1440×900) and **mobile** (Pixel 7) projects reuse that signed-in session.
+7. Stops the server and the mock.
 
 Every test also fails on uncaught page errors, app `console.error` output and any HTTP 5xx response.
 
@@ -71,12 +76,13 @@ Every test also fails on uncaught page errors, app `console.error` output and an
 | Search by title/artist/album, genre filter | `tests/desktop/search.spec.ts` |
 | PIN users, wrong PIN, non-admin UI, sign-out, delete | `tests/desktop/users.spec.ts` |
 | Favourites, radio stations, themes, Subsonic switch, Activity, Home, Home smart playlists | `tests/desktop/features.spec.ts` |
-| Mobile shell, browse, search, Now Playing, OS media controls, Equalizer sheet fit and Saved EQ block, Sleep tool, M3U import sheet, steering pills | `tests/mobile/mobile.spec.ts` |
+| Free music sources against the mock providers: Wikipedia/TheAudioDB bios and credits, ListenBrainz stats and top songs, Deezer top songs, album text by release group, Refresh Metadata MusicBrainz results, the Free music sources switch (off: no MusicBrainz request; Artist Radio note), Libre.fm sign-in through the callback, own server connect (wrong token refused) and disconnect, no Last.fm left in Settings | `tests/desktop/providers.spec.ts` |
+| Mobile shell, browse, search, Now Playing, OS media controls, Equalizer sheet fit and Saved EQ block, Sleep tool, M3U import sheet, steering pills, Scrobbling targets | `tests/mobile/mobile.spec.ts` |
 | Backup: back up now (with an uploaded cover), schedule/keep, delete | `tests/desktop/backup.spec.ts` |
 | Restore (project `restore`, runs last because it signs everyone out): live restore, first-run restore on a second fresh server with a remapped music folder | `tests/restore/restore.spec.ts` |
 
-Not covered (needs hardware or network): Play On renderers, DLNA, BoogieMix rendering/deep analysis, Last.fm,
-ListenBrainz and provider lookups, the desktop (Tauri) shell. Steering pill suggestions are not covered either: the
+Not covered (needs hardware or a real service): Play On renderers, DLNA, BoogieMix rendering/deep analysis, the real
+provider services (only the mock is tested), the desktop (Tauri) shell. Steering pill suggestions are not covered either: the
 server offers a pill only with at least 10 tracks behind it and style tags from providers, so the tests turn pills on
 over the API instead.
 
@@ -88,6 +94,7 @@ over the API instead.
 | `BOOGIEBOX_E2E_STRICT_VERSION` | off | `1` = fail when the `VERSION` build is missing |
 | `BOOGIEBOX_E2E_PORT` | `3917` | Server port |
 | `BOOGIEBOX_E2E_PORT2` | `3918` | Port of the second, fresh server the first-run restore test starts |
+| `BOOGIEBOX_E2E_PROVIDER_PORT` | `3919` | Port of the mock providers |
 | `BOOGIEBOX_PRUNE_BRAKE_MIN` | `2` | Passed to the server: lowers the scan's mass-removal brake floor (normally 200 tracks) so the fixture library can trip it |
 
 ## Writing tests

@@ -250,7 +250,7 @@ test('smart playlist steering pills: on, reset, queue prompt, editor line, Style
       await goTo(page, 'Playlists')
       await main(page).getByText(name, { exact: true }).click()
       await expect(pills.getByRole('button', { name: 'More shoegaze', pressed: true })).toBeVisible()
-      // No Last.fm counts in the fixture, so "Popular" uses the local wording.
+      // No popularity counts for the fixture (the mock providers list no fixture songs), so "Popular" uses the local wording.
       await expect(pills.getByRole('button', { name: 'Most played here', pressed: true })).toBeVisible()
       await expect(main(page).getByRole('status').filter({ hasText: /tracks? changed$/ })).toBeVisible()
       await expect(main(page).getByText('More pills appear once BoogieBox finds style tags for these tracks.')).toBeVisible()
