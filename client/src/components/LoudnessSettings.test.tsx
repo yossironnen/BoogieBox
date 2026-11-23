@@ -15,7 +15,7 @@ describe('VolumeLevellingCard', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'playbackSettings').mockResolvedValue({
-      transcodeQuality: 'low', replayGainEnabled: 'false', vinylMode: 'standard', lastfmConfigured: 'false',
+      transcodeQuality: 'low', replayGainEnabled: 'false', vinylMode: 'standard',
       loudnessPlayOnMode: 'album',
     });
   });
@@ -38,7 +38,7 @@ describe('VolumeLevellingCard', () => {
 
   it('says this player is not levelled when the mode is off', async () => {
     vi.mocked(api.playbackSettings).mockResolvedValue({
-      transcodeQuality: 'low', replayGainEnabled: 'false', vinylMode: 'standard', lastfmConfigured: 'false',
+      transcodeQuality: 'low', replayGainEnabled: 'false', vinylMode: 'standard',
     });
     render(<VolumeLevellingCard prefs={{ mode: 'off', preampDb: 0 }} onChange={vi.fn()} />);
     expect(await screen.findByText('Not levelled (set by an admin)')).toBeInTheDocument();

@@ -41,136 +41,6 @@ fn lyrics_ovh_api_base() -> String {
     provider_base_url("BOOGIEBOX_LYRICS_OVH_API_BASE", "https://api.lyrics.ovh")
 }
 
-pub(crate) fn lastfm_api_base() -> String {
-    provider_base_url(
-        "BOOGIEBOX_LASTFM_API_BASE",
-        "https://ws.audioscrobbler.com/2.0/",
-    )
-}
-
-// -- Last.fm key health (wip/lastfm-replacement-plan.md phase 0) ----------------
-//
-// From 2026-12-01 Last.fm only accepts the keys of Pro subscribers. A refused key (error 10 or 26, or HTTP 403) is
-// remembered here, so every lane and the scrobbler stop calling Last.fm, nothing is recorded as "no data", and
-// Settings can say why. Last.fm support is being removed; this only covers releases before that.
-
-/// What Last.fm last said about an API key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LastfmKeyHealth {
-    /// Not asked yet (or a refusal old enough to ask again).
-    Unknown,
-    Ok,
-    Rejected,
-}
-
-/// A refused key is tried once more after this long (its owner may have bought Pro).
-const LASTFM_REJECTED_RECHECK: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
-
-/// Error text of a Last.fm call that was skipped or refused because of the key.
-pub const LASTFM_KEY_REJECTED: &str = "key-rejected";
-
-static LASTFM_KEY_HEALTH: std::sync::Mutex<Vec<(u64, LastfmKeyHealth, Instant)>> =
-    std::sync::Mutex::new(Vec::new());
-
-fn lastfm_key_hash(key: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    key.trim().hash(&mut hasher);
-    hasher.finish()
-}
-
-/// What Last.fm last said about `key`.
-pub fn lastfm_key_health(key: &str) -> LastfmKeyHealth {
-    let hash = lastfm_key_hash(key);
-    let known = LASTFM_KEY_HEALTH.lock().unwrap_or_else(|p| p.into_inner());
-    match known.iter().find(|(h, _, _)| *h == hash) {
-        Some((_, LastfmKeyHealth::Rejected, at)) if at.elapsed() >= LASTFM_REJECTED_RECHECK => {
-            LastfmKeyHealth::Unknown
-        }
-        Some((_, health, _)) => *health,
-        None => LastfmKeyHealth::Unknown,
-    }
-}
-
-/// False while Last.fm refuses `key`: callers skip Last.fm instead of calling it.
-pub fn lastfm_key_usable(key: &str) -> bool {
-    lastfm_key_health(key) != LastfmKeyHealth::Rejected
-}
-
-pub(crate) fn record_lastfm_key_health(key: &str, health: LastfmKeyHealth) {
-    let hash = lastfm_key_hash(key);
-    let mut known = LASTFM_KEY_HEALTH.lock().unwrap_or_else(|p| p.into_inner());
-    let before = known.iter().position(|(h, _, _)| *h == hash);
-    let was = before.map(|i| known[i].1);
-    if health == LastfmKeyHealth::Rejected && was != Some(LastfmKeyHealth::Rejected) {
-        tracing::warn!(
-            "Last.fm refused the API key (keys need a Pro subscription from 1 December 2026): \
-             Last.fm lookups and scrobbles are paused"
-        );
-    }
-    let entry = (hash, health, Instant::now());
-    match before {
-        Some(i) => known[i] = entry,
-        None => {
-            // Keys rarely change; keep the list small.
-            if known.len() >= 16 {
-                known.remove(0);
-            }
-            known.push(entry);
-        }
-    }
-}
-
-/// True when Last.fm's reply refuses the key itself: error 10 (invalid key) or 26 (suspended), or a 403 with no
-/// other error code (Last.fm also answers 403 for an expired user session, error 9). Recorded either way, so a
-/// working key clears an old refusal.
-pub(crate) fn lastfm_reply_rejects_key(key: &str, status: u16, body: &Value) -> bool {
-    let rejected = match body["error"].as_i64() {
-        Some(code) => matches!(code, 10 | 26),
-        None => status == 403,
-    };
-    if rejected {
-        record_lastfm_key_health(key, LastfmKeyHealth::Rejected);
-    } else if (200..300).contains(&status) {
-        record_lastfm_key_health(key, LastfmKeyHealth::Ok);
-    }
-    rejected
-}
-
-/// Status, JSON body (the parse error when it isn't JSON) and whether the key was refused.
-async fn read_lastfm_reply(
-    key: &str,
-    response: reqwest::Response,
-) -> (u16, Result<Value, String>, bool) {
-    let status = response.status().as_u16();
-    let body = response.json::<Value>().await.map_err(|e| e.to_string());
-    let rejected = lastfm_reply_rejects_key(key, status, body.as_ref().unwrap_or(&Value::Null));
-    (status, body, rejected)
-}
-
-/// Asks Last.fm once whether it takes `key` (Settings › Last.fm).
-pub async fn check_lastfm_key(client: &Client, key: &str) -> LastfmKeyHealth {
-    let url = format!(
-        "{}?method=chart.gettopartists&api_key={}&format=json&limit=1",
-        lastfm_api_base(),
-        urlencoding::encode(key.trim())
-    );
-    let t0 = log_request("lastfm", "key_check", "");
-    let Ok(response) = client.get(&url).timeout(PROVIDER_TIMEOUT).send().await else {
-        return LastfmKeyHealth::Unknown;
-    };
-    log_response("lastfm", "key_check", t0, response.status());
-    let (status, _, rejected) = read_lastfm_reply(key, response).await;
-    if rejected {
-        LastfmKeyHealth::Rejected
-    } else if (200..300).contains(&status) {
-        LastfmKeyHealth::Ok
-    } else {
-        LastfmKeyHealth::Unknown
-    }
-}
-
 /// Logs an outbound metadata-provider request. Only visible when scan debug
 /// logging is enabled — routed via this module's target to `scan-debug.log`.
 fn log_request(provider: &str, action: &str, detail: &str) -> Instant {
@@ -678,7 +548,7 @@ pub struct MetadataSearchResult {
 /// used by `post_scan::run_sync_discogs_album_metadata`'s cross-provider
 /// agreement check (label/release-type/year are only applied when every
 /// matched provider agrees), which needs to see all of them, not just
-/// whichever answered first. Deliberately Last.fm-free and behaviorally
+/// whichever answered first. Behaviorally
 /// identical to the pre-failover `search_metadata`, since that job's
 /// agreement logic wasn't part of this change.
 pub async fn search_metadata_combined(
@@ -714,18 +584,14 @@ pub async fn search_metadata_combined(
 
 /// Searches for artist/album metadata as a failover chain — MusicBrainz
 /// first (keyless, several candidates), then Discogs (album searches only;
-/// Discogs has no artist-only search wired up here), then Spotify, then
-/// Last.fm while its key still works — stopping at the first provider that
-/// returns at least one match. A provider that errors (rate limit or
+/// Discogs has no artist-only search wired up here), then Spotify — stopping
+/// at the first provider that returns at least one match. A provider that errors (rate limit or
 /// otherwise) doesn't stop the chain, but its failure is recorded and
 /// returned alongside whatever the rest of the chain found, so the client
 /// can tell "genuinely no matches" apart from "a provider failed".
-// Back to 7 arguments when the Last.fm key goes.
-#[allow(clippy::too_many_arguments)]
 pub async fn search_metadata(
     client: &Client,
     musicbrainz: bool,
-    lastfm_key: Option<&str>,
     discogs_token: Option<&str>,
     spotify_client_id: Option<&str>,
     spotify_client_secret: Option<&str>,
@@ -764,16 +630,6 @@ pub async fn search_metadata(
             Ok(_) => {}
             Err(reason) => warnings.push(ProviderSearchWarning {
                 provider: "spotify".to_owned(),
-                reason,
-            }),
-        }
-    }
-
-    if let Some(key) = lastfm_key.filter(|key| lastfm_key_usable(key)) {
-        match search_lastfm_metadata(client, key, artist, album).await {
-            Ok(results) => return (results, warnings),
-            Err(reason) => warnings.push(ProviderSearchWarning {
-                provider: "lastfm".to_owned(),
                 reason,
             }),
         }
@@ -992,125 +848,6 @@ async fn search_musicbrainz_metadata(
             .collect()
     };
     Ok(results)
-}
-
-/// One-result-or-none Last.fm lookup (`artist.getinfo`/`album.getinfo` are
-/// direct-lookup APIs, not a fuzzy multi-candidate search like Discogs/
-/// Spotify) mapped onto the shared `MetadataSearchResult` shape so it can
-/// slot into the same failover chain and the same "pick a result" UI.
-async fn search_lastfm_metadata(
-    client: &Client,
-    api_key: &str,
-    artist: &str,
-    album: Option<&str>,
-) -> Result<Vec<MetadataSearchResult>, ProviderSearchFailure> {
-    let lastfm_api_root = lastfm_api_base();
-    let (url, log_kind, log_subject) = if let Some(album_name) = album {
-        (
-            format!(
-                "{lastfm_api_root}?method=album.getinfo&artist={}&album={}&api_key={}&format=json",
-                urlencoding::encode(artist),
-                urlencoding::encode(album_name),
-                api_key
-            ),
-            "album_metadata_search",
-            format!("{artist} — {album_name}"),
-        )
-    } else {
-        (
-            format!(
-                "{lastfm_api_root}?method=artist.getinfo&artist={}&api_key={}&format=json&autocorrect=1",
-                urlencoding::encode(artist),
-                api_key
-            ),
-            "artist_metadata_search",
-            artist.to_owned(),
-        )
-    };
-
-    let t0 = log_request("lastfm", log_kind, &log_subject);
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|_| ProviderSearchFailure::Unavailable)?;
-    log_response("lastfm", log_kind, t0, resp.status());
-
-    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return Err(ProviderSearchFailure::RateLimited);
-    }
-    let (status, body, rejected) = read_lastfm_reply(api_key, resp).await;
-    if rejected || !(200..300).contains(&status) {
-        return Err(ProviderSearchFailure::Unavailable);
-    }
-    let data = body.map_err(|_| ProviderSearchFailure::Unavailable)?;
-
-    if let Some(album_name) = album {
-        let node = &data["album"];
-        if node.is_null() {
-            return Ok(Vec::new());
-        }
-        let summary = node["wiki"]["summary"].as_str().unwrap_or("");
-        let image = node["image"].as_array().and_then(|imgs| {
-            imgs.iter()
-                .rev()
-                .find_map(|i| optional_nonempty_json_string(&i["#text"]))
-        });
-        let genre = node["tags"]["tag"]
-            .as_array()
-            .and_then(|tags| tags.first())
-            .and_then(|tag| optional_nonempty_json_string(&tag["name"]));
-        Ok(vec![MetadataSearchResult {
-            provider: "lastfm".to_owned(),
-            title: Some(album_name.to_owned()),
-            artist: optional_nonempty_json_string(&node["artist"])
-                .or_else(|| Some(artist.to_owned())),
-            year: None,
-            release_type: None,
-            genre,
-            cover_url: image,
-            disambiguation: None,
-            tracklist: None,
-            description: if summary.is_empty() {
-                None
-            } else {
-                Some(summary.to_owned())
-            },
-            extra: None,
-        }])
-    } else {
-        let node = &data["artist"];
-        if node.is_null() || node["name"].as_str().is_none() {
-            return Ok(Vec::new());
-        }
-        let summary = node["bio"]["summary"].as_str().unwrap_or("");
-        let image = node["image"].as_array().and_then(|imgs| {
-            imgs.iter()
-                .rev()
-                .find_map(|i| optional_nonempty_json_string(&i["#text"]))
-        });
-        let genre = node["tags"]["tag"]
-            .as_array()
-            .and_then(|tags| tags.first())
-            .and_then(|tag| optional_nonempty_json_string(&tag["name"]));
-        Ok(vec![MetadataSearchResult {
-            provider: "lastfm".to_owned(),
-            title: optional_nonempty_json_string(&node["name"]).or_else(|| Some(artist.to_owned())),
-            artist: Some(artist.to_owned()),
-            year: None,
-            release_type: None,
-            genre,
-            cover_url: image,
-            disambiguation: None,
-            tracklist: None,
-            description: if summary.is_empty() {
-                None
-            } else {
-                Some(summary.to_owned())
-            },
-            extra: None,
-        }])
-    }
 }
 
 async fn search_discogs_metadata(
@@ -1566,30 +1303,7 @@ pub async fn fetch_lyricsovh(client: &Client, artist: &str, title: &str) -> Opti
     })
 }
 
-// ── Last.fm ───────────────────────────────────────────────────────────────────
-
-/// Public Last Fm Info Payload data shape used by BoogieBox.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LastFmInfoPayload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mbid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canonical_name: Option<String>,
-    /// Documents the Summary public API surface.
-    pub summary: String,
-    /// Documents the Full public API surface.
-    pub full: String,
-    /// Documents the Listeners public API surface.
-    pub listeners: Option<String>,
-    /// Documents the Playcount public API surface.
-    pub playcount: Option<String>,
-    /// Documents the Url public API surface.
-    pub url: Option<String>,
-    /// Documents the Image public API surface.
-    pub image: Option<String>,
-    /// Documents the Tags public API surface.
-    pub tags: Vec<String>,
-}
+// ── Shared JSON helpers ──────────────────────────────────────────────────────
 
 pub(crate) fn optional_nonempty_json_string(value: &Value) -> Option<String> {
     value
@@ -1597,148 +1311,6 @@ pub(crate) fn optional_nonempty_json_string(value: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-}
-
-fn parse_lastfm_artist_info(data: &Value) -> Option<LastFmInfoPayload> {
-    let artist = &data["artist"];
-    if artist.is_null() || artist["name"].as_str().is_none() {
-        return None;
-    }
-    let image = artist["image"].as_array().and_then(|images| {
-        images
-            .iter()
-            .rev()
-            .find_map(|image| optional_nonempty_json_string(&image["#text"]))
-    });
-    let tags = artist["tags"]["tag"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|tag| optional_nonempty_json_string(&tag["name"]))
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(LastFmInfoPayload {
-        mbid: optional_nonempty_json_string(&artist["mbid"]),
-        canonical_name: optional_nonempty_json_string(&artist["name"]),
-        summary: artist["bio"]["summary"].as_str().unwrap_or("").to_owned(),
-        full: artist["bio"]["content"].as_str().unwrap_or("").to_owned(),
-        listeners: artist["stats"]["listeners"].as_str().map(str::to_owned),
-        playcount: artist["stats"]["playcount"].as_str().map(str::to_owned),
-        url: optional_nonempty_json_string(&artist["url"]),
-        image,
-        tags,
-    })
-}
-
-/// Documents the Fetch Lastfm Artist Info public API surface.
-pub async fn fetch_lastfm_artist_info(
-    client: &Client,
-    api_key: &str,
-    artist_name: &str,
-) -> Option<LastFmInfoPayload> {
-    let lastfm_api_root = lastfm_api_base();
-    let url = format!(
-        "{lastfm_api_root}?method=artist.getinfo&artist={}&api_key={}&format=json&autocorrect=1",
-        urlencoding::encode(artist_name),
-        api_key
-    );
-    if !lastfm_key_usable(api_key) {
-        return None;
-    }
-    let t0 = log_request("lastfm", "artist_info", artist_name);
-    let resp = client.get(&url).send().await.ok()?;
-    log_response("lastfm", "artist_info", t0, resp.status());
-    let (_, body, rejected) = read_lastfm_reply(api_key, resp).await;
-    if rejected {
-        return None;
-    }
-    parse_lastfm_artist_info(&body.ok()?)
-}
-
-fn parse_lastfm_similar_artists(data: &Value) -> Vec<RelatedArtistCandidate> {
-    data["similarartists"]["artist"]
-        .as_array()
-        .map(|artists| {
-            artists
-                .iter()
-                .enumerate()
-                .filter_map(|(index, artist)| {
-                    let name = optional_nonempty_json_string(&artist["name"])?;
-                    let match_score = artist["match"]
-                        .as_f64()
-                        .or_else(|| artist["match"].as_str()?.parse::<f64>().ok())
-                        .map(|score| score.clamp(0.0, 1.0));
-                    let image_url = artist["image"].as_array().and_then(|images| {
-                        images
-                            .iter()
-                            .rev()
-                            .find_map(|image| optional_nonempty_json_string(&image["#text"]))
-                    });
-                    Some(RelatedArtistCandidate {
-                        external_id: optional_nonempty_json_string(&artist["mbid"]),
-                        name,
-                        url: optional_nonempty_json_string(&artist["url"]),
-                        image_url,
-                        match_score,
-                        rank: index + 1,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Fetches Last.fm's ranked similar-artist graph for a source artist.
-pub async fn fetch_lastfm_similar_artists(
-    client: &Client,
-    api_key: &str,
-    artist_name: &str,
-    mbid: Option<&str>,
-    limit: usize,
-) -> Result<Vec<RelatedArtistCandidate>, String> {
-    let identity = mbid
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| format!("mbid={}", urlencoding::encode(value)))
-        .unwrap_or_else(|| format!("artist={}", urlencoding::encode(artist_name.trim())));
-    let lastfm_api_root = lastfm_api_base();
-    let url = format!(
-        "{lastfm_api_root}?method=artist.getSimilar&{identity}&api_key={}&format=json&autocorrect=1&limit={}",
-        urlencoding::encode(api_key),
-        limit.clamp(1, 100)
-    );
-    if !lastfm_key_usable(api_key) {
-        return Err(LASTFM_KEY_REJECTED.to_owned());
-    }
-    let t0 = log_request("lastfm", "similar_artists", artist_name);
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    log_response("lastfm", "similar_artists", t0, response.status());
-    let (status, body, rejected) = read_lastfm_reply(api_key, response).await;
-    if rejected {
-        return Err(LASTFM_KEY_REJECTED.to_owned());
-    }
-    if !(200..300).contains(&status) {
-        return Err(format!("Last.fm returned {status}"));
-    }
-    let data = body?;
-    if data["error"].is_number() {
-        return Err(data["message"]
-            .as_str()
-            .unwrap_or("Last.fm request failed")
-            .to_owned());
-    }
-    let candidates = parse_lastfm_similar_artists(&data);
-    tracing::debug!(
-        "provider result lastfm similar_artists artist={artist_name:?} hits={}",
-        candidates.len()
-    );
-    Ok(candidates)
 }
 
 fn parse_deezer_related_artists(data: &Value) -> Vec<RelatedArtistCandidate> {
@@ -1809,179 +1381,6 @@ pub async fn fetch_deezer_related_artists(
     Ok(candidates)
 }
 
-/// Documents the Fetch Lastfm Album Info public API surface.
-pub async fn fetch_lastfm_album_info(
-    client: &Client,
-    api_key: &str,
-    artist_name: &str,
-    album_name: &str,
-) -> Option<LastFmInfoPayload> {
-    let lastfm_api_root = lastfm_api_base();
-    let url = format!(
-        "{lastfm_api_root}?method=album.getinfo&artist={}&album={}&api_key={}&format=json",
-        urlencoding::encode(artist_name),
-        urlencoding::encode(album_name),
-        api_key
-    );
-    let t0 = log_request(
-        "lastfm",
-        "album_info",
-        &format!("{artist_name} — {album_name}"),
-    );
-    if !lastfm_key_usable(api_key) {
-        return None;
-    }
-    let resp = client.get(&url).send().await.ok()?;
-    log_response("lastfm", "album_info", t0, resp.status());
-    let (_, body, rejected) = read_lastfm_reply(api_key, resp).await;
-    if rejected {
-        return None;
-    }
-    let data = body.ok()?;
-    let album = &data["album"];
-    if album.is_null() {
-        return None;
-    }
-    let summary = album["wiki"]["summary"].as_str().unwrap_or("").to_owned();
-    let full = album["wiki"]["content"].as_str().unwrap_or("").to_owned();
-    let listeners = album["listeners"].as_str().map(str::to_owned);
-    let playcount = album["playcount"].as_str().map(str::to_owned);
-    let url = album["url"].as_str().map(str::to_owned);
-    let image = album["image"]
-        .as_array()
-        .and_then(|imgs| {
-            imgs.iter()
-                .rev()
-                .find(|i| !i["#text"].as_str().unwrap_or("").is_empty())
-        })
-        .and_then(|i| i["#text"].as_str())
-        .map(str::to_owned);
-    let tags = album["tags"]["tag"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t["name"].as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(LastFmInfoPayload {
-        mbid: None,
-        canonical_name: None,
-        summary,
-        full,
-        listeners,
-        playcount,
-        url,
-        image,
-        tags,
-    })
-}
-
-/// Documents the Fetch Lastfm Artist Top Tags public API surface.
-pub async fn fetch_lastfm_artist_top_tags(
-    client: &Client,
-    api_key: &str,
-    artist_name: &str,
-) -> Vec<(String, u64)> {
-    let lastfm_api_root = lastfm_api_base();
-    let url = format!(
-        "{lastfm_api_root}?method=artist.gettoptags&artist={}&api_key={}&format=json",
-        urlencoding::encode(artist_name),
-        api_key
-    );
-    if !lastfm_key_usable(api_key) {
-        return vec![];
-    }
-    let t0 = log_request("lastfm", "artist_top_tags", artist_name);
-    let resp = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
-    log_response("lastfm", "artist_top_tags", t0, resp.status());
-    let data: Value = match read_lastfm_reply(api_key, resp).await {
-        (_, Ok(v), false) => v,
-        _ => return vec![],
-    };
-    data["toptags"]["tag"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| {
-                    let name = t["name"].as_str()?.to_owned();
-                    let count = t["count"].as_u64().unwrap_or(0);
-                    Some((name, count))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Documents the Fetch Lastfm Top Tracks public API surface.
-pub async fn fetch_lastfm_top_tracks(
-    client: &Client,
-    api_key: &str,
-    artist_name: &str,
-) -> Result<Vec<Value>, String> {
-    let lastfm_api_root = lastfm_api_base();
-    let url = format!(
-        "{lastfm_api_root}?method=artist.getTopTracks&api_key={}&artist={}&format=json&autocorrect=1&limit=10",
-        api_key,
-        urlencoding::encode(artist_name),
-    );
-    if !lastfm_key_usable(api_key) {
-        return Err(LASTFM_KEY_REJECTED.to_owned());
-    }
-    let t0 = log_request("lastfm", "top_tracks", artist_name);
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    log_response("lastfm", "top_tracks", t0, resp.status());
-    let (_, body, rejected) = read_lastfm_reply(api_key, resp).await;
-    if rejected {
-        return Err(LASTFM_KEY_REJECTED.to_owned());
-    }
-    let data = body?;
-    if data["error"].is_number() {
-        return Err(data["message"].as_str().unwrap_or("Not found").to_owned());
-    }
-    let raw = data["toptracks"]["track"]
-        .as_array()
-        .ok_or_else(|| "No tracks found".to_owned())?;
-    let mut tracks: Vec<Value> = raw
-        .iter()
-        .filter_map(|t| {
-            let name = t["name"].as_str()?.trim().to_owned();
-            if name.is_empty() {
-                return None;
-            }
-            let playcount: u64 = t["playcount"]
-                .as_str()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            if playcount == 0 {
-                return None;
-            }
-            let mut obj = serde_json::json!({ "name": name, "playcount": playcount });
-            if let Some(n) = t["listeners"].as_str().and_then(|s| s.parse::<u64>().ok()) {
-                obj["listeners"] = serde_json::json!(n);
-            }
-            if let Some(u) = t["url"].as_str() {
-                obj["url"] = serde_json::json!(u);
-            }
-            Some(obj)
-        })
-        .collect();
-    if tracks.is_empty() {
-        return Err("No tracks found".to_owned());
-    }
-    tracks.sort_by(|a, b| {
-        b["playcount"]
-            .as_u64()
-            .unwrap_or(0)
-            .cmp(&a["playcount"].as_u64().unwrap_or(0))
-    });
-    tracks.truncate(5);
-    Ok(tracks)
-}
-
 // -- Artist Radio metadata (wip/artist-radio-v2-plan.md §3) ---------------------
 
 /// Why a tag/similarity lookup produced nothing. `RateLimited` must stay
@@ -1990,8 +1389,6 @@ pub async fn fetch_lastfm_top_tracks(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderFetchError {
     RateLimited,
-    /// Last.fm refuses the API key (see [`lastfm_key_usable`]): stop, record nothing.
-    KeyRejected,
     Failed(String),
 }
 
@@ -1999,7 +1396,6 @@ impl std::fmt::Display for ProviderFetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ProviderFetchError::RateLimited => write!(f, "provider rate limit exceeded"),
-            ProviderFetchError::KeyRejected => write!(f, "Last.fm refused the API key"),
             ProviderFetchError::Failed(message) => write!(f, "{message}"),
         }
     }
@@ -2189,148 +1585,6 @@ fn parse_tag_counts(tags: &Value) -> Vec<(String, u64)> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Fetches Last.fm's crowd tags for one track (`track.getTopTags`).
-///
-/// Unlike [`fetch_lastfm_artist_top_tags`] this returns a `Result` so a rate
-/// limit (HTTP 429 or Last.fm error 29) is never confused with a track that
-/// simply has no tags (error 6 / an empty list → `Ok(vec![])`).
-pub async fn fetch_lastfm_track_top_tags(
-    client: &Client,
-    api_key: &str,
-    artist_name: &str,
-    track_title: &str,
-) -> Result<Vec<(String, u64)>, ProviderFetchError> {
-    let lastfm_api_root = lastfm_api_base();
-    let url = format!(
-        "{lastfm_api_root}?method=track.gettoptags&artist={}&track={}&api_key={}&format=json&autocorrect=1",
-        urlencoding::encode(artist_name),
-        urlencoding::encode(track_title),
-        urlencoding::encode(api_key),
-    );
-    if !lastfm_key_usable(api_key) {
-        return Err(ProviderFetchError::KeyRejected);
-    }
-    let t0 = log_request(
-        "lastfm",
-        "track_top_tags",
-        &format!("{artist_name} — {track_title}"),
-    );
-    let response = client
-        .get(&url)
-        .timeout(PROVIDER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
-    log_response("lastfm", "track_top_tags", t0, response.status());
-    if response.status().as_u16() == 429 {
-        return Err(ProviderFetchError::RateLimited);
-    }
-    let (status, body, rejected) = read_lastfm_reply(api_key, response).await;
-    if rejected {
-        return Err(ProviderFetchError::KeyRejected);
-    }
-    if !(200..300).contains(&status) {
-        return Err(ProviderFetchError::Failed(format!(
-            "Last.fm returned {status}"
-        )));
-    }
-    let data = body.map_err(ProviderFetchError::Failed)?;
-    if let Some(code) = data["error"].as_i64() {
-        return match code {
-            29 => Err(ProviderFetchError::RateLimited),
-            6 => Ok(Vec::new()),
-            _ => Err(ProviderFetchError::Failed(
-                data["message"]
-                    .as_str()
-                    .unwrap_or("Last.fm request failed")
-                    .to_owned(),
-            )),
-        };
-    }
-    Ok(parse_tag_counts(&data["toptags"]["tag"]))
-}
-
-/// Most songs asked for per artist; on a sample of the dev library this covered 99% of its tracks.
-const LASTFM_TRACK_COUNTS_LIMIT: u32 = 1000;
-
-/// One artist's songs on Last.fm with their global scrobble counts. An artist Last.fm doesn't know is an empty
-/// list; a throttle stays an error so it's never recorded as "no data".
-pub async fn fetch_lastfm_artist_track_counts(
-    client: &Client,
-    api_key: &str,
-    artist_name: &str,
-) -> Result<Vec<boogiebox_db::popularity::PopularityEntry>, ProviderFetchError> {
-    let lastfm_api_root = lastfm_api_base();
-    let url = format!(
-        "{lastfm_api_root}?method=artist.gettoptracks&artist={}&api_key={}&format=json&autocorrect=1&limit={LASTFM_TRACK_COUNTS_LIMIT}",
-        urlencoding::encode(artist_name),
-        urlencoding::encode(api_key),
-    );
-    if !lastfm_key_usable(api_key) {
-        return Err(ProviderFetchError::KeyRejected);
-    }
-    let t0 = log_request("lastfm", "artist_track_counts", artist_name);
-    let response = client
-        .get(&url)
-        .timeout(PROVIDER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
-    log_response("lastfm", "artist_track_counts", t0, response.status());
-    if response.status().as_u16() == 429 {
-        return Err(ProviderFetchError::RateLimited);
-    }
-    let (status, body, rejected) = read_lastfm_reply(api_key, response).await;
-    if rejected {
-        return Err(ProviderFetchError::KeyRejected);
-    }
-    if !(200..300).contains(&status) {
-        return Err(ProviderFetchError::Failed(format!(
-            "Last.fm returned {status}"
-        )));
-    }
-    let data = body.map_err(ProviderFetchError::Failed)?;
-    if let Some(code) = data["error"].as_i64() {
-        return match code {
-            29 => Err(ProviderFetchError::RateLimited),
-            6 => Ok(Vec::new()),
-            _ => Err(ProviderFetchError::Failed(
-                data["message"]
-                    .as_str()
-                    .unwrap_or("Last.fm request failed")
-                    .to_owned(),
-            )),
-        };
-    }
-    let count = |value: &Value| -> Option<u64> {
-        value
-            .as_u64()
-            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
-    };
-    let track = &data["toptracks"]["track"];
-    // Last.fm sends a lone object instead of a one-item list.
-    let tracks: &[Value] = match track {
-        Value::Array(list) => list,
-        Value::Object(_) => std::slice::from_ref(track),
-        _ => &[],
-    };
-    Ok(tracks
-        .iter()
-        .filter_map(|entry| {
-            let title = entry["name"].as_str()?.trim();
-            let scrobbles = count(&entry["playcount"])?;
-            (!title.is_empty() && scrobbles > 0).then(|| {
-                boogiebox_db::popularity::PopularityEntry {
-                    recording_mbid: None,
-                    title: title.to_owned(),
-                    scrobbles,
-                    listeners: count(&entry["listeners"]),
-                }
-            })
-        })
-        .collect())
 }
 
 /// MusicBrainz and ListenBrainz signal throttling with HTTP 429/503.
@@ -2645,53 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn lastfm_artist_info_parses_identity_and_old_cache_defaults() {
-        let data = serde_json::json!({
-            "artist": {
-                "name": "Massive Attack",
-                "mbid": "10adbe5c-6cb4-4d2a-82a2-bfbdd0488cbd",
-                "url": "https://last.fm/music/Massive+Attack",
-                "stats": {"listeners": "10", "playcount": "20"},
-                "bio": {"summary": "Summary", "content": "Full"},
-                "image": [{"#text": ""}, {"#text": "https://img/artist.jpg"}],
-                "tags": {"tag": [{"name": "trip-hop"}]}
-            }
-        });
-        let parsed = parse_lastfm_artist_info(&data).unwrap();
-        assert_eq!(
-            parsed.mbid.as_deref(),
-            Some("10adbe5c-6cb4-4d2a-82a2-bfbdd0488cbd")
-        );
-        assert_eq!(parsed.canonical_name.as_deref(), Some("Massive Attack"));
-        assert_eq!(parsed.tags, vec!["trip-hop"]);
-
-        let old: LastFmInfoPayload = serde_json::from_value(serde_json::json!({
-            "summary": "Old", "full": "Old", "listeners": null,
-            "playcount": null, "url": null, "image": null, "tags": []
-        }))
-        .unwrap();
-        assert_eq!(old.mbid, None);
-        assert_eq!(old.canonical_name, None);
-    }
-
-    #[test]
     fn related_artist_parsers_preserve_rank_score_and_ids() {
-        let lastfm = serde_json::json!({
-            "similarartists": {"artist": [
-                {"name": "Portishead", "mbid": "mbid-portishead", "match": "0.93", "url": "https://last.fm/portishead", "image": [{"#text": "https://img/p.jpg"}]},
-                {"name": "Tricky", "mbid": "", "match": 1.5}
-            ]}
-        });
-        let candidates = parse_lastfm_similar_artists(&lastfm);
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].rank, 1);
-        assert_eq!(
-            candidates[0].external_id.as_deref(),
-            Some("mbid-portishead")
-        );
-        assert_eq!(candidates[0].match_score, Some(0.93));
-        assert_eq!(candidates[1].match_score, Some(1.0));
-
         let deezer = serde_json::json!({"data": [
             {"id": 27, "name": "Daft Punk", "link": "https://deezer.com/artist/27", "picture_big": "https://img/dp.jpg"}
         ]});
@@ -2700,7 +1908,6 @@ mod tests {
         assert_eq!(related[0].rank, 1);
         assert_eq!(related[0].match_score, None);
 
-        assert!(parse_lastfm_similar_artists(&serde_json::json!({})).is_empty());
         assert!(parse_deezer_related_artists(&serde_json::json!({})).is_empty());
     }
 }
@@ -2868,49 +2075,13 @@ pub(crate) mod provider_fetch_tests {
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
     }
 
-    // -- search_metadata failover chain (MusicBrainz -> Discogs -> Spotify -> Last.fm)
+    // -- search_metadata failover chain (MusicBrainz -> Discogs -> Spotify)
 
     #[tokio::test]
-    async fn search_metadata_uses_lastfm_last_when_it_is_the_only_provider() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .and(query_param("method", "artist.getinfo"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "artist": { "name": "Madonna", "bio": { "summary": "Pop icon." } }
-            })))
-            .mount(&server)
-            .await;
-        let client = Client::new();
-        let (results, warnings) = search_metadata(
-            &client,
-            false,
-            Some("lastfm-key"),
-            None,
-            None,
-            None,
-            "Madonna",
-            None,
-        )
-        .await;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].provider, "lastfm");
-        assert_eq!(results[0].title.as_deref(), Some("Madonna"));
-        assert!(warnings.is_empty());
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn search_metadata_falls_through_when_musicbrainz_has_nothing_and_skips_lastfm_after_a_match(
-    ) {
+    async fn search_metadata_falls_through_when_musicbrainz_has_nothing() {
         let _guard = ENV_LOCK.lock().await;
         let server = MockServer::start().await;
         std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
 
@@ -2920,15 +2091,6 @@ pub(crate) mod provider_fetch_tests {
                 "artists": [{ "id": "79239441-bfd5-4981-a70c-55c3f15c1287", "score": 30, "name": "Madonnas" }]
             })))
             .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .and(query_param("method", "artist.getinfo"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "artist": { "name": "Madonna" }
-            })))
-            .expect(0)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -2951,7 +2113,6 @@ pub(crate) mod provider_fetch_tests {
         let (results, warnings) = search_metadata(
             &client,
             true,
-            Some("lastfm-key"),
             None,
             Some("spotify-id"),
             Some("spotify-secret"),
@@ -2967,7 +2128,6 @@ pub(crate) mod provider_fetch_tests {
         );
 
         std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
     }
@@ -3005,7 +2165,6 @@ pub(crate) mod provider_fetch_tests {
         let (results, warnings) = search_metadata(
             &client,
             true,
-            None,
             None,
             Some("spotify-id"),
             Some("spotify-secret"),
@@ -3048,7 +2207,7 @@ pub(crate) mod provider_fetch_tests {
 
         let client = Client::new();
         let (results, warnings) =
-            search_metadata(&client, true, None, None, None, None, "Nirvana", None).await;
+            search_metadata(&client, true, None, None, None, "Nirvana", None).await;
         assert!(warnings.is_empty());
         assert_eq!(results.len(), 2, "bad ids and weak scores are dropped");
         assert!(results.iter().all(|r| r.provider == "musicbrainz"));
@@ -3105,7 +2264,6 @@ pub(crate) mod provider_fetch_tests {
             None,
             None,
             None,
-            None,
             "Nirvana",
             Some("Nevermind"),
         )
@@ -3157,12 +2315,11 @@ pub(crate) mod provider_fetch_tests {
             .await;
 
         let client = Client::new();
-        // No Last.fm key, no Discogs token — Spotify is the only provider in
+        // No Discogs token — Spotify is the only provider in
         // the chain, matching the real regression this was found from.
         let (results, warnings) = search_metadata(
             &client,
             false,
-            None,
             None,
             Some("spotify-id"),
             Some("spotify-secret"),
@@ -3177,68 +2334,6 @@ pub(crate) mod provider_fetch_tests {
 
         std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn search_lastfm_metadata_maps_album_lookup_fields() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .and(query_param("method", "album.getinfo"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "album": {
-                    "artist": "Madonna",
-                    "wiki": { "summary": "A classic." },
-                    "image": [{ "#text": "https://img/cover.jpg" }],
-                    "tags": { "tag": [{ "name": "pop" }] }
-                }
-            })))
-            .mount(&server)
-            .await;
-
-        let client = Client::new();
-        let results = search_lastfm_metadata(&client, "lastfm-key", "Madonna", Some("Erotica"))
-            .await
-            .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].provider, "lastfm");
-        assert_eq!(results[0].title.as_deref(), Some("Erotica"));
-        assert_eq!(results[0].artist.as_deref(), Some("Madonna"));
-        assert_eq!(results[0].genre.as_deref(), Some("pop"));
-        assert_eq!(
-            results[0].cover_url.as_deref(),
-            Some("https://img/cover.jpg")
-        );
-        assert_eq!(results[0].description.as_deref(), Some("A classic."));
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn search_lastfm_metadata_returns_empty_not_an_error_when_unknown() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .and(query_param("method", "artist.getinfo"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "artist": null
-            })))
-            .mount(&server)
-            .await;
-
-        let client = Client::new();
-        let results = search_lastfm_metadata(&client, "lastfm-key", "Unknown Artist", None)
-            .await
-            .unwrap();
-        assert!(results.is_empty());
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
     }
 
     #[tokio::test]
@@ -3307,102 +2402,6 @@ pub(crate) mod provider_fetch_tests {
     }
 
     #[tokio::test]
-    async fn fetch_lastfm_artist_info_parses_bio_and_tags() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "artist": {
-                    "name": "Massive Attack",
-                    "mbid": "mbid-1",
-                    "url": "https://last.fm/music/Massive+Attack",
-                    "bio": { "summary": "short bio", "content": "long bio" },
-                    "stats": { "listeners": "100", "playcount": "200" },
-                    "image": [{ "#text": "" }, { "#text": "https://img/artist.jpg" }],
-                    "tags": { "tag": [{ "name": "trip-hop" }] }
-                }
-            })))
-            .mount(&server)
-            .await;
-
-        let client = Client::new();
-        let info = fetch_lastfm_artist_info(&client, "key", "Massive Attack")
-            .await
-            .unwrap();
-        assert_eq!(info.summary, "short bio");
-        assert_eq!(info.image.as_deref(), Some("https://img/artist.jpg"));
-        assert_eq!(info.tags, vec!["trip-hop".to_string()]);
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn fetch_lastfm_artist_info_returns_none_when_artist_missing() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-            .mount(&server)
-            .await;
-
-        let client = Client::new();
-        assert!(fetch_lastfm_artist_info(&client, "key", "Nobody")
-            .await
-            .is_none());
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn fetch_lastfm_top_tracks_returns_track_list_and_errors_on_failure() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "toptracks": { "track": [
-                    { "name": "Song One", "playcount": "500" },
-                    { "name": "Song Two", "playcount": "300" }
-                ] }
-            })))
-            .mount(&server)
-            .await;
-
-        let client = Client::new();
-        let tracks = fetch_lastfm_top_tracks(&client, "key", "Artist")
-            .await
-            .unwrap();
-        assert_eq!(tracks.len(), 2);
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn fetch_lastfm_artist_top_tags_parses_tag_counts() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "toptags": { "tag": [{ "name": "rock", "count": 50 }] }
-            })))
-            .mount(&server)
-            .await;
-
-        let client = Client::new();
-        let tags = fetch_lastfm_artist_top_tags(&client, "key", "Artist").await;
-        assert_eq!(tags, vec![("rock".to_string(), 50)]);
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
     async fn fetch_deezer_related_artists_parses_and_errors_on_server_failure() {
         let _guard = ENV_LOCK.lock().await;
         let server = MockServer::start().await;
@@ -3428,311 +2427,6 @@ pub(crate) mod provider_fetch_tests {
 
     const MBID_A: &str = "10adbe5e-a2c0-4bf3-8249-2b4cbf6e6ca8";
     const MBID_B: &str = "8f6bd1e4-fbe1-4f50-aa9b-94c450ec0f11";
-
-    #[tokio::test]
-    async fn artist_track_counts_parse_and_tell_throttles_from_unknown_artists() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-        let client = Client::new();
-
-        Mock::given(method("GET"))
-            .and(query_param("method", "artist.gettoptracks"))
-            .and(query_param("artist", "Erasure"))
-            .and(query_param("autocorrect", "1"))
-            .and(query_param("limit", "1000"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "toptracks": { "track": [
-                    { "name": "A Little Respect", "playcount": "900", "listeners": "90" },
-                    { "name": "Sometimes", "playcount": 500 },
-                    { "name": "  ", "playcount": "5" },
-                    { "name": "Never Scrobbled", "playcount": "0" },
-                    { "name": "No Count" }
-                ]}
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("artist", "Single"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "toptracks": { "track": { "name": "Only Song", "playcount": "7" } }
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("artist", "Empty"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "toptracks": { "track": [] }
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("artist", "Unknown"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "error": 6, "message": "The artist you supplied could not be found"
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("artist", "Throttled"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "error": 29, "message": "Rate limit exceeded"
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("artist", "Too Fast"))
-            .respond_with(ResponseTemplate::new(429))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("artist", "Broken"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("artist", "Bad Key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "error": 10, "message": "Invalid API key"
-            })))
-            .mount(&server)
-            .await;
-
-        let fetch = |artist: &'static str| {
-            let client = client.clone();
-            async move { fetch_lastfm_artist_track_counts(&client, "key", artist).await }
-        };
-        let counts = fetch("Erasure").await.unwrap();
-        assert_eq!(counts.len(), 2);
-        assert_eq!(counts[0].title, "A Little Respect");
-        assert_eq!(counts[0].scrobbles, 900);
-        assert_eq!(counts[0].listeners, Some(90));
-        assert_eq!(counts[1].scrobbles, 500);
-        assert_eq!(counts[1].listeners, None);
-        assert_eq!(fetch("Single").await.unwrap()[0].title, "Only Song");
-        assert!(fetch("Empty").await.unwrap().is_empty());
-        assert!(fetch("Unknown").await.unwrap().is_empty());
-        assert_eq!(
-            fetch("Throttled").await.unwrap_err(),
-            ProviderFetchError::RateLimited
-        );
-        assert_eq!(
-            fetch("Too Fast").await.unwrap_err(),
-            ProviderFetchError::RateLimited
-        );
-        assert!(matches!(
-            fetch("Broken").await.unwrap_err(),
-            ProviderFetchError::Failed(_)
-        ));
-        // A refused key gets its own name here: the refusal is remembered for the whole process.
-        assert_eq!(
-            fetch_lastfm_artist_track_counts(&client, "track-counts-refused-key", "Bad Key")
-                .await
-                .unwrap_err(),
-            ProviderFetchError::KeyRejected
-        );
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn a_refused_lastfm_key_stops_every_lookup_after_one_answer() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-        let client = Client::new();
-        // Each key is refused once, in a different way; nothing asks Last.fm again after that.
-        Mock::given(method("GET"))
-            .and(query_param("api_key", "dead-10"))
-            .respond_with(
-                ResponseTemplate::new(403).set_body_json(
-                    serde_json::json!({ "error": 10, "message": "Invalid API key" }),
-                ),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("api_key", "dead-403"))
-            .respond_with(ResponseTemplate::new(403))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("api_key", "dead-26"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    serde_json::json!({ "error": 26, "message": "Suspended API key" }),
-                ),
-            )
-            // The lookup, then the Settings check (which always asks).
-            .expect(2)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(query_param("api_key", "live-key"))
-            .and(query_param("method", "chart.gettopartists"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artists": {} })),
-            )
-            .mount(&server)
-            .await;
-
-        assert!(fetch_lastfm_artist_info(&client, "dead-10", "Cher")
-            .await
-            .is_none());
-        assert_eq!(lastfm_key_health("dead-10"), LastfmKeyHealth::Rejected);
-        assert!(!lastfm_key_usable("dead-10"));
-        assert!(
-            fetch_lastfm_album_info(&client, "dead-10", "Cher", "Believe")
-                .await
-                .is_none()
-        );
-        assert!(fetch_lastfm_artist_top_tags(&client, "dead-10", "Cher")
-            .await
-            .is_empty());
-        let (results, warnings) = search_metadata(
-            &client,
-            false,
-            Some("dead-10"),
-            None,
-            None,
-            None,
-            "Cher",
-            None,
-        )
-        .await;
-        assert!(
-            results.is_empty() && warnings.is_empty(),
-            "skipped, not a failure"
-        );
-
-        assert_eq!(
-            fetch_lastfm_track_top_tags(&client, "dead-403", "A", "B").await,
-            Err(ProviderFetchError::KeyRejected)
-        );
-        assert!(matches!(
-            fetch_lastfm_artist_track_counts(&client, "dead-403", "A").await,
-            Err(ProviderFetchError::KeyRejected)
-        ));
-
-        assert_eq!(
-            fetch_lastfm_top_tracks(&client, "dead-26", "A").await,
-            Err(LASTFM_KEY_REJECTED.to_owned())
-        );
-        assert_eq!(
-            fetch_lastfm_similar_artists(&client, "dead-26", "A", None, 10).await,
-            Err(LASTFM_KEY_REJECTED.to_owned())
-        );
-        assert_eq!(
-            check_lastfm_key(&client, "dead-26").await,
-            LastfmKeyHealth::Rejected
-        );
-
-        // A key nobody has asked about yet is usable; one Last.fm takes is Ok.
-        assert_eq!(lastfm_key_health("live-key"), LastfmKeyHealth::Unknown);
-        assert!(lastfm_key_usable("live-key"));
-        assert_eq!(
-            check_lastfm_key(&client, "live-key").await,
-            LastfmKeyHealth::Ok
-        );
-        // A user-session error (9) on a 403 is not the key.
-        assert!(!lastfm_reply_rejects_key(
-            "live-key",
-            403,
-            &serde_json::json!({ "error": 9 })
-        ));
-        assert!(lastfm_key_usable("live-key"));
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn fetch_lastfm_track_top_tags_parses_and_distinguishes_rate_limits_from_misses() {
-        let _guard = ENV_LOCK.lock().await;
-        let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-        let client = Client::new();
-
-        Mock::given(method("GET"))
-            .and(query_param("method", "track.gettoptags"))
-            .and(query_param("track", "Teardrop"))
-            .and(query_param("autocorrect", "1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "toptags": { "tag": [
-                    { "name": "trip-hop", "count": 100 },
-                    { "name": "melancholy", "count": "45" },
-                    { "name": "  ", "count": 3 }
-                ]}
-            })))
-            .mount(&server)
-            .await;
-        let tags = fetch_lastfm_track_top_tags(&client, "key", "Massive Attack", "Teardrop")
-            .await
-            .unwrap();
-        assert_eq!(
-            tags,
-            vec![("trip-hop".to_owned(), 100), ("melancholy".to_owned(), 45)]
-        );
-
-        // Last.fm error 6 = track not found → an empty result, not a failure.
-        Mock::given(method("GET"))
-            .and(query_param("track", "Unknown"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "error": 6, "message": "Track not found" })),
-            )
-            .mount(&server)
-            .await;
-        assert!(fetch_lastfm_track_top_tags(&client, "key", "A", "Unknown")
-            .await
-            .unwrap()
-            .is_empty());
-
-        // Error 29 and HTTP 429 are rate limits; other errors are plain failures.
-        Mock::given(method("GET"))
-            .and(query_param("track", "Limited"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({ "error": 29, "message": "Rate Limit Exceeded" }),
-            ))
-            .mount(&server)
-            .await;
-        assert_eq!(
-            fetch_lastfm_track_top_tags(&client, "key", "A", "Limited").await,
-            Err(ProviderFetchError::RateLimited)
-        );
-        Mock::given(method("GET"))
-            .and(query_param("track", "Throttled"))
-            .respond_with(ResponseTemplate::new(429))
-            .mount(&server)
-            .await;
-        assert_eq!(
-            fetch_lastfm_track_top_tags(&client, "key", "A", "Throttled").await,
-            Err(ProviderFetchError::RateLimited)
-        );
-        Mock::given(method("GET"))
-            .and(query_param("track", "Broken"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    serde_json::json!({ "error": 8, "message": "Operation failed" }),
-                ),
-            )
-            .mount(&server)
-            .await;
-        assert_eq!(
-            fetch_lastfm_track_top_tags(&client, "key", "A", "Broken").await,
-            Err(ProviderFetchError::Failed("Operation failed".to_owned()))
-        );
-        Mock::given(method("GET"))
-            .and(query_param("track", "Down"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-        assert!(matches!(
-            fetch_lastfm_track_top_tags(&client, "key", "A", "Down").await,
-            Err(ProviderFetchError::Failed(_))
-        ));
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
 
     #[tokio::test]
     async fn search_musicbrainz_artist_accepts_only_one_confident_exact_match() {

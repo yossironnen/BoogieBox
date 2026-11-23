@@ -1016,7 +1016,7 @@ async fn put_smart_definition_handler(
 }
 
 /// Starts an on-demand tag lookup for tracks the steering suggestions found untagged. Does nothing when no
-/// tracks need it or Last.fm lookups are off.
+/// tracks need it or MusicBrainz lookups are off.
 fn look_up_tags(state: &SharedState, db: &DbPool, untagged_ids: &[String]) {
     let http_client = state
         .read()

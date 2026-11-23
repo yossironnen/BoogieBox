@@ -73,7 +73,7 @@ scanner.rs — async music scan worker (ID3v2, FLAC, Ogg, MP4/M4A tag parsing, t
 tag_bag.rs — keeps every text tag a file carries (ReplayGain, MusicBrainz ids, multi-value credits)  
 loudness_analysis.rs — volume levelling: ebur128 measurement of untagged tracks and mixes into `track_loudness`  
 lane_failures.rs — waveform/BPM/loudness lanes give up on a file after 3 failures (until restart)  
-post_scan.rs — async post-scan lanes (art caching, Last.fm, lyrics, artist styles)  
+post_scan.rs — async post-scan lanes (art caching, artist ids, lyrics, Discogs album metadata)  
 mix_worker.rs — BoogieMix render + AI planner + deep-analysis Python orchestration  
 dlna.rs — SSDP + Axum DLNA server, ContentDirectory Browse, audio streaming  
 media_serve.rs — shared ranged serving + MP3/WAV transcodes (browser, DLNA, Play On)  
@@ -87,7 +87,7 @@ logs.rs — admin Logs view (list, page backwards, follow, mask secrets; files n
 shutdown_event.rs — lets the Windows tray launcher stop the server  
 bin/boogiebox.rs — Windows tray launcher (`boogiebox.exe`)  
 activity.rs — admin Activity page: live transfer tracking (byte-counted responses), download sessions, web player heartbeats, persisted 7-day history, snapshot builder  
-scrobbling/ — Last.fm + ListenBrainz scrobble forwarder (encrypted per-user accounts, queued delivery with retries, Last.fm sign-in)  
+scrobbling/ — Libre.fm, ListenBrainz and own-server (Maloja, Koito) scrobble forwarder (encrypted per-user accounts, queued delivery with retries, Libre.fm sign-in)  
 providers.rs — Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh  
 artwork_cache.rs — SHA-1 cache-key shards, UUID v7 markers, folder.jpg discovery  
 image_thumb.rs — JPEG thumbnail generation (pure Rust `image` crate)  

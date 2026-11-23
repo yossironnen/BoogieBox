@@ -712,7 +712,6 @@ pub fn list_artists_needing_external_identity(
          FROM artists ar
          JOIN tracks t ON t.artist_id=ar.id
          WHERE t.library_id=?1 AND (
-           (ar.lastfm_mbid IS NULL AND (ar.lastfm_identity_checked_at IS NULL OR ar.lastfm_identity_checked_at < ?2)) OR
            (ar.deezer_artist_id IS NULL AND (ar.deezer_identity_checked_at IS NULL OR ar.deezer_identity_checked_at < ?2)) OR
            (ar.spotify_artist_id IS NULL AND (ar.spotify_identity_checked_at IS NULL OR ar.spotify_identity_checked_at < ?2)) OR
            (ar.discogs_artist_id IS NULL AND (ar.discogs_identity_checked_at IS NULL OR ar.discogs_identity_checked_at < ?2))

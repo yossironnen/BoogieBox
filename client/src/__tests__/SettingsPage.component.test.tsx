@@ -21,7 +21,6 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     integrations: {
       spotifyTest: vi.fn(),
       geniusTest: vi.fn(),
-      lastfmStatus: vi.fn(async () => ({ configured: true, health: 'ok' })),
     },
     dlna: { status: vi.fn() },
     boogiemix: {
@@ -36,7 +35,7 @@ const { apiMock, getStreamDirectMock, setStreamDirectMock } = vi.hoisted(() => (
     systemSwitchDb: vi.fn(),
     radioMetadataStatus: vi.fn(),
     subsonic: { credentials: vi.fn(), setPassword: vi.fn(), clearPassword: vi.fn() },
-    scrobble: { accounts: vi.fn(), connectListenBrainz: vi.fn(), connectLastFm: vi.fn(), disconnect: vi.fn() },
+    scrobble: { accounts: vi.fn(), connectListenBrainz: vi.fn(), connectLibreFm: vi.fn(), disconnect: vi.fn() },
   },
   getStreamDirectMock: vi.fn(),
   setStreamDirectMock: vi.fn(),
@@ -72,7 +71,7 @@ describe('SettingsPage component flows', () => {
     getStreamDirectMock.mockReturnValue(false);
     // Subsonic panels are covered by ConnectedAppsPanel.test.tsx / SubsonicSettings.test.tsx.
     apiMock.subsonic.credentials.mockResolvedValue({ enabled: false, hasPassword: false, updatedAt: null, lastUsedAt: null, lastClient: null, serverUrls: [] });
-    apiMock.radioMetadataStatus.mockResolvedValue({ mode: 'full', lastfmConfigured: true, keylessEnabled: true, tracksChecked: 0, tracksTotal: 0, artistsTagged: 0, artistsTotal: 0 });
+    apiMock.radioMetadataStatus.mockResolvedValue({ mode: 'full', keylessEnabled: true, tracksChecked: 0, tracksTotal: 0, artistsTagged: 0, artistsTotal: 0 });
     apiMock.systemStatus.mockResolvedValue({ setupRequired: false, ffmpegAvailable: true, dbFolder: 'D:\\BoogieData' });
     apiMock.systemSwitchDb.mockResolvedValue({ ok: true });
     apiMock.admin.logs.list.mockResolvedValue({ folder: 'C:\\ProgramData\\BoogieBox\\logs', sources: [] });
@@ -200,7 +199,6 @@ describe('SettingsPage component flows', () => {
       spotifyClientSecret: 'client-secret',
       geniusClientId: 'genius-id',
       geniusClientSecret: 'genius-secret',
-      lastfmKey: 'lastfm-key',
       dlnaEnabled: 'true',
       dlnaFriendlyName: 'BoogieBox',
       dlnaPort: '8200',
@@ -669,28 +667,11 @@ describe('SettingsPage component flows', () => {
     expect(screen.getByDisplayValue('65535')).toBeInTheDocument();
   });
 
-  it('warns when Last.fm refuses the saved key', async () => {
-    apiMock.integrations.lastfmStatus.mockResolvedValueOnce({ configured: true, health: 'rejected' });
-    render(
-      <SettingsPage
-        currentUser={{ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true }}
-        onLogout={() => {}}
-        settings={DEFAULT_SETTINGS}
-        onSettingsChange={() => {}}
-      />
-    );
-    fireEvent.click(screen.getByRole('tab', { name: /Integrations/i }));
-    expect(await screen.findByText(
-      /Last\.fm no longer accepts this key\. From 1 December 2026, Last\.fm keys need a Pro subscription\. BoogieBox keeps showing what it already fetched\./,
-    )).toBeInTheDocument();
-  });
-
-  it('executes integrations test/save actions for Discogs, Spotify, and Last.fm', async () => {
+  it('executes integrations test/save actions for Discogs and Spotify, with no Last.fm', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
       if (url.includes('api.discogs.com')) return okJson({});
-      if (url.includes('ws.audioscrobbler.com')) return okJson({ artists: { artist: [{ name: 'A' }] } });
       return okJson({});
     });
 
@@ -726,18 +707,8 @@ describe('SettingsPage component flows', () => {
     expect(screen.queryByPlaceholderText(/Genius Client Secret/i)).not.toBeInTheDocument();
     expect(apiMock.integrations.geniusTest).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByPlaceholderText(/Last\.fm API key/i), { target: { value: 'lfm-2' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Test Last.fm connection' }));
-    // The badge checks the app key only; "Connected" would read like a linked user account.
-    expect(await screen.findByText('Key valid')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Save Last.fm credentials' }));
-    await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ lastfmKey: 'lfm-2', lastfmSecret: '' }));
-    expect(screen.getByText(/Each user connects their own Last\.fm account/)).toBeInTheDocument();
-    expect(screen.queryByText(/Last\.fm no longer accepts this key/)).not.toBeInTheDocument();
-
-    const lastfmHeading = screen.getAllByText('Last.fm', { selector: 'div' })[0];
-    const spotifyHeading = screen.getByText(/Artist Images: Deezer \+ Spotify Fallback/i);
-    expect(lastfmHeading.compareDocumentPosition(spotifyHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/Last\.fm API key/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Each user connects their own Last\.fm account/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client ID/i), { target: { value: 'id-2' } });
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client Secret/i), { target: { value: 'secret-2' } });
@@ -753,6 +724,7 @@ describe('SettingsPage component flows', () => {
 
     expect(screen.getByText('Provider Usage')).toBeInTheDocument();
     expect(screen.getByText('Metadata provider usage')).toBeInTheDocument();
+    // Usage recorded before the removal still shows under its name.
     expect(screen.getAllByText('Last.fm').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Spotify').length).toBeGreaterThan(0);
     expect(screen.getByText(/cache write: 100/i)).toBeInTheDocument();
@@ -771,9 +743,7 @@ describe('SettingsPage component flows', () => {
       ok: false,
       status: 401,
       headers: { get: () => 'application/json' },
-      json: async () => String(input).includes('audioscrobbler')
-        ? { error: 10, message: 'bad key' }
-        : { message: 'bad token' },
+      json: async () => ({ message: 'bad token' }),
     } as unknown as Response));
 
     render(
@@ -789,12 +759,10 @@ describe('SettingsPage component flows', () => {
     expect(screen.getByText(/No provider usage has been recorded/i)).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/Discogs personal access token/i), { target: { value: 'bad' } });
-    fireEvent.change(screen.getByPlaceholderText(/Last\.fm API key/i), { target: { value: 'bad' } });
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client ID/i), { target: { value: 'id' } });
     fireEvent.change(screen.getByPlaceholderText(/Spotify Client Secret/i), { target: { value: 'secret' } });
     for (const button of screen.getAllByRole('button', { name: /^Test .* connection$/ })) fireEvent.click(button);
     expect(await screen.findByText(/Discogs returned 401: bad token/i)).toBeInTheDocument();
-    expect(await screen.findByText(/Last\.fm error/i)).toBeInTheDocument();
     expect(await screen.findByText(/spotify offline/i)).toBeInTheDocument();
     for (const button of screen.getAllByRole('button', { name: /^Save .* credentials$/ })) fireEvent.click(button);
     expect(await screen.findAllByText(/save denied/i)).not.toHaveLength(0);
@@ -1090,9 +1058,9 @@ describe('SettingsPage component flows', () => {
       pending: 2,
     };
     apiMock.scrobble.accounts
-      .mockResolvedValueOnce({ lastfmAvailable: false, accounts: [] })
-      .mockResolvedValueOnce({ lastfmAvailable: false, accounts: [] })
-      .mockResolvedValue({ lastfmAvailable: false, accounts: [lbAccount] });
+      .mockResolvedValueOnce({ accounts: [] })
+      .mockResolvedValueOnce({ accounts: [] })
+      .mockResolvedValue({ accounts: [lbAccount] });
     apiMock.scrobble.connectListenBrainz.mockResolvedValue({ ok: true, accountName: 'lb_alice' });
     apiMock.scrobble.disconnect.mockResolvedValue({ ok: true });
     vi.mocked(fetch).mockImplementation(async () => okJson({ valid: true, user_name: 'lb_alice' }));

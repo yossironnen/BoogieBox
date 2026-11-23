@@ -420,7 +420,7 @@ describe('api.artistSimilar', () => {
   it('calls GET /api/artists/:id/similar with a limit', async () => {
     const response = {
       sourceArtistId: '5',
-      artists: [{ id: '9', name: 'Related Artist', score: 1, providers: ['lastfm'] }],
+      artists: [{ id: '9', name: 'Related Artist', score: 1, providers: ['listenbrainz'] }],
     };
     vi.mocked(fetch).mockReturnValue(okJson(response));
 
@@ -470,7 +470,7 @@ describe('api Artist Radio', () => {
     expect(requestUrl().pathname).toContain('/api/artists/5/radio/options');
 
     vi.mocked(fetch).mockClear();
-    const status = { mode: 'full', lastfmConfigured: true, keylessEnabled: true, tracksChecked: 1, tracksTotal: 2, artistsTagged: 0, artistsTotal: 0 };
+    const status = { mode: 'full', keylessEnabled: true, tracksChecked: 1, tracksTotal: 2, artistsTagged: 0, artistsTotal: 0 };
     vi.mocked(fetch).mockReturnValue(okJson(status));
     expect(await api.radioMetadataStatus()).toEqual(status);
     expect(requestUrl().pathname).toContain('/api/radio/metadata/status');

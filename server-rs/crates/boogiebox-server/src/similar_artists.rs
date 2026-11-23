@@ -2,8 +2,7 @@
 
 use crate::{
     providers::{
-        fetch_deezer_related_artists, fetch_lastfm_similar_artists,
-        fetch_listenbrainz_similar_artists, RelatedArtistCandidate,
+        fetch_deezer_related_artists, fetch_listenbrainz_similar_artists, RelatedArtistCandidate,
     },
     DbPool,
 };
@@ -26,7 +25,6 @@ const RELATED_CACHE_DAYS: i64 = 7;
 /// Raw provider similarity candidates for one artist, before local resolution.
 #[derive(Debug, Default, Clone)]
 pub struct RelatedSet {
-    pub lastfm: Vec<RelatedArtistCandidate>,
     pub deezer: Vec<RelatedArtistCandidate>,
     pub listenbrainz: Vec<RelatedArtistCandidate>,
 }
@@ -41,18 +39,15 @@ fn setting_enabled_by_default(conn: &Connection, key: &str) -> bool {
 }
 
 struct RelatedContext {
-    name: String,
-    lastfm_mbid: Option<String>,
     deezer_artist_id: Option<String>,
     musicbrainz_id: Option<String>,
-    lastfm_key: Option<String>,
     keyless: bool,
-    keys: [String; 3],
-    fresh: [Option<String>; 3],
-    stale: [Option<String>; 3],
+    keys: [String; 2],
+    fresh: [Option<String>; 2],
+    stale: [Option<String>; 2],
 }
 
-/// Gathers Last.fm / Deezer / ListenBrainz similar-artist candidates for one
+/// Gathers Deezer / ListenBrainz similar-artist candidates for one
 /// artist, cache-first (7 days). On a miss it fetches, bounded by
 /// `network_budget` per provider when given (the radio path), and falls back to
 /// stale cache when a provider fails or times out. `Ok(None)` = unknown artist.
@@ -72,26 +67,20 @@ pub async fn gather_related_candidates(
             };
             let source_key = identity.artist_id.to_string();
             let keys = [
-                format!("artist-similar:lastfm:{source_key}"),
                 format!("artist-similar:deezer:{source_key}"),
                 format!("artist-similar:listenbrainz:{source_key}"),
             ];
             let fresh = [
                 get_lastfm_cached(&conn, &keys[0]),
                 get_lastfm_cached(&conn, &keys[1]),
-                get_lastfm_cached(&conn, &keys[2]),
             ];
             let stale = [
                 get_lastfm_cached_stale(&conn, &keys[0]),
                 get_lastfm_cached_stale(&conn, &keys[1]),
-                get_lastfm_cached_stale(&conn, &keys[2]),
             ];
             Ok(Some(RelatedContext {
-                name: identity.name,
-                lastfm_mbid: identity.lastfm_mbid,
                 deezer_artist_id: identity.deezer_artist_id,
                 musicbrainz_id: get_artist_musicbrainz_id(&conn, &source_id)?,
-                lastfm_key: get_setting(&conn, "lastfmKey"),
                 keyless: setting_enabled_by_default(&conn, "radioKeylessProviders"),
                 keys,
                 fresh,
@@ -108,18 +97,12 @@ pub async fn gather_related_candidates(
     let budget = |duration: Option<Duration>| duration.unwrap_or(Duration::from_secs(60));
     let limit = budget(network_budget);
 
-    let lastfm = if let Some(cached) = decode_related_cache(ctx.fresh[0].clone()) {
+    let deezer = if let Some(cached) = decode_related_cache(ctx.fresh[0].clone()) {
         cached
-    } else if let Some(api_key) = ctx.lastfm_key.as_deref() {
+    } else if let Some(deezer_id) = ctx.deezer_artist_id.as_deref() {
         match tokio::time::timeout(
             limit,
-            fetch_lastfm_similar_artists(
-                http_client,
-                api_key,
-                &ctx.name,
-                ctx.lastfm_mbid.as_deref(),
-                100,
-            ),
+            fetch_deezer_related_artists(http_client, deezer_id, 100),
         )
         .await
         {
@@ -135,12 +118,14 @@ pub async fn gather_related_candidates(
         decode_related_cache(ctx.stale[0].clone()).unwrap_or_default()
     };
 
-    let deezer = if let Some(cached) = decode_related_cache(ctx.fresh[1].clone()) {
+    let listenbrainz = if !ctx.keyless {
+        Vec::new()
+    } else if let Some(cached) = decode_related_cache(ctx.fresh[1].clone()) {
         cached
-    } else if let Some(deezer_id) = ctx.deezer_artist_id.as_deref() {
+    } else if let Some(mbid) = ctx.musicbrainz_id.as_deref() {
         match tokio::time::timeout(
             limit,
-            fetch_deezer_related_artists(http_client, deezer_id, 100),
+            fetch_listenbrainz_similar_artists(http_client, mbid, 100),
         )
         .await
         {
@@ -156,29 +141,6 @@ pub async fn gather_related_candidates(
         decode_related_cache(ctx.stale[1].clone()).unwrap_or_default()
     };
 
-    let listenbrainz = if !ctx.keyless {
-        Vec::new()
-    } else if let Some(cached) = decode_related_cache(ctx.fresh[2].clone()) {
-        cached
-    } else if let Some(mbid) = ctx.musicbrainz_id.as_deref() {
-        match tokio::time::timeout(
-            limit,
-            fetch_listenbrainz_similar_artists(http_client, mbid, 100),
-        )
-        .await
-        {
-            Ok(Ok(candidates)) => {
-                if let Ok(payload) = serde_json::to_string(&candidates) {
-                    cache_updates.push((ctx.keys[2].clone(), payload));
-                }
-                candidates
-            }
-            _ => decode_related_cache(ctx.stale[2].clone()).unwrap_or_default(),
-        }
-    } else {
-        decode_related_cache(ctx.stale[2].clone()).unwrap_or_default()
-    };
-
     if !cache_updates.is_empty() {
         let cache_db = db.clone();
         let _ = tokio::task::spawn_blocking(move || {
@@ -190,7 +152,6 @@ pub async fn gather_related_candidates(
         .await;
     }
     Ok(Some(RelatedSet {
-        lastfm,
         deezer,
         listenbrainz,
     }))
@@ -212,7 +173,6 @@ pub struct SimilarArtistResult {
 #[derive(Debug)]
 struct RankedMatch {
     score: f64,
-    lastfm_rank: Option<usize>,
     deezer_rank: Option<usize>,
     providers: Vec<String>,
 }
@@ -231,91 +191,30 @@ fn resolve_candidate(
     find_owned_artist_by_name(conn, &candidate.name)
 }
 
-/// Deezer and ListenBrainz scores sit below Last.fm's while Last.fm is in the mix; without it (no key, a refused
-/// key, nothing listed) they use the whole 0..1 range, so Artist Radio weighs similar artists as it did before.
-fn keyless_scale(with_lastfm: bool, scale: f64) -> f64 {
-    if with_lastfm {
-        scale
-    } else {
-        1.0
-    }
+fn deezer_rank_score(rank: usize) -> f64 {
+    1.0 / (1.0 + 0.08 * rank.saturating_sub(1) as f64)
 }
 
-fn deezer_rank_score(rank: usize, with_lastfm: bool) -> f64 {
-    keyless_scale(with_lastfm, 0.65) / (1.0 + 0.08 * rank.saturating_sub(1) as f64)
-}
-
-/// Last.fm + Deezer only — see [`resolve_local_similar_artists_with_listenbrainz`].
-pub fn resolve_local_similar_artists(
-    conn: &Connection,
-    user_id: &str,
-    source_artist_id: &EntityId,
-    lastfm: &[RelatedArtistCandidate],
-    deezer: &[RelatedArtistCandidate],
-    limit: usize,
-) -> rusqlite::Result<Vec<SimilarArtistResult>> {
-    resolve_local_similar_artists_with_listenbrainz(
-        conn,
-        user_id,
-        source_artist_id,
-        lastfm,
-        deezer,
-        &[],
-        limit,
-    )
-}
-
-fn listenbrainz_rank_score(candidate: &RelatedArtistCandidate, with_lastfm: bool) -> f64 {
-    let base = candidate
+fn listenbrainz_rank_score(candidate: &RelatedArtistCandidate) -> f64 {
+    candidate
         .match_score
-        .unwrap_or_else(|| 1.0 / candidate.rank.max(1) as f64);
-    (keyless_scale(with_lastfm, 0.6) * base).clamp(0.0, 1.0)
+        .unwrap_or_else(|| 1.0 / candidate.rank.max(1) as f64)
+        .clamp(0.0, 1.0)
 }
 
 /// Intersects provider candidates with the local collection, rejects
 /// ambiguous/non-owning matches, combines evidence, and returns a stable rank.
-/// ListenBrainz is the keyless third source: it can stand alone (no Last.fm
-/// key needed) and adds a small consensus boost when another provider agrees.
-pub fn resolve_local_similar_artists_with_listenbrainz(
+/// Either source can stand alone; ListenBrainz adds a small consensus boost
+/// when Deezer agrees.
+pub fn resolve_local_similar_artists(
     conn: &Connection,
     user_id: &str,
     source_artist_id: &EntityId,
-    lastfm: &[RelatedArtistCandidate],
     deezer: &[RelatedArtistCandidate],
     listenbrainz: &[RelatedArtistCandidate],
     limit: usize,
 ) -> rusqlite::Result<Vec<SimilarArtistResult>> {
     let mut matches: HashMap<EntityId, RankedMatch> = HashMap::new();
-    let with_lastfm = !lastfm.is_empty();
-
-    for candidate in lastfm {
-        let Some(local_id) = resolve_candidate(conn, ArtistIdentityProvider::LastFm, candidate)?
-        else {
-            continue;
-        };
-        if &local_id == source_artist_id {
-            continue;
-        }
-        let score = candidate
-            .match_score
-            .unwrap_or_else(|| 1.0 / candidate.rank.max(1) as f64)
-            .clamp(0.0, 1.0);
-        matches
-            .entry(local_id)
-            .and_modify(|existing| {
-                existing.score = existing.score.max(score);
-                existing.lastfm_rank = Some(candidate.rank);
-                if !existing.providers.iter().any(|value| value == "lastfm") {
-                    existing.providers.push("lastfm".to_owned());
-                }
-            })
-            .or_insert_with(|| RankedMatch {
-                score,
-                lastfm_rank: Some(candidate.rank),
-                deezer_rank: None,
-                providers: vec!["lastfm".to_owned()],
-            });
-    }
 
     for candidate in deezer {
         let Some(local_id) = resolve_candidate(conn, ArtistIdentityProvider::Deezer, candidate)?
@@ -325,7 +224,7 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
         if &local_id == source_artist_id {
             continue;
         }
-        let score = deezer_rank_score(candidate.rank.max(1), with_lastfm);
+        let score = deezer_rank_score(candidate.rank.max(1));
         matches
             .entry(local_id)
             .and_modify(|existing| {
@@ -337,7 +236,6 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
             })
             .or_insert_with(|| RankedMatch {
                 score,
-                lastfm_rank: None,
                 deezer_rank: Some(candidate.rank),
                 providers: vec!["deezer".to_owned()],
             });
@@ -352,7 +250,7 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
         if &local_id == source_artist_id {
             continue;
         }
-        let score = listenbrainz_rank_score(candidate, with_lastfm);
+        let score = listenbrainz_rank_score(candidate);
         matches
             .entry(local_id)
             .and_modify(|existing| {
@@ -367,7 +265,6 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
             })
             .or_insert_with(|| RankedMatch {
                 score,
-                lastfm_rank: None,
                 deezer_rank: None,
                 providers: vec!["listenbrainz".to_owned()],
             });
@@ -391,32 +288,24 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
                 score: ranked.score,
                 providers: ranked.providers,
             },
-            ranked.lastfm_rank,
             ranked.deezer_rank,
         ));
     }
 
-    results.sort_by(
-        |(left, left_lastfm, left_deezer), (right, right_lastfm, right_deezer)| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| {
-                    left_lastfm
-                        .unwrap_or(usize::MAX)
-                        .cmp(&right_lastfm.unwrap_or(usize::MAX))
-                })
-                .then_with(|| {
-                    left_deezer
-                        .unwrap_or(usize::MAX)
-                        .cmp(&right_deezer.unwrap_or(usize::MAX))
-                })
-                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-                .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
-        },
-    );
+    results.sort_by(|(left, left_deezer), (right, right_deezer)| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| {
+                left_deezer
+                    .unwrap_or(usize::MAX)
+                    .cmp(&right_deezer.unwrap_or(usize::MAX))
+            })
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
+    });
     results.truncate(limit);
-    Ok(results.into_iter().map(|(result, _, _)| result).collect())
+    Ok(results.into_iter().map(|(result, _)| result).collect())
 }
 
 #[cfg(test)]
@@ -447,7 +336,7 @@ mod tests {
         conn.execute_batch(
             "INSERT INTO users(id, username) VALUES('user-1', 'user');
              INSERT INTO libraries(id, path, name) VALUES('library-1', 'D:/Music', 'Music');
-             INSERT INTO artists(id, name, lastfm_mbid, deezer_artist_id) VALUES
+             INSERT INTO artists(id, name, musicbrainz_artist_id, deezer_artist_id) VALUES
                ('source', 'Source', 'source-mbid', 'source-deezer'),
                ('portishead', 'Portishead', 'p-mbid', 'p-deezer'),
                ('tricky', 'Tricky', 't-mbid', 't-deezer'),
@@ -469,20 +358,25 @@ mod tests {
             "user-1",
             &coerce_entity_id("source"),
             &[
-                candidate(Some("p-mbid"), "Wrong Provider Name", Some(0.8), 2),
-                candidate(Some("t-mbid"), "Tricky", Some(0.82), 1),
-                candidate(Some("source-mbid"), "Source", Some(1.0), 3),
-                candidate(Some("a-mbid"), "Appears Only", Some(0.99), 4),
+                candidate(Some("p-deezer"), "Wrong Provider Name", None, 2),
+                candidate(Some("t-deezer"), "Tricky", None, 1),
+                candidate(Some("source-deezer"), "Source", None, 3),
+                candidate(Some("a-deezer"), "Appears Only", None, 4),
             ],
-            &[candidate(Some("p-deezer"), "Portishead", None, 1)],
+            &[candidate(Some("p-mbid"), "Portishead", Some(0.95), 1)],
             10,
         )
         .unwrap();
 
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].id, coerce_entity_id("portishead"));
-        assert_eq!(results[0].providers, vec!["lastfm", "deezer"]);
-        assert_eq!(results[1].id, coerce_entity_id("tricky"));
+        assert_eq!(
+            results.len(),
+            2,
+            "the source and an artist without albums drop out"
+        );
+        assert_eq!(results[0].id, coerce_entity_id("tricky"));
+        assert_eq!(results[1].id, coerce_entity_id("portishead"));
+        assert_eq!(results[1].providers, vec!["deezer", "listenbrainz"]);
+        assert!((results[1].score - (deezer_rank_score(2) + 0.06)).abs() < 1e-9);
     }
 
     #[test]
@@ -505,11 +399,10 @@ mod tests {
             candidate(Some("lfm-tricky"), "Tricky", Some(0.4), 2), // matched via lastfm_mbid
             candidate(Some("unknown-mbid"), "Nobody", Some(0.3), 3),
         ];
-        let alone = resolve_local_similar_artists_with_listenbrainz(
+        let alone = resolve_local_similar_artists(
             &conn,
             "user-1",
             &coerce_entity_id("source"),
-            &[],
             &[],
             &lb,
             10,
@@ -518,34 +411,10 @@ mod tests {
         assert_eq!(alone.len(), 2);
         assert_eq!(alone[0].name, "Portishead");
         assert_eq!(alone[0].providers, vec!["listenbrainz"]);
-        // No Last.fm in the mix: ListenBrainz scores use the whole range.
         assert!((alone[0].score - 1.0).abs() < 1e-9);
-
-        let boosted = resolve_local_similar_artists_with_listenbrainz(
-            &conn,
-            "user-1",
-            &coerce_entity_id("source"),
-            &[candidate(Some("mb-portishead"), "Portishead", Some(0.5), 1)],
-            &[],
-            &lb,
-            10,
-        )
-        .unwrap();
-        assert_eq!(boosted[0].providers, vec!["lastfm", "listenbrainz"]);
-        assert!((boosted[0].score - 0.56).abs() < 1e-9);
         // Rank-only candidates (no score) still score.
-        assert!(listenbrainz_rank_score(&candidate(None, "X", None, 2), true) > 0.0);
-        // Without Last.fm the keyless sources use the whole range.
-        assert!(
-            (listenbrainz_rank_score(&candidate(None, "X", Some(0.8), 1), false) - 0.8).abs()
-                < 1e-9
-        );
-        assert!(
-            (listenbrainz_rank_score(&candidate(None, "X", Some(0.8), 1), true) - 0.48).abs()
-                < 1e-9
-        );
-        assert!((deezer_rank_score(1, false) - 1.0).abs() < 1e-9);
-        assert!((deezer_rank_score(1, true) - 0.65).abs() < 1e-9);
+        assert!((listenbrainz_rank_score(&candidate(None, "X", None, 2)) - 0.5).abs() < 1e-9);
+        assert!((deezer_rank_score(1) - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -567,12 +436,12 @@ mod tests {
             &conn,
             "user-1",
             &coerce_entity_id("source"),
+            &[],
             &[
                 candidate(None, "Same Name", Some(1.0), 1),
                 candidate(None, "Beta", Some(0.5), 3),
                 candidate(None, "Alpha", Some(0.5), 2),
             ],
-            &[],
             1,
         )
         .unwrap();
@@ -585,7 +454,7 @@ mod tests {
     use crate::providers::provider_fetch_tests::ENV_LOCK;
     use std::sync::{Arc, Mutex};
     use wiremock::{
-        matchers::{method, path, query_param},
+        matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
     };
 
@@ -619,22 +488,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gather_fetches_all_three_sources_then_serves_them_from_cache() {
+    async fn gather_fetches_both_sources_then_serves_them_from_cache() {
         let _env = ENV_LOCK.lock().await;
-        let lastfm = MockServer::start().await;
         let deezer = MockServer::start().await;
         let labs = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", lastfm.uri());
         std::env::set_var("BOOGIEBOX_DEEZER_API_BASE", deezer.uri());
         std::env::set_var("BOOGIEBOX_LISTENBRAINZ_LABS_API_BASE", labs.uri());
-        Mock::given(method("GET"))
-            .and(query_param("method", "artist.getSimilar"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "similarartists": { "artist": [{ "name": "Portishead", "mbid": PEER, "match": "0.9" }] }
-            })))
-            .expect(1)
-            .mount(&lastfm)
-            .await;
         Mock::given(method("GET"))
             .and(path("/artist/dz-1/related"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -653,14 +512,19 @@ mod tests {
             .await;
 
         let db = gather_db();
-        set(&db, "lastfmKey", "key");
+        // An old Last.fm list in the cache is not read any more.
+        boogiebox_db::artwork::save_lastfm_cache(
+            &db.lock().unwrap(),
+            "artist-similar:lastfm:src",
+            r#"[{"name":"Old","rank":1}]"#,
+            7,
+        );
         let client = Client::new();
         let id = coerce_entity_id("src");
         let first = gather_related_candidates(&db, &client, &id, Some(Duration::from_secs(5)))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(first.lastfm[0].name, "Portishead");
         assert_eq!(first.deezer[0].name, "Tricky");
         assert_eq!(first.listenbrainz[0].external_id.as_deref(), Some(PEER));
         assert!(cached(&db, "artist-similar:listenbrainz:src").is_some());
@@ -671,14 +535,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(second.lastfm, first.lastfm);
+        assert_eq!(second.deezer, first.deezer);
         assert_eq!(second.listenbrainz, first.listenbrainz);
-        lastfm.verify().await;
         deezer.verify().await;
         labs.verify().await;
 
         for var in [
-            "BOOGIEBOX_LASTFM_API_BASE",
             "BOOGIEBOX_DEEZER_API_BASE",
             "BOOGIEBOX_LISTENBRAINZ_LABS_API_BASE",
         ] {

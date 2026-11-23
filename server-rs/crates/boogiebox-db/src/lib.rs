@@ -888,7 +888,47 @@ fn tracked_migrations() -> Vec<Migration> {
             id: "2026-11-22-scrobble-targets",
             apply: scrobble::ensure_scrobble_targets_schema,
         },
+        Migration {
+            id: "2026-11-23-remove-lastfm",
+            apply: remove_lastfm_data,
+        },
     ]
+}
+
+/// Migration `2026-11-23-remove-lastfm`: Last.fm support is gone. Drops Last.fm scrobble accounts and queued
+/// plays, the Last.fm key settings, queued Last.fm jobs (including the Last.fm-only artist styles job) and
+/// cached Last.fm answers (bios, album info, top tracks, similar artists). Keeps Last.fm tags, popularity counts and artist ids until a keyless source replaces them,
+/// and the `lastfm_cache` table, which is the shared provider cache.
+fn remove_lastfm_data(connection: &Connection) -> Result<(), rusqlite::Error> {
+    // Partial databases (old-schema test fixtures) may lack any of these tables.
+    if table_exists(connection, "scrobble_accounts") {
+        scrobble::remove_lastfm_accounts(connection)?;
+    }
+    let steps = [
+        (
+            "settings",
+            "DELETE FROM settings WHERE key IN ('lastfmKey', 'lastfmSecret')",
+        ),
+        (
+            "post_scan_jobs",
+            "DELETE FROM post_scan_jobs
+               WHERE job_type IN ('warm_lastfm_artist_info', 'warm_lastfm_album_info', 'sync_artist_styles')",
+        ),
+        (
+            "lastfm_cache",
+            "DELETE FROM lastfm_cache
+               WHERE cache_key LIKE 'artist:%' OR cache_key LIKE 'album:%' OR cache_key LIKE 'toptracks:%'
+                  OR cache_key LIKE 'artist-similar:lastfm:%'
+                  OR (cache_key LIKE 'about:%'
+                      AND CASE WHEN json_valid(data) THEN json_extract(data, '$.source') END = 'lastfm')",
+        ),
+    ];
+    for (table, sql) in steps {
+        if table_exists(connection, table) {
+            connection.execute(sql, [])?;
+        }
+    }
+    Ok(())
 }
 
 fn run_tracked_migrations(connection: &Connection) -> Result<(), rusqlite::Error> {
@@ -2564,7 +2604,6 @@ fn seed_admin_user(connection: &Connection) -> Result<(), rusqlite::Error> {
 fn seed_default_settings(connection: &Connection) -> Result<(), rusqlite::Error> {
     let defaults = [
         ("discogsToken", ""),
-        ("lastfmKey", ""),
         ("spotifyClientId", ""),
         ("spotifyClientSecret", ""),
         ("geniusClientId", ""),
@@ -4310,7 +4349,7 @@ mod tests {
                 INSERT INTO settings(key, value) VALUES
                   ('tmdbApiKey', 'secret'),
                   ('dlnaMediaTypes', 'both'),
-                  ('lastfmKey', 'keep');
+                  ('discogsToken', 'keep');
                 "#,
             )
             .expect("seed");
@@ -4341,7 +4380,62 @@ mod tests {
         );
         assert_eq!(
             query_single_text(&connection, "SELECT key FROM settings"),
-            "lastfmKey"
+            "discogsToken"
+        );
+    }
+
+    #[test]
+    fn lastfm_removal_drops_lastfm_answers_and_keys_but_keeps_tags_and_other_caches() {
+        let connection = Connection::open_in_memory().expect("memory db");
+        initialize_schema(&connection).expect("schema");
+        connection
+            .execute_batch(
+                r#"
+                INSERT OR REPLACE INTO settings(key, value) VALUES ('lastfmKey', 'k'), ('lastfmSecret', 's'),
+                  ('discogsToken', 'keep');
+                INSERT INTO libraries(id, path, name) VALUES ('lib', '/m', 'Music');
+                INSERT INTO post_scan_jobs(id, library_id, job_type, status) VALUES
+                  ('j1', 'lib', 'warm_lastfm_artist_info', 'pending'),
+                  ('j2', 'lib', 'sync_artist_styles', 'pending'),
+                  ('j3', 'lib', 'cache_album_images', 'pending');
+                INSERT INTO lastfm_cache(cache_key, data, fetched_at, expires_at) VALUES
+                  ('artist:old band', '{}', datetime('now'), datetime('now', '+7 days')),
+                  ('album:old band:first', '{}', datetime('now'), datetime('now', '+7 days')),
+                  ('toptracks:old band', '[]', datetime('now'), datetime('now', '+7 days')),
+                  ('artist-similar:lastfm:a1', '[]', datetime('now'), datetime('now', '+7 days')),
+                  ('about:artist:a1', '{"source":"lastfm","summary":"x"}', datetime('now'), datetime('now', '+7 days')),
+                  ('about:artist:a2', '{"source":"wikipedia","summary":"y"}', datetime('now'), datetime('now', '+7 days')),
+                  ('about:album:a3', 'not json', datetime('now'), datetime('now', '+7 days')),
+                  ('artist-similar:deezer:a1', '[]', datetime('now'), datetime('now', '+7 days')),
+                  ('album-styles-checked:al1', '1', datetime('now'), datetime('now', '+7 days'));
+                "#,
+            )
+            .expect("seed");
+        remove_lastfm_data(&connection).expect("remove");
+        assert_eq!(
+            query_single_i64(
+                &connection,
+                "SELECT COUNT(*) FROM settings WHERE key IN ('lastfmKey', 'lastfmSecret')"
+            ),
+            0
+        );
+        assert_eq!(
+            query_single_text(
+                &connection,
+                "SELECT value FROM settings WHERE key = 'discogsToken'"
+            ),
+            "keep"
+        );
+        assert_eq!(
+            query_single_text(&connection, "SELECT group_concat(id) FROM post_scan_jobs"),
+            "j3"
+        );
+        assert_eq!(
+            query_single_text(
+                &connection,
+                "SELECT group_concat(cache_key, ' ') FROM (SELECT cache_key FROM lastfm_cache ORDER BY cache_key)"
+            ),
+            "about:album:a3 about:artist:a2 album-styles-checked:al1 artist-similar:deezer:a1"
         );
     }
 

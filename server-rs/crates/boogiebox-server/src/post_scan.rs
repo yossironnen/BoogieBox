@@ -8,14 +8,12 @@ use crate::{
     },
     image_thumb::generate_thumbnail,
     providers::{
-        download_image, fetch_lastfm_album_info, fetch_lastfm_artist_info,
-        fetch_lastfm_artist_top_tags, fetch_lrclib_lyrics, fetch_lyricsovh,
-        get_spotify_access_token, search_deezer_artist_match, search_discogs_album_cover,
-        search_discogs_artist_match, search_metadata_combined, search_spotify_artist_match,
-        search_spotify_artist_match_with_token, ArtistProviderMatch, LastFmInfoPayload,
-        MetadataSearchResult,
+        download_image, fetch_lrclib_lyrics, fetch_lyricsovh, get_spotify_access_token,
+        search_deezer_artist_match, search_discogs_album_cover, search_discogs_artist_match,
+        search_metadata_combined, search_spotify_artist_match,
+        search_spotify_artist_match_with_token, ArtistProviderMatch, MetadataSearchResult,
     },
-    tag_taxonomy::{normalize_tag, to_tag_inputs},
+    tag_taxonomy::normalize_tag,
     DbPool,
 };
 use boogiebox_db::{
@@ -32,7 +30,7 @@ use boogiebox_db::{
         EntityId,
     },
     playlists::normalize_release_type,
-    radio::{replace_album_styles, replace_artist_tags},
+    radio::replace_album_styles,
 };
 use reqwest::Client;
 use rusqlite::OptionalExtension;
@@ -44,9 +42,6 @@ use tokio_util::sync::CancellationToken;
 
 const ARTIST_THUMB_SIZES: &[u32] = &[300, 800];
 const ALBUM_THUMB_SIZES: &[u32] = &[300, 800];
-const LASTFM_CACHE_DAYS: i64 = 7;
-const MIN_LASTFM_TAG_COUNT: u64 = 20;
-const MAX_ARTIST_STYLE_AGE_HOURS: i64 = 24 * 7;
 
 /// Default between-item delay shared by the post-scan lanes that call an
 /// external provider once (or a couple of times) per artist/album/track — a
@@ -71,15 +66,6 @@ fn delay_from_env_or(var: &str, default_ms: u64) -> Duration {
         .map(Duration::from_millis)
         .unwrap_or(Duration::from_millis(default_ms))
 }
-const STYLE_TAG_BLACKLIST: &[&str] = &[
-    "seen live",
-    "favorites",
-    "favourites",
-    "favorite",
-    "favourite",
-    "my favorites",
-    "my favourites",
-];
 
 // -- State ---------------------------------------------------------------------
 
@@ -205,9 +191,6 @@ async fn process_post_scan_job(
         "cache_album_images" => {
             run_cache_album_images(state, &job.library_id, job.payload.as_deref()).await
         }
-        "warm_lastfm_artist_info" => {
-            run_warm_lastfm_artist_info(state, &job.library_id, job.payload.as_deref()).await
-        }
         "enrich_artist_external_ids" => {
             run_enrich_artist_external_ids(
                 state,
@@ -217,13 +200,9 @@ async fn process_post_scan_job(
             )
             .await
         }
-        "warm_lastfm_album_info" => {
-            run_warm_lastfm_album_info(state, &job.library_id, job.payload.as_deref()).await
-        }
         "warm_track_lyrics" => {
             run_warm_track_lyrics(state, &job.library_id, job.payload.as_deref()).await
         }
-        "sync_artist_styles" => run_sync_artist_styles(state, &job.library_id).await,
         "sync_discogs_album_metadata" => {
             run_sync_discogs_album_metadata(state, &job.library_id, job.payload.as_deref()).await
         }
@@ -232,13 +211,6 @@ async fn process_post_scan_job(
 }
 
 // -- Helpers -------------------------------------------------------------------
-
-/// The Last.fm key, unless Last.fm refuses it (no Pro subscription): the lanes then leave Last.fm alone.
-async fn usable_lastfm_key(db: &DbPool) -> Option<String> {
-    get_setting_value(db, "lastfmKey")
-        .await
-        .filter(|key| !key.trim().is_empty() && crate::providers::lastfm_key_usable(key))
-}
 
 async fn get_setting_value(db: &DbPool, key: &str) -> Option<String> {
     let db = db.clone();
@@ -264,24 +236,6 @@ async fn persist_artist_provider_match(
     let _ = tokio::task::spawn_blocking(move || {
         let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         persist_artist_identity_if_missing(&conn, &artist_id, provider, Some(&external_id), None)
-    })
-    .await;
-}
-
-async fn persist_lastfm_identity(db: &DbPool, artist_id: &str, info: &LastFmInfoPayload) {
-    let db = db.clone();
-    let artist_id = coerce_entity_id(artist_id);
-    let mbid = info.mbid.clone();
-    let canonical_name = info.canonical_name.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        persist_artist_identity_if_missing(
-            &conn,
-            &artist_id,
-            ArtistIdentityProvider::LastFm,
-            mbid.as_deref(),
-            canonical_name.as_deref(),
-        )
     })
     .await;
 }
@@ -680,88 +634,6 @@ async fn run_cache_album_images(
     Ok(())
 }
 
-// -- warm_lastfm_artist_info ---------------------------------------------------
-
-async fn run_warm_lastfm_artist_info(
-    state: &PostScanState,
-    library_id: &EntityId,
-    payload: Option<&str>,
-) -> Result<(), JobError> {
-    let api_key = match usable_lastfm_key(&state.db).await {
-        Some(k) => k,
-        None => return Ok(()),
-    };
-
-    let artist_ids = parse_entity_ids_from_payload(payload, "artistIds");
-    let artist_ids = if artist_ids.is_empty() {
-        get_library_entity_ids(
-            &state.db,
-            "SELECT DISTINCT artist_id FROM tracks WHERE library_id=?1 AND artist_id IS NOT NULL",
-            library_id.clone(),
-        )
-        .await
-    } else {
-        artist_ids
-    };
-
-    for artist_id in &artist_ids {
-        let artist = {
-            let db = state.db.clone();
-            let id = artist_id.clone();
-            tokio::task::spawn_blocking(move || {
-                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                get_artist_for_art(&conn, &id)
-            })
-            .await
-            .ok()
-            .flatten()
-        };
-        let Some(artist) = artist else { continue };
-
-        let cache_key = format!("artist:{}", artist.name.to_lowercase());
-        let cached = {
-            let db = state.db.clone();
-            let ck = cache_key.clone();
-            tokio::task::spawn_blocking(move || {
-                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                get_lastfm_cached(&conn, &ck)
-            })
-            .await
-            .ok()
-            .flatten()
-        };
-        if let Some(cached) = cached {
-            if let Ok(info) = serde_json::from_str::<LastFmInfoPayload>(&cached) {
-                if info.canonical_name.is_some() {
-                    persist_lastfm_identity(&state.db, artist_id, &info).await;
-                    continue;
-                }
-            }
-        }
-
-        let info = fetch_lastfm_artist_info(&state.http_client, &api_key, &artist.name).await;
-        if !crate::providers::lastfm_key_usable(&api_key) {
-            // Refused mid-run: stop here; nothing was recorded for this one.
-            break;
-        }
-        tokio::time::sleep(provider_sweep_delay()).await;
-        let Some(info) = info else { continue };
-        persist_lastfm_identity(&state.db, artist_id, &info).await;
-
-        let data = serde_json::to_string(&info).unwrap_or_default();
-        if !data.is_empty() {
-            let db = state.db.clone();
-            let ck = cache_key.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                save_lastfm_cache(&conn, &ck, &data, LASTFM_CACHE_DAYS);
-            })
-            .await;
-        }
-    }
-    Ok(())
-}
-
 // -- enrich_artist_external_ids ----------------------------------------------
 
 async fn run_enrich_artist_external_ids(
@@ -796,7 +668,6 @@ async fn run_enrich_artist_external_ids(
         .expect("targeted identity task")?
     };
 
-    let lastfm_key = usable_lastfm_key(&state.db).await;
     let discogs_token = get_setting_value(&state.db, "discogsToken").await;
     let spotify_id = get_setting_value(&state.db, "spotifyClientId").await;
     let spotify_secret = get_setting_value(&state.db, "spotifyClientSecret").await;
@@ -806,16 +677,6 @@ async fn run_enrich_artist_external_ids(
     };
 
     for artist in artists {
-        if artist.lastfm_mbid.is_none() {
-            if let Some(api_key) = lastfm_key.as_deref() {
-                if let Some(info) =
-                    fetch_lastfm_artist_info(&state.http_client, api_key, &artist.name).await
-                {
-                    persist_lastfm_identity(&state.db, &artist.artist_id.to_string(), &info).await;
-                }
-            }
-        }
-
         if artist.deezer_artist_id.is_none() {
             if let Some(matched) =
                 search_deezer_artist_match(&state.http_client, &artist.name).await
@@ -863,8 +724,8 @@ async fn run_enrich_artist_external_ids(
             }
         }
 
-        // This lane can call up to four providers per artist (Last.fm,
-        // Deezer, Discogs, Spotify) — one pause per artist iteration still
+        // This lane can call up to three providers per artist (Deezer,
+        // Discogs, Spotify) — one pause per artist iteration still
         // bounds how fast any single one of them gets hit across the sweep.
         tokio::time::sleep(provider_sweep_delay()).await;
 
@@ -892,90 +753,6 @@ async fn finalize_pending_identity_lock(db: &DbPool, artist_id: &EntityId) {
         boogiebox_db::music::finalize_pending_identity_lock(&conn, &artist_id)
     })
     .await;
-}
-
-// -- warm_lastfm_album_info ----------------------------------------------------
-
-async fn run_warm_lastfm_album_info(
-    state: &PostScanState,
-    library_id: &EntityId,
-    payload: Option<&str>,
-) -> Result<(), JobError> {
-    let api_key = match usable_lastfm_key(&state.db).await {
-        Some(k) => k,
-        None => return Ok(()),
-    };
-
-    let album_ids = parse_entity_ids_from_payload(payload, "albumIds");
-    let album_ids = if album_ids.is_empty() {
-        get_library_entity_ids(
-            &state.db,
-            "SELECT DISTINCT album_id FROM tracks WHERE library_id=?1 AND album_id IS NOT NULL",
-            library_id.clone(),
-        )
-        .await
-    } else {
-        album_ids
-    };
-
-    for album_id in &album_ids {
-        let album = {
-            let db = state.db.clone();
-            let id = album_id.clone();
-            tokio::task::spawn_blocking(move || {
-                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                get_album_for_art(&conn, &id)
-            })
-            .await
-            .ok()
-            .flatten()
-        };
-        let Some(album) = album else { continue };
-        if album.title.is_empty() || album.artist.is_empty() {
-            continue;
-        }
-
-        let cache_key = format!(
-            "album:{}:{}",
-            album.artist.to_lowercase(),
-            album.title.to_lowercase()
-        );
-        let is_cached = {
-            let db = state.db.clone();
-            let ck = cache_key.clone();
-            tokio::task::spawn_blocking(move || {
-                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                get_lastfm_cached(&conn, &ck).is_some()
-            })
-            .await
-            .unwrap_or(false)
-        };
-        if is_cached {
-            continue;
-        }
-
-        let info =
-            fetch_lastfm_album_info(&state.http_client, &api_key, &album.artist, &album.title)
-                .await;
-        if !crate::providers::lastfm_key_usable(&api_key) {
-            // Refused mid-run: stop here; nothing was recorded for this one.
-            break;
-        }
-        tokio::time::sleep(provider_sweep_delay()).await;
-        let Some(info) = info else { continue };
-
-        let data = serde_json::to_string(&info).unwrap_or_default();
-        if !data.is_empty() {
-            let db = state.db.clone();
-            let ck = cache_key.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                save_lastfm_cache(&conn, &ck, &data, LASTFM_CACHE_DAYS);
-            })
-            .await;
-        }
-    }
-    Ok(())
 }
 
 // -- warm_track_lyrics ---------------------------------------------------------
@@ -1066,74 +843,6 @@ async fn run_warm_track_lyrics(
                 &source,
                 synced_json.as_deref(),
             );
-        })
-        .await;
-    }
-    Ok(())
-}
-
-// -- sync_artist_styles --------------------------------------------------------
-
-async fn run_sync_artist_styles(
-    state: &PostScanState,
-    library_id: &EntityId,
-) -> Result<(), JobError> {
-    let api_key = match usable_lastfm_key(&state.db).await {
-        Some(k) => k,
-        None => return Ok(()),
-    };
-
-    // Artists in library whose styles are stale or missing
-    let artist_rows: Vec<(String, String)> = {
-        let db = state.db.clone();
-        let library_id = library_id.clone();
-        let age_hours = MAX_ARTIST_STYLE_AGE_HOURS;
-        tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT ar.id, ar.name \
-                 FROM artists ar \
-                 JOIN tracks t ON t.artist_id = ar.id \
-                 WHERE t.library_id = ?1 \
-                   AND ar.name IS NOT NULL AND ar.name != '' \
-                   AND (NOT EXISTS (SELECT 1 FROM artist_styles WHERE artist_id = ar.id) \
-                        OR (SELECT MAX(updated_at) FROM artist_styles WHERE artist_id = ar.id) \
-                             < datetime('now', '-' || ?2 || ' hours')) \
-                 ORDER BY ar.name",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![library_id, age_hours], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-        })
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or_default()
-    };
-
-    for (artist_id, artist_name) in &artist_rows {
-        let tags = fetch_lastfm_artist_top_tags(&state.http_client, &api_key, artist_name).await;
-        if !crate::providers::lastfm_key_usable(&api_key) {
-            // Refused mid-run: stop here; nothing was recorded for this one.
-            break;
-        }
-        tokio::time::sleep(provider_sweep_delay()).await;
-
-        // Normalized, classified (genre / mood / era) and weighted; junk such as
-        // "seen live" and "favorites" is dropped by the taxonomy.
-        let mut styles = to_tag_inputs(&tags, MIN_LASTFM_TAG_COUNT, 0.0, 12, &[artist_name]);
-        styles.retain(|s| !STYLE_TAG_BLACKLIST.contains(&s.tag.as_str()));
-
-        if styles.is_empty() {
-            continue;
-        }
-
-        let db = state.db.clone();
-        let id = artist_id.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            let _ = replace_artist_tags(&conn, &coerce_entity_id(&id), &styles);
         })
         .await;
     }
@@ -1435,7 +1144,7 @@ fn extract_discogs_styles(extra: &serde_json::Value) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_provider_year, persist_artist_provider_match, persist_lastfm_identity};
+    use super::{parse_provider_year, persist_artist_provider_match};
     use crate::{providers::ArtistProviderMatch, DbPool};
     use boogiebox_db::{
         initialize_schema,
@@ -1463,7 +1172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opportunistic_helpers_persist_selected_provider_and_lastfm_identity() {
+    async fn opportunistic_helpers_persist_selected_provider() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         initialize_schema(&conn).unwrap();
         conn.execute(
@@ -1481,18 +1190,6 @@ mod tests {
         };
         persist_artist_provider_match(&db, "artist-1", ArtistIdentityProvider::Deezer, &matched)
             .await;
-        let info = crate::providers::LastFmInfoPayload {
-            mbid: Some("mbid-1".to_owned()),
-            canonical_name: Some("Massive Attack".to_owned()),
-            summary: String::new(),
-            full: String::new(),
-            listeners: None,
-            playcount: None,
-            url: None,
-            image: None,
-            tags: Vec::new(),
-        };
-        persist_lastfm_identity(&db, "artist-1", &info).await;
 
         let identity = {
             let conn = db.lock().unwrap();
@@ -1501,11 +1198,6 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(identity.deezer_artist_id.as_deref(), Some("deezer-1"));
-        assert_eq!(identity.lastfm_mbid.as_deref(), Some("mbid-1"));
-        assert_eq!(
-            identity.lastfm_canonical_name.as_deref(),
-            Some("Massive Attack")
-        );
     }
 
     // -- offline pure-logic tests ------------------------------------------------
@@ -2146,95 +1838,6 @@ mod tests {
         std::env::remove_var("BOOGIEBOX_DISCOGS_API_BASE");
     }
 
-    // -- run_warm_lastfm_artist_info ---------------------------------------------
-
-    #[tokio::test]
-    async fn warm_lastfm_artist_info_noop_without_api_key() {
-        let f = fixture("lastfm-artist-nokey");
-        let result =
-            super::run_warm_lastfm_artist_info(&f.state, &f.library_id_entity(), None).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn warm_lastfm_artist_info_fetches_and_caches() {
-        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
-            .lock()
-            .await;
-        let server = wiremock::MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "artist": {
-                        "name": "Test Artist",
-                        "mbid": "mbid-xyz",
-                        "bio": { "summary": "sum", "content": "full" },
-                        "tags": { "tag": [] }
-                    }
-                })),
-            )
-            .mount(&server)
-            .await;
-
-        let f = fixture("lastfm-artist-fetch");
-        set_setting(&f, "lastfmKey", "key1");
-        let result =
-            super::run_warm_lastfm_artist_info(&f.state, &f.library_id_entity(), None).await;
-        assert!(result.is_ok());
-
-        let identity = {
-            let conn = f.state.db.lock().unwrap();
-            boogiebox_db::music::get_artist_external_identity(
-                &conn,
-                &boogiebox_db::music::coerce_entity_id(&f.artist_id),
-            )
-            .unwrap()
-            .unwrap()
-        };
-        assert_eq!(identity.lastfm_mbid.as_deref(), Some("mbid-xyz"));
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn warm_lastfm_artist_info_uses_valid_cache_without_refetching() {
-        let f = fixture("lastfm-artist-cached");
-        set_setting(&f, "lastfmKey", "key1");
-        let cache_key = "artist:test artist";
-        let payload = crate::providers::LastFmInfoPayload {
-            mbid: Some("cached-mbid".to_string()),
-            canonical_name: Some("Test Artist".to_string()),
-            summary: String::new(),
-            full: String::new(),
-            listeners: None,
-            playcount: None,
-            url: None,
-            image: None,
-            tags: Vec::new(),
-        };
-        let data = serde_json::to_string(&payload).unwrap();
-        {
-            let conn = f.state.db.lock().unwrap();
-            boogiebox_db::artwork::save_lastfm_cache(&conn, cache_key, &data, 7);
-        }
-        // No mock server mounted at all — a network call here would fail/hang,
-        // proving the cached branch short-circuits before any HTTP fetch.
-        let result =
-            super::run_warm_lastfm_artist_info(&f.state, &f.library_id_entity(), None).await;
-        assert!(result.is_ok());
-        let identity = {
-            let conn = f.state.db.lock().unwrap();
-            boogiebox_db::music::get_artist_external_identity(
-                &conn,
-                &boogiebox_db::music::coerce_entity_id(&f.artist_id),
-            )
-            .unwrap()
-            .unwrap()
-        };
-        assert_eq!(identity.lastfm_mbid.as_deref(), Some("cached-mbid"));
-    }
-
     // -- run_enrich_artist_external_ids -------------------------------------------
 
     #[tokio::test]
@@ -2324,8 +1927,8 @@ mod tests {
     #[tokio::test]
     async fn enrich_artist_external_ids_leaves_a_pending_merge_master_unlocked_on_a_miss() {
         // A guaranteed, deterministic miss (never a real network call): the
-        // mocked Deezer search returns no results, and no Last.fm/Discogs/
-        // Spotify keys are configured, so every provider branch is skipped.
+        // mocked Deezer search returns no results, and no Discogs/Spotify
+        // keys are configured, so every provider branch is skipped.
         let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
             .lock()
             .await;
@@ -2392,62 +1995,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // -- run_warm_lastfm_album_info ------------------------------------------------
-
-    #[tokio::test]
-    async fn warm_lastfm_album_info_noop_without_api_key() {
-        let f = fixture("lastfm-album-nokey");
-        let result =
-            super::run_warm_lastfm_album_info(&f.state, &f.library_id_entity(), None).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn warm_lastfm_album_info_skips_when_already_cached() {
-        let f = fixture("lastfm-album-cached");
-        set_setting(&f, "lastfmKey", "key1");
-        let cache_key = "album:test artist:test album";
-        {
-            let conn = f.state.db.lock().unwrap();
-            boogiebox_db::artwork::save_lastfm_cache(&conn, cache_key, "{}", 7);
-        }
-        // No mock server mounted — proves the cached branch short-circuits.
-        let result =
-            super::run_warm_lastfm_album_info(&f.state, &f.library_id_entity(), None).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn warm_lastfm_album_info_fetches_and_caches() {
-        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
-            .lock()
-            .await;
-        let server = wiremock::MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "album": { "name": "Test Album", "artist": "Test Artist" }
-                })),
-            )
-            .mount(&server)
-            .await;
-
-        let f = fixture("lastfm-album-fetch");
-        set_setting(&f, "lastfmKey", "key1");
-        let result =
-            super::run_warm_lastfm_album_info(&f.state, &f.library_id_entity(), None).await;
-        assert!(result.is_ok());
-        let cache_key = "album:test artist:test album";
-        let cached = {
-            let conn = f.state.db.lock().unwrap();
-            boogiebox_db::artwork::get_lastfm_cached(&conn, cache_key)
-        };
-        assert!(cached.is_some());
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
     // -- run_warm_track_lyrics -----------------------------------------------------
 
     #[tokio::test]
@@ -2508,94 +2055,6 @@ mod tests {
 
         std::env::remove_var("BOOGIEBOX_LRCLIB_API_BASE");
         std::env::remove_var("BOOGIEBOX_LYRICS_OVH_API_BASE");
-    }
-
-    // -- run_sync_artist_styles ----------------------------------------------------
-
-    #[tokio::test]
-    async fn sync_artist_styles_noop_without_api_key() {
-        let f = fixture("styles-nokey");
-        let result = super::run_sync_artist_styles(&f.state, &f.library_id_entity()).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn sync_artist_styles_filters_low_count_and_blacklisted_tags() {
-        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
-            .lock()
-            .await;
-        let server = wiremock::MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "toptags": { "tag": [
-                        { "name": "seen live", "count": 999 },
-                        { "name": "hi", "count": 999 },
-                        { "name": "rock", "count": 5 }
-                    ] }
-                })),
-            )
-            .mount(&server)
-            .await;
-
-        let f = fixture("styles-filtered");
-        set_setting(&f, "lastfmKey", "key1");
-        let result = super::run_sync_artist_styles(&f.state, &f.library_id_entity()).await;
-        assert!(result.is_ok());
-        let count: i64 = {
-            let conn = f.state.db.lock().unwrap();
-            conn.query_row(
-                "SELECT COUNT(*) FROM artist_styles WHERE artist_id = ?",
-                rusqlite::params![f.artist_id],
-                |r| r.get(0),
-            )
-            .unwrap()
-        };
-        assert_eq!(count, 0, "all tags fail the filter, so none should persist");
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn sync_artist_styles_persists_valid_tags() {
-        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
-            .lock()
-            .await;
-        let server = wiremock::MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "toptags": { "tag": [
-                        { "name": "trip-hop", "count": 100 },
-                        { "name": "electronic", "count": 50 }
-                    ] }
-                })),
-            )
-            .mount(&server)
-            .await;
-
-        let f = fixture("styles-valid");
-        set_setting(&f, "lastfmKey", "key1");
-        let result = super::run_sync_artist_styles(&f.state, &f.library_id_entity()).await;
-        assert!(result.is_ok());
-        let styles: Vec<String> = {
-            let conn = f.state.db.lock().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT style FROM artist_styles WHERE artist_id = ? ORDER BY style")
-                .unwrap();
-            stmt.query_map(rusqlite::params![f.artist_id], |r| r.get(0))
-                .unwrap()
-                .collect::<Result<_, _>>()
-                .unwrap()
-        };
-        assert_eq!(
-            styles,
-            vec!["electronic".to_string(), "trip-hop".to_string()]
-        );
-
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
     }
 
     // -- run_sync_discogs_album_metadata --------------------------------------------

@@ -120,7 +120,7 @@ vi.mock('../components/PlaylistsView', () => ({
 vi.mock('../components/SettingsPage', () => ({
   default: (props: any) => (
     <div data-testid="settings-view">
-      <button onClick={() => props.onSettingsChange({ ...DEFAULT_SETTINGS, lastfmKey: 'changed' })}>change-settings</button>
+      <button onClick={() => props.onSettingsChange({ ...DEFAULT_SETTINGS, fontFamily: 'changed' })}>change-settings</button>
       <button onClick={() => props.onStreamDirectChange?.(true)}>set-stream-direct</button>
       <button onClick={() => props.onAdaptiveAccentEnabledChange(false)}>set-adaptive</button>
       <button onClick={() => props.onVinylHardcoreChange(true)}>set-hardcore</button>
@@ -183,9 +183,9 @@ describe('App component flows', () => {
       total_gb: 0.1,
     });
     apiMock.systemStatus.mockResolvedValue({ ffmpegAvailable: true });
-    apiMock.playbackSettings.mockResolvedValue({ transcodeQuality: 'high', replayGainEnabled: '0', vinylMode: '0', lastfmConfigured: false });
+    apiMock.playbackSettings.mockResolvedValue({ transcodeQuality: 'high', replayGainEnabled: '0', vinylMode: '0' });
     apiMock.auth.me.mockResolvedValue({ id: '1', username: 'admin', role: 'admin', canManageLibraries: true, canEditMetadata: true });
-    apiMock.settings.get.mockResolvedValue({ lastfmKey: 'lastfm', transcodeQuality: 'high' });
+    apiMock.settings.get.mockResolvedValue({ discogsToken: 'token', transcodeQuality: 'high' });
     apiMock.userSettings.get.mockResolvedValue({});
     apiMock.userSettings.update.mockResolvedValue({ ok: true });
     apiMock.genres.mockResolvedValue([{ genre: 'Rock', track_count: 3 }]);

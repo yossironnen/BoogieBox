@@ -70,7 +70,7 @@ keeps them; `remove-missing-tracks` is the explicit way to delete them.
 | `GET` | `/api/albums` | Browse albums. |
 | `GET` | `/api/albums/{id}` | Fetch album detail. |
 | `GET` | `/api/albums/latest` | Fetch recently added albums. |
-| `GET` | `/api/artists/{id}/similar` | Similar artists owned locally (Last.fm, Deezer, ListenBrainz). |
+| `GET` | `/api/artists/{id}/similar` | Similar artists owned locally (Deezer, ListenBrainz). |
 | `GET` | `/api/artists/{id}/radio` | Build an Artist Radio queue. Query: `limit` (10-300, default 100), `focus` (`similar`\|`mood`), `moods` (comma-separated: `chill,melancholic,uplifting,energetic,dark,dreamy,romantic,aggressive`), `variety` (0-1). Returns `artist`, `tags`, `moods`, `mix`, `coverage`, `degraded` (non-error notice when data is thin) and `tracks`, each with a `radio_reason` (`seed`\|`similar`\|`mood`\|`style`). Never 404s for a known artist. |
 | `GET` | `/api/artists/{id}/radio/options` | What the radio options popover offers: seed `tags`, `autoMoods`, per-mood availability and library-wide tagging progress. |
 | `GET` | `/api/tracks/{id}` | Fetch track detail. |
@@ -91,7 +91,7 @@ keeps them; `remove-missing-tracks` is the explicit way to delete them.
 | `PUT` / `DELETE` | `/api/albums/{id}/saved-eq` | Same for the album. A song's own curve wins over its album's. Curves are removed with their song or album and follow an album merged by a rename. |
 | `GET` | `/api/tracks/{id}/sonic-fingerprint` | Fetch Sonic Fingerprint (stem analysis, sections, transition windows) for a track. |
 | `POST` | `/api/tracks/{id}/played` | Record a track play event (also lists it in Subsonic `getNowPlaying` as "BoogieBox" and tells the user's scrobbling services it started). Optional `?output=native&client=NAME` when the desktop app's own engine plays it: Activity lists it as the desktop app on that PC. |
-| `POST` | `/api/tracks/{id}/scrobble` | The web player says a play counts (played half its length or 4 minutes; tracks of 30 s or less never count). Body `{ startedAt }` (Unix seconds, optional). Queued for the user's Last.fm / ListenBrainz accounts; does not change play counts. |
+| `POST` | `/api/tracks/{id}/scrobble` | The web player says a play counts (played half its length or 4 minutes; tracks of 30 s or less never count). Body `{ startedAt }` (Unix seconds, optional). Queued for the user's scrobbling accounts; does not change play counts. |
 | `GET` | `/api/user/history` | Fetch listening history for the current user. |
 | `POST` | `/api/tracks/loudness` | Volume levelling values `{ ids }` (up to 200 track ids or `boogiemix:<outputId>` mixes): gains and peaks per id; ids without values are left out. |
 
@@ -143,16 +143,14 @@ apps. Tokens and session keys are stored AES-256-GCM encrypted with `subsonic.ke
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/scrobble/accounts` | `{ lastfmAvailable, lastfmKeyRefused, accounts: [{ service, accountName, needsReconnect, connectedAt, lastScrobbleAt, pending, address }] }`. `service` is `lastfm`, `librefm`, `listenbrainz` or `server` (own ListenBrainz-compatible server; `address` is its address). |
+| `GET` | `/api/scrobble/accounts` | `{ accounts: [{ service, accountName, needsReconnect, connectedAt, lastScrobbleAt, pending, address }] }`. `service` is `librefm`, `listenbrainz` or `server` (own ListenBrainz-compatible server; `address` is its address). |
 | `PUT` | `/api/scrobble/listenbrainz` | Connect ListenBrainz with `{ token }` (validated with ListenBrainz first; `400` when refused, `502` when unreachable). |
-| `POST` | `/api/scrobble/lastfm/connect` | Start the Last.fm sign-in: body `{ origin }` (the web UI's own origin); returns `{ url }` to open. `409` until an admin sets `lastfmKey` and `lastfmSecret`. |
-| `GET` | `/api/scrobble/lastfm/callback?state&token` | Where Last.fm sends the user back. No session cookie needed: the one-time `state` (10 minutes) names the user. Returns a small HTML page. |
 | `POST` | `/api/scrobble/librefm/connect` | Start the Libre.fm sign-in: body `{ origin }`; returns `{ url }`. No admin setup (Libre.fm takes BoogieBox's built-in placeholder key). |
-| `GET` | `/api/scrobble/librefm/callback?state&token` | Where Libre.fm sends the user back (as the Last.fm callback; a state works only for the service it was issued for). |
+| `GET` | `/api/scrobble/librefm/callback?state&token` | Where Libre.fm sends the user back (no session cookie needed: the one-time `state` (10 minutes) names the user; returns a small HTML page). |
 | `PUT` | `/api/scrobble/server` | Connect the user's own ListenBrainz-compatible server (Maloja, Koito) with `{ address, token }`. `address` is http(s) with an optional path (e.g. `…/apis/listenbrainz`); a trailing `/1` or `/` is dropped. The token is checked with the server's `/1/validate-token`; a server without one (404/405) is accepted without a user name. Returns `{ ok, accountName, address }`; `400` for a bad address or a refused token, `502` when unreachable. |
-| `DELETE` | `/api/scrobble/{lastfm\|librefm\|listenbrainz\|server}` | Disconnect and drop queued plays. |
+| `DELETE` | `/api/scrobble/{librefm\|listenbrainz\|server}` | Disconnect and drop queued plays. |
 
-Delivery: plays are queued and sent in batches (Last.fm 50, ListenBrainz 100) by a background worker. Temporary
+Delivery: plays are queued and sent in batches (Libre.fm 50, ListenBrainz 100) by a background worker. Temporary
 failures retry with backoff (1 minute doubling to 6 hours); plays are dropped after 14 days or 20 attempts; at most
 1000 plays wait per account. A rejected token or session marks the account `needsReconnect` and keeps its plays.
 "Now playing" is sent when a track starts (best effort). Play On sessions scrobble once the speaker's position
@@ -177,7 +175,7 @@ passes the same threshold as the web player.
 | `GET` | `/api/playlists/smart-styles` | Styles in the library for a `style` rule, most tracks first: `[{ style, trackCount }]`. Up to 500, each with at least 3 tracks. A `style` rule reads track, album and artist tags: operators `is`, `is_not`, and `is_within` (also narrower kinds, such as "atmospheric black metal" within "black metal"). |
 | `GET` | `/api/playlists/{id}/smart-definition` | The owner's rules with `schemaVersion`, `editRevision`, `membershipRevision`, `evaluatedAt`, `supported` (false when a newer version stored them) and `missingLibraryIds`. |
 | `PUT` | `/api/playlists/{id}/smart-definition` | Replace the rules `{ definition, expectedEditRevision }` and re-evaluate, all or nothing. `409` `edit_conflict` (with the current `editRevision`) when they changed meanwhile; `409` `unsupported` for rules from a newer version. |
-| `GET` | `/api/playlists/{id}/steer` | A smart playlist's steering pills, after refreshing it: `{ active, pills, pool, tagged, fewTags, popularSource, addedTrackIds, editRevision }`. Each entry in `pills` is a pill plus its `count`; send it back without `count` to turn it on. `popularSource` is `lastfm` when at least half the matching tracks have a Last.fm scrobble count, otherwise `local`. Empty when every match already fits or no pill would change enough. `429` `busy` when too many are waiting. `404` for other users' and manual playlists. |
+| `GET` | `/api/playlists/{id}/steer` | A smart playlist's steering pills, after refreshing it: `{ active, pills, pool, tagged, fewTags, popularSource, addedTrackIds, editRevision }`. Each entry in `pills` is a pill plus its `count`; send it back without `count` to turn it on. `popularSource` is `external` when at least half the matching tracks have an outside play count (ListenBrainz listens, or Last.fm scrobbles kept from before), otherwise `local`. Empty when every match already fits or no pill would change enough. `429` `busy` when too many are waiting. `404` for other users' and manual playlists. |
 | `PUT` | `/api/playlists/{id}/steer` | Replace the pills `{ steer }` (up to 3) and re-evaluate, all or nothing: `{ steer, snapshot }`. A pill is `{ kind: "style", tag, direction: "more"\|"less"\|"deeper" }`, `{ kind: "mood", bucket, direction: "more"\|"less" }` or `{ kind: "signal", signal: "favourites"\|"popular"\|"new"\|"faster"\|"slower"\|"energetic"\|"calmer" }`. Moves `editRevision` but doesn't check it, so a rules editor open elsewhere gets its usual conflict when it saves. `400` `invalid_rules` with `bad_steer` errors. Pills only choose among tracks the rules match. |
 | `GET` | `/api/playlists/{id}/snapshot` | Playlist and tracks from one read, smart playlists refreshed first: `{ playlist, tracks, membershipRevision, refreshError }`. `refreshError` (`timed_out` / `unsupported` / `failed`) means the last result is shown. |
 | `POST` | `/api/playlists/{id}/refresh` | Re-evaluate a smart playlist now; returns the snapshot. |
@@ -302,13 +300,13 @@ username; error 0 when signed in another way), `getUser` (`jukeboxRole` is true 
 `getPlaylist` (a smart playlist is refreshed first; smart playlists are listed `readonly`), `createPlaylist` (a taken name gets " (2)"; with `playlistId` it replaces the entries; returns the
 playlist), `updatePlaylist` (`name`, `comment`, `songIndexToRemove…` then `songIdToAdd…`; `public` ignored; entry edits of a smart playlist, here or via `createPlaylist`, answer error 50),
 `deletePlaylist`, `getLyrics` (cache only), `getLyricsBySongId` (cache, then LRCLIB/lyrics.ovh within 5 s;
-synced lines in ms), `getArtistInfo`/`getArtistInfo2` (local bio, else the cached Last.fm summary; similar
-artists in the library), `getAlbumInfo`/`getAlbumInfo2`, `getSimilarSongs`/`getSimilarSongs2` (an Artist Radio
-queue seeded by the song's, album's or artist's artist; provider lookups capped at 2 s), `getTopSongs` (cached
-Last.fm top tracks first, then local plays), `getNowPlaying` (what apps, the BoogieBox web player and Play On
+synced lines in ms), `getArtistInfo`/`getArtistInfo2` (local bio, else the cached About text; similar
+artists in the library), `getAlbumInfo`/`getAlbumInfo2` (local notes, else the cached About text), `getSimilarSongs`/`getSimilarSongs2` (an Artist Radio
+queue seeded by the song's, album's or artist's artist; provider lookups capped at 2 s), `getTopSongs` (by stored
+popularity counts first, then local plays), `getNowPlaying` (what apps, the BoogieBox web player and Play On
 speakers reported in the last 10 minutes, all users; `playerName` is the app, "BoogieBox" or the speaker),
 `scrobble` (`submission=true` counts a play at `time`, ignoring repeats within 30 s, and queues it for the user's
-Last.fm/ListenBrainz accounts; `submission=false` marks now playing), `stream`, `download` (original file),
+scrobbling accounts; `submission=false` marks now playing), `stream`, `download` (original file),
 `getCoverArt` (`al-`/`ar-`/`tr-`/`pl-`/`mx-` ids; 300 or 800 px), `getInternetRadioStations` (all users; the
 station's own URL), `create`/`update`/`deleteInternetRadioStation` (admins, else error 50), `jukeboxControl`,
 `getScanStatus` (`scanning`; `count` = files scanned so far while scanning, else the track count; `lastScan`) and
@@ -358,8 +356,7 @@ stars.
 
 Settings (global, admin): `subsonicApiEnabled` (`true`/`false`, default `false`), `subsonicMaxTranscodes`
 (1–8, default 3), `subsonicIgnoredArticles` (up to 20 words, default `The El La Los Las Le Les`),
-`subsonicJukeboxRenderer` (a Play On renderer UDN, empty = no jukebox). `lastfmSecret` (the Last.fm API shared
-secret, next to `lastfmKey`) enables Last.fm scrobbling. Subsonic
+`subsonicJukeboxRenderer` (a Play On renderer UDN, empty = no jukebox). Subsonic
 passwords are stored AES-256-GCM encrypted with the key file `subsonic.key` next to `boogiebox.db`; when moving
 the database by hand, move `subsonic.key` with it or users must set their Subsonic passwords again. Apps send
 the password (or its hash, or the API key) in the URL over plain HTTP. BoogieBox is for your home network only:
@@ -382,9 +379,7 @@ do not expose it to the internet. To listen away from home, download music to th
 | `POST` | `/api/admin/browse-folder` | Browse the server filesystem for folder selection. |
 | `GET` | `/api/admin/fs/browse` | List directory contents on the server filesystem. |
 | `GET` | `/api/admin/provider-usage` | Fetch provider usage statistics. |
-| `GET` | `/api/lastfm/info` | Fetch Last.fm artist information. |
-| `GET` | `/api/lastfm/top-tracks` | Fetch Last.fm top-track suggestions for an artist (no longer used by the client; goes with the Last.fm removal). |
-| `GET` | `/api/artists/{id}/about` | Signed in. An artist's bio, no key needed: the English Wikipedia summary via MusicBrainz → Wikidata, else TheAudioDB (free key), else an old cached Last.fm answer. `{ source, summary, full, url, stats }`; `source` is `wikipedia`, `theaudiodb`, `lastfm` or `null` (nothing found); `stats` is `{ listens, listeners }` from ListenBrainz or `null`. Cached a week (nothing found: a day). `404` unknown artist. |
+| `GET` | `/api/artists/{id}/about` | Signed in. An artist's bio, no key needed: the English Wikipedia summary via MusicBrainz → Wikidata, else TheAudioDB (free key). `{ source, summary, full, url, stats }`; `source` is `wikipedia`, `theaudiodb` or `null` (nothing found); `stats` is `{ listens, listeners }` from ListenBrainz or `null`. Cached a week (nothing found: a day). `404` unknown artist. |
 | `GET` | `/api/albums/{id}/about` | Same for an album's description (Wikipedia via its release group, else TheAudioDB by release group or artist + title); `stats` is always `null`. |
 | `GET` | `/api/artists/{id}/top-songs` | Signed in. An artist's top songs, no key needed: ListenBrainz listen counts by the artist's MusicBrainz id, else Deezer's order. `{ source, tracks: [{ name, listens, url }] }`; `source` is `listenbrainz`, `deezer` or `null`; `listens` is `null` for Deezer. Cached a week (an empty answer a day). `404` unknown artist. |
 | `GET` | `/api/radio/metadata/status` | Artist Radio metadata collection mode, provider availability and progress (`tracksChecked`/`tracksTotal`, `artistsTagged`/`artistsTotal`). |
@@ -395,7 +390,7 @@ Volume levelling settings: per user `loudnessMode` (`off` | `track` | `album` | 
 `album`, applied to Subsonic transcodes). Gains never push a peak above −1 dBTP. Subsonic songs carry `replayGain`.
 
 Artist Radio settings (global, admin): `radioTrackTagSync` (`off` | `lazy` | `full`, default `full`) controls
-Last.fm track-tag collection; `radioKeylessProviders` (`true`/`false`, default `true`) enables MusicBrainz and
+MusicBrainz track-tag collection (`lazy`: only for a starting radio's tracks); `radioKeylessProviders` (`true`/`false`, default `true`) enables MusicBrainz and
 ListenBrainz (no key needed).
 
 ## Implementation Notes

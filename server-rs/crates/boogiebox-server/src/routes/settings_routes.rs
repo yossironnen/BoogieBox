@@ -197,12 +197,6 @@ async fn playback_settings_handler(State(state): State<SharedState>) -> impl Int
                     .cloned()
                     .unwrap_or_else(|| "standard".into()),
             );
-            // Return boolean presence flag, not the actual key
-            let lastfm_configured = map.get("lastfmKey").map(|v| !v.is_empty()).unwrap_or(false);
-            public.insert(
-                "lastfmConfigured".to_string(),
-                lastfm_configured.to_string(),
-            );
             (StatusCode::OK, Json(public)).into_response()
         }
         _ => internal_error(),
@@ -377,7 +371,7 @@ mod tests {
                 .uri("/api/settings")
                 .header("cookie", admin_cookie.clone())
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"lastfmKey":"abc123"}"#))
+                .body(Body::from(r#"{"discogsToken":"abc123"}"#))
                 .unwrap(),
         )
         .await;
@@ -394,7 +388,7 @@ mod tests {
         .await;
         assert_eq!(get2_status, StatusCode::OK);
         let json2 = json_body(&body2);
-        assert_eq!(json2["lastfmKey"], "abc123");
+        assert_eq!(json2["discogsToken"], "abc123");
     }
 
     #[tokio::test]
@@ -429,7 +423,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let json = json_body(&body);
         assert_eq!(json["transcodeQuality"], "low");
-        assert_eq!(json["lastfmConfigured"], "false");
+        assert!(json.get("lastfmConfigured").is_none());
         assert_eq!(json["loudnessPlayOnMode"], "off");
     }
 

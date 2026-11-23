@@ -1,6 +1,6 @@
 //! Artist bios and album descriptions without a key (`wip/lastfm-replacement-plan.md` phase 2): the English
 //! Wikipedia summary reached through MusicBrainz → Wikidata links (never a name search, so no disambiguation
-//! pages), then TheAudioDB with its free key, then a Last.fm answer cached before (until Last.fm support is removed).
+//! pages), then TheAudioDB with its free key.
 //! Artist stats are ListenBrainz listen and listener counts.
 
 use std::time::Duration;
@@ -47,7 +47,7 @@ fn theaudiodb_base() -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct About {
-    /// `wikipedia`, `theaudiodb` or `lastfm`; `None` when no source had a text.
+    /// `wikipedia` or `theaudiodb`; `None` when no source had a text.
     pub source: Option<String>,
     pub summary: String,
     /// The longer text behind "Read more", when the source has one.
@@ -340,18 +340,6 @@ async fn listenbrainz_artist_stats(
     )
 }
 
-fn from_lastfm(cached: Option<String>) -> Option<Text> {
-    // Read loosely: old cache entries differ in which fields they have.
-    let info: Value = serde_json::from_str(&cached?).ok()?;
-    let summary = optional_nonempty_json_string(&info["summary"])?;
-    let full = optional_nonempty_json_string(&info["full"]).filter(|f| f.trim() != summary.trim());
-    Some(Text {
-        summary: summary.trim().to_owned(),
-        full,
-        url: optional_nonempty_json_string(&info["url"]),
-    })
-}
-
 fn about_from(source: &str, text: Text, stats: Option<AboutStats>) -> About {
     About {
         source: Some(source.to_owned()),
@@ -373,6 +361,13 @@ fn album_key(id: &EntityId) -> String {
 /// The cached text for an artist, without asking anyone (Subsonic `getArtistInfo`).
 pub fn cached_artist_about(conn: &rusqlite::Connection, id: &EntityId) -> Option<About> {
     boogiebox_db::artwork::get_lastfm_cached(conn, &artist_key(id))
+        .and_then(|data| serde_json::from_str::<About>(&data).ok())
+        .filter(|about| about.source.is_some())
+}
+
+/// The cached text for an album, without asking anyone (Subsonic `getAlbumInfo`).
+pub fn cached_album_about(conn: &rusqlite::Connection, id: &EntityId) -> Option<About> {
+    boogiebox_db::artwork::get_lastfm_cached(conn, &album_key(id))
         .and_then(|data| serde_json::from_str::<About>(&data).ok())
         .filter(|about| about.source.is_some())
 }
@@ -412,7 +407,6 @@ struct ArtistRow {
     name: String,
     mbid: Option<String>,
     cached: Option<String>,
-    lastfm: Option<String>,
 }
 
 /// An artist's bio and stats (`None`: no such artist).
@@ -429,10 +423,6 @@ pub async fn artist_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<A
                 .ok()
                 .flatten(),
             cached: boogiebox_db::artwork::get_lastfm_cached(conn, &artist_key(&lookup)),
-            lastfm: boogiebox_db::artwork::get_lastfm_cached_stale(
-                conn,
-                &format!("artist:{}", name.to_lowercase()),
-            ),
             name,
         })
     })
@@ -466,8 +456,6 @@ pub async fn artist_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<A
         about_from("wikipedia", text, stats)
     } else if let Some(text) = note(theaudiodb_artist(http, mbid.as_deref(), &row.name).await) {
         about_from("theaudiodb", text, stats)
-    } else if let Some(text) = from_lastfm(row.lastfm) {
-        about_from("lastfm", text, stats)
     } else {
         About {
             stats,
@@ -483,7 +471,6 @@ struct AlbumRow {
     artist: String,
     release_group: Option<String>,
     cached: Option<String>,
-    lastfm: Option<String>,
 }
 
 /// An album's description (`None`: no such album).
@@ -502,10 +489,6 @@ pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<Ab
             .ok()?;
         Some(AlbumRow {
             cached: boogiebox_db::artwork::get_lastfm_cached(conn, &album_key(&lookup)),
-            lastfm: boogiebox_db::artwork::get_lastfm_cached_stale(
-                conn,
-                &format!("album:{}:{}", artist.to_lowercase(), title.to_lowercase()),
-            ),
             title,
             artist,
             release_group,
@@ -541,8 +524,6 @@ pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<Ab
         note(theaudiodb_album(http, release_group.as_deref(), &row.artist, &row.title).await)
     {
         about_from("theaudiodb", text, None)
-    } else if let Some(text) = from_lastfm(row.lastfm) {
-        about_from("lastfm", text, None)
     } else {
         About::default()
     };

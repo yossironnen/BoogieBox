@@ -10,7 +10,7 @@ describe('DEFAULT_SETTINGS', () => {
   it('contains all required keys', () => {
     const keys: (keyof typeof DEFAULT_SETTINGS)[] = [
       'colorBg', 'colorSurface', 'colorBorder', 'colorAccent',
-      'colorText', 'colorTextMuted', 'bgTexture', 'fontFamily', 'lastfmKey',
+      'colorText', 'colorTextMuted', 'bgTexture', 'fontFamily',
       'dlnaEnabled', 'dlnaFriendlyName', 'dlnaPort',
       'transcodeQuality',
       'waveformGenerateOnMissing', 'waveformBackgroundEnabled', 'waveformBackgroundFrequencyHours', 'waveformBackgroundBatchSize',
@@ -31,8 +31,9 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.fontFamily).toBe('Aptos, "Segoe UI Variable", "Segoe UI", Inter, system-ui, sans-serif');
   });
 
-  it('has an empty lastfmKey by default', () => {
-    expect(DEFAULT_SETTINGS.lastfmKey).toBe('');
+  it('has no Last.fm settings any more', () => {
+    expect(DEFAULT_SETTINGS).not.toHaveProperty('lastfmKey');
+    expect(DEFAULT_SETTINGS).not.toHaveProperty('lastfmConfigured');
   });
 
   it('has no texture by default', () => {

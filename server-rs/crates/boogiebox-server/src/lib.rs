@@ -152,7 +152,7 @@ pub struct AppState {
     pub worker_cancel: tokio_util::sync::CancellationToken,
     /// Subsonic API caches (credentials, settings, key, transcode limiter); reset on a database switch.
     pub subsonic: subsonic::SubsonicState,
-    /// Now-playing list, Last.fm sign-in states and the scrobble forwarder's wake-up; reset on a database switch.
+    /// Now-playing list, Libre.fm sign-in states and the scrobble forwarder's wake-up; reset on a database switch.
     pub plays: plays::PlayHub,
     /// Live transfers, web player reports and queued history for the admin Activity page; reset on a database
     /// switch.
@@ -165,7 +165,13 @@ pub struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        let db_config = server_config::read_db_config();
+        // Unit tests never open the database the locator names: that is the developer's real library, and opening
+        // it runs every pending migration on it.
+        let db_config = if cfg!(test) {
+            None
+        } else {
+            server_config::read_db_config()
+        };
         let setup_required = is_setup_required(db_config.as_ref());
 
         let db_folder = db_config

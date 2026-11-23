@@ -12,10 +12,8 @@ use serde::Deserialize;
 use crate::{
     auth::{AdminUser, AuthenticatedUser},
     providers::{
-        check_lastfm_key, fetch_deezer_artist_top, fetch_lastfm_album_info,
-        fetch_lastfm_artist_info, fetch_lastfm_top_tracks, fetch_listenbrainz_top_recordings,
-        fetch_lrclib_lyrics, get_spotify_access_token, lastfm_key_health, lastfm_key_usable,
-        search_deezer_artist_match, search_metadata, LastfmKeyHealth, LASTFM_KEY_REJECTED,
+        fetch_deezer_artist_top, fetch_listenbrainz_top_recordings, fetch_lrclib_lyrics,
+        get_spotify_access_token, search_deezer_artist_match, search_metadata,
     },
     DbPool, ErrorResponse, SharedState,
 };
@@ -26,10 +24,6 @@ use crate::{
 pub fn provider_router(state: SharedState) -> Router {
     Router::new()
         .route("/api/integrations/spotify/test", get(spotify_test_handler))
-        .route(
-            "/api/integrations/lastfm/status",
-            get(lastfm_status_handler),
-        )
         .route("/api/integrations/genius/test", post(genius_test_handler))
         .route("/api/integrations/lyrics", get(lyrics_search_handler))
         .route(
@@ -37,8 +31,6 @@ pub fn provider_router(state: SharedState) -> Router {
             get(metadata_search_handler),
         )
         .route("/api/admin/provider-usage", get(provider_usage_handler))
-        .route("/api/lastfm/info", get(lastfm_info_handler))
-        .route("/api/lastfm/top-tracks", get(lastfm_top_tracks_handler))
         .route("/api/artists/{id}/top-songs", get(artist_top_songs_handler))
         .route("/api/artists/{id}/about", get(artist_about_handler))
         .route("/api/albums/{id}/about", get(album_about_handler))
@@ -57,17 +49,6 @@ struct LyricsSearchParams {
 struct MetadataSearchParams {
     artist: Option<String>,
     album: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LastFmInfoParams {
-    artist: Option<String>,
-    album: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LastFmTopTracksParams {
-    artist: Option<String>,
 }
 
 // -- Handlers ------------------------------------------------------------------
@@ -267,20 +248,19 @@ async fn metadata_search_handler(
         None => return setup_required_response(),
     };
 
-    let (musicbrainz, lastfm_key, discogs_token, spotify_id, spotify_secret) =
+    let (musicbrainz, discogs_token, spotify_id, spotify_secret) =
         tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap_or_else(|p| p.into_inner());
             (
                 boogiebox_db::artwork::get_setting(&conn, "radioKeylessProviders")
                     .is_none_or(|value| value != "false"),
-                boogiebox_db::artwork::get_setting(&conn, "lastfmKey"),
                 boogiebox_db::artwork::get_setting(&conn, "discogsToken"),
                 boogiebox_db::artwork::get_setting(&conn, "spotifyClientId"),
                 boogiebox_db::artwork::get_setting(&conn, "spotifyClientSecret"),
             )
         })
         .await
-        .unwrap_or((true, None, None, None, None));
+        .unwrap_or((true, None, None, None));
 
     let http_client = state
         .read()
@@ -290,7 +270,6 @@ async fn metadata_search_handler(
     let (results, provider_warnings) = search_metadata(
         &http_client,
         musicbrainz,
-        lastfm_key.as_deref(),
         discogs_token.as_deref(),
         spotify_id.as_deref(),
         spotify_secret.as_deref(),
@@ -354,207 +333,6 @@ async fn provider_usage_handler(
     match snapshot {
         Ok(snap) => (StatusCode::OK, Json(snap)).into_response(),
         _ => internal_error(),
-    }
-}
-
-async fn lastfm_info_handler(
-    State(state): State<SharedState>,
-    _user: AuthenticatedUser,
-    Query(params): Query<LastFmInfoParams>,
-) -> impl IntoResponse {
-    let artist = params.artist.as_deref().unwrap_or("").trim().to_owned();
-    let album = params
-        .album
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-
-    if artist.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "artist is required" })),
-        )
-            .into_response();
-    }
-
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required_response(),
-    };
-
-    let cache_key = if let Some(ref alb) = album {
-        format!("album:{}:{}", artist.to_lowercase(), alb.to_lowercase())
-    } else {
-        format!("artist:{}", artist.to_lowercase())
-    };
-
-    // Check cache
-    let cached = {
-        let ck = cache_key.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            boogiebox_db::artwork::get_lastfm_cached(&conn, &ck)
-        })
-        .await
-        .unwrap_or(None)
-    };
-
-    if let Some(data) = cached {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-            return (StatusCode::OK, Json(v)).into_response();
-        }
-    }
-
-    // Fetch API key
-    let db2 = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required_response(),
-    };
-    let api_key = tokio::task::spawn_blocking(move || {
-        let conn = db2.lock().unwrap_or_else(|p| p.into_inner());
-        boogiebox_db::artwork::get_setting(&conn, "lastfmKey").unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default();
-
-    if api_key.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "no-key" })),
-        )
-            .into_response();
-    }
-
-    let http_client = state
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .http_client
-        .clone();
-    if !lastfm_key_usable(&api_key) {
-        return lastfm_refused_response(&state, cache_key).await;
-    }
-    let payload = if let Some(ref alb) = album {
-        fetch_lastfm_album_info(&http_client, &api_key, &artist, alb).await
-    } else {
-        fetch_lastfm_artist_info(&http_client, &api_key, &artist).await
-    };
-
-    let Some(info) = payload else {
-        if !lastfm_key_usable(&api_key) {
-            return lastfm_refused_response(&state, cache_key).await;
-        }
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "Not found" })),
-        )
-            .into_response();
-    };
-
-    let obj = serde_json::json!({
-        "summary": info.summary,
-        "full": info.full,
-        "listeners": info.listeners,
-        "playcount": info.playcount,
-        "url": info.url,
-        "image": info.image,
-        "tags": info.tags,
-    });
-
-    // Save to cache (7 days)
-    if let Ok(data_str) = serde_json::to_string(&obj) {
-        if let Some(db3) = get_db(&state) {
-            let _ = tokio::task::spawn_blocking(move || {
-                let conn = db3.lock().unwrap_or_else(|p| p.into_inner());
-                boogiebox_db::artwork::save_lastfm_cache(&conn, &cache_key, &data_str, 7);
-            })
-            .await;
-        }
-    }
-
-    (StatusCode::OK, Json(obj)).into_response()
-}
-
-async fn lastfm_top_tracks_handler(
-    State(state): State<SharedState>,
-    _user: AuthenticatedUser,
-    Query(params): Query<LastFmTopTracksParams>,
-) -> impl IntoResponse {
-    let artist = params.artist.as_deref().unwrap_or("").trim().to_owned();
-    if artist.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "artist is required" })),
-        )
-            .into_response();
-    }
-
-    let db = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required_response(),
-    };
-
-    let cache_key = format!("toptracks:{}", artist.to_lowercase());
-
-    let cached = {
-        let ck = cache_key.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            boogiebox_db::artwork::get_lastfm_cached(&conn, &ck)
-        })
-        .await
-        .unwrap_or(None)
-    };
-
-    if let Some(data) = cached {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-            return (StatusCode::OK, Json(v)).into_response();
-        }
-    }
-
-    let db2 = match get_db(&state) {
-        Some(d) => d,
-        None => return setup_required_response(),
-    };
-    let api_key = tokio::task::spawn_blocking(move || {
-        let conn = db2.lock().unwrap_or_else(|p| p.into_inner());
-        boogiebox_db::artwork::get_setting(&conn, "lastfmKey").unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default();
-
-    if api_key.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "no-key" })),
-        )
-            .into_response();
-    }
-
-    let http_client = state
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .http_client
-        .clone();
-    match fetch_lastfm_top_tracks(&http_client, &api_key, &artist).await {
-        Ok(tracks) => {
-            if let Ok(data_str) = serde_json::to_string(&tracks) {
-                if let Some(db3) = get_db(&state) {
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let conn = db3.lock().unwrap_or_else(|p| p.into_inner());
-                        boogiebox_db::artwork::save_lastfm_cache(&conn, &cache_key, &data_str, 7);
-                    })
-                    .await;
-                }
-            }
-            (StatusCode::OK, Json(serde_json::json!(tracks))).into_response()
-        }
-        Err(e) if e == LASTFM_KEY_REJECTED => lastfm_refused_response(&state, cache_key).await,
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": e })),
-        )
-            .into_response(),
     }
 }
 
@@ -702,66 +480,6 @@ async fn artist_top_songs_handler(
         }
     }
     (StatusCode::OK, Json(body)).into_response()
-}
-
-/// While Last.fm refuses the key: the last answer it gave (however old), else `key-rejected`, so the page hides
-/// the block instead of saying Last.fm has nothing.
-async fn lastfm_refused_response(
-    state: &SharedState,
-    cache_key: String,
-) -> axum::response::Response {
-    if let Some(db) = get_db(state) {
-        let stale = tokio::task::spawn_blocking(move || {
-            let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-            boogiebox_db::artwork::get_lastfm_cached_stale(&conn, &cache_key)
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some(value) =
-            stale.and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
-        {
-            return (StatusCode::OK, Json(value)).into_response();
-        }
-    }
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(serde_json::json!({ "error": LASTFM_KEY_REJECTED })),
-    )
-        .into_response()
-}
-
-/// Whether Last.fm takes the saved key (Settings › Last.fm). Asks Last.fm once when nothing is known yet.
-async fn lastfm_status_handler(
-    State(state): State<SharedState>,
-    _admin: AdminUser,
-) -> impl IntoResponse {
-    let Some(db) = get_db(&state) else {
-        return setup_required_response();
-    };
-    let api_key = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        boogiebox_db::artwork::get_setting(&conn, "lastfmKey").unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default();
-    let api_key = api_key.trim().to_owned();
-    if api_key.is_empty() {
-        return Json(
-            serde_json::json!({ "configured": false, "health": LastfmKeyHealth::Unknown }),
-        )
-        .into_response();
-    }
-    let mut health = lastfm_key_health(&api_key);
-    if health == LastfmKeyHealth::Unknown {
-        let http_client = state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .http_client
-            .clone();
-        health = check_lastfm_key(&http_client, &api_key).await;
-    }
-    Json(serde_json::json!({ "configured": true, "health": health })).into_response()
 }
 
 // -- Helpers -------------------------------------------------------------------
@@ -991,42 +709,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lastfm_info_requires_artist_and_returns_cached_value_without_a_network_call() {
-        let (app, pool) = new_test_app_with_pool("provider-lastfm-info");
-        let cookie = seed_user_session(&pool, "u1");
-
-        let (missing_artist_status, _) = send(
-            app.clone(),
-            Request::builder()
-                .uri("/api/lastfm/info")
-                .header("cookie", cookie.clone())
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(missing_artist_status, StatusCode::BAD_REQUEST);
-
-        boogiebox_db::artwork::save_lastfm_cache(
-            &pool.lock().unwrap(),
-            "artist:cached artist",
-            r#"{"summary":"cached summary"}"#,
-            7,
-        );
-
-        let (status, body) = send(
-            app,
-            Request::builder()
-                .uri("/api/lastfm/info?artist=Cached%20Artist")
-                .header("cookie", cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(json_body(&body)["summary"], "cached summary");
-    }
-
-    #[tokio::test]
     async fn about_comes_from_wikipedia_then_theaudiodb_then_old_last_fm_and_is_cached() {
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1108,7 +790,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        // Nothing for the third artist anywhere but an old Last.fm answer.
+        // Nothing for the third artist anywhere: an old Last.fm answer isn't shown any more.
         Mock::given(method("GET"))
             .and(path("/search.php"))
             .respond_with(
@@ -1173,9 +855,8 @@ mod tests {
 
         let (_, body) = send(app.clone(), get("/api/artists/ar-old/about")).await;
         let body = json_body(&body);
-        assert_eq!(body["source"], "lastfm");
-        assert_eq!(body["summary"], "Old bio.");
-        assert!(body["full"].is_null());
+        assert!(body["source"].is_null());
+        assert_eq!(body["summary"], "");
 
         let (status, _) = send(app, get("/api/artists/missing/about")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1276,123 +957,5 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         std::env::remove_var("BOOGIEBOX_LISTENBRAINZ_API_BASE");
         std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
-    }
-
-    #[tokio::test]
-    async fn a_refused_lastfm_key_serves_old_answers_or_says_key_rejected() {
-        let (app, pool) = new_test_app_with_pool("provider-lastfm-refused");
-        let cookie = seed_user_session(&pool, "u1");
-        let admin = seed_admin_session(&pool, "admin1");
-        {
-            let conn = pool.lock().unwrap();
-            conn.execute(
-                "INSERT INTO settings(key, value) VALUES ('lastfmKey', 'route-refused-key')
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [],
-            )
-            .unwrap();
-            // Expired long ago: only served because Last.fm refuses the key.
-            conn.execute(
-                "INSERT INTO lastfm_cache(cache_key, data, fetched_at, expires_at)
-                 VALUES('artist:old artist', '{\"summary\":\"old summary\"}', datetime('now', '-30 days'), datetime('now', '-23 days'))",
-                [],
-            )
-            .unwrap();
-        }
-        crate::providers::record_lastfm_key_health(
-            "route-refused-key",
-            crate::providers::LastfmKeyHealth::Rejected,
-        );
-        let get = |uri: &str, cookie: &str| {
-            Request::builder()
-                .uri(uri)
-                .header("cookie", cookie.to_owned())
-                .body(Body::empty())
-                .unwrap()
-        };
-
-        let (status, body) = send(
-            app.clone(),
-            get("/api/lastfm/info?artist=Old%20Artist", &cookie),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(json_body(&body)["summary"], "old summary");
-
-        let (status, body) = send(
-            app.clone(),
-            get("/api/lastfm/info?artist=New%20Artist", &cookie),
-        )
-        .await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(json_body(&body)["error"], "key-rejected");
-
-        let (status, body) = send(
-            app.clone(),
-            get("/api/lastfm/top-tracks?artist=New%20Artist", &cookie),
-        )
-        .await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(json_body(&body)["error"], "key-rejected");
-
-        let (status, _) = send(app.clone(), get("/api/integrations/lastfm/status", &cookie)).await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, body) = send(app, get("/api/integrations/lastfm/status", &admin)).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(json_body(&body)["configured"], true);
-        assert_eq!(json_body(&body)["health"], "rejected");
-    }
-
-    #[tokio::test]
-    async fn lastfm_info_returns_bad_request_when_no_key_configured_and_cache_misses() {
-        let (app, pool) = new_test_app_with_pool("provider-lastfm-no-key");
-        let cookie = seed_user_session(&pool, "u1");
-        let (status, body) = send(
-            app,
-            Request::builder()
-                .uri("/api/lastfm/info?artist=Uncached%20Artist")
-                .header("cookie", cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(&body)["error"], "no-key");
-    }
-
-    #[tokio::test]
-    async fn lastfm_top_tracks_requires_artist_and_returns_cached_value() {
-        let (app, pool) = new_test_app_with_pool("provider-lastfm-top");
-        let cookie = seed_user_session(&pool, "u1");
-
-        let (missing_status, _) = send(
-            app.clone(),
-            Request::builder()
-                .uri("/api/lastfm/top-tracks")
-                .header("cookie", cookie.clone())
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(missing_status, StatusCode::BAD_REQUEST);
-
-        boogiebox_db::artwork::save_lastfm_cache(
-            &pool.lock().unwrap(),
-            "toptracks:cached artist",
-            r#"[{"name":"Song One"}]"#,
-            7,
-        );
-
-        let (status, body) = send(
-            app,
-            Request::builder()
-                .uri("/api/lastfm/top-tracks?artist=Cached%20Artist")
-                .header("cookie", cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(json_body(&body)[0]["name"], "Song One");
     }
 }

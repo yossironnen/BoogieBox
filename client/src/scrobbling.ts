@@ -1,11 +1,11 @@
 /**
- * Scrobbling to the signed-in user's own Last.fm, Libre.fm, ListenBrainz and ListenBrainz-compatible server
+ * Scrobbling to the signed-in user's own Libre.fm, ListenBrainz and ListenBrainz-compatible server
  * (Maloja, Koito) accounts. The server keeps the secrets and sends the plays; the web player only says when a
  * play counts (`scrobbleThreshold`).
  */
 
 /** `server` is the user's own ListenBrainz-compatible server. */
-export type ScrobbleService = 'lastfm' | 'listenbrainz' | 'librefm' | 'server';
+export type ScrobbleService = 'listenbrainz' | 'librefm' | 'server';
 
 /** One connected account (never includes the token or session key). */
 export interface ScrobbleAccount {
@@ -22,19 +22,12 @@ export interface ScrobbleAccount {
 
 /** `GET /api/scrobble/accounts`. */
 export interface ScrobbleAccountsResponse {
-  /** The admin entered the Last.fm API key and shared secret. */
-  lastfmAvailable: boolean;
-  /** Last.fm refuses the admin's key (no Pro subscription): Last.fm scrobbles are paused. */
-  lastfmKeyRefused?: boolean;
   accounts: ScrobbleAccount[];
 }
 
-/** Shown on a connected Last.fm account while Last.fm refuses the server's key (approved copy, temporary). */
-export const LASTFM_SCROBBLES_REFUSED = "Last.fm isn't accepting scrobbles from this server.";
-
 /**
  * Seconds a track must play before it counts: half its length or 4 minutes, whichever is less. Tracks of
- * 30 seconds or less never count (Last.fm rule); so does anything without a known length.
+ * 30 seconds or less never count (Audioscrobbler rule); so does anything without a known length.
  */
 export function scrobbleThreshold(duration: number | null | undefined): number | null {
   if (duration == null || !Number.isFinite(duration) || duration <= 30) return null;

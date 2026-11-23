@@ -266,7 +266,7 @@ fn is_year_or_decade(tag: &str) -> bool {
 }
 
 /// Lowercases, trims, folds aliases, and drops junk. `None` means "discard".
-/// `exclude` lists names (artist/title) that Last.fm users sometimes tag with.
+/// `exclude` lists names (artist/title) that listeners sometimes tag with.
 pub fn normalize_tag(raw: &str, exclude: &[&str]) -> Option<String> {
     let mut tag = raw
         .replace(['_', '\u{a0}'], " ")

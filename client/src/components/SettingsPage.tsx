@@ -209,9 +209,7 @@ const MUSIC_POST_SCAN_ACTIONS: Array<{ jobType: AdminPostScanJobType; label: str
   { jobType: 'refresh_library_mappings', label: 'Refresh mappings', icon: 'refresh' },
   { jobType: 'cache_artist_images', label: 'Cache artist images', icon: 'artistImage' },
   { jobType: 'cache_album_images', label: 'Cache album images', icon: 'albumImage' },
-  { jobType: 'warm_lastfm_info', label: 'Warm Last.fm', icon: 'cloud' },
   { jobType: 'warm_track_lyrics', label: 'Warm lyrics', icon: 'lyrics' },
-  { jobType: 'sync_artist_styles', label: 'Sync artist styles', icon: 'styles' },
 ];
 
 function getLibraryPostScanActions(library: Library): Array<{ jobType: AdminPostScanJobType; label: string; icon: QueueIconKey }> {
@@ -938,20 +936,6 @@ export default function SettingsPage({
   const [geniusClientSecret, setGeniusClientSecret] = useState('');
   const [geniusSaving, setGeniusSaving] = useState(false);
   const [geniusResult, setGeniusResult] = useState<string | null>(null);
-  const [lastfmKey, setLastfmKey] = useState('');
-  const [lastfmSecret, setLastfmSecret] = useState('');
-  const [lastfmSaving, setLastfmSaving] = useState(false);
-  const [lastfmResult, setLastfmResult] = useState<string | null>(null);
-  const [lastfmConnected, setLastfmConnected] = useState<boolean | null>(null);
-  /** Last.fm refuses the saved key (no Pro subscription from 1 Dec 2026). */
-  const [lastfmRefused, setLastfmRefused] = useState(false);
-  const loadLastfmStatus = useCallback(() => {
-    Promise.resolve()
-      .then(() => api.integrations.lastfmStatus())
-      .then((status) => setLastfmRefused(!!status?.configured && status.health === 'rejected'))
-      .catch(() => {});
-  }, []);
-  const [lastfmHelpOpen, setLastfmHelpOpen] = useState(false);
   const [streamDirect, setStreamDirectState] = useState(() => getStreamDirect());
   const [transcodeQuality, setTranscodeQuality] = useState<'low' | 'high'>(settings.transcodeQuality === 'high' ? 'high' : 'low');
   const [transcodeQualitySaving, setTranscodeQualitySaving] = useState(false);
@@ -1181,10 +1165,7 @@ export default function SettingsPage({
         if (s.spotifyClientSecret) setSpotifyClientSecret(s.spotifyClientSecret);
         if (s.geniusClientId) setGeniusClientId(s.geniusClientId);
         if (s.geniusClientSecret) setGeniusClientSecret(s.geniusClientSecret);
-        if (s.lastfmKey) setLastfmKey(s.lastfmKey);
-        if (s.lastfmSecret) setLastfmSecret(s.lastfmSecret);
       });
-      loadLastfmStatus();
       loadProviderUsage();
     }
     if (activeTab === 'advanced') {
@@ -1220,7 +1201,7 @@ export default function SettingsPage({
       }).catch(() => {});
       if (isAdmin) api.admin.logs.list().then(l => setLogFolder(l.folder)).catch(() => {});
     }
-  }, [activeTab, isAdmin, canManageLibraries, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage, loadLastfmStatus]);
+  }, [activeTab, isAdmin, canManageLibraries, refreshLibraries, loadSchedules, loadQueueSnapshot, loadDlnaStatus, loadWaveformStatus, loadBpmStatus, loadBoogieMixDeepStatus, loadProviderUsage]);
 
   useEffect(() => {
     if (activeTab !== 'advanced') return;
@@ -1462,48 +1443,6 @@ export default function SettingsPage({
       setGeniusResult('Error: ' + e.message);
     } finally {
       setGeniusSaving(false);
-    }
-  };
-
-  const saveLastfmKey = async () => {
-    setLastfmSaving(true);
-    setLastfmResult(null);
-    setLastfmConnected(null);
-    try {
-      await api.settings.update({ lastfmKey: lastfmKey.trim(), lastfmSecret: lastfmSecret.trim() });
-      onSettingsChange({ ...local, lastfmKey: lastfmKey.trim() } as any);
-      setLastfmResult(lastfmSecret.trim() ? '✓ API key and shared secret saved' : '✓ API key saved');
-      setTimeout(() => setLastfmResult(null), 3000);
-      loadLastfmStatus();
-    } catch (e: any) {
-      setLastfmResult('✗ ' + e.message);
-    } finally {
-      setLastfmSaving(false);
-    }
-  };
-
-  const testLastfmKey = async () => {
-    if (!lastfmKey.trim()) { setLastfmResult('Enter a key first'); return; }
-    setLastfmSaving(true);
-    setLastfmResult('Testing…');
-    try {
-      const url = `https://ws.audioscrobbler.com/2.0/?method=chart.gettopartists&api_key=${encodeURIComponent(lastfmKey.trim())}&format=json&limit=1`;
-      const resp = await fetch(url);
-      const data = await resp.json();
-      if (data.error) {
-        setLastfmResult(`✗ Last.fm error ${data.error}: ${data.message}`);
-        setLastfmConnected(false);
-        // 10 invalid key, 26 suspended: what a key without Pro gets from 1 Dec 2026.
-        if (data.error === 10 || data.error === 26) setLastfmRefused(true);
-      } else {
-        setLastfmResult('✓ Key is valid — Last.fm connection OK');
-        setLastfmConnected(true);
-      }
-    } catch (e: any) {
-      setLastfmResult('✗ Network error: ' + e.message);
-      setLastfmConnected(false);
-    } finally {
-      setLastfmSaving(false);
     }
   };
 
@@ -1770,7 +1709,7 @@ export default function SettingsPage({
           </SettingsPanel>
 
           <ConnectedAppsPanel username={currentUser.username} />
-          <ScrobblingPanel onOpenLastFmSetup={isAdmin ? () => goToSection('integrations', 'settings-lastfm') : undefined} />
+          <ScrobblingPanel />
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
@@ -2915,7 +2854,7 @@ export default function SettingsPage({
               description={(
                 <>
                   Writes detailed scan and post-scan diagnostics — including metadata provider requests
-                  (Discogs, Last.fm, Deezer, Spotify, LRCLIB, lyrics.ovh) and their results — to{' '}
+                  (MusicBrainz, ListenBrainz, Wikipedia, TheAudioDB, Discogs, Deezer, Spotify, LRCLIB, lyrics.ovh) and their results — to{' '}
                   <code style={{ color: 'var(--accent)' }}>scan-debug.log</code>. Takes effect immediately, no restart
                   needed. Leave this disabled unless you are troubleshooting large-library scans or stuck post-scan work.
                 </>
@@ -3164,77 +3103,6 @@ export default function SettingsPage({
             )}
           </div>}
 
-          {/* Last.fm */}
-          <div id="settings-lastfm" style={{ ...P.sectionTitle, marginTop: 24 }}>Last.fm</div>
-          <IntegrationConnector
-            dotColor="#d51007"
-            name="Last.fm"
-            description="Shows artist biographies, album reviews, listener stats, and genre tags on artist and album pages in Browse."
-            status={connectorStatus(!!lastfmKey.trim(), lastfmConnected)}
-            statusLabels={{ connected: 'Key valid' }}
-            helpOpen={lastfmHelpOpen}
-            onToggleHelp={() => setLastfmHelpOpen((v) => !v)}
-            helpContent={
-              <>
-                <strong style={{ color: 'var(--text)' }}>1.</strong> Create an account at{' '}
-                <a href="https://www.last.fm/api/account/create" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
-                  last.fm/api/account/create
-                </a>{' '}
-                <strong style={{ color: 'var(--text)' }}>2.</strong> Fill in the application form{' '}
-                <strong style={{ color: 'var(--text)' }}>3.</strong> Copy your API key and paste it below.{' '}
-                <strong style={{ color: 'var(--text)' }}>4.</strong> To let users scrobble to their own Last.fm accounts, also paste the shared secret.
-              </>
-            }
-            onTest={testLastfmKey}
-            onSave={saveLastfmKey}
-            busy={lastfmSaving}
-            errorMessage={connectorMessage(lastfmResult)}
-            footer={
-              <>
-              {lastfmRefused && (
-                <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 12, fontSize: 13, color: 'var(--warning, #f59e0b)' }}>
-                  <ScrobbleIcon.Warning size={14} /> Last.fm no longer accepts this key. From 1 December 2026, Last.fm keys need a Pro subscription. BoogieBox keeps showing what it already fetched.
-                </div>
-              )}
-              <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-muted)' }}>
-                Each user connects their own Last.fm account for scrobbling in User Settings → Scrobbling.{' '}
-                <button
-                  type="button"
-                  onClick={() => goToSection('theme', 'settings-scrobbling')}
-                  style={{ border: 'none', background: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }}
-                >
-                  Open Scrobbling
-                </button>
-              </div>
-              </>
-            }
-          >
-            <input
-              type="password"
-              placeholder="Paste your Last.fm API key…"
-              value={lastfmKey}
-              onChange={e => { setLastfmKey(e.target.value); setLastfmResult(null); setLastfmConnected(null); }}
-              style={{
-                flex: 1, minWidth: 240,
-                backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-                color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                fontSize: 15, fontFamily: 'monospace', outline: 'none',
-              }}
-            />
-            <input
-              type="password"
-              aria-label="Last.fm shared secret"
-              placeholder="Shared secret (for scrobbling, optional)…"
-              value={lastfmSecret}
-              onChange={e => { setLastfmSecret(e.target.value); setLastfmResult(null); }}
-              style={{
-                flex: 1, minWidth: 240,
-                backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
-                color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
-                fontSize: 15, fontFamily: 'monospace', outline: 'none',
-              }}
-            />
-          </IntegrationConnector>
           </>)}
 
           <div style={{ ...P.sectionTitle, ...(isAdmin ? { marginTop: 24 } : {}) }}>ListenBrainz</div>

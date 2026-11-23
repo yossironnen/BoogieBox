@@ -36,10 +36,6 @@ const { apiMock } = vi.hoisted(() => ({
     scanJobs: { active: vi.fn() },
     albumArtUrl: vi.fn((albumId: ClientEntityId, size: number, version?: string | number) => `/api/albums/${albumId}/art?size=${size}${version ? `&v=${version}` : ''}`),
     artistPhotoUrl: vi.fn((artistId: ClientEntityId, size: number, version?: string | number) => `/api/artists/${artistId}/photo?size=${size}${version ? `&v=${version}` : ''}`),
-    lastfm: {
-      info: vi.fn(),
-      topTracks: vi.fn(),
-    },
     artistTopSongs: vi.fn(),
     artistAbout: vi.fn(),
     albumAbout: vi.fn(),
@@ -124,14 +120,6 @@ describe('BrowseView component flows', () => {
       artists: [],
       albums: [],
     }));
-    apiMock.lastfm.info.mockResolvedValue({
-      summary: 'Artist summary',
-      content: 'Artist full',
-      listeners: 100,
-      playcount: 200,
-      tags: ['rock'],
-      url: 'https://last.fm/artist',
-    });
     apiMock.artistAbout.mockResolvedValue({
       source: 'wikipedia',
       summary: 'Artist summary',
@@ -154,42 +142,6 @@ describe('BrowseView component flows', () => {
           json: async () => ({ url: 'https://img.example.com/a.jpg', source: 'deezer' }),
         } as unknown as Response;
       }
-      if (url.includes('method=artist.getInfo')) {
-        return {
-          ok: true,
-          json: async () => ({
-            artist: {
-              bio: { summary: 'Artist summary', content: 'Artist full' },
-              stats: { listeners: '100', playcount: '200' },
-              tags: { tag: [{ name: 'rock' }] },
-              url: 'https://last.fm/artist',
-            },
-          }),
-        } as unknown as Response;
-      }
-      if (url.includes('method=artist.getTopTracks')) {
-        return {
-          ok: true,
-          json: async () => ({
-            toptracks: {
-              track: [
-                { name: 'Top Song', playcount: '500', listeners: '50', url: 'https://last.fm/top-song' },
-              ],
-            },
-          }),
-        } as unknown as Response;
-      }
-      if (url.includes('method=album.getInfo')) {
-        return {
-          ok: true,
-          json: async () => ({
-            album: {
-              wiki: { summary: 'Album summary', content: 'Album full' },
-              tags: { tag: [{ name: 'rock' }] },
-            },
-          }),
-        } as unknown as Response;
-      }
       return {
         ok: true,
         json: async () => ({}),
@@ -203,7 +155,7 @@ describe('BrowseView component flows', () => {
     apiMock.radioStations.list.mockResolvedValue([station]);
     const onPlayRadioStation = vi.fn();
     const { rerender } = render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" onPlayRadioStation={onPlayRadioStation} />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} onPlayRadioStation={onPlayRadioStation} />,
     );
     expect(await screen.findByText('Artist One')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Favourites' }));
@@ -216,7 +168,7 @@ describe('BrowseView component flows', () => {
     expect(await screen.findByText('Artist One')).toBeInTheDocument();
 
     rerender(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" openSpecialRequest={{ special: 'favourites', token: 1 }} />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} openSpecialRequest={{ special: 'favourites', token: 1 }} />,
     );
     expect(await screen.findByText('No favourite songs yet')).toBeInTheDocument();
   });
@@ -260,7 +212,6 @@ describe('BrowseView component flows', () => {
           playTrack={vi.fn()}
           playAlbumInVinylMode={vi.fn()}
           addToQueue={vi.fn()}
-          lastfmKey=""
         />,
       );
       fireEvent.click(screen.getByRole('button', { name: 'Albums' }));
@@ -285,9 +236,9 @@ describe('BrowseView component flows', () => {
     }
   });
 
-  it('shows the artist bio from Wikipedia with its credit and ListenBrainz stats, no Last.fm calls', async () => {
+  it('shows the artist bio from Wikipedia with its credit and ListenBrainz stats', async () => {
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="test-lastfm-key" />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByText('Artist One'));
@@ -302,8 +253,6 @@ describe('BrowseView component flows', () => {
     expect(screen.getByRole('link', { name: 'Wikipedia ↗' })).toBeInTheDocument();
     expect(await screen.findByText('Listens on ListenBrainz')).toBeInTheDocument();
     expect(screen.getByText('500 listens')).toBeInTheDocument();
-    expect(apiMock.lastfm.info).not.toHaveBeenCalled();
-    expect(apiMock.lastfm.topTracks).not.toHaveBeenCalled();
   });
 
   it('shows TheAudioDB bios with Read more, and hides the block when nothing was found', async () => {
@@ -315,7 +264,7 @@ describe('BrowseView component flows', () => {
       stats: null,
     });
     const { unmount } = render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByText('Artist One'));
@@ -329,7 +278,7 @@ describe('BrowseView component flows', () => {
 
     apiMock.artistAbout.mockResolvedValueOnce({ source: null, summary: '', full: null, url: null, stats: null });
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getAllByText('Artist One')[0]);
@@ -345,7 +294,7 @@ describe('BrowseView component flows', () => {
       tracks: [{ name: 'Top Song', listens: null, url: 'https://www.deezer.com/track/1' }],
     });
     const { unmount } = render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByText('Artist One'));
@@ -357,7 +306,7 @@ describe('BrowseView component flows', () => {
 
     apiMock.artistTopSongs.mockResolvedValueOnce({ source: null, tracks: [] });
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getAllByText('Artist One')[0]);
@@ -376,7 +325,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -420,7 +368,7 @@ describe('BrowseView component flows', () => {
     apiMock.artistSimilar.mockImplementation(async (artistId: ClientEntityId) => ({
       sourceArtistId: artistId,
       artists: artistId === '1'
-        ? [{ id: '2', name: 'Related Artist', track_count: 5, album_count: 1, score: 1, providers: ['lastfm'] }]
+        ? [{ id: '2', name: 'Related Artist', track_count: 5, album_count: 1, score: 1, providers: ['listenbrainz'] }]
         : [],
     }));
 
@@ -430,7 +378,6 @@ describe('BrowseView component flows', () => {
         playTrack={vi.fn()}
         playAlbumInVinylMode={vi.fn()}
         addToQueue={vi.fn()}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -457,7 +404,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -474,7 +420,7 @@ describe('BrowseView component flows', () => {
     ));
   });
 
-  it('allows Artist Radio playback even when local lastfmKey prop is empty', async () => {
+  it('allows Artist Radio playback', async () => {
     const playTrack = vi.fn();
     const playAlbumInVinylMode = vi.fn();
     const addToQueue = vi.fn();
@@ -485,7 +431,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey=""
       />
     );
 
@@ -514,7 +459,7 @@ describe('BrowseView component flows', () => {
     const playTrack = vi.fn();
 
     render(
-      <BrowseView libraries={[]} playTrack={playTrack} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+      <BrowseView libraries={[]} playTrack={playTrack} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await waitFor(() => expect(apiMock.artists).toHaveBeenCalled());
     fireEvent.click(screen.getByText('Artist One'));
@@ -564,7 +509,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={vi.fn()}
         addToQueue={vi.fn()}
-        lastfmKey="test-lastfm-key"
       />,
     );
     await screen.findByTitle('Artist One');
@@ -614,7 +558,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
         openAlbumRequest={{ album, token: 1 }}
       />
     );
@@ -638,7 +581,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -667,7 +609,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -700,7 +641,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -733,7 +673,6 @@ describe('BrowseView component flows', () => {
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
         libraries={[{ id: '1', name: 'Main', path: 'D:\\Music', added_at: '2026-01-01', last_scan: null, track_count: 2 }]}
-        lastfmKey="abc123"
       />
     );
 
@@ -758,7 +697,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -806,7 +744,6 @@ describe('BrowseView component flows', () => {
         playTrack={vi.fn()}
         playAlbumInVinylMode={vi.fn()}
         addToQueue={vi.fn()}
-        lastfmKey="test-lastfm-key"
       />,
     );
     await screen.findByTitle('Artist One');
@@ -872,7 +809,6 @@ describe('BrowseView component flows', () => {
         playTrack={vi.fn()}
         playAlbumInVinylMode={vi.fn()}
         addToQueue={vi.fn()}
-        lastfmKey="test-lastfm-key"
       />,
     );
     await screen.findByTitle('Artist One');
@@ -912,7 +848,6 @@ describe('BrowseView component flows', () => {
         playTrack={vi.fn()}
         playAlbumInVinylMode={vi.fn()}
         addToQueue={vi.fn()}
-        lastfmKey="test-lastfm-key"
       />,
     );
     await screen.findByTitle('Artist One');
@@ -939,7 +874,6 @@ describe('BrowseView component flows', () => {
         playTrack={vi.fn()}
         playAlbumInVinylMode={vi.fn()}
         addToQueue={vi.fn()}
-        lastfmKey="test-lastfm-key"
       />,
     );
 
@@ -963,7 +897,6 @@ describe('BrowseView component flows', () => {
           playTrack={playTrack}
           playAlbumInVinylMode={playAlbumInVinylMode}
           addToQueue={addToQueue}
-          lastfmKey="test-lastfm-key"
         />
         <ContextMenuRoot />
       </>
@@ -1013,7 +946,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -1048,7 +980,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -1118,7 +1049,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -1216,7 +1146,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -1254,7 +1183,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -1273,7 +1201,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -1297,7 +1224,6 @@ describe('BrowseView component flows', () => {
         playTrack={playTrack}
         playAlbumInVinylMode={playAlbumInVinylMode}
         addToQueue={addToQueue}
-        lastfmKey="test-lastfm-key"
       />
     );
 
@@ -1321,7 +1247,6 @@ describe('BrowseView component flows', () => {
       playTrack: vi.fn(),
       playAlbumInVinylMode: vi.fn(),
       addToQueue: vi.fn(),
-      lastfmKey: '',
     };
     const view = render(<BrowseView {...props} />);
 
@@ -1373,7 +1298,6 @@ describe('BrowseView component flows', () => {
       playTrack: vi.fn(),
       playAlbumInVinylMode: vi.fn(),
       addToQueue: vi.fn(),
-      lastfmKey: '',
     };
 
     const view = render(<BrowseView {...props} openGenreRequest={{ genre: '   ', token: 1 }} />);
@@ -1395,7 +1319,7 @@ describe('BrowseView component flows', () => {
 
   it('hides the Select entry point without canEditMetadata', async () => {
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await screen.findByText('Artist One');
     expect(screen.queryByRole('button', { name: 'Select artists to merge' })).not.toBeInTheDocument();
@@ -1409,7 +1333,7 @@ describe('BrowseView component flows', () => {
     apiMock.mergeArtists.mockResolvedValue({ id: '1', name: 'Madonna', track_count: 3, album_count: 2 });
 
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} canEditMetadata />,
     );
     await screen.findByText('Madonna');
 
@@ -1436,7 +1360,7 @@ describe('BrowseView component flows', () => {
     apiMock.unmergeArtist.mockResolvedValue({ master: { id: '1', name: 'Artist One' }, new_artist_ids: ['n1'] });
 
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} canEditMetadata />,
     );
     fireEvent.click(await screen.findByText('Artist One'));
 
@@ -1450,7 +1374,7 @@ describe('BrowseView component flows', () => {
 
   it('hides Select on the Albums tab even when canEditMetadata is true', async () => {
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} canEditMetadata />,
     );
     await screen.findByText('Artist One');
     expect(screen.getByRole('button', { name: 'Select artists to merge' })).toBeInTheDocument();
@@ -1466,7 +1390,7 @@ describe('BrowseView component flows', () => {
     ]);
 
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} canEditMetadata />,
     );
     await screen.findByText('Various Artists');
     fireEvent.click(screen.getByRole('button', { name: 'Select artists to merge' }));
@@ -1483,7 +1407,7 @@ describe('BrowseView component flows', () => {
       { id: '1', name: 'Artist One', track_count: 2, album_count: 1, rating: null, metadata_locked: 1 },
     ]);
     const { container } = render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} />,
     );
     await screen.findByText('Artist One');
     expect(container.querySelector('[title="Custom metadata — protected from auto-scan"]')).toBeInTheDocument();
@@ -1498,7 +1422,7 @@ describe('BrowseView component flows', () => {
     });
 
     render(
-      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} lastfmKey="" canEditMetadata />,
+      <BrowseView libraries={[]} playTrack={vi.fn()} playAlbumInVinylMode={vi.fn()} addToQueue={vi.fn()} canEditMetadata />,
     );
     fireEvent.click(await screen.findByText('Artist One'));
 

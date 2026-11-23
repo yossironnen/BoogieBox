@@ -27,21 +27,6 @@ fn text_node(name: &'static str, value: impl Into<String>) -> Node {
     Node::new(name).text(value.into())
 }
 
-/// A cached Last.fm JSON document (`artist:…`, `album:…`, `toptracks:…`), never fetched here.
-fn cached_lastfm(conn: &rusqlite::Connection, key: &str) -> Option<Json> {
-    boogiebox_db::artwork::get_lastfm_cached(conn, key)
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-}
-
-fn json_str(value: &Json, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-
 // ── Lyrics ─────────────────────────────────────────────────────────────────────
 
 /// `getLyrics` (`artist`, `title`): cached lyrics only.
@@ -125,21 +110,20 @@ pub async fn lyrics_by_song_id(ctx: &Ctx) -> Result<Node, SubsonicError> {
 
 // ── Artist and album info ──────────────────────────────────────────────────────
 
-/// `getArtistInfo` / `getArtistInfo2`: local bio (else the cached Last.fm summary) and similar artists in
-/// this library.
+/// `getArtistInfo` / `getArtistInfo2`: local bio (else the cached About text) and similar artists in this
+/// library.
 pub async fn artist_info(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError> {
     let id = required_id(&ctx.params, "id")?;
     let count = ctx.params.clamped("count", 20, 0, 50)? as usize;
     let lookup_id = id.clone();
-    let (description, mbid, lastfm, about) = ctx
+    let (description, mbid, about) = ctx
         .db(move |conn| {
             let info = sdb::artist_info(conn, &lookup_id)
                 .map_err(db_err)?
                 .ok_or_else(|| SubsonicError::not_found("Artist"))?;
-            let lastfm = cached_lastfm(conn, &format!("artist:{}", info.name.to_lowercase()));
             // The bio the artist page fetched (Wikipedia, TheAudioDB); no network here.
             let about = crate::about::cached_artist_about(conn, &coerce_entity_id(&lookup_id));
-            Ok((info.description, info.musicbrainz_id, lastfm, about))
+            Ok((info.description, info.musicbrainz_id, about))
         })
         .await?;
 
@@ -159,11 +143,10 @@ pub async fn artist_info(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError>
         .unwrap_or_default();
         let user = ctx.user_id();
         ctx.db(move |conn| {
-            crate::similar_artists::resolve_local_similar_artists_with_listenbrainz(
+            crate::similar_artists::resolve_local_similar_artists(
                 conn,
                 &user,
                 &entity,
-                &related.lastfm,
                 &related.deezer,
                 &related.listenbrainz,
                 count,
@@ -186,10 +169,7 @@ pub async fn artist_info(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError>
         .db(move |conn| sdb::annotations(conn, &user, ItemKind::Artist, &ids).map_err(db_err))
         .await?;
 
-    let biography = description
-        .or_else(|| about.map(|a| a.summary))
-        .or_else(|| lastfm.as_ref().and_then(|v| json_str(v, "summary")));
-    let lastfm_url = lastfm.as_ref().and_then(|v| json_str(v, "url"));
+    let biography = description.or_else(|| about.map(|a| a.summary));
     let articles = ctx.articles();
     let mut node = Node::new(if legacy { "artistInfo" } else { "artistInfo2" });
     if let Some(bio) = biography {
@@ -197,9 +177,6 @@ pub async fn artist_info(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError>
     }
     if let Some(mbid) = mbid {
         node = node.object(text_node("musicBrainzId", mbid));
-    }
-    if let Some(url) = lastfm_url {
-        node = node.object(text_node("lastFmUrl", url));
     }
     let similar_nodes = artists
         .iter()
@@ -214,29 +191,22 @@ pub async fn artist_info(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicError>
     Ok(Node::new("payload").object(node.list("similarArtist", similar_nodes)))
 }
 
-/// `getAlbumInfo` / `getAlbumInfo2`: local notes, else the cached Last.fm summary.
+/// `getAlbumInfo` / `getAlbumInfo2`: local notes, else the cached About text (no network here).
 pub async fn album_info(ctx: &Ctx) -> Result<Node, SubsonicError> {
     let id = required_id(&ctx.params, "id")?;
-    let (description, lastfm) = ctx
+    let (description, about) = ctx
         .db(move |conn| {
             let info = sdb::album_info(conn, &id)
                 .map_err(db_err)?
                 .ok_or_else(|| SubsonicError::not_found("Album"))?;
-            let key = format!(
-                "album:{}:{}",
-                info.artist.to_lowercase(),
-                info.title.to_lowercase()
-            );
-            Ok((info.description, cached_lastfm(conn, &key)))
+            let about = crate::about::cached_album_about(conn, &coerce_entity_id(&id));
+            Ok((info.description, about))
         })
         .await?;
-    let notes = description.or_else(|| lastfm.as_ref().and_then(|v| json_str(v, "summary")));
+    let notes = description.or_else(|| about.map(|a| a.summary));
     let mut node = Node::new("albumInfo");
     if let Some(notes) = notes {
         node = node.object(text_node("notes", notes));
-    }
-    if let Some(url) = lastfm.as_ref().and_then(|v| json_str(v, "url")) {
-        node = node.object(text_node("lastFmUrl", url));
     }
     Ok(Node::new("payload").object(node))
 }
@@ -312,23 +282,29 @@ pub async fn similar_songs(ctx: &Ctx, legacy: bool) -> Result<Node, SubsonicErro
     Ok(Node::new("payload").object(Node::new(container).list("song", songs_nodes(&songs, &ann))))
 }
 
-/// Orders an artist's songs: Last.fm's cached top tracks first (in their order), then by local plays.
+/// Orders an artist's songs: the most-played by the stored popularity counts (ListenBrainz listens, or Last.fm
+/// scrobbles kept from before) first, then by local plays.
 pub fn rank_top_songs(
     mut songs: Vec<boogiebox_db::subsonic::SubsonicSong>,
-    lastfm_top: &[String],
+    popularity: &HashMap<String, i64>,
 ) -> Vec<boogiebox_db::subsonic::SubsonicSong> {
-    let rank: HashMap<String, usize> = lastfm_top
-        .iter()
-        .enumerate()
-        .map(|(i, name)| (name.trim().to_lowercase(), i))
-        .collect();
-    // Stable: songs without a Last.fm rank keep their play-count order.
-    songs.sort_by_key(|s| {
-        rank.get(&s.title.trim().to_lowercase())
-            .copied()
-            .unwrap_or(usize::MAX)
-    });
+    // Stable: songs without a count keep their play-count order.
+    songs.sort_by_key(|s| std::cmp::Reverse(popularity.get(&s.id).copied().unwrap_or(-1)));
     songs
+}
+
+/// Stored popularity counts of one artist's tracks, by track id.
+fn artist_popularity(
+    conn: &rusqlite::Connection,
+    artist_id: &str,
+) -> rusqlite::Result<HashMap<String, i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.track_id, p.scrobbles FROM track_popularity p
+         JOIN tracks t ON t.id = p.track_id
+         WHERE t.artist_id = ?1",
+    )?;
+    let rows = stmt.query_map([artist_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
 }
 
 /// `getTopSongs` (`artist` name).
@@ -342,14 +318,8 @@ pub async fn top_songs(ctx: &Ctx) -> Result<Node, SubsonicError> {
                 return Ok((Vec::new(), Default::default()));
             };
             let songs = sdb::artist_songs_by_plays(conn, &artist_id, 500).map_err(db_err)?;
-            let lastfm_top: Vec<String> =
-                cached_lastfm(conn, &format!("toptracks:{}", artist.to_lowercase()))
-                    .and_then(|v| v.as_array().cloned())
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|t| json_str(t, "name"))
-                    .collect();
-            let mut songs = rank_top_songs(songs, &lastfm_top);
+            let popularity = artist_popularity(conn, &artist_id).map_err(db_err)?;
+            let mut songs = rank_top_songs(songs, &popularity);
             songs.truncate(count);
             let ann = song_annotations(conn, &user, &songs)?;
             Ok((songs, ann))
@@ -446,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn top_songs_put_lastfm_hits_first_then_plays() {
+    fn top_songs_put_popular_songs_first_then_plays() {
         let song = |id: &str, title: &str| SubsonicSong {
             id: id.into(),
             title: title.into(),
@@ -460,7 +430,11 @@ mod tests {
                 song("c", "Other"),
                 song("d", "hit one "),
             ],
-            &["Hit One".into(), "Hit Two".into(), "Not Local".into()],
+            &HashMap::from([
+                ("d".to_owned(), 900),
+                ("b".to_owned(), 40),
+                ("x".to_owned(), 5000),
+            ]),
         );
         assert_eq!(
             ranked.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),

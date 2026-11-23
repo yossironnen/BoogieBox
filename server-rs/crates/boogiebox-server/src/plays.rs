@@ -18,9 +18,9 @@ use crate::{activity::ActivityHub, subsonic::SubsonicState, DbPool, SharedState}
 /// How long a "now playing" notice stays listed without a refresh.
 const NOW_PLAYING_TTL: Duration = Duration::from_secs(600);
 const MAX_NOW_PLAYING: usize = 64;
-/// How long a Last.fm sign-in may take.
-pub const LASTFM_STATE_TTL: Duration = Duration::from_secs(600);
-const MAX_LASTFM_STATES: usize = 256;
+/// How long a Libre.fm sign-in may take.
+pub const SIGN_IN_STATE_TTL: Duration = Duration::from_secs(600);
+const MAX_SIGN_IN_STATES: usize = 256;
 /// Client name shown for the BoogieBox web player.
 pub const WEB_CLIENT: &str = "BoogieBox";
 
@@ -53,7 +53,7 @@ pub struct NowPlayingEntry {
 #[derive(Debug, Default)]
 struct Inner {
     now_playing: Mutex<Vec<NowPlayingEntry>>,
-    lastfm_states: Mutex<HashMap<String, (String, &'static str, Instant)>>,
+    sign_in_states: Mutex<HashMap<String, (String, &'static str, Instant)>>,
     wake: Notify,
 }
 
@@ -69,7 +69,7 @@ impl PlayHub {
     /// Forgets everything (database switched).
     pub fn reset(&self) {
         lock(&self.0.now_playing).clear();
-        lock(&self.0.lastfm_states).clear();
+        lock(&self.0.sign_in_states).clear();
     }
 
     /// Records what a player is playing (one entry per user + player).
@@ -92,14 +92,14 @@ impl PlayHub {
         list.iter().rev().cloned().collect()
     }
 
-    /// A one-time, unguessable value naming `user_id` for a Last.fm/Libre.fm (`service`) sign-in callback.
+    /// A one-time, unguessable value naming `user_id` for a Libre.fm (`service`) sign-in callback.
     pub fn issue_sign_in_state(&self, user_id: &str, service: &'static str) -> String {
         let mut bytes = [0u8; 32];
         rand::rng().fill_bytes(&mut bytes);
         let state = hex::encode(bytes);
-        let mut states = lock(&self.0.lastfm_states);
-        states.retain(|_, (_, _, at)| at.elapsed() < LASTFM_STATE_TTL);
-        if states.len() >= MAX_LASTFM_STATES {
+        let mut states = lock(&self.0.sign_in_states);
+        states.retain(|_, (_, _, at)| at.elapsed() < SIGN_IN_STATE_TTL);
+        if states.len() >= MAX_SIGN_IN_STATES {
             states.clear();
         }
         states.insert(state.clone(), (user_id.to_owned(), service, Instant::now()));
@@ -108,8 +108,8 @@ impl PlayHub {
 
     /// The user a sign-in state was issued to for `service`; each state works once and expires.
     pub fn take_sign_in_state(&self, state: &str, service: &str) -> Option<String> {
-        let (user, issued_for, at) = lock(&self.0.lastfm_states).remove(state)?;
-        (at.elapsed() < LASTFM_STATE_TTL && issued_for == service).then_some(user)
+        let (user, issued_for, at) = lock(&self.0.sign_in_states).remove(state)?;
+        (at.elapsed() < SIGN_IN_STATE_TTL && issued_for == service).then_some(user)
     }
 
     /// Wakes the scrobble forwarder (new plays were queued).
@@ -209,7 +209,7 @@ pub fn unix_now() -> i64 {
 }
 
 /// Seconds a track must play before it counts as a scrobble: half its length or 4 minutes, whichever is
-/// less. `None` for tracks of 30 s or less (Last.fm rule) or with no known length.
+/// less. `None` for tracks of 30 s or less (the Audioscrobbler rule) or with no known length.
 pub fn scrobble_threshold(duration_secs: Option<f64>) -> Option<f64> {
     let d = duration_secs.filter(|d| d.is_finite())?;
     (d > 30.0).then(|| (d / 2.0).min(240.0))
@@ -248,27 +248,27 @@ mod tests {
     }
 
     #[test]
-    fn lastfm_states_are_single_use_and_bound_to_a_user() {
+    fn sign_in_states_are_single_use_and_bound_to_a_user() {
         let hub = PlayHub::default();
-        let a = hub.issue_sign_in_state("u1", "lastfm");
-        let b = hub.issue_sign_in_state("u2", "lastfm");
-        let c = hub.issue_sign_in_state("u1", "librefm");
+        let a = hub.issue_sign_in_state("u1", "librefm");
+        let b = hub.issue_sign_in_state("u2", "librefm");
+        let c = hub.issue_sign_in_state("u1", "server");
         assert_eq!(
-            hub.take_sign_in_state(&c, "lastfm"),
+            hub.take_sign_in_state(&c, "librefm"),
             None,
             "bound to its service"
         );
         assert_eq!(a.len(), 64);
         assert_ne!(a, b);
-        assert_eq!(hub.take_sign_in_state(&a, "lastfm").as_deref(), Some("u1"));
-        assert_eq!(hub.take_sign_in_state(&a, "lastfm"), None, "one use only");
-        assert_eq!(hub.take_sign_in_state("forged", "lastfm"), None);
+        assert_eq!(hub.take_sign_in_state(&a, "librefm").as_deref(), Some("u1"));
+        assert_eq!(hub.take_sign_in_state(&a, "librefm"), None, "one use only");
+        assert_eq!(hub.take_sign_in_state("forged", "librefm"), None);
         hub.reset();
-        assert_eq!(hub.take_sign_in_state(&b, "lastfm"), None);
-        for i in 0..(MAX_LASTFM_STATES + 1) {
-            hub.issue_sign_in_state(&format!("u{i}"), "lastfm");
+        assert_eq!(hub.take_sign_in_state(&b, "librefm"), None);
+        for i in 0..(MAX_SIGN_IN_STATES + 1) {
+            hub.issue_sign_in_state(&format!("u{i}"), "librefm");
         }
-        assert!(lock(&hub.0.lastfm_states).len() <= MAX_LASTFM_STATES);
+        assert!(lock(&hub.0.sign_in_states).len() <= MAX_SIGN_IN_STATES);
     }
 
     #[test]

@@ -230,11 +230,8 @@ const MUSIC_POST_SCAN_JOB_TYPES: &[&str] = &[
     "refresh_library_mappings",
     "cache_album_images",
     "cache_artist_images",
-    "warm_lastfm_artist_info",
     "enrich_artist_external_ids",
-    "warm_lastfm_album_info",
     "warm_track_lyrics",
-    "sync_artist_styles",
     "sync_discogs_album_metadata",
 ];
 
@@ -1062,11 +1059,8 @@ pub fn enqueue_default_music_post_scan_jobs(
         "refresh_library_mappings",
         "cache_album_images",
         "cache_artist_images",
-        "warm_lastfm_artist_info",
         "enrich_artist_external_ids",
-        "warm_lastfm_album_info",
         "warm_track_lyrics",
-        "sync_artist_styles",
         "sync_discogs_album_metadata",
     ] {
         ids.push(enqueue_post_scan_job_for_id(
@@ -1085,7 +1079,7 @@ pub fn enqueue_missing_artist_identity_backfill_jobs(conn: &Connection) -> Resul
          JOIN tracks t ON t.library_id=l.id
          JOIN artists ar ON ar.id=t.artist_id
          WHERE l.library_type='music' AND (
-           ar.lastfm_mbid IS NULL OR ar.deezer_artist_id IS NULL OR
+           ar.deezer_artist_id IS NULL OR
            ar.spotify_artist_id IS NULL OR ar.discogs_artist_id IS NULL
          )
          ORDER BY l.id",
@@ -1916,7 +1910,6 @@ fn recover_stale_post_scan_jobs(conn: &Connection, lane: PostScanLane) -> Result
 fn post_scan_stale_timeout_minutes(job_type: &str) -> i64 {
     match job_type {
         "warm_track_lyrics" => 120,
-        "sync_artist_styles" => 120,
         "sync_discogs_album_metadata" => 180,
         "enrich_artist_external_ids" => 120,
         "refresh_library_mappings" => 15,
@@ -2585,7 +2578,7 @@ mod tests {
     fn post_scan_job_lifecycle_enqueue_claim_touch_and_complete() {
         let f = fixture("post-scan-lifecycle");
         let job_ids = enqueue_default_music_post_scan_jobs(&f.conn, &f.library_id).unwrap();
-        assert_eq!(job_ids.len(), 9);
+        assert_eq!(job_ids.len(), 6);
 
         let claimed = claim_next_post_scan_job(&f.conn, PostScanLane::Music)
             .unwrap()

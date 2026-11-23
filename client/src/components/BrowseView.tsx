@@ -505,7 +505,7 @@ const EditIcon = () => (
   </svg>
 );
 // Download-cloud, not a plain reload glyph — this pulls fresh metadata from
-// an online provider (Last.fm/Discogs/etc.), it doesn't just re-render the page.
+// an online provider (MusicBrainz/Discogs/etc.), it doesn't just re-render the page.
 const RefreshIcon = () => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M8 17l4 4 4-4" /><path d="M12 12v9" /><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 4 16.3" />
@@ -1244,19 +1244,12 @@ function AlbumCover({ albumId, title, refreshToken = 0, adaptiveAccentEnabled = 
   );
 }
 
-// ─── Last.fm Bio ──────────────────────────────────────────────────────────────
+// ─── About (bio) ───────────────────────────────────────────────────────────────
 
 
 
 type ArtistTopSongsResponse = ArtistTopSongs;
 type TopSong = ArtistTopSongs['tracks'][number];
-
-interface LastFmTopTrack {
-  name: string;
-  playcount: number;
-  listeners?: number;
-  url?: string;
-}
 
 type ArtistPhotoPhase = 'loading' | 'local' | 'none';
 
@@ -1266,24 +1259,6 @@ function normalizeTrackText(value: string | null | undefined): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
-
-/** Parse Last Fm Top Tracks is part of this module's public API. */
-export function parseLastFmTopTracks(data: any, limit = 5): LastFmTopTrack[] {
-  const rawTracks = data?.toptracks?.track;
-  if (!Array.isArray(rawTracks)) return [];
-
-  return rawTracks
-    .map((track: any) => ({
-      name: typeof track?.name === 'string' ? track.name.trim() : '',
-      playcount: Number(track?.playcount),
-      listeners: Number.isFinite(Number(track?.listeners)) ? Number(track.listeners) : undefined,
-      url: typeof track?.url === 'string' ? track.url : undefined,
-    }))
-    .filter((track: LastFmTopTrack) => track.name && Number.isFinite(track.playcount) && track.playcount > 0)
-    .sort((a: LastFmTopTrack, b: LastFmTopTrack) => b.playcount - a.playcount)
-    .slice(0, limit);
-}
-
 
 /** Parse Artist Photo Payload is part of this module's public API. */
 export function parseArtistPhotoPayload(data: any): { url: string; source: 'deezer' | 'spotify' } | null {
@@ -1296,11 +1271,10 @@ export function parseArtistPhotoPayload(data: any): { url: string; source: 'deez
 const ABOUT_LINK: Record<AboutSource, string> = {
   wikipedia: 'Wikipedia ↗',
   theaudiodb: 'TheAudioDB ↗',
-  lastfm: 'Last.fm ↗',
 };
 
 /**
- * An artist's bio or an album's description (Wikipedia, else TheAudioDB, else an old Last.fm answer) with the
+ * An artist's bio or an album's description (Wikipedia, else TheAudioDB) with the
  * artist's ListenBrainz stats. Hidden when there's nothing to show.
  */
 function AboutBlock({ kind, id, description }: {
@@ -2391,10 +2365,10 @@ function ArtistHeader({
 
 
 function TrackList({
-  tracks, loading, album, lastfmKey,
+  tracks, loading, album,
   onPlayTrack, onQueueTrack, onPlayAll, onShuffle, onQueueAll, onPlayVinyl, onRefreshed, onArtistClick, onRateAlbum, onRateTrack, adaptiveAccentEnabled,
 }: {
-  tracks: Track[]; loading: boolean; album: Album; lastfmKey: string;
+  tracks: Track[]; loading: boolean; album: Album;
   onPlayTrack: (t: Track) => void;
   onQueueTrack: (t: Track) => void;
   onPlayAll: () => void;
@@ -2419,7 +2393,7 @@ function TrackList({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
-      {/* Album header: cover+meta on left, Last.fm bio on right */}
+      {/* Album header: cover+meta on left, About text on right */}
       <div style={L.albumHeader}>
         {/* Left pane: art + title + buttons */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, flexShrink: 0 }}>
@@ -2574,7 +2548,6 @@ interface Props {
   playTrack: (track: Track, allTracks?: Track[], source?: import('../types').QueueSource) => void;
   playAlbumInVinylMode: (tracks: Track[], albumId: ClientEntityId) => void;
   addToQueue: (track: Track) => void;
-  lastfmKey: string;
   openAlbumRequest?: { album: Album; token: number } | null;
   openArtistRequest?: { artist: Artist; token: number } | null;
   openGenreRequest?: { genre: string; token: number } | null;
@@ -2603,7 +2576,6 @@ export default function BrowseView({
   playTrack,
   playAlbumInVinylMode,
   addToQueue,
-  lastfmKey,
   openAlbumRequest,
   openArtistRequest,
   openGenreRequest,
@@ -3929,7 +3901,7 @@ export default function BrowseView({
       )}
       {drill.level === 'album' && (
         <TrackList
-          tracks={albumTracks} loading={loading} album={currentAlbum ?? drill.album} lastfmKey={lastfmKey}
+          tracks={albumTracks} loading={loading} album={currentAlbum ?? drill.album}
           onPlayTrack={t => playTrack(t, albumTracks, { type: 'album', id: drill.album.id })}
           onQueueTrack={t => addToQueue(t)}
           onPlayAll={() => { if (albumTracks.length) playTrack(albumTracks[0], albumTracks, { type: 'album', id: drill.album.id }); }}
@@ -4811,7 +4783,7 @@ const L: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
     fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
   },
-  // ── Last.fm bio pane ──
+  // ── About (bio) pane ──
   bioWrap: {
     flex: 1, minWidth: 0, borderLeft: '1px solid var(--border)',
     paddingLeft: 20, paddingRight: 4, display: 'flex', flexDirection: 'column', gap: 10,

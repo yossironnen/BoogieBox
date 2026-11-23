@@ -105,7 +105,7 @@ export function mixStyleLabel(style: string): string {
 
 const POST_SCAN_LABEL: Record<string, string> = {
   artwork: 'artwork', art: 'artwork', waveforms: 'waveforms', waveform: 'waveforms', bpm: 'BPM',
-  lastfm: 'Last.fm', lyrics: 'lyrics', artist_styles: 'artist styles',
+  lyrics: 'lyrics',
 };
 
 /** `Queued after scan: artwork, waveforms, BPM` or null. */

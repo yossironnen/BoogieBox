@@ -18,7 +18,6 @@ vi.mock('../api', () => ({ api: apiMock }));
 
 const status = (overrides: Partial<RadioMetadataStatus> = {}): RadioMetadataStatus => ({
   mode: 'full',
-  lastfmConfigured: true,
   keylessEnabled: true,
   tracksChecked: 1234,
   tracksTotal: 5000,
@@ -78,12 +77,17 @@ describe('RadioMetadataSettings', () => {
     await waitFor(() => expect(apiMock.settings.update).toHaveBeenLastCalledWith({ radioKeylessProviders: 'true' }));
   });
 
-  it('points to Integrations when no Last.fm key is configured, unless collection is off', async () => {
-    apiMock.radioMetadataStatus.mockResolvedValue(status({ lastfmConfigured: false }));
+  it('asks to turn on MusicBrainz when it is off, unless collection is off', async () => {
+    apiMock.radioMetadataStatus.mockResolvedValue(status({ keylessEnabled: false }));
     const { unmount } = render(<RadioMetadataSettings />);
-    expect(await screen.findByRole('note')).toHaveTextContent('Last.fm API key');
+    expect(await screen.findByRole('note')).toHaveTextContent('Turn on MusicBrainz and ListenBrainz to collect tags.');
     unmount();
-    apiMock.radioMetadataStatus.mockResolvedValue(status({ lastfmConfigured: false, mode: 'off' }));
+    apiMock.radioMetadataStatus.mockResolvedValue(status({ mode: 'off' }));
+    const { unmount: unmountOff } = render(<RadioMetadataSettings />);
+    await screen.findByText(/Tracks checked:/);
+    expect(screen.queryByRole('note')).toBeNull();
+    unmountOff();
+    apiMock.radioMetadataStatus.mockResolvedValue(status({ keylessEnabled: false, mode: 'off' }));
     render(<RadioMetadataSettings />);
     await screen.findByText(/Tracks checked:/);
     expect(screen.queryByRole('note')).toBeNull();

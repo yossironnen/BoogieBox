@@ -76,7 +76,7 @@ describe('MetadataRefreshModal', () => {
     const onApplied = vi.fn();
     apiMock.integrations.metadataSearch.mockResolvedValue({
       results: [
-        { provider: 'lastfm', type: 'artist', title: 'New Artist', artist: 'Credit', year: 2020, genre: 'Rock', image: '/artist.jpg', tags: ['rock', 'indie'] },
+        { provider: 'musicbrainz', type: 'artist', title: 'New Artist', artist: 'Credit', year: 2020, genre: 'Rock', image: '/artist.jpg', tags: ['rock', 'indie'] },
         { provider: 'custom', type: 'artist', title: 'Second Artist', tags: ['electronic'] },
       ],
     });
@@ -92,7 +92,7 @@ describe('MetadataRefreshModal', () => {
     );
 
     fireEvent.keyDown(screen.getByDisplayValue('Old Artist'), { key: 'Enter' });
-    expect(await screen.findByText('Last.fm')).toBeInTheDocument();
+    expect(await screen.findByText('MusicBrainz')).toBeInTheDocument();
     expect(screen.getByText('custom')).toBeInTheDocument();
     expect(screen.getAllByText(/result/).some((node) => node.textContent === '1 result')).toBe(true);
     fireEvent.click(screen.getAllByRole('button', { name: 'Apply' })[0]);

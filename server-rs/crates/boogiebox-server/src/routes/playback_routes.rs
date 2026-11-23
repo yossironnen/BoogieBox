@@ -311,7 +311,7 @@ struct ScrobbleBody {
 }
 
 /// The web player calls this once a track has played long enough to count (half its length or 4 minutes);
-/// the play is queued for the user's Last.fm / ListenBrainz accounts. Play counts are recorded by `/played`.
+/// the play is queued for the user's scrobbling accounts. Play counts are recorded by `/played`.
 async fn track_scrobble_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,

@@ -88,8 +88,8 @@ export default function RadioMetadataSettings({ disabled = false }: { disabled?:
           {MODE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
         </select>
         <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-          Uses your Last.fm key. A first full pass over a large library can take many hours; it runs at low priority,
-          resumes after restarts and pauses while a BoogieMix is being built.
+          Tags come from MusicBrainz. A first full pass over a large library can take a day or more; it runs at low
+          priority, resumes after restarts and pauses while a BoogieMix is being built.
         </span>
       </label>
 
@@ -105,15 +105,15 @@ export default function RadioMetadataSettings({ disabled = false }: { disabled?:
         <span style={{ display: 'grid', gap: 2 }}>
           <span style={{ color: 'var(--text)', fontWeight: 600 }}>Use MusicBrainz and ListenBrainz</span>
           <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-            No account or key needed. Adds similar artists and genre tags, and is the only source when no Last.fm
-            key is set. Artist names are sent to musicbrainz.org and listenbrainz.org.
+            No account or key needed. Adds similar artists, genre and mood tags, and popularity. Artist names and
+            track titles are sent to musicbrainz.org and listenbrainz.org.
           </span>
         </span>
       </label>
 
-      {status && !status.lastfmConfigured && status.mode !== 'off' ? (
+      {status && !status.keylessEnabled && status.mode !== 'off' ? (
         <div role="note" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-          Add a Last.fm API key under Integrations to collect track-level mood tags.
+          Turn on MusicBrainz and ListenBrainz to collect tags.
         </div>
       ) : null}
 

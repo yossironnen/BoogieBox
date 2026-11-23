@@ -17,7 +17,6 @@ interface Props {
 
 const PROVIDER_LABELS: Record<string, string> = {
   musicbrainz: 'MusicBrainz',
-  lastfm: 'Last.fm',
   discogs: 'Discogs',
   spotify: 'Spotify',
   deezer: 'Deezer',
@@ -25,7 +24,6 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 const PROVIDER_COLORS: Record<string, string> = {
   musicbrainz: '#ba478f',
-  lastfm: '#d51007',
   discogs: '#333',
   spotify: '#1db954',
   deezer: '#a238ff',

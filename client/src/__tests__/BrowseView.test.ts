@@ -23,7 +23,6 @@ import {
   matchesAlbumRatingTarget,
   matchesRatingFilter,
   parseArtistPhotoPayload,
-  parseLastFmTopTracks,
   parseSortDir,
   shouldApplyBrowseRootFetchResult,
   sortAlbums,
@@ -191,51 +190,6 @@ describe('sortArtists', () => {
 
   it('handles single artist', () => {
     expect(sortArtists([makeArtist('1', 'Solo')], 'desc')).toHaveLength(1);
-  });
-});
-
-describe('parseLastFmTopTracks', () => {
-  it('parses and returns top 5 tracks sorted by playcount desc', () => {
-    const data = {
-      toptracks: {
-        track: [
-          { name: 'Song C', playcount: '100', listeners: '10', url: 'https://x/c' },
-          { name: 'Song A', playcount: '500', listeners: '20', url: 'https://x/a' },
-          { name: 'Song B', playcount: '300', listeners: '15', url: 'https://x/b' },
-          { name: 'Song D', playcount: '200', listeners: '12' },
-          { name: 'Song E', playcount: '50' },
-          { name: 'Song F', playcount: '40' },
-        ],
-      },
-    };
-
-    const result = parseLastFmTopTracks(data, 5);
-    expect(result.map(t => t.name)).toEqual(['Song A', 'Song B', 'Song D', 'Song C', 'Song E']);
-    expect(result).toHaveLength(5);
-    expect(result[0].playcount).toBe(500);
-  });
-
-  it('filters out invalid entries', () => {
-    const data = {
-      toptracks: {
-        track: [
-          { name: '', playcount: '100' },
-          { name: 'Bad Number', playcount: 'abc' },
-          { name: 'Zero', playcount: '0' },
-          { name: 'Valid', playcount: '12' },
-        ],
-      },
-    };
-
-    expect(parseLastFmTopTracks(data)).toEqual([
-      { name: 'Valid', playcount: 12, listeners: undefined, url: undefined },
-    ]);
-  });
-
-  it('returns empty array when payload is missing track list', () => {
-    expect(parseLastFmTopTracks({})).toEqual([]);
-    expect(parseLastFmTopTracks({ toptracks: {} })).toEqual([]);
-    expect(parseLastFmTopTracks({ toptracks: { track: null } })).toEqual([]);
   });
 });
 

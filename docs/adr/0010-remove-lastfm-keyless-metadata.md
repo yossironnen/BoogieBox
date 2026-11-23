@@ -1,7 +1,7 @@
 # ADR-0010: Remove Last.fm; metadata from keyless providers
 
 ## Status
-Proposed (decisions made by the user 2026-11-22; plan `wip/lastfm-replacement-plan.md` §5)
+Accepted 2026-11-23 (decisions made by the user 2026-11-22; plan `wip/lastfm-replacement-plan.md` §5; built in 0.9.123)
 
 ## Context
 From 2026-12-01 a Last.fm API key only works if its owner has a Last.fm Pro subscription. BoogieBox asks each admin
@@ -38,9 +38,11 @@ We will remove Last.fm support (metadata, scrobbling, key settings) and take met
 identity from file tags and MusicBrainz; bios from Wikipedia through MusicBrainz → Wikidata links, then TheAudioDB with
 its free shared key; styles and tags from MusicBrainz plus Discogs; popularity and top songs from ListenBrainz, then
 Deezer; similar artists from ListenBrainz and Deezer. Stats are shown as ListenBrainz numbers. Scrobbling targets are
-ListenBrainz (with a custom server address for compatible servers) and Libre.fm. Data already stored from Last.fm is
-kept until a keyless source replaces it. A dead-key guard ships first so a release before the removal degrades
-quietly.
+ListenBrainz (with a custom server address for compatible servers) and Libre.fm. Track tags, track popularity and
+artist ids already stored from Last.fm are kept until a keyless source replaces them; saved Last.fm answers (bios,
+album descriptions, top tracks, similar artists), Last.fm scrobble accounts with their waiting plays, the key settings
+and queued Last.fm jobs are deleted by the removal migration. The Last.fm-only "Sync artist styles" admin job goes
+too. A dead-key guard ships first so a release before the removal degrades quietly.
 
 ## Rationale
 Most admins lose Last.fm on 1 December anyway; keeping it as a fallback would cost two code paths for few users.
@@ -50,7 +52,8 @@ Every replacement needs no key or user setting.
 - Positive: no API keys to manage for metadata; nothing stops working when a subscription ends.
 - Trade-off: thinner tags and smaller counts; coverage is measured on the dev library before and after.
 - Trade-off: credit lines for Wikipedia (CC BY-SA) and MusicBrainz/ListenBrainz data.
-- Follow-up: phases 0–8 in the plan; UI wording ("About", "listens on ListenBrainz", Settings) needs approval first.
+- Follow-up: phases 0–7 and the removal are done (0.9.123); phase 8 (docs, credits, the keyless switch as the main
+  switch) remains. UI wording needs approval first.
 
 ## Related
 - `wip/lastfm-replacement-plan.md`

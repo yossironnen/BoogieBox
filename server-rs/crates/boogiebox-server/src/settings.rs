@@ -8,8 +8,6 @@ use std::collections::HashMap;
 pub const ALLOWED_GLOBAL_SETTINGS_KEYS: &[&str] = &[
     // Provider credentials
     "discogsToken",
-    "lastfmKey",
-    "lastfmSecret",
     "spotifyClientId",
     "spotifyClientSecret",
     "geniusClientId",
@@ -185,7 +183,6 @@ pub const PLAYBACK_SETTINGS_KEYS: &[&str] = &[
     "transcodeQuality",
     "replayGainEnabled",
     "vinylMode",
-    "lastfmKey",
     "loudnessPlayOnMode",
 ];
 
@@ -523,7 +520,6 @@ mod tests {
             "uuid:4d696e69-444c-164e-9d41-ecf4bbc0b4f2"
         );
         assert!(check("subsonicJukeboxRenderer", "<script>").is_err());
-        assert_eq!(check("lastfmSecret", "abc").unwrap(), "abc");
     }
 
     #[test]
@@ -744,7 +740,7 @@ mod tests {
 
     #[test]
     fn unrestricted_keys_pass_through_as_is() {
-        // discogsToken/lastfmKey/etc. hit the catch-all `_ => Ok(value)` arm.
+        // discogsToken/spotifyClientId/etc. hit the catch-all `_ => Ok(value)` arm.
         assert_eq!(
             normalize_one("discogsToken", "some-token-value").unwrap(),
             "some-token-value"

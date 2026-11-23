@@ -479,11 +479,14 @@ mod tests {
         assert!(get_setting(&f.conn, "lastfmKey").is_none());
         f.conn
             .execute(
-                "UPDATE settings SET value = 'abc123' WHERE key = 'lastfmKey'",
+                "UPDATE settings SET value = 'abc123' WHERE key = 'discogsToken'",
                 [],
             )
             .unwrap();
-        assert_eq!(get_setting(&f.conn, "lastfmKey").as_deref(), Some("abc123"));
+        assert_eq!(
+            get_setting(&f.conn, "discogsToken").as_deref(),
+            Some("abc123")
+        );
     }
 
     #[test]

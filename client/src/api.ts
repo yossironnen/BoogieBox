@@ -53,7 +53,6 @@ import type {
   AdminQueueSnapshot,
   ProviderUsageSnapshot,
   HistoryEntry,
-  LastFmInfo,
   ArtistTopSongs,
   About,
   Playlist,
@@ -599,7 +598,7 @@ export const api = {
       ? `/tracks/${id}/played`
       : `/tracks/${id}/played?output=native&client=${encodeURIComponent(nativeClient)}`,
   ),
-  /** The track played long enough to count; queued for the user's Last.fm / ListenBrainz accounts. */
+  /** The track played long enough to count; queued for the user's scrobbling accounts. */
   scrobbleTrack: (id: ApiEntityId, startedAt: number) =>
     post<{ ok: boolean }>(`/tracks/${id}/scrobble`, { startedAt: Math.floor(startedAt) }),
   trackWaveform: (id: ApiEntityId) => get<TrackWaveformLookupResponse>(`/tracks/${id}/waveform`),
@@ -685,7 +684,7 @@ export const api = {
   systemSelectFolder: (initialDir?: string) => post<{ folder: string | null }>('/system/select-folder', { initialDir }),
   systemSetup: (dbFolder: string) => post<{ ok: boolean }>('/system/setup', { dbFolder }),
   systemSwitchDb: (dbFolder: string) => post<{ ok: boolean }>('/system/switch-db', { dbFolder }),
-  playbackSettings: () => get<{ transcodeQuality: string; replayGainEnabled: string; vinylMode: string; lastfmConfigured: string; loudnessPlayOnMode?: string }>('/playback-settings'),
+  playbackSettings: () => get<{ transcodeQuality: string; replayGainEnabled: string; vinylMode: string; loudnessPlayOnMode?: string }>('/playback-settings'),
   settings: {
     get: () => get<Record<string, string>>('/settings'),
     update: (updates: Record<string, string>) => put<{ ok: boolean }>('/settings', updates),
@@ -708,9 +707,6 @@ export const api = {
   },
   integrations: {
     spotifyTest: () => get<{ ok: boolean }>('/integrations/spotify/test'),
-    /** Whether Last.fm takes the saved key (admin). */
-    lastfmStatus: () =>
-      get<{ configured: boolean; health: 'unknown' | 'ok' | 'rejected' }>('/integrations/lastfm/status'),
     geniusTest: (clientId?: string, clientSecret?: string) =>
       post<{ ok: boolean }>('/integrations/genius/test', { clientId, clientSecret }),
     lyrics: (params: { artist: string; title: string }) =>
@@ -955,21 +951,10 @@ export const api = {
   /** An artist's most played songs: ListenBrainz listen counts, else Deezer's order (no key needed). */
   artistTopSongs: (artistId: EntityId) =>
     get<ArtistTopSongs>(`/artists/${encodeURIComponent(String(artistId))}/top-songs`),
-  /** An artist's bio and ListenBrainz stats (Wikipedia, else TheAudioDB, else an old Last.fm answer). */
+  /** An artist's bio and ListenBrainz stats (Wikipedia, else TheAudioDB). */
   artistAbout: (artistId: EntityId) => get<About>(`/artists/${encodeURIComponent(String(artistId))}/about`),
   /** An album's description, same sources. */
   albumAbout: (albumId: EntityId) => get<About>(`/albums/${encodeURIComponent(String(albumId))}/about`),
-  lastfm: {
-    info: (artist: string, album?: string) => {
-      const params = new URLSearchParams({ artist });
-      if (album) params.set('album', album);
-      return get<LastFmInfo>(`/lastfm/info?${params}`);
-    },
-    topTracks: (artist: string) =>
-      get<{ name: string; playcount: number; listeners?: number; url?: string }[]>(
-        `/lastfm/top-tracks?${new URLSearchParams({ artist })}`
-      ),
-  },
   admin: {
     /** How much of the library has loudness values, and the measuring lane's state. */
     loudnessStatus: () => get<LoudnessStatus>('/admin/loudness/status'),
@@ -1019,8 +1004,6 @@ export const api = {
   scrobble: {
     accounts:            () => get<ScrobbleAccountsResponse>('/scrobble/accounts'),
     connectListenBrainz: (token: string) => put<{ ok: boolean; accountName: string }>('/scrobble/listenbrainz', { token }),
-    /** The Last.fm sign-in page to open; Last.fm returns to this origin's callback. */
-    connectLastFm:       (origin: string) => post<{ url: string }>('/scrobble/lastfm/connect', { origin }),
     /** The Libre.fm sign-in page to open; Libre.fm returns to this origin's callback. */
     connectLibreFm:      (origin: string) => post<{ url: string }>('/scrobble/librefm/connect', { origin }),
     /** The user's own ListenBrainz-compatible server; `address` comes back cleaned. */

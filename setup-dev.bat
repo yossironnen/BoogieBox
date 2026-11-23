@@ -297,7 +297,7 @@ if exist dev.config (
     exit /b 0
 )
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$json=[ordered]@{integrations=[ordered]@{lastfmKey='';discogsToken='';spotifyClientId='';spotifyClientSecret='';geniusClientId='';geniusClientSecret=''}} | ConvertTo-Json -Depth 4;" ^
+  "$json=[ordered]@{integrations=[ordered]@{discogsToken='';spotifyClientId='';spotifyClientSecret='';geniusClientId='';geniusClientSecret=''}} | ConvertTo-Json -Depth 4;" ^
   "Set-Content -LiteralPath 'dev.config' -Value $json -Encoding UTF8"
 if errorlevel 1 (
     echo [ERROR] Failed to create dev.config.

@@ -1414,7 +1414,6 @@ export default function App() {
         ...prev,
         ...(shared.transcodeQuality != null ? { transcodeQuality: shared.transcodeQuality } : {}),
         ...(shared.replayGainEnabled != null ? { replayGainEnabled: shared.replayGainEnabled } : {}),
-        ...(shared.lastfmConfigured != null ? { lastfmConfigured: shared.lastfmConfigured } : {}),
       }));
     }).catch(() => {});
   }, [currentUser]);
@@ -2005,7 +2004,6 @@ export default function App() {
                 playTrack={playTrack}
                 playAlbumInVinylMode={playAlbumInVinylMode}
                 addToQueue={addToQueue}
-                lastfmKey={settings.lastfmKey}
                 openAlbumRequest={browseOpenAlbumRequest}
                 openArtistRequest={browseOpenArtistRequest}
                 openGenreRequest={browseOpenGenreRequest}

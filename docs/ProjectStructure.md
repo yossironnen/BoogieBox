@@ -120,7 +120,7 @@ BoogieBox is organized around a Rust backend, React client, Tauri desktop shell,
 | `routes/subsonic_routes.rs` | Subsonic password and API key management (the `/rest` API itself is in `src/subsonic/`). |
 | `routes/favourites_routes.rs` | Favourites (hearts). |
 | `routes/radio_routes.rs` | Internet radio stations and the stream relay. |
-| `routes/scrobble_routes.rs` | Last.fm and ListenBrainz accounts. |
+| `routes/scrobble_routes.rs` | Libre.fm, ListenBrainz and own-server scrobbling accounts. |
 | `routes/activity_routes.rs` | Admin Activity snapshot, SSE feed, web player heartbeat, and mix-job cancel. |
 | `routes/backup_routes.rs` | Backup settings, runs, restores, and first-run restore. |
 | `routes/log_routes.rs` | Admin Logs view. |

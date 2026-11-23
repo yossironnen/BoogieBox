@@ -1,10 +1,10 @@
-//! Scrobble forwarding to each user's own Last.fm, Libre.fm, ListenBrainz and ListenBrainz-compatible server
+//! Scrobble forwarding to each user's own Libre.fm, ListenBrainz and ListenBrainz-compatible server
 //! (Maloja, Koito) accounts (plan §15.5, 2.5-3; wip/lastfm-replacement-plan.md phase 7).
 //! Plays are queued in `scrobble_queue` and sent by a background forwarder, outside the database lock, with
 //! retries. "Now playing" is sent directly (best effort). Account secrets are AES-256-GCM encrypted with the
 //! data-folder key Subsonic passwords use, bound to user and service.
 
-pub mod lastfm;
+pub mod audioscrobbler;
 pub mod listenbrainz;
 
 use std::{collections::BTreeMap, time::Duration};
@@ -21,8 +21,6 @@ const TICK: Duration = Duration::from_secs(30);
 const PASS_LIMIT: i64 = 500;
 /// Longest wait between retries.
 const MAX_BACKOFF_SECS: i64 = 6 * 3600;
-/// While Last.fm refuses the app key, its plays wait this long between checks (not counted as failures).
-const LASTFM_PAUSED_RETRY_SECS: i64 = 3600;
 /// Longest a "now playing" notice may take.
 const NOW_PLAYING_BUDGET: Duration = Duration::from_secs(5);
 
@@ -40,7 +38,6 @@ pub enum SendError {
 /// Service API roots (tests point them at mock servers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoints {
-    pub lastfm: String,
     pub librefm: String,
     pub listenbrainz: String,
 }
@@ -48,7 +45,6 @@ pub struct Endpoints {
 impl Endpoints {
     pub fn production() -> Self {
         Endpoints {
-            lastfm: crate::providers::lastfm_api_base(),
             librefm: std::env::var("BOOGIEBOX_LIBREFM_API_BASE")
                 .unwrap_or_else(|_| "https://libre.fm/2.0/".to_owned()),
             listenbrainz: listenbrainz::api_base(),
@@ -78,20 +74,6 @@ pub fn open(key: &[u8; 32], account: &qdb::ScrobbleAccount) -> Option<String> {
         &account.secret_enc,
         &account.secret_nonce,
     )
-}
-
-/// The admin's Last.fm app credentials, when both key and shared secret are set.
-pub fn lastfm_app(conn: &Connection) -> Option<lastfm::AppCredentials> {
-    let get = |k: &str| {
-        boogiebox_db::artwork::get_setting(conn, k)
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty())
-    };
-    Some(lastfm::AppCredentials {
-        api_key: get("lastfmKey")?,
-        secret: get("lastfmSecret")?,
-        guard_key: true,
-    })
 }
 
 /// Queues a finished play for each of the user's active services; returns how many were queued.
@@ -128,7 +110,6 @@ pub fn enqueue_play(
 /// Accounts with their decrypted secrets, read in one blocking task (one DB hold, then the key, outside the lock).
 struct Unlocked {
     accounts: Vec<(qdb::ScrobbleAccount, String)>,
-    lastfm: Option<lastfm::AppCredentials>,
 }
 
 async fn unlock<F>(env: &PlayEnv, select: F) -> Option<Unlocked>
@@ -137,10 +118,10 @@ where
 {
     let env = env.clone();
     tokio::task::spawn_blocking(move || {
-        let (accounts, lastfm) = {
+        let accounts = {
             let conn = env.db.lock().unwrap_or_else(|p| p.into_inner());
             match select(&conn) {
-                Ok(a) => (a, lastfm_app(&conn)),
+                Ok(a) => a,
                 Err(err) => {
                     tracing::warn!(error = %err, "Could not read scrobble accounts");
                     return None;
@@ -150,7 +131,6 @@ where
         if accounts.is_empty() {
             return Some(Unlocked {
                 accounts: Vec::new(),
-                lastfm,
             });
         }
         // Only now touch the key file (it is created on first use; never for users without accounts).
@@ -160,7 +140,6 @@ where
                 .into_iter()
                 .filter_map(|a| open(&key, &a).map(|secret| (a, secret)))
                 .collect(),
-            lastfm,
         })
     })
     .await
@@ -205,24 +184,11 @@ pub async fn forward_now_playing(
     for (account, secret) in &unlocked.accounts {
         let send = async {
             match account.service {
-                ScrobbleService::LastFm => match &unlocked.lastfm {
-                    Some(app) => {
-                        lastfm::update_now_playing(
-                            &env.http,
-                            &endpoints.lastfm,
-                            app,
-                            secret,
-                            &track,
-                        )
-                        .await
-                    }
-                    None => Err(SendError::Temporary),
-                },
                 ScrobbleService::LibreFm => {
-                    lastfm::update_now_playing(
+                    audioscrobbler::update_now_playing(
                         &env.http,
                         &endpoints.librefm,
-                        &lastfm::AppCredentials::librefm(),
+                        &audioscrobbler::AppCredentials::librefm(),
                         secret,
                         &track,
                     )
@@ -268,19 +234,14 @@ async fn send_batch(
     endpoints: &Endpoints,
     account: &qdb::ScrobbleAccount,
     secret: &str,
-    app: Option<&lastfm::AppCredentials>,
     plays: &[(ScrobbleTrack, i64)],
 ) -> Result<(), SendError> {
     match account.service {
-        ScrobbleService::LastFm => match app {
-            Some(app) => lastfm::scrobble(&env.http, &endpoints.lastfm, app, secret, plays).await,
-            None => Err(SendError::Temporary),
-        },
         ScrobbleService::LibreFm => {
-            lastfm::scrobble(
+            audioscrobbler::scrobble(
                 &env.http,
                 &endpoints.librefm,
-                &lastfm::AppCredentials::librefm(),
+                &audioscrobbler::AppCredentials::librefm(),
                 secret,
                 plays,
             )
@@ -300,7 +261,7 @@ async fn send_batch(
 /// Most plays per delivery call for a service.
 fn batch_size(service: ScrobbleService) -> usize {
     match service {
-        ScrobbleService::LastFm | ScrobbleService::LibreFm => lastfm::MAX_BATCH,
+        ScrobbleService::LibreFm => audioscrobbler::MAX_BATCH,
         ScrobbleService::ListenBrainz | ScrobbleService::OwnServer => listenbrainz::MAX_BATCH,
     }
 }
@@ -350,14 +311,7 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
     let mut sent_ids = Vec::new();
     let mut dropped_ids = Vec::new();
     let mut deferred: Vec<(i64, i64)> = Vec::new();
-    let mut postponed: Vec<i64> = Vec::new();
     let mut reconnect = Vec::new();
-    let lastfm_paused = || {
-        unlocked
-            .lastfm
-            .as_ref()
-            .is_some_and(|app| !crate::providers::lastfm_key_usable(&app.api_key))
-    };
     let mut delivered = Vec::new();
     for rows in groups.values() {
         let Some(first) = rows.first() else { continue };
@@ -369,38 +323,18 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
             // Secret unreadable (key replaced): the rows go when the account is cleared.
             continue;
         };
-        if first.service == ScrobbleService::LastFm && lastfm_paused() {
-            // Last.fm refuses the key: keep the plays, try again later, don't spend their attempts.
-            postponed.extend(rows.iter().map(|r| r.id));
-            continue;
-        }
         for chunk in rows.chunks(batch_size(first.service)) {
             let plays: Vec<(ScrobbleTrack, i64)> = chunk
                 .iter()
                 .map(|r| (r.track.clone(), r.played_at))
                 .collect();
             let ids = chunk.iter().map(|r| r.id);
-            match send_batch(
-                env,
-                endpoints,
-                account,
-                secret,
-                unlocked.lastfm.as_ref(),
-                &plays,
-            )
-            .await
-            {
+            match send_batch(env, endpoints, account, secret, &plays).await {
                 Ok(()) => {
                     sent_ids.extend(ids);
                     delivered.push((first.user_id.clone(), first.service));
                 }
                 Err(SendError::Rejected) => dropped_ids.extend(ids),
-                Err(SendError::Temporary)
-                    if first.service == ScrobbleService::LastFm && lastfm_paused() =>
-                {
-                    postponed.extend(ids);
-                    break;
-                }
                 Err(SendError::Temporary) => {
                     deferred.extend(chunk.iter().map(|r| (r.id, now + backoff_secs(r.attempts))))
                 }
@@ -413,7 +347,7 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
     }
     report.sent = sent_ids.len();
     report.dropped = dropped_ids.len();
-    report.deferred = deferred.len() + postponed.len();
+    report.deferred = deferred.len();
     report.reconnect = reconnect.len();
     let db = env.db.clone();
     let _ = tokio::task::spawn_blocking(move || {
@@ -423,7 +357,6 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
         for (id, next) in deferred {
             let _ = qdb::defer(&conn, &[id], next);
         }
-        let _ = qdb::postpone(&conn, &postponed, now + LASTFM_PAUSED_RETRY_SECS);
         for (user, service) in reconnect {
             let _ = qdb::mark_needs_reconnect(&conn, &user, service);
         }
@@ -466,8 +399,6 @@ pub enum ConnectError {
     Rejected,
     /// The service could not be reached.
     Unavailable,
-    /// The Last.fm key and shared secret are not both set.
-    NotConfigured,
     /// The sign-in link expired or was already used.
     Expired,
     /// The own server's address is not an http(s) address.
@@ -481,7 +412,6 @@ impl ConnectError {
         match self {
             ConnectError::Rejected => "The service did not accept this account",
             ConnectError::Unavailable => "The service could not be reached. Try again later",
-            ConnectError::NotConfigured => "Last.fm is not set up on this server",
             ConnectError::Expired => "This sign-in link has expired. Start again from Settings",
             ConnectError::BadAddress => {
                 "Enter the server address, starting with http:// or https://"
@@ -595,57 +525,9 @@ pub fn valid_origin(origin: &str) -> bool {
     boogiebox_db::radio_stations::valid_http_url(origin) && !rest.contains(['/', '?', '#', '@'])
 }
 
-/// A service that signs in through its own page (the Last.fm protocol).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignIn {
-    LastFm,
-    LibreFm,
-}
-
-impl SignIn {
-    pub fn service(self) -> ScrobbleService {
-        match self {
-            SignIn::LastFm => ScrobbleService::LastFm,
-            SignIn::LibreFm => ScrobbleService::LibreFm,
-        }
-    }
-
-    fn auth_page(self) -> &'static str {
-        match self {
-            SignIn::LastFm => lastfm::AUTH_PAGE,
-            SignIn::LibreFm => lastfm::LIBREFM_AUTH_PAGE,
-        }
-    }
-
-    fn api_base(self, endpoints: &Endpoints) -> &str {
-        match self {
-            SignIn::LastFm => &endpoints.lastfm,
-            SignIn::LibreFm => &endpoints.librefm,
-        }
-    }
-
-    /// Last.fm needs the admin's key and secret; Libre.fm has built-in ones.
-    async fn app(self, env: &PlayEnv) -> Result<lastfm::AppCredentials, ConnectError> {
-        match self {
-            SignIn::LibreFm => Ok(lastfm::AppCredentials::librefm()),
-            SignIn::LastFm => {
-                let db = env.db.clone();
-                tokio::task::spawn_blocking(move || {
-                    let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-                    lastfm_app(&conn)
-                })
-                .await
-                .map_err(|_| ConnectError::Internal)?
-                .ok_or(ConnectError::NotConfigured)
-            }
-        }
-    }
-}
-
-/// Starts a sign-in: the page to open, with a one-time callback state for `user_id`.
-pub async fn begin_sign_in(
+/// Starts a Libre.fm sign-in: the page to open, with a one-time callback state for `user_id`.
+pub fn begin_librefm_sign_in(
     env: &PlayEnv,
-    network: SignIn,
     user_id: &str,
     origin: &str,
 ) -> Result<String, ConnectError> {
@@ -653,28 +535,26 @@ pub async fn begin_sign_in(
     if !valid_origin(origin) {
         return Err(ConnectError::Rejected);
     }
-    let app = network.app(env).await?;
-    let service = network.service().as_str();
+    let service = ScrobbleService::LibreFm.as_str();
     let state = env.hub.issue_sign_in_state(user_id, service);
     let callback = format!("{origin}/api/scrobble/{service}/callback?state={state}");
-    Ok(lastfm::auth_url(
-        network.auth_page(),
-        &app.api_key,
+    Ok(audioscrobbler::auth_url(
+        audioscrobbler::LIBREFM_AUTH_PAGE,
+        &audioscrobbler::AppCredentials::librefm().api_key,
         &callback,
     ))
 }
 
-/// Finishes a sign-in from the callback (`state` names the user and the service; it works once).
-pub async fn finish_sign_in(
+/// Finishes a Libre.fm sign-in from the callback (`state` names the user and the service; it works once).
+pub async fn finish_librefm_sign_in(
     env: &PlayEnv,
     endpoints: &Endpoints,
-    network: SignIn,
     state: &str,
     token: &str,
 ) -> Result<String, ConnectError> {
     let user = env
         .hub
-        .take_sign_in_state(state, network.service().as_str())
+        .take_sign_in_state(state, ScrobbleService::LibreFm.as_str())
         .ok_or(ConnectError::Expired)?;
     let token = token.trim();
     // Callback tokens are URL-safe: letters, digits, `-` and `_`.
@@ -686,15 +566,18 @@ pub async fn finish_sign_in(
     {
         return Err(ConnectError::Rejected);
     }
-    let app = network.app(env).await?;
-    let (session_key, name) =
-        lastfm::get_session(&env.http, network.api_base(endpoints), &app, token)
-            .await
-            .map_err(connect_error)?;
+    let (session_key, name) = audioscrobbler::get_session(
+        &env.http,
+        &endpoints.librefm,
+        &audioscrobbler::AppCredentials::librefm(),
+        token,
+    )
+    .await
+    .map_err(connect_error)?;
     store_account(
         env,
         &user,
-        network.service(),
+        ScrobbleService::LibreFm,
         session_key,
         Some(name.clone()).filter(|n| !n.is_empty()),
         None,

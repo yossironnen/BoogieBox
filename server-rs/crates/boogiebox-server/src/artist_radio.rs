@@ -6,7 +6,7 @@
 //! at the bottom are the only parts that read the database (never the network).
 
 use crate::{
-    similar_artists::{resolve_local_similar_artists_with_listenbrainz, RelatedSet},
+    similar_artists::{resolve_local_similar_artists, RelatedSet},
     tag_taxonomy::{mood_bucket_of, mood_similarity, tags_for_bucket, MOOD_BUCKETS},
 };
 use boogiebox_db::{
@@ -14,7 +14,7 @@ use boogiebox_db::{
     radio::{
         count_tracks_with_any_tag, load_radio_tracks, radio_ids_for_artists,
         radio_ids_matching_tags, recent_play_ages, seed_audio_profile, seed_tag_vector,
-        track_tag_progress, RadioTrack, SeedAudio, TagLayer, TagWeight, SOURCE_LASTFM,
+        track_tag_progress, RadioTrack, SeedAudio, TagLayer, TagWeight, SOURCE_MUSICBRAINZ,
     },
 };
 use rusqlite::Connection;
@@ -755,11 +755,10 @@ pub fn load_inputs(
     let seed_tags = seed_tag_vector(conn, artist_id)?;
     let seed_audio = seed_audio_profile(conn, artist_id)?;
     let moods = effective_moods(&options.moods, &seed_tags);
-    let similar = resolve_local_similar_artists_with_listenbrainz(
+    let similar = resolve_local_similar_artists(
         conn,
         user_id,
         artist_id,
-        &related.lastfm,
         &related.deezer,
         &related.listenbrainz,
         SIMILAR_ARTIST_LIMIT,
@@ -918,7 +917,7 @@ pub fn radio_options(
             auto: auto.iter().any(|a| a == bucket),
         });
     }
-    let (checked, total) = track_tag_progress(conn, SOURCE_LASTFM)?;
+    let (checked, total) = track_tag_progress(conn, SOURCE_MUSICBRAINZ)?;
     Ok(RadioOptionsSnapshot {
         tags: seed_tags.iter().take(12).map(|t| t.tag.clone()).collect(),
         auto_moods: auto,
@@ -1580,7 +1579,7 @@ mod tests {
 
     fn related_similar() -> RelatedSet {
         RelatedSet {
-            lastfm: vec![boogiebox_server_related("sim-mbid", "Similar", 0.9)],
+            listenbrainz: vec![boogiebox_server_related("sim-mbid", "Similar", 0.9)],
             ..RelatedSet::default()
         }
     }

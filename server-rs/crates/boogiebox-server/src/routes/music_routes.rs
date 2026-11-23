@@ -30,8 +30,7 @@ use crate::{
     home_cache::HomeQueryCache,
     radio_metadata::{radio_metadata_status, spawn_lazy_tag_fetch},
     similar_artists::{
-        gather_related_candidates, resolve_local_similar_artists_with_listenbrainz,
-        SimilarArtistResult,
+        gather_related_candidates, resolve_local_similar_artists, SimilarArtistResult,
     },
     tag_taxonomy::MOOD_BUCKETS,
     DbPool, ErrorResponse, SharedState,
@@ -833,11 +832,10 @@ async fn similar_artists_handler(
     let response_source_id = artist_id.clone();
     match tokio::task::spawn_blocking(move || {
         let conn = db.lock().expect("db");
-        resolve_local_similar_artists_with_listenbrainz(
+        resolve_local_similar_artists(
             &conn,
             &user_id,
             &artist_id,
-            &related.lastfm,
             &related.deezer,
             &related.listenbrainz,
             limit,
@@ -1531,14 +1529,19 @@ mod similar_artist_route_tests {
                ('related-album', 'Related Album', 'Related', 'related');",
         )
         .expect("fixtures");
-        let lastfm = serde_json::to_string(&vec![
+        let listenbrainz = serde_json::to_string(&vec![
             candidate("related-mbid", "Related", 1),
             candidate("unowned-mbid", "Unowned", 2),
         ])
-        .expect("lastfm cache");
+        .expect("listenbrainz cache");
         let deezer = serde_json::to_string(&vec![candidate("related-deezer", "Related", 1)])
             .expect("deezer cache");
-        save_lastfm_cache(&conn, "artist-similar:lastfm:source", &lastfm, 7);
+        save_lastfm_cache(
+            &conn,
+            "artist-similar:listenbrainz:source",
+            &listenbrainz,
+            7,
+        );
         save_lastfm_cache(&conn, "artist-similar:deezer:source", &deezer, 7);
 
         let shared = Arc::new(RwLock::new(AppState {
@@ -1608,7 +1611,7 @@ mod similar_artist_route_tests {
         assert_eq!(json["artists"][0]["id"], "related");
         assert_eq!(
             json["artists"][0]["providers"],
-            serde_json::json!(["lastfm", "deezer"])
+            serde_json::json!(["deezer", "listenbrainz"])
         );
     }
 }
@@ -2305,9 +2308,8 @@ mod artist_radio_route_tests {
             rank: 1,
         }])
         .unwrap();
-        save_lastfm_cache(&conn, "artist-similar:lastfm:seed", &similar, 7);
         save_lastfm_cache(&conn, "artist-similar:deezer:seed", "[]", 7);
-        save_lastfm_cache(&conn, "artist-similar:listenbrainz:seed", "[]", 7);
+        save_lastfm_cache(&conn, "artist-similar:listenbrainz:seed", &similar, 7);
         music_router(Arc::new(RwLock::new(AppState {
             setup_required: false,
             db: Some(Arc::new(Mutex::new(conn))),
@@ -2446,7 +2448,7 @@ mod artist_radio_route_tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["mode"], "full");
         assert_eq!(body["keylessEnabled"], true);
-        assert_eq!(body["lastfmConfigured"], false);
+        assert!(body.get("lastfmConfigured").is_none());
         assert_eq!(body["tracksTotal"], 5);
         assert_eq!(body["artistsTagged"], 2);
     }

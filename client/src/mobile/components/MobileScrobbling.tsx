@@ -1,5 +1,5 @@
 /**
- * Mobile Settings → Scrobbling: connect the signed-in user's Last.fm, Libre.fm and ListenBrainz accounts and
+ * Mobile Settings → Scrobbling: connect the signed-in user's Libre.fm and ListenBrainz accounts and
  * their own ListenBrainz-compatible server. Mirrors the desktop panel (components/ScrobblingPanel.tsx) and
  * shares its logic.
  */
@@ -16,7 +16,7 @@ import {
   type SignInService,
 } from '../../components/ScrobblingPanel';
 import { hybridMobileContentStyles } from '../../hybridPreview';
-import { LASTFM_SCROBBLES_REFUSED, type ScrobbleService } from '../../scrobbling';
+import type { ScrobbleService } from '../../scrobbling';
 import MobileConfirmationSheet from './MobileConfirmationSheet';
 
 /** Mobile Scrobbling is part of this module's public API. */
@@ -46,7 +46,7 @@ export default function MobileScrobbling() {
     );
   };
 
-  const signIn = (service: SignInService, setupHint: string | null) => {
+  const signIn = (service: SignInService) => {
     const name = SERVICE_NAMES[service];
     const account = s.account(service);
     const waiting = s.waitingFor !== null;
@@ -54,15 +54,10 @@ export default function MobileScrobbling() {
       <>
         {row(service)}
         {account?.needsReconnect ? <div role="alert" style={styles.error}>{name} stopped accepting this account. Reconnect to keep scrobbling.</div> : null}
-        {service === 'lastfm' && account && s.lastfmKeyRefused ? <div role="status" style={styles.error}>{LASTFM_SCROBBLES_REFUSED}</div> : null}
         {!account || account.needsReconnect ? (
-          setupHint === null ? (
-            <button type="button" disabled={s.busy || waiting} style={{ ...styles.primary, ...(s.busy || waiting ? styles.disabled : null) }} onClick={() => void s.connectSignIn(service)}>
-              {account ? `Reconnect ${name}` : `Connect ${name}`}
-            </button>
-          ) : (
-            <div style={styles.hint}>{setupHint}</div>
-          )
+          <button type="button" disabled={s.busy || waiting} style={{ ...styles.primary, ...(s.busy || waiting ? styles.disabled : null) }} onClick={() => void s.connectSignIn(service)}>
+            {account ? `Reconnect ${name}` : `Connect ${name}`}
+          </button>
         ) : null}
         {s.waitingFor === service ? <div role="status" style={styles.hint}>Finish signing in to {name} in the window that opened.</div> : null}
         {account ? (
@@ -79,11 +74,10 @@ export default function MobileScrobbling() {
         <h3 id="mobile-settings-scrobbling" style={styles.heading}>Scrobbling</h3>
       </div>
       <p style={styles.description}>
-        Send what you play to your own Last.fm, Libre.fm or ListenBrainz account, or your own scrobble server.
+        Send what you play to your own Libre.fm or ListenBrainz account, or your own scrobble server.
       </p>
 
-      {signIn('lastfm', s.lastfmAvailable ? null : 'An admin needs to add the Last.fm API key and shared secret first.')}
-      {signIn('librefm', null)}
+      {signIn('librefm')}
 
       {row('listenbrainz')}
       {listenbrainz?.needsReconnect ? <div role="alert" style={styles.error}>ListenBrainz stopped accepting this token. Enter a new one.</div> : null}

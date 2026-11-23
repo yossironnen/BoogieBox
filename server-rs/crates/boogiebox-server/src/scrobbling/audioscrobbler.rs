@@ -1,5 +1,5 @@
-//! Last.fm Scrobbling 2.0 (also spoken by Libre.fm): web authentication, `track.updateNowPlaying` and
-//! `track.scrobble`. Every call is signed with the app's shared secret (`api_sig`). Keys and session keys are
+//! Scrobbling 2.0, the Audioscrobbler protocol Libre.fm speaks: web authentication, `track.updateNowPlaying`
+//! and `track.scrobble`. Every call is signed with the app's shared secret (`api_sig`). Keys and session keys are
 //! never logged.
 
 use std::time::Duration;
@@ -11,25 +11,21 @@ use super::SendError;
 use crate::providers::urlencoding::encode;
 use boogiebox_db::scrobble::ScrobbleTrack;
 
-/// Where users approve BoogieBox on Last.fm.
-pub const AUTH_PAGE: &str = "https://www.last.fm/api/auth/";
 /// Where users approve BoogieBox on Libre.fm.
 pub const LIBREFM_AUTH_PAGE: &str = "https://libre.fm/api/auth/";
 /// Libre.fm issues no app keys and checks neither key nor signature (measured 2026-11-22); any 32
 /// characters do.
 const LIBREFM_API_KEY: &str = "boogieboxboogieboxboogieboxboogi";
 const LIBREFM_SECRET: &str = "boogieboxboogieboxboogieboxboogi";
-/// Most plays per `track.scrobble` call (Last.fm limit).
+/// Most plays per `track.scrobble` call (protocol limit).
 pub const MAX_BATCH: usize = 50;
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The app credentials: an admin's Last.fm key and secret (`lastfmKey`, `lastfmSecret`), or Libre.fm's.
+/// The app credentials every call is signed with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppCredentials {
     pub api_key: String,
     pub secret: String,
-    /// Last.fm only: skip calls while Last.fm refuses the key, and notice when it starts to.
-    pub guard_key: bool,
 }
 
 impl AppCredentials {
@@ -38,7 +34,6 @@ impl AppCredentials {
         AppCredentials {
             api_key: LIBREFM_API_KEY.to_owned(),
             secret: LIBREFM_SECRET.to_owned(),
-            guard_key: false,
         }
     }
 }
@@ -77,7 +72,7 @@ fn form_body(params: &[(String, String)]) -> String {
         .join("&")
 }
 
-/// Maps a Last.fm error code to how the forwarder reacts.
+/// Maps a protocol error code to how the forwarder reacts.
 pub fn classify(code: i64) -> SendError {
     match code {
         // Invalid/expired session, authentication failed, unauthorised token.
@@ -95,10 +90,6 @@ async fn call(
     app: &AppCredentials,
     mut params: Vec<(String, String)>,
 ) -> Result<Value, SendError> {
-    // A key Last.fm refuses (no Pro subscription): don't call; the forwarder keeps the plays.
-    if app.guard_key && !crate::providers::lastfm_key_usable(&app.api_key) {
-        return Err(SendError::Temporary);
-    }
     params.push(("api_key".into(), app.api_key.clone()));
     let sig = api_sig(&params, &app.secret);
     params.push(("api_sig".into(), sig));
@@ -113,12 +104,6 @@ async fn call(
         .map_err(|_| SendError::Temporary)?;
     let status = response.status();
     let body: Value = response.json().await.unwrap_or(Value::Null);
-    // Checked before the codes below: a bare 403 must not drop the plays.
-    if app.guard_key
-        && crate::providers::lastfm_reply_rejects_key(&app.api_key, status.as_u16(), &body)
-    {
-        return Err(SendError::Temporary);
-    }
     if let Some(code) = body.get("error").and_then(Value::as_i64) {
         return Err(classify(code));
     }
@@ -221,7 +206,6 @@ mod tests {
         AppCredentials {
             api_key: "key123".into(),
             secret: "sekrit".into(),
-            guard_key: true,
         }
     }
 
@@ -251,13 +235,13 @@ mod tests {
     #[test]
     fn auth_url_encodes_the_callback() {
         let url = auth_url(
-            AUTH_PAGE,
+            LIBREFM_AUTH_PAGE,
             "key123",
-            "http://box.local:3000/api/scrobble/lastfm/callback?state=ab",
+            "http://box.local:3000/api/scrobble/librefm/callback?state=ab",
         );
         assert_eq!(
             url,
-            "https://www.last.fm/api/auth/?api_key=key123&cb=http%3A%2F%2Fbox.local%3A3000%2Fapi%2Fscrobble%2Flastfm%2Fcallback%3Fstate%3Dab"
+            "https://libre.fm/api/auth/?api_key=key123&cb=http%3A%2F%2Fbox.local%3A3000%2Fapi%2Fscrobble%2Flibrefm%2Fcallback%3Fstate%3Dab"
         );
     }
 
@@ -265,13 +249,12 @@ mod tests {
     fn librefm_uses_its_own_page_and_a_32_character_placeholder_key() {
         let app = AppCredentials::librefm();
         assert_eq!(app.api_key.len(), 32);
-        assert!(!app.guard_key);
         assert!(auth_url(LIBREFM_AUTH_PAGE, &app.api_key, "http://box/cb")
             .starts_with("https://libre.fm/api/auth/?api_key=boogiebox"));
     }
 
     #[tokio::test]
-    async fn a_bare_403_from_librefm_does_not_mark_any_key_refused() {
+    async fn a_bare_403_from_librefm_drops_the_plays() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(403))
@@ -283,7 +266,6 @@ mod tests {
             scrobble(&client, &server.uri(), &app, "sk", &[(track(), 1)]).await,
             Err(SendError::Rejected)
         );
-        assert!(crate::providers::lastfm_key_usable(&app.api_key));
     }
 
     #[test]

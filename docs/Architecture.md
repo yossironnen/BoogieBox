@@ -38,7 +38,7 @@ Important server modules:
 - `src/subsonic/`: OpenSubsonic-compatible `/rest/{method}` API for third-party apps: parameter parsing (query + form), Subsonic-password auth (AES-GCM at rest, `subsonic.key` beside the database, cached; never the PIN), one node tree rendered to XML/JSON/JSONP, browse/list/search/playlist handlers, library-confined `stream`/`download` with a transcode limiter, and `getCoverArt` via the artwork cache. `routes/subsonic_routes.rs` manages the passwords for the UI. It also serves internet radio (`getInternetRadioStations` and admin edits), a jukebox that drives one Play On speaker (`jukeboxControl`), Opus/AAC streams and per-user play counts. Phase 3 added OpenSubsonic API keys (`apiKey` alone, SHA-256 hash only, own cache; `tokenInfo`), `timeOffset` for transcodes (`transcodeOffset`), a per-user saved play queue shared by the user's apps (`getPlayQueue`/`savePlayQueue` and the index-based pair), and `getScanStatus`/`startScan` (scans every library in turn via `scanner::spawn_scan_jobs`). Every request's hold of the shared database lock is logged (`debug`, `warn` above 250 ms); album lists page album ids before totalling tracks, and song pages pick ids in a join-free subquery, so 500-row sync pages stay within ~15 ms on a 100k-track library (`boogiebox-db` ignored test `subsonic_scale`).
 - `src/activity.rs`: admin Activity page. `ActivityHub` (in `AppState`, reset on a database switch) counts bytes of every media response through `track_response` (range requests for one item collapse into one transfer that lingers 10 s), folds Subsonic downloads and uncached streams into per-app download sessions, keeps web player heartbeats, and queues history events that a background task writes to `activity_events` (7-day retention). `snapshot` merges it with Play On sessions, the now-playing list and the job tables in one short lock hold. `routes/activity_routes.rs` serves the snapshot, its SSE feed, the heartbeat and an admin mix-job cancel.
 - `src/plays.rs`: shared play hub. The web player (`/played`, `/scrobble`), Play On sessions and Subsonic `scrobble` report plays here: it keeps the now-playing list for `getNowPlaying` and hands plays to the scrobble forwarder.
-- `src/scrobbling/`: forwards plays to each user's own Last.fm and ListenBrainz accounts. Secrets are AES-GCM encrypted with `subsonic.key`; plays wait in `scrobble_queue` and a background worker sends them in batches with retries. `routes/scrobble_routes.rs` connects accounts (ListenBrainz token, Last.fm sign-in with a one-time callback state).
+- `src/scrobbling/`: forwards plays to each user's own Libre.fm, ListenBrainz and own-server (Maloja, Koito) accounts. Secrets are AES-GCM encrypted with `subsonic.key`; plays wait in `scrobble_queue` and a background worker sends them in batches with retries. `routes/scrobble_routes.rs` connects accounts (ListenBrainz or own-server token, Libre.fm sign-in with a one-time callback state).
 - `routes/favourites_routes.rs` (hearts over `subsonic_stars`) and `routes/radio_routes.rs` (stations and the stream relay the web player uses).
 - `src/providers.rs`: Discogs, Deezer, Spotify, LRCLIB, and lyrics.ovh clients.
 - `src/image_thumb.rs`: JPEG thumbnail generation.
@@ -58,7 +58,7 @@ Important server modules:
 - `src/deep_analysis.rs`: optional BoogieMix deep-analysis queueing and status.
 - `src/artist_radio.rs`: Artist Radio queue building.
 - `src/similar_artists.rs`: locally-owned similar-artist resolution.
-- `src/radio_metadata.rs`: background Last.fm/MusicBrainz/ListenBrainz tag and mood-tag collection.
+- `src/radio_metadata.rs`: background MusicBrainz/ListenBrainz tag, mood-tag and popularity collection.
 - `src/tag_taxonomy.rs`: style/mood tag normalization for Artist Radio.
 - `src/db_warmup.rs`: background cache warm-up on startup and library switch.
 - `src/db_maintenance.rs`: weekly late-night `PRAGMA incremental_vacuum` sweep.
@@ -73,7 +73,7 @@ Important server modules:
 - `src/bin/boogiebox.rs`: the Windows tray launcher (`boogiebox.exe`). It runs `boogiebox-server.exe` without a console window and shows a notification-area icon with "Open BoogieBox" and "Exit".
 - `src/bin/`: also maintenance utilities (`probe-init`, `perf-bench`, `boogiemix-feature-stats`).
 
-`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `smart_playlists` (rule validation, compiling and evaluation with a 1 s query budget, stored membership, freshness checks), `smart_steer` (steering pills re-weighting membership inside the rules), `smart_suggest` (which pills to offer), `popularity` (Last.fm scrobble counts behind "Popular"), `playlist_import` (M3U/M3U8 matching), `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, `subsonic` (credentials, API keys, stars, play queues, paged sync listings), `scrobble`, `radio_stations`, `favourites`, `activity`, `loudness`, `saved_eq` (per-user EQ curves for a song or an album), `backup` (`VACUUM INTO` snapshots, manifest, retention, path remaps), and `maintenance`.
+`boogiebox-db` modules are split by domain: `music`, `playback`, `playlists`, `smart_playlists` (rule validation, compiling and evaluation with a 1 s query budget, stored membership, freshness checks), `smart_steer` (steering pills re-weighting membership inside the rules), `smart_suggest` (which pills to offer), `popularity` (ListenBrainz listen counts, or Last.fm counts kept from before, behind "Popular"), `playlist_import` (M3U/M3U8 matching), `artwork`, `boogiemix`, `jobs`, `radio`, `remote`, `subsonic` (credentials, API keys, stars, play queues, paged sync listings), `scrobble`, `radio_stations`, `favourites`, `activity`, `loudness`, `saved_eq` (per-user EQ curves for a song or an album), `backup` (`VACUUM INTO` snapshots, manifest, retention, path remaps), and `maintenance`.
 
 ## Frontend
 
@@ -127,8 +127,8 @@ Core tables include:
 - `tracks`, `artists`, `albums`, `tracks_fts`
 - `artist_merges`, `artist_merge_members`, `artist_merge_moves`, `artist_name_aliases`
 - `artist_ratings`, `album_ratings`, `track_ratings`, `play_history`
-- `artist_styles`, `album_styles`, `track_tags`, `track_tag_sync`, `lastfm_cache`, `lyrics_cache`, `artist_eq_cache`
-- `track_popularity`, `artist_popularity_sync` (Last.fm scrobble counts for the "Popular" steering pill)
+- `artist_styles`, `album_styles`, `track_tags`, `track_tag_sync`, `lastfm_cache` (the shared provider cache; the name is historical), `lyrics_cache`, `artist_eq_cache`
+- `track_popularity`, `artist_popularity_sync` (ListenBrainz listen counts, or Last.fm scrobble counts kept from before, for the "Popular" steering pill)
 - `scan_jobs`, `post_scan_jobs`, `scan_schedules`
 - `playlists` (`kind` `manual` / `smart`), `playlist_tracks`, `smart_playlist_definitions`, `smart_playlist_content_revision`, `smart_playlist_user_revisions`, `crossfade_overrides`
 - `track_waveforms`, `track_loudness`, `track_deep_analysis`, `track_mix_analysis`, `deep_analysis_jobs`

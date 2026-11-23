@@ -1,4 +1,4 @@
-//! Scrobble forwarding storage: each user's connected Last.fm / Libre.fm / ListenBrainz / own-server account
+//! Scrobble forwarding storage: each user's connected Libre.fm / ListenBrainz / own-server account
 //! (encrypted secret) and the
 //! delivery queue the server's forwarder drains. Times are Unix seconds supplied by the caller.
 //! See wip/opensubsonic-api-implementation-plan.md §15.5 (2.5-3).
@@ -17,7 +17,6 @@ pub const MAX_ATTEMPTS: i64 = 20;
 /// A scrobbling service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScrobbleService {
-    LastFm,
     ListenBrainz,
     /// Libre.fm: the Last.fm scrobbling protocol at another address.
     LibreFm,
@@ -26,8 +25,7 @@ pub enum ScrobbleService {
 }
 
 impl ScrobbleService {
-    pub const ALL: [ScrobbleService; 4] = [
-        ScrobbleService::LastFm,
+    pub const ALL: [ScrobbleService; 3] = [
         ScrobbleService::ListenBrainz,
         ScrobbleService::LibreFm,
         ScrobbleService::OwnServer,
@@ -35,7 +33,6 @@ impl ScrobbleService {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            ScrobbleService::LastFm => "lastfm",
             ScrobbleService::ListenBrainz => "listenbrainz",
             ScrobbleService::LibreFm => "librefm",
             ScrobbleService::OwnServer => "server",
@@ -44,7 +41,6 @@ impl ScrobbleService {
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
-            "lastfm" => Some(ScrobbleService::LastFm),
             "listenbrainz" => Some(ScrobbleService::ListenBrainz),
             "librefm" => Some(ScrobbleService::LibreFm),
             "server" => Some(ScrobbleService::OwnServer),
@@ -134,9 +130,26 @@ pub fn ensure_scrobble_targets_schema(conn: &Connection) -> rusqlite::Result<()>
     )
 }
 
+/// Migration `2026-11-23-remove-lastfm` (scrobbling part): Last.fm accounts and their queued plays.
+pub fn remove_lastfm_accounts(conn: &Connection) -> rusqlite::Result<()> {
+    let has_users: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_users {
+        // Only partial databases (old-schema test fixtures): any change to these tables checks the users key.
+        return Ok(());
+    }
+    conn.execute_batch(
+        "DELETE FROM scrobble_queue WHERE service = 'lastfm';
+         DELETE FROM scrobble_accounts WHERE service = 'lastfm';",
+    )
+}
+
 // ── Accounts ───────────────────────────────────────────────────────────────────
 
-/// A stored account with its encrypted secret (Last.fm/Libre.fm session key or ListenBrainz token).
+/// A stored account with its encrypted secret (Libre.fm session key or ListenBrainz token).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrobbleAccount {
     pub user_id: String,
@@ -267,7 +280,7 @@ pub fn list_accounts(
         Ok((
             row.get::<_, String>(0)?,
             ScrobbleAccountStatus {
-                service: ScrobbleService::LastFm,
+                service: ScrobbleService::ListenBrainz,
                 account_name: row.get(1)?,
                 needs_reconnect: row.get::<_, i64>(2)? != 0,
                 connected_at: row.get(3)?,
@@ -496,19 +509,6 @@ pub fn defer(conn: &Connection, ids: &[i64], next_attempt_at: i64) -> rusqlite::
     )
 }
 
-/// Moves plays to a later attempt without counting a failure (a paused service).
-pub fn postpone(conn: &Connection, ids: &[i64], next_attempt_at: i64) -> rusqlite::Result<usize> {
-    if ids.is_empty() {
-        return Ok(0);
-    }
-    let (ph, mut values) = id_list(ids);
-    values.insert(0, Value::Integer(next_attempt_at));
-    conn.execute(
-        &format!("UPDATE scrobble_queue SET next_attempt_at = ? WHERE id IN ({ph})"),
-        params_from_iter(values),
-    )
-}
-
 /// Drops plays that are too old or failed too often.
 pub fn prune(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
     conn.execute(
@@ -574,13 +574,15 @@ mod tests {
         );
         ensure_scrobble_targets_schema(&conn).unwrap();
         ensure_scrobble_targets_schema(&conn).unwrap();
-        let kept = get_account(&conn, "u1", ScrobbleService::LastFm)
-            .unwrap()
+        let kept: (String, i64, Vec<u8>, Option<String>) = conn
+            .query_row(
+                "SELECT account_name, needs_reconnect, secret_enc, api_base FROM scrobble_accounts
+                 WHERE user_id = 'u1' AND service = 'lastfm'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
             .unwrap();
-        assert_eq!(kept.account_name.as_deref(), Some("al"));
-        assert!(kept.needs_reconnect);
-        assert_eq!(kept.secret_enc, [1]);
-        assert_eq!(kept.api_base, None);
+        assert_eq!(kept, ("al".to_owned(), 1, vec![1], None));
         upsert_account_at(
             &conn,
             "u1",
@@ -608,22 +610,48 @@ mod tests {
             Some("http://maloja.lan:42010/apis/listenbrainz")
         );
         let list = list_accounts(&conn, "u1").unwrap();
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.len(), 2, "a row for an unknown service is skipped");
         assert!(list
             .iter()
             .any(|a| a.service == ScrobbleService::OwnServer && a.api_base.is_some()));
     }
 
     #[test]
+    fn lastfm_removal_drops_only_lastfm_accounts_and_plays() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO scrobble_accounts(user_id, service, secret_enc, secret_nonce)
+               VALUES ('u1', 'lastfm', x'01', x'02');
+             INSERT INTO scrobble_queue(user_id, service, artist, title, played_at, created_at)
+               VALUES ('u1', 'lastfm', 'a', 't', 1, 1);",
+        )
+        .unwrap();
+        upsert_account(&conn, "u1", ScrobbleService::LibreFm, b"c", b"n", None).unwrap();
+        enqueue(&conn, "u1", ScrobbleService::LibreFm, &track(), 5, 5).unwrap();
+        remove_lastfm_accounts(&conn).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(
+            count("SELECT COUNT(*) FROM scrobble_accounts WHERE service = 'lastfm'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM scrobble_queue WHERE service = 'lastfm'"),
+            0
+        );
+        assert_eq!(count("SELECT COUNT(*) FROM scrobble_accounts"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM scrobble_queue"), 1);
+    }
+
+    #[test]
     fn accounts_upsert_list_reconnect_and_delete() {
         let conn = db();
-        assert!(get_account(&conn, "u1", ScrobbleService::LastFm)
+        assert!(get_account(&conn, "u1", ScrobbleService::LibreFm)
             .unwrap()
             .is_none());
         upsert_account(
             &conn,
             "u1",
-            ScrobbleService::LastFm,
+            ScrobbleService::LibreFm,
             b"ct",
             b"nonce",
             Some("al"),
@@ -638,7 +666,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let acct = get_account(&conn, "u1", ScrobbleService::LastFm)
+        let acct = get_account(&conn, "u1", ScrobbleService::LibreFm)
             .unwrap()
             .unwrap();
         assert_eq!(acct.secret_enc, b"ct");
@@ -646,10 +674,10 @@ mod tests {
         assert!(!acct.needs_reconnect);
         assert_eq!(
             active_services(&conn, "u1").unwrap(),
-            [ScrobbleService::LastFm, ScrobbleService::ListenBrainz]
+            [ScrobbleService::LibreFm, ScrobbleService::ListenBrainz]
         );
 
-        mark_needs_reconnect(&conn, "u1", ScrobbleService::LastFm).unwrap();
+        mark_needs_reconnect(&conn, "u1", ScrobbleService::LibreFm).unwrap();
         assert_eq!(
             active_services(&conn, "u1").unwrap(),
             [ScrobbleService::ListenBrainz]
@@ -666,7 +694,7 @@ mod tests {
         mark_delivered(&conn, "u1", ScrobbleService::ListenBrainz).unwrap();
         let list = list_accounts(&conn, "u1").unwrap();
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].service, ScrobbleService::LastFm);
+        assert_eq!(list[0].service, ScrobbleService::LibreFm);
         assert!(list[0].needs_reconnect);
         assert_eq!(list[1].pending, 1);
         assert!(list[1].last_scrobble_at.is_some());
@@ -675,14 +703,14 @@ mod tests {
         upsert_account(
             &conn,
             "u1",
-            ScrobbleService::LastFm,
+            ScrobbleService::LibreFm,
             b"ct3",
             b"n3",
             Some("al"),
         )
         .unwrap();
         assert!(
-            !get_account(&conn, "u1", ScrobbleService::LastFm)
+            !get_account(&conn, "u1", ScrobbleService::LibreFm)
                 .unwrap()
                 .unwrap()
                 .needs_reconnect
@@ -707,11 +735,11 @@ mod tests {
     #[test]
     fn queue_due_defer_remove_prune_and_cap() {
         let conn = db();
-        upsert_account(&conn, "u1", ScrobbleService::LastFm, b"c", b"n", None).unwrap();
-        enqueue(&conn, "u1", ScrobbleService::LastFm, &track(), 300, 1000).unwrap();
-        enqueue(&conn, "u1", ScrobbleService::LastFm, &track(), 200, 1000).unwrap();
+        upsert_account(&conn, "u1", ScrobbleService::LibreFm, b"c", b"n", None).unwrap();
+        enqueue(&conn, "u1", ScrobbleService::LibreFm, &track(), 300, 1000).unwrap();
+        enqueue(&conn, "u1", ScrobbleService::LibreFm, &track(), 200, 1000).unwrap();
         // No account → never due.
-        enqueue(&conn, "u2", ScrobbleService::LastFm, &track(), 100, 1000).unwrap();
+        enqueue(&conn, "u2", ScrobbleService::LibreFm, &track(), 100, 1000).unwrap();
         let due_now = due(&conn, 1000, 50).unwrap();
         assert_eq!(due_now.len(), 2);
         assert_eq!(due_now[0].played_at, 200, "oldest play first");
@@ -735,7 +763,7 @@ mod tests {
         assert_eq!(prune(&conn, 1000 + QUEUE_MAX_AGE_SECS + 1).unwrap(), 1);
 
         for i in 0..(MAX_QUEUED_PER_ACCOUNT + 3) {
-            enqueue(&conn, "u1", ScrobbleService::LastFm, &track(), i, 5000).unwrap();
+            enqueue(&conn, "u1", ScrobbleService::LibreFm, &track(), i, 5000).unwrap();
         }
         let count: i64 = conn
             .query_row(

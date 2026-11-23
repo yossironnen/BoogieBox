@@ -147,7 +147,6 @@ export interface ArtistRadioOptionsSnapshot {
 /** Response of `GET /radio/metadata/status` (Settings). */
 export interface RadioMetadataStatus {
   mode: 'off' | 'lazy' | 'full';
-  lastfmConfigured: boolean;
   keylessEnabled: boolean;
   tracksChecked: number;
   tracksTotal: number;
@@ -195,7 +194,7 @@ export interface UnmergeResult {
 /** A collection-owned artist resolved from provider similarity metadata. */
 export interface SimilarArtist extends Artist {
   score: number;
-  providers: Array<'lastfm' | 'deezer'>;
+  providers: Array<'deezer' | 'listenbrainz'>;
 }
 
 /** Similar artists response for one local source artist. */
@@ -342,8 +341,6 @@ export interface AppSettings {
   colorTextMuted: string;
   bgTexture: string;
   fontFamily: string;
-  // API keys
-  lastfmKey: string;
   // DLNA
   dlnaEnabled: string;
   dlnaFriendlyName: string;
@@ -355,7 +352,6 @@ export interface AppSettings {
   vinylMode: string;
   transcodeQuality: string;
   replayGainEnabled: string;
-  lastfmConfigured: string;
   // Waveforms
   waveformGenerateOnMissing: string;
   waveformBackgroundEnabled: string;
@@ -411,9 +407,7 @@ export type AdminPostScanJobType =
   | 'refresh_library_mappings'
   | 'cache_artist_images'
   | 'cache_album_images'
-  | 'warm_lastfm_info'
-  | 'warm_track_lyrics'
-  | 'sync_artist_styles';
+  | 'warm_track_lyrics';
 
 /** Admin Queue Snapshot is part of this module's public API. */
 export interface AdminQueueSnapshot {
@@ -436,7 +430,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   colorTextMuted: '#b6a79b',
   bgTexture:      'none',
   fontFamily:     'Aptos, "Segoe UI Variable", "Segoe UI", Inter, system-ui, sans-serif',
-  lastfmKey:      '',
   dlnaEnabled:      'false',
   dlnaFriendlyName: 'BoogieBox',
   dlnaPort:         '8200',
@@ -445,7 +438,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   vinylMode: 'standard',
   transcodeQuality: 'low',
   replayGainEnabled: 'false',
-  lastfmConfigured: 'false',
   waveformGenerateOnMissing: 'true',
   waveformBackgroundEnabled: 'false',
   waveformBackgroundFrequencyHours: '24',
@@ -818,9 +810,9 @@ export interface QueueSource {
   rememberProgress?: boolean;
 }
 
-// ─── Last.fm ───────────────────────────────────────────────────────────────
+// ─── About and top songs ───────────────────────────────────────────────────
 
-export type AboutSource = 'wikipedia' | 'theaudiodb' | 'lastfm';
+export type AboutSource = 'wikipedia' | 'theaudiodb';
 
 /** `GET /api/artists/{id}/about`, `/api/albums/{id}/about`: a bio or description and the artist's stats. */
 export interface About {
@@ -837,17 +829,6 @@ export interface About {
 export interface ArtistTopSongs {
   source: 'listenbrainz' | 'deezer' | null;
   tracks: { name: string; listens: number | null; url: string | null }[];
-}
-
-/** Last Fm Info is part of this module's public API. */
-export interface LastFmInfo {
-  summary: string;
-  full: string;
-  listeners?: string;
-  playcount?: string;
-  url?: string;
-  image?: string;
-  tags?: string[];
 }
 
 // ─── Auth / Users ──────────────────────────────────────────────────────────
@@ -978,7 +959,7 @@ export interface SonicFingerprint {
 
 /** Metadata Search Result is part of this module's public API. */
 export interface MetadataSearchResult {
-  provider: 'musicbrainz' | 'lastfm' | 'discogs' | 'spotify' | 'deezer';
+  provider: 'musicbrainz' | 'discogs' | 'spotify' | 'deezer';
   type: 'artist' | 'album';
   title: string;
   artist?: string;
