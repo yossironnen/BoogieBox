@@ -49,6 +49,8 @@ fn queued(env: &PlayEnv) -> Vec<(String, String, i64)> {
 fn endpoints(lastfm: &MockServer, lb: &MockServer) -> Endpoints {
     Endpoints {
         lastfm: lastfm.uri(),
+        // Libre.fm tests mount on the Last.fm mock unless they say otherwise.
+        librefm: lastfm.uri(),
         listenbrainz: lb.uri(),
     }
 }
@@ -83,6 +85,7 @@ fn secrets_are_bound_to_user_and_service() {
         secret_nonce: nonce.clone(),
         account_name: None,
         needs_reconnect: false,
+        api_base: None,
     };
     assert_eq!(
         open(&key, &account("u1", ScrobbleService::LastFm)).as_deref(),
@@ -355,36 +358,42 @@ async fn lastfm_sign_in_uses_a_one_time_state() {
         .await;
     let ep = endpoints(&lastfm, &lb);
     assert_eq!(
-        begin_lastfm_connect(&env, "u1", "http://box/path").await,
+        begin_sign_in(&env, SignIn::LastFm, "u1", "http://box/path").await,
         Err(ConnectError::Rejected)
     );
-    let url = begin_lastfm_connect(&env, "u1", "http://box.local:3000/")
+    let url = begin_sign_in(&env, SignIn::LastFm, "u1", "http://box.local:3000/")
         .await
         .unwrap();
     assert!(url.starts_with("https://www.last.fm/api/auth/?api_key=app-key&cb=http%3A%2F%2Fbox.local%3A3000%2Fapi%2Fscrobble%2Flastfm%2Fcallback%3Fstate%3D"));
     let state = url.rsplit("state%3D").next().unwrap().to_owned();
     assert_eq!(
-        finish_lastfm_connect(&env, &ep, "forged", "tok").await,
+        finish_sign_in(&env, &ep, SignIn::LastFm, "forged", "tok").await,
         Err(ConnectError::Expired)
     );
     // Real Last.fm tokens are URL-safe and can contain `-` and `_`.
     assert_eq!(
-        finish_lastfm_connect(&env, &ep, &state, "4fVKx6ab9u_ToICGrT2GRbq-25WsC")
-            .await
-            .unwrap(),
+        finish_sign_in(
+            &env,
+            &ep,
+            SignIn::LastFm,
+            &state,
+            "4fVKx6ab9u_ToICGrT2GRbq-25WsC"
+        )
+        .await
+        .unwrap(),
         "fm_alice"
     );
     assert_eq!(
-        finish_lastfm_connect(&env, &ep, &state, "tok123").await,
+        finish_sign_in(&env, &ep, SignIn::LastFm, &state, "tok123").await,
         Err(ConnectError::Expired),
         "a state works once"
     );
-    let retry = begin_lastfm_connect(&env, "u1", "http://box.local:3000")
+    let retry = begin_sign_in(&env, SignIn::LastFm, "u1", "http://box.local:3000")
         .await
         .unwrap();
     let retry_state = retry.rsplit("state%3D").next().unwrap().to_owned();
     assert_eq!(
-        finish_lastfm_connect(&env, &ep, &retry_state, "tok 123").await,
+        finish_sign_in(&env, &ep, SignIn::LastFm, &retry_state, "tok 123").await,
         Err(ConnectError::Rejected)
     );
     {
@@ -396,8 +405,156 @@ async fn lastfm_sign_in_uses_a_one_time_state() {
             .unwrap();
     }
     assert_eq!(
-        begin_lastfm_connect(&env, "u1", "http://box.local:3000").await,
+        begin_sign_in(&env, SignIn::LastFm, "u1", "http://box.local:3000").await,
         Err(ConnectError::NotConfigured)
     );
     assert!(!ConnectError::NotConfigured.message().is_empty());
+}
+
+#[tokio::test]
+async fn librefm_signs_in_and_scrobbles_without_any_admin_setup() {
+    let env = env("scrobble-librefm");
+    {
+        let conn = env.db.lock().unwrap();
+        conn.execute(
+            "DELETE FROM settings WHERE key IN ('lastfmKey', 'lastfmSecret')",
+            [],
+        )
+        .unwrap();
+    }
+    let librefm = MockServer::start().await;
+    let lb = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_string_contains("method=auth.getSession"))
+        .and(body_string_contains("api_key=boogiebox"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"session": {"name": "lf_alice", "key": "lf-sk"}})),
+        )
+        .mount(&librefm)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_string_contains("method=track.scrobble"))
+        .and(body_string_contains("sk=lf-sk"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"scrobbles": {}})))
+        .expect(1)
+        .mount(&librefm)
+        .await;
+    let ep = endpoints(&librefm, &lb);
+    let url = begin_sign_in(&env, SignIn::LibreFm, "u1", "http://box.local:3000")
+        .await
+        .unwrap();
+    assert!(
+        url.starts_with("https://libre.fm/api/auth/?api_key=boogiebox"),
+        "{url}"
+    );
+    assert!(url.contains("%2Fapi%2Fscrobble%2Flibrefm%2Fcallback%3Fstate%3D"));
+    let state = url.rsplit("state%3D").next().unwrap().to_owned();
+    assert_eq!(
+        finish_sign_in(&env, &ep, SignIn::LastFm, &state, "tok").await,
+        Err(ConnectError::Expired),
+        "a Libre.fm state doesn't finish a Last.fm sign-in"
+    );
+    let url = begin_sign_in(&env, SignIn::LibreFm, "u1", "http://box.local:3000")
+        .await
+        .unwrap();
+    let state = url.rsplit("state%3D").next().unwrap().to_owned();
+    assert_eq!(
+        finish_sign_in(&env, &ep, SignIn::LibreFm, &state, "lf-token_1")
+            .await
+            .unwrap(),
+        "lf_alice"
+    );
+    {
+        let conn = env.db.lock().unwrap();
+        assert_eq!(
+            enqueue_play(&conn, "u1", "t1", unix_now() - 300, unix_now()),
+            1
+        );
+    }
+    let report = deliver_due(&env, &ep).await;
+    assert_eq!(report.sent, 1, "{report:?}");
+    assert!(queued(&env).is_empty());
+}
+
+#[tokio::test]
+async fn own_server_connects_with_its_address_and_receives_plays() {
+    let env = env("scrobble-own-server");
+    let lastfm = MockServer::start().await;
+    let lb = MockServer::start().await;
+    let own = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/apis/listenbrainz/1/validate-token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"valid": true, "user_name": "mal"})),
+        )
+        .mount(&own)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/apis/listenbrainz/1/submit-listens"))
+        .and(body_partial_json(json!({"listen_type": "single"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .expect(1)
+        .mount(&own)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/apis/listenbrainz/1/submit-listens"))
+        .and(body_partial_json(json!({"listen_type": "playing_now"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .expect(1)
+        .mount(&own)
+        .await;
+    assert_eq!(
+        connect_own_server(&env, "u1", "box.lan/apis", "maloja-key").await,
+        Err(ConnectError::BadAddress)
+    );
+    assert_eq!(
+        connect_own_server(&env, "u1", &own.uri(), "two words").await,
+        Err(ConnectError::Rejected)
+    );
+    let address = format!("{}/apis/listenbrainz/1/", own.uri());
+    let (stored, name) = connect_own_server(&env, "u1", &address, " maloja-key ")
+        .await
+        .unwrap();
+    assert_eq!(stored, format!("{}/apis/listenbrainz", own.uri()));
+    assert_eq!(name.as_deref(), Some("mal"));
+    // ListenBrainz and the own server are separate targets.
+    connect(&env, "u1", ScrobbleService::ListenBrainz, "lb-token-1234");
+    Mock::given(method("POST"))
+        .and(path("/1/submit-listens"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(&lb)
+        .await;
+    let ep = endpoints(&lastfm, &lb);
+    forward_now_playing(&env, &ep, "u1", "t1").await;
+    {
+        let conn = env.db.lock().unwrap();
+        assert_eq!(
+            enqueue_play(&conn, "u1", "t1", unix_now() - 300, unix_now()),
+            2
+        );
+    }
+    let report = deliver_due(&env, &ep).await;
+    assert_eq!(report.sent, 2, "{report:?}");
+    let conn = env.db.lock().unwrap();
+    let account = qdb::get_account(&conn, "u1", ScrobbleService::OwnServer)
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.api_base, Some(stored));
+    assert_ne!(account.secret_enc, b"maloja-key");
+}
+
+#[tokio::test]
+async fn own_server_without_an_address_asks_to_reconnect() {
+    let env = env("scrobble-own-server-missing");
+    let lastfm = MockServer::start().await;
+    let lb = MockServer::start().await;
+    connect(&env, "u1", ScrobbleService::OwnServer, "maloja-key");
+    {
+        let conn = env.db.lock().unwrap();
+        enqueue_play(&conn, "u1", "t1", unix_now() - 300, unix_now());
+    }
+    let report = deliver_due(&env, &endpoints(&lastfm, &lb)).await;
+    assert_eq!(report.reconnect, 1);
+    assert_eq!(queued(&env).len(), 1, "the play is kept");
 }

@@ -1,5 +1,6 @@
-//! Scrobbling accounts for the BoogieBox UI (cookie auth, own account only): connect ListenBrainz with a
-//! token, connect Last.fm through its sign-in page, see status, disconnect. Secrets are never returned.
+//! Scrobbling accounts for the BoogieBox UI (cookie auth, own account only): connect ListenBrainz or an own
+//! ListenBrainz-compatible server with a token, connect Last.fm or Libre.fm through their sign-in pages, see
+//! status, disconnect. Secrets are never returned.
 //! See wip/opensubsonic-api-implementation-plan.md §15.5 (2.5-3).
 
 use axum::{
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::AuthenticatedUser,
     plays::PlayEnv,
-    scrobbling::{self, ConnectError, Endpoints},
+    scrobbling::{self, ConnectError, Endpoints, SignIn},
     ErrorResponse, OkResponse, SharedState,
 };
 
@@ -28,10 +29,18 @@ pub fn scrobble_router(state: SharedState) -> Router {
             "/api/scrobble/lastfm/callback",
             get(lastfm_callback_handler),
         )
-        // `PUT` connects ListenBrainz (token); Last.fm connects through its sign-in page instead.
+        .route(
+            "/api/scrobble/librefm/connect",
+            post(librefm_connect_handler),
+        )
+        .route(
+            "/api/scrobble/librefm/callback",
+            get(librefm_callback_handler),
+        )
+        // `PUT` connects ListenBrainz or the own server (token); Last.fm and Libre.fm sign in on their pages.
         .route(
             "/api/scrobble/{service}",
-            put(connect_listenbrainz_handler).delete(disconnect_handler),
+            put(connect_token_handler).delete(disconnect_handler),
         )
         .with_state(state)
 }
@@ -53,7 +62,9 @@ fn not_ready() -> Response {
 
 fn connect_failed(err: ConnectError) -> Response {
     let status = match err {
-        ConnectError::Rejected | ConnectError::Expired => StatusCode::BAD_REQUEST,
+        ConnectError::Rejected | ConnectError::Expired | ConnectError::BadAddress => {
+            StatusCode::BAD_REQUEST
+        }
         ConnectError::NotConfigured => StatusCode::CONFLICT,
         ConnectError::Unavailable => StatusCode::BAD_GATEWAY,
         ConnectError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -70,6 +81,8 @@ struct AccountView {
     connected_at: String,
     last_scrobble_at: Option<String>,
     pending: i64,
+    /// The own server's address.
+    address: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,6 +122,7 @@ async fn accounts_handler(State(state): State<SharedState>, user: AuthenticatedU
                     connected_at: a.connected_at,
                     last_scrobble_at: a.last_scrobble_at,
                     pending: a.pending,
+                    address: a.api_base,
                 })
                 .collect(),
         })
@@ -120,6 +134,8 @@ async fn accounts_handler(State(state): State<SharedState>, user: AuthenticatedU
 #[derive(Debug, Deserialize)]
 struct TokenBody {
     token: Option<String>,
+    /// The own server's address.
+    address: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,25 +143,39 @@ struct TokenBody {
 struct ConnectedResponse {
     ok: bool,
     account_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
 }
 
-async fn connect_listenbrainz_handler(
+async fn connect_token_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
     Path(service): Path<String>,
     Json(body): Json<TokenBody>,
 ) -> Response {
-    if service != ScrobbleService::ListenBrainz.as_str() {
-        return error(StatusCode::NOT_FOUND, "Unknown service");
-    }
+    let service = match ScrobbleService::parse(&service) {
+        Some(s @ (ScrobbleService::ListenBrainz | ScrobbleService::OwnServer)) => s,
+        _ => return error(StatusCode::NOT_FOUND, "Unknown service"),
+    };
     let Some(env) = PlayEnv::from_state(&state) else {
         return not_ready();
     };
     let token = body.token.unwrap_or_default();
-    match scrobbling::connect_listenbrainz(&env, &Endpoints::production(), &user.id, &token).await {
-        Ok(account_name) => Json(ConnectedResponse {
+    let result = if service == ScrobbleService::OwnServer {
+        let address = body.address.unwrap_or_default();
+        scrobbling::connect_own_server(&env, &user.id, &address, &token)
+            .await
+            .map(|(address, name)| (name.unwrap_or_default(), Some(address)))
+    } else {
+        scrobbling::connect_listenbrainz(&env, &Endpoints::production(), &user.id, &token)
+            .await
+            .map(|name| (name, None))
+    };
+    match result {
+        Ok((account_name, address)) => Json(ConnectedResponse {
             ok: true,
             account_name,
+            address,
         })
         .into_response(),
         Err(err) => connect_failed(err),
@@ -163,19 +193,36 @@ struct UrlResponse {
     url: String,
 }
 
+async fn begin_sign_in(
+    state: &SharedState,
+    network: SignIn,
+    user_id: &str,
+    body: ConnectBody,
+) -> Response {
+    let Some(env) = PlayEnv::from_state(state) else {
+        return not_ready();
+    };
+    let origin = body.origin.unwrap_or_default();
+    match scrobbling::begin_sign_in(&env, network, user_id, &origin).await {
+        Ok(url) => Json(UrlResponse { url }).into_response(),
+        Err(err) => connect_failed(err),
+    }
+}
+
 async fn lastfm_connect_handler(
     State(state): State<SharedState>,
     user: AuthenticatedUser,
     Json(body): Json<ConnectBody>,
 ) -> Response {
-    let Some(env) = PlayEnv::from_state(&state) else {
-        return not_ready();
-    };
-    let origin = body.origin.unwrap_or_default();
-    match scrobbling::begin_lastfm_connect(&env, &user.id, &origin).await {
-        Ok(url) => Json(UrlResponse { url }).into_response(),
-        Err(err) => connect_failed(err),
-    }
+    begin_sign_in(&state, SignIn::LastFm, &user.id, body).await
+}
+
+async fn librefm_connect_handler(
+    State(state): State<SharedState>,
+    user: AuthenticatedUser,
+    Json(body): Json<ConnectBody>,
+) -> Response {
+    begin_sign_in(&state, SignIn::LibreFm, &user.id, body).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,12 +244,20 @@ fn escape_html(text: &str) -> String {
         .collect()
 }
 
-/// The page Last.fm returns the user to (in a separate window or the system browser).
-fn callback_page(ok: bool, message: &str) -> Response {
+fn network_name(network: SignIn) -> &'static str {
+    match network {
+        SignIn::LastFm => "Last.fm",
+        SignIn::LibreFm => "Libre.fm",
+    }
+}
+
+/// The page Last.fm/Libre.fm returns the user to (in a separate window or the system browser).
+fn callback_page(network: SignIn, ok: bool, message: &str) -> Response {
+    let name = network_name(network);
     let title = if ok {
-        "Last.fm connected"
+        format!("{name} connected")
     } else {
-        "Last.fm not connected"
+        format!("{name} not connected")
     };
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -223,24 +278,40 @@ fn callback_page(ok: bool, message: &str) -> Response {
 }
 
 /// No session cookie needed: the one-time `state` names the user (the page may open in another browser).
+async fn finish_sign_in(state: &SharedState, network: SignIn, query: CallbackQuery) -> Response {
+    let Some(env) = PlayEnv::from_state(state) else {
+        return not_ready();
+    };
+    let (Some(sign_in), Some(token)) = (query.state, query.token) else {
+        return callback_page(network, false, ConnectError::Expired.message());
+    };
+    match scrobbling::finish_sign_in(&env, &Endpoints::production(), network, &sign_in, &token)
+        .await
+    {
+        Ok(_) => callback_page(
+            network,
+            true,
+            &format!(
+                "BoogieBox will now scrobble your plays to {}. You can close this window.",
+                network_name(network)
+            ),
+        ),
+        Err(err) => callback_page(network, false, err.message()),
+    }
+}
+
 async fn lastfm_callback_handler(
     State(state): State<SharedState>,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
-    let Some(env) = PlayEnv::from_state(&state) else {
-        return not_ready();
-    };
-    let (Some(sign_in), Some(token)) = (query.state, query.token) else {
-        return callback_page(false, ConnectError::Expired.message());
-    };
-    match scrobbling::finish_lastfm_connect(&env, &Endpoints::production(), &sign_in, &token).await
-    {
-        Ok(_) => callback_page(
-            true,
-            "BoogieBox will now scrobble your plays to Last.fm. You can close this window.",
-        ),
-        Err(err) => callback_page(false, err.message()),
-    }
+    finish_sign_in(&state, SignIn::LastFm, query).await
+}
+
+async fn librefm_callback_handler(
+    State(state): State<SharedState>,
+    Query(query): Query<CallbackQuery>,
+) -> Response {
+    finish_sign_in(&state, SignIn::LibreFm, query).await
 }
 
 async fn disconnect_handler(
@@ -329,6 +400,67 @@ mod tests {
         assert_eq!(
             send(app.clone(), connect("http://box/evil")).await.0,
             StatusCode::BAD_REQUEST
+        );
+
+        // Libre.fm needs no admin setup: its sign-in page opens straight away.
+        let (status, body) = send(
+            app.clone(),
+            req(
+                "POST",
+                "/api/scrobble/librefm/connect",
+                Some(json!({ "origin": "http://box.local:3000" })),
+                c,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let url = json_body(&body)["url"].as_str().unwrap().to_owned();
+        assert!(
+            url.starts_with("https://libre.fm/api/auth/?api_key="),
+            "{url}"
+        );
+        assert!(
+            url.contains("%2Fapi%2Fscrobble%2Flibrefm%2Fcallback%3Fstate%3D"),
+            "{url}"
+        );
+        let (status, page) = send(
+            app.clone(),
+            req("GET", "/api/scrobble/librefm/callback", None, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(String::from_utf8_lossy(&page).contains("Libre.fm not connected"));
+
+        // An own-server address that isn't http(s) is refused before anything is sent.
+        let (status, body) = send(
+            app.clone(),
+            req(
+                "PUT",
+                "/api/scrobble/server",
+                Some(json!({"address": "maloja.lan:42010", "token": "maloja-key"})),
+                c,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(json_body(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("http:// or https://"));
+        assert_eq!(
+            send(
+                app.clone(),
+                req(
+                    "PUT",
+                    "/api/scrobble/librefm",
+                    Some(json!({"token": "x"})),
+                    c
+                )
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND,
+            "Libre.fm signs in on its page, not with a token"
         );
 
         // A malformed ListenBrainz token never leaves the server.

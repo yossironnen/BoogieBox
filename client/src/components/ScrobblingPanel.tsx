@@ -1,26 +1,55 @@
 /**
- * Settings → User Settings → Scrobbling: connect the signed-in user's own Last.fm account. ListenBrainz is
- * connected from Settings → Integrations (`ListenBrainzConnector` in SettingsPage). Plays from the web player,
- * Play On speakers and Subsonic apps are then sent by the server.
+ * Settings → User Settings → Scrobbling: connect the signed-in user's own Last.fm and Libre.fm accounts (sign-in
+ * page) and their own ListenBrainz-compatible server (address + token). ListenBrainz is connected from
+ * Settings → Integrations (`ListenBrainzConnector` in SettingsPage). Plays from the web player, Play On speakers
+ * and Subsonic apps are then sent by the server.
  * `useScrobbleAccounts` holds the logic and is shared with the Integrations card and the mobile panel.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { hybridControlStyles, hybridSettingsStyles } from '../hybridPreview';
-import { LASTFM_SCROBBLES_REFUSED, plausibleListenBrainzToken, type ScrobbleAccount, type ScrobbleService } from '../scrobbling';
+import {
+  LASTFM_SCROBBLES_REFUSED,
+  plausibleListenBrainzToken,
+  plausibleServerAddress,
+  SERVER_ADDRESS_ERROR,
+  type ScrobbleAccount,
+  type ScrobbleService,
+} from '../scrobbling';
 import ConfirmModal from './ConfirmModal';
 import { formatWhen, SubsonicIcon } from './ConnectedAppsPanel';
 import { InlineStatus } from './settingsControls';
 
-/** How long the panel waits for the Last.fm sign-in to finish. */
-const LASTFM_WAIT_MS = 5 * 60 * 1000;
-const LASTFM_POLL_MS = 3000;
+/** How long the panel waits for a Last.fm/Libre.fm sign-in to finish. */
+const SIGN_IN_WAIT_MS = 5 * 60 * 1000;
+const SIGN_IN_POLL_MS = 3000;
 
 export const SERVICE_NAMES: Record<ScrobbleService, string> = {
   lastfm: 'Last.fm',
   listenbrainz: 'ListenBrainz',
+  librefm: 'Libre.fm',
+  server: 'Own server',
 };
+
+/** Services that connect through their own sign-in page. */
+export type SignInService = 'lastfm' | 'librefm';
+
+/** Approved copy for the own server. */
+export const SERVER_COPY = {
+  hint: 'Any server that takes ListenBrainz scrobbles, such as Maloja or Koito. Use the address it gives for ListenBrainz apps.',
+  addressLabel: 'Server address',
+  addressPlaceholder: 'http://192.168.1.20:42010/apis/listenbrainz',
+  tokenLabel: 'Token',
+  connect: 'Connect server',
+  reconnect: 'Your server stopped accepting this token. Enter a new one.',
+  disconnectTitle: 'Disconnect your server?',
+};
+
+/** "Disconnect Last.fm?" / "Disconnect your server?" */
+export function disconnectTitle(service: ScrobbleService): string {
+  return service === 'server' ? SERVER_COPY.disconnectTitle : `Disconnect ${SERVICE_NAMES[service]}?`;
+}
 
 const svg = (size: number, children: React.ReactNode) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -32,10 +61,18 @@ const svg = (size: number, children: React.ReactNode) => (
 export const ScrobbleIcon = {
   /** Broadcast arcs: a service account. */
   Service: ({ size = 16 }: { size?: number }) => svg(size, <><circle cx="12" cy="12" r="2" /><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4" /></>),
+  /** Stacked server boxes: the user's own server. */
+  Server: ({ size = 16 }: { size?: number }) => svg(size, <><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 7.5h.01M7 16.5h.01" /></>),
   /** Up arrow into a tray: plays waiting to send. */
   Pending: ({ size = 16 }: { size?: number }) => svg(size, <><path d="M12 15V3M7 8l5-5 5 5" /><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" /></>),
   Warning: ({ size = 16 }: { size?: number }) => svg(size, <><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /><path d="M12 9v4M12 17h.01" /></>),
 };
+
+/** What an account row shows as its value: the account name, else the own server's address. */
+export function accountLabel(account: ScrobbleAccount | null): string {
+  if (!account) return 'Not connected';
+  return account.accountName || account.address || 'Connected';
+}
 
 /** Scrobbling accounts state and actions (desktop and mobile panels). */
 export function useScrobbleAccounts() {
@@ -44,7 +81,7 @@ export function useScrobbleAccounts() {
   const [lastfmKeyRefused, setLastfmKeyRefused] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [waitingLastFm, setWaitingLastFm] = useState(false);
+  const [waitingFor, setWaitingFor] = useState<SignInService | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const deadlineRef = useRef(0);
@@ -66,7 +103,7 @@ export function useScrobbleAccounts() {
   const stopWaiting = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = null;
-    setWaitingLastFm(false);
+    setWaitingFor(null);
   }, []);
 
   useEffect(() => {
@@ -96,30 +133,54 @@ export function useScrobbleAccounts() {
     }
   };
 
-  /** Opens the Last.fm sign-in page and waits for the account to appear. */
-  const connectLastFm = async () => {
+  /** Connects the user's own ListenBrainz-compatible server. */
+  const connectServer = async (address: string, token: string): Promise<boolean> => {
+    if (!plausibleServerAddress(address)) {
+      setResult(`Error: ${SERVER_ADDRESS_ERROR}`);
+      return false;
+    }
     setBusy(true);
     setResult(null);
     try {
-      const { url } = await api.scrobble.connectLastFm(window.location.origin);
+      const res = await api.scrobble.connectServer(address.trim(), token.trim());
+      const where = res.address || address.trim();
+      setResult(res.accountName ? `Connected to ${where} as ${res.accountName}` : `Connected to ${where}`);
+      await load();
+      return true;
+    } catch (error) {
+      setResult(`Error: ${error instanceof Error ? error.message : 'Could not connect'}`);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Opens the Last.fm/Libre.fm sign-in page and waits for the account to appear. */
+  const connectSignIn = async (service: SignInService) => {
+    const name = SERVICE_NAMES[service];
+    setBusy(true);
+    setResult(null);
+    try {
+      const origin = window.location.origin;
+      const { url } = service === 'lastfm' ? await api.scrobble.connectLastFm(origin) : await api.scrobble.connectLibreFm(origin);
       window.open(url, '_blank', 'noopener,noreferrer');
-      setWaitingLastFm(true);
-      deadlineRef.current = Date.now() + LASTFM_WAIT_MS;
-      const before = account('lastfm')?.connectedAt ?? null;
+      setWaitingFor(service);
+      deadlineRef.current = Date.now() + SIGN_IN_WAIT_MS;
+      const before = account(service)?.connectedAt ?? null;
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(() => {
         void load().then((list) => {
-          const now = list?.find((a) => a.service === 'lastfm');
+          const now = list?.find((a) => a.service === service);
           if (now && !now.needsReconnect && now.connectedAt !== before) {
             stopWaiting();
-            setResult(now.accountName ? `Connected to Last.fm as ${now.accountName}` : 'Connected to Last.fm');
+            setResult(now.accountName ? `Connected to ${name} as ${now.accountName}` : `Connected to ${name}`);
           } else if (Date.now() > deadlineRef.current) {
             stopWaiting();
           }
         });
-      }, LASTFM_POLL_MS);
+      }, SIGN_IN_POLL_MS);
     } catch (error) {
-      setResult(`Error: ${error instanceof Error ? error.message : 'Could not start the Last.fm sign-in'}`);
+      setResult(`Error: ${error instanceof Error ? error.message : `Could not start the ${name} sign-in`}`);
     } finally {
       setBusy(false);
     }
@@ -130,7 +191,7 @@ export function useScrobbleAccounts() {
     setResult(null);
     try {
       await api.scrobble.disconnect(service);
-      setResult(`Disconnected from ${SERVICE_NAMES[service]}`);
+      setResult(service === 'server' ? 'Disconnected from your server' : `Disconnected from ${SERVICE_NAMES[service]}`);
       await load();
     } catch (error) {
       setResult(`Error: ${error instanceof Error ? error.message : 'Could not disconnect'}`);
@@ -146,14 +207,17 @@ export function useScrobbleAccounts() {
     lastfmAvailable,
     lastfmKeyRefused,
     busy,
-    waitingLastFm,
+    waitingFor,
     result,
     connectListenBrainz,
-    connectLastFm,
-    cancelLastFmWait: stopWaiting,
+    connectServer,
+    connectSignIn,
+    cancelWait: stopWaiting,
     disconnect,
   };
 }
+
+type Accounts = ReturnType<typeof useScrobbleAccounts>;
 
 /** One service's status row. */
 export function AccountRow({ service, account }: { service: ScrobbleService; account: ScrobbleAccount | null }) {
@@ -161,9 +225,9 @@ export function AccountRow({ service, account }: { service: ScrobbleService; acc
   return (
     <div style={S.stats}>
       <div style={S.stat}>
-        <span style={S.statIcon}><ScrobbleIcon.Service /></span>
+        <span style={S.statIcon}>{service === 'server' ? <ScrobbleIcon.Server /> : <ScrobbleIcon.Service />}</span>
         <span style={S.statLabel}>{SERVICE_NAMES[service]}</span>
-        <strong style={S.statValue}>{account ? (account.accountName || 'Connected') : 'Not connected'}</strong>
+        <strong style={S.statValue}>{accountLabel(account)}</strong>
       </div>
       {account && (
         <>
@@ -183,13 +247,135 @@ export function AccountRow({ service, account }: { service: ScrobbleService; acc
   );
 }
 
+/** Last.fm or Libre.fm: connect through the service's sign-in page. */
+function SignInBlock({ service, s, setupHint, onDisconnect }: {
+  service: SignInService;
+  s: Accounts;
+  /** Shown instead of the connect button when the service isn't set up (Last.fm keys). */
+  setupHint?: React.ReactNode;
+  onDisconnect: () => void;
+}) {
+  const name = SERVICE_NAMES[service];
+  const account = s.account(service);
+  const waiting = s.waitingFor !== null;
+  return (
+    <div style={S.service}>
+      <AccountRow service={service} account={account} />
+      {account?.needsReconnect && (
+        <div role="alert" style={S.warning}><ScrobbleIcon.Warning size={14} /> {name} stopped accepting this account. Reconnect to keep scrobbling.</div>
+      )}
+      {service === 'lastfm' && account && s.lastfmKeyRefused && (
+        <div role="status" style={S.warning}><ScrobbleIcon.Warning size={14} /> {LASTFM_SCROBBLES_REFUSED}</div>
+      )}
+      <div style={S.actions}>
+        {(!account || account.needsReconnect) && (
+          setupHint ?? (
+            <button
+              type="button"
+              disabled={s.busy || waiting}
+              onClick={() => void s.connectSignIn(service)}
+              style={{ ...hybridControlStyles.primaryButton, ...(s.busy || waiting ? hybridControlStyles.disabled : {}) }}
+            >
+              {account ? `Reconnect ${name}` : `Connect ${name}`}
+            </button>
+          )
+        )}
+        {account && (
+          <button type="button" disabled={s.busy} onClick={onDisconnect} style={hybridControlStyles.dangerButton} aria-label={`Disconnect ${name}`}>
+            Disconnect
+          </button>
+        )}
+      </div>
+      {s.waitingFor === service && (
+        <div style={S.hint}>
+          Finish signing in to {name} in the window that opened.{' '}
+          <button type="button" style={S.linkButton} onClick={s.cancelWait}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The user's own ListenBrainz-compatible server: address + token. */
+function OwnServerBlock({ s, onDisconnect }: { s: Accounts; onDisconnect: () => void }) {
+  const account = s.account('server');
+  const [address, setAddress] = useState('');
+  const [token, setToken] = useState('');
+  const showForm = !account || account.needsReconnect;
+  const canConnect = !s.busy && address.trim() !== '' && token.trim() !== '';
+  return (
+    <div style={S.service}>
+      <AccountRow service="server" account={account} />
+      {account?.needsReconnect && (
+        <div role="alert" style={S.warning}><ScrobbleIcon.Warning size={14} /> {SERVER_COPY.reconnect}</div>
+      )}
+      {showForm && (
+        <>
+          <div style={S.hint}>{SERVER_COPY.hint}</div>
+          <div style={S.fields}>
+            <label style={S.field}>
+              {SERVER_COPY.addressLabel}
+              <input
+                type="url"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={2048}
+                placeholder={SERVER_COPY.addressPlaceholder}
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                style={S.input}
+              />
+            </label>
+            <label style={S.field}>
+              {SERVER_COPY.tokenLabel}
+              <input
+                type="password"
+                autoComplete="off"
+                maxLength={256}
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                style={S.input}
+              />
+            </label>
+          </div>
+        </>
+      )}
+      <div style={S.actions}>
+        {showForm && (
+          <button
+            type="button"
+            disabled={!canConnect}
+            onClick={() => { void s.connectServer(address, token).then((ok) => { if (ok) { setAddress(''); setToken(''); } }); }}
+            style={{ ...hybridControlStyles.primaryButton, ...(!canConnect ? hybridControlStyles.disabled : {}) }}
+          >
+            {SERVER_COPY.connect}
+          </button>
+        )}
+        {account && (
+          <button type="button" disabled={s.busy} onClick={onDisconnect} style={hybridControlStyles.dangerButton} aria-label="Disconnect your server">
+            Disconnect
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Scrobbling panel for the User Settings tab. `onOpenLastFmSetup` (admins) links to the Last.fm app keys. */
 export default function ScrobblingPanel({ onOpenLastFmSetup }: { onOpenLastFmSetup?: () => void } = {}) {
   const s = useScrobbleAccounts();
   const [confirm, setConfirm] = useState<ScrobbleService | null>(null);
-  const lastfm = s.account('lastfm');
 
   if (!s.loaded) return null;
+
+  const lastfmSetupHint = s.lastfmAvailable ? undefined : onOpenLastFmSetup ? (
+    <span style={S.hint}>
+      Add the Last.fm API key and shared secret first.{' '}
+      <button type="button" style={S.linkButton} onClick={onOpenLastFmSetup}>Open Last.fm setup</button>
+    </span>
+  ) : (
+    <span style={S.hint}>An admin needs to add the Last.fm API key and shared secret in Settings → Integrations first.</span>
+  );
 
   return (
     <section id="settings-scrobbling" aria-label="Scrobbling" style={hybridSettingsStyles.panel}>
@@ -197,58 +383,20 @@ export default function ScrobblingPanel({ onOpenLastFmSetup }: { onOpenLastFmSet
         <div>
           <div style={hybridSettingsStyles.sectionTitle}>Scrobbling</div>
           <div style={hybridSettingsStyles.panelDescription}>
-            Send what you play here, on Play On speakers and in Subsonic apps to your own Last.fm account. ListenBrainz is under Integrations.
+            Send what you play here, on Play On speakers and in Subsonic apps to your own Last.fm or Libre.fm account or your own scrobble server. ListenBrainz is under Integrations.
           </div>
         </div>
       </div>
 
-      <div style={S.service}>
-        <AccountRow service="lastfm" account={lastfm} />
-        {lastfm?.needsReconnect && (
-          <div role="alert" style={S.warning}><ScrobbleIcon.Warning size={14} /> Last.fm stopped accepting this account. Reconnect to keep scrobbling.</div>
-        )}
-        {lastfm && s.lastfmKeyRefused && (
-          <div role="status" style={S.warning}><ScrobbleIcon.Warning size={14} /> {LASTFM_SCROBBLES_REFUSED}</div>
-        )}
-        <div style={S.actions}>
-          {(!lastfm || lastfm.needsReconnect) && (
-            s.lastfmAvailable ? (
-              <button
-                type="button"
-                disabled={s.busy || s.waitingLastFm}
-                onClick={() => void s.connectLastFm()}
-                style={{ ...hybridControlStyles.primaryButton, ...(s.busy || s.waitingLastFm ? hybridControlStyles.disabled : {}) }}
-              >
-                {lastfm ? 'Reconnect Last.fm' : 'Connect Last.fm'}
-              </button>
-            ) : onOpenLastFmSetup ? (
-              <span style={S.hint}>
-                Add the Last.fm API key and shared secret first.{' '}
-                <button type="button" style={S.linkButton} onClick={onOpenLastFmSetup}>Open Last.fm setup</button>
-              </span>
-            ) : (
-              <span style={S.hint}>An admin needs to add the Last.fm API key and shared secret in Settings → Integrations first.</span>
-            )
-          )}
-          {lastfm && (
-            <button type="button" disabled={s.busy} onClick={() => setConfirm('lastfm')} style={hybridControlStyles.dangerButton}>
-              Disconnect
-            </button>
-          )}
-        </div>
-        {s.waitingLastFm && (
-          <div style={S.hint}>
-            Finish signing in to Last.fm in the window that opened.{' '}
-            <button type="button" style={S.linkButton} onClick={s.cancelLastFmWait}>Cancel</button>
-          </div>
-        )}
-      </div>
+      <SignInBlock service="lastfm" s={s} setupHint={lastfmSetupHint} onDisconnect={() => setConfirm('lastfm')} />
+      <SignInBlock service="librefm" s={s} onDisconnect={() => setConfirm('librefm')} />
+      <OwnServerBlock s={s} onDisconnect={() => setConfirm('server')} />
 
       <InlineStatus busy={s.busy} busyText="Working…" result={s.result} />
 
       {confirm && (
         <ConfirmModal
-          title={`Disconnect ${SERVICE_NAMES[confirm]}?`}
+          title={disconnectTitle(confirm)}
           message="Plays waiting to be sent to it are dropped."
           confirmLabel="Disconnect"
           tone="danger"
@@ -280,5 +428,13 @@ const S: Record<string, React.CSSProperties> = {
   warning: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--warning, #f59e0b)' },
   actions: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   hint: { fontSize: 13, color: 'var(--text-muted)' },
+  fields: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 },
+  field: { display: 'grid', gap: 5, fontSize: 12, fontWeight: 650, color: 'var(--text-muted)' },
+  input: {
+    minWidth: 0,
+    backgroundColor: 'var(--bg)', border: '1px solid var(--border)',
+    color: 'var(--text)', borderRadius: 6, padding: '8px 12px',
+    fontSize: 15, fontFamily: 'monospace', outline: 'none',
+  },
   linkButton: { border: 'none', background: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 },
 };

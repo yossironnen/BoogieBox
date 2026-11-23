@@ -1,4 +1,5 @@
-//! Scrobble forwarding storage: each user's connected Last.fm / ListenBrainz account (encrypted secret) and the
+//! Scrobble forwarding storage: each user's connected Last.fm / Libre.fm / ListenBrainz / own-server account
+//! (encrypted secret) and the
 //! delivery queue the server's forwarder drains. Times are Unix seconds supplied by the caller.
 //! See wip/opensubsonic-api-implementation-plan.md §15.5 (2.5-3).
 
@@ -18,15 +19,26 @@ pub const MAX_ATTEMPTS: i64 = 20;
 pub enum ScrobbleService {
     LastFm,
     ListenBrainz,
+    /// Libre.fm: the Last.fm scrobbling protocol at another address.
+    LibreFm,
+    /// The user's own ListenBrainz-compatible server (Maloja, Koito) at `api_base`.
+    OwnServer,
 }
 
 impl ScrobbleService {
-    pub const ALL: [ScrobbleService; 2] = [ScrobbleService::LastFm, ScrobbleService::ListenBrainz];
+    pub const ALL: [ScrobbleService; 4] = [
+        ScrobbleService::LastFm,
+        ScrobbleService::ListenBrainz,
+        ScrobbleService::LibreFm,
+        ScrobbleService::OwnServer,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             ScrobbleService::LastFm => "lastfm",
             ScrobbleService::ListenBrainz => "listenbrainz",
+            ScrobbleService::LibreFm => "librefm",
+            ScrobbleService::OwnServer => "server",
         }
     }
 
@@ -34,6 +46,8 @@ impl ScrobbleService {
         match raw {
             "lastfm" => Some(ScrobbleService::LastFm),
             "listenbrainz" => Some(ScrobbleService::ListenBrainz),
+            "librefm" => Some(ScrobbleService::LibreFm),
+            "server" => Some(ScrobbleService::OwnServer),
             _ => None,
         }
     }
@@ -71,9 +85,58 @@ pub fn ensure_scrobble_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// Migration `2026-11-22-scrobble-targets`: rebuilds `scrobble_accounts` without the two-service CHECK (the
+/// app checks service names) and adds `api_base`, the own server's address. Rows are kept as they are.
+pub fn ensure_scrobble_targets_schema(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_scrobble_schema(conn)?;
+    let has_api_base: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('scrobble_accounts') WHERE name = 'api_base')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_api_base {
+        return Ok(());
+    }
+    let has_users: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_users {
+        // Only partial databases (old-schema test fixtures): DROP TABLE would check the users foreign key.
+        return conn.execute_batch("ALTER TABLE scrobble_accounts ADD COLUMN api_base TEXT");
+    }
+    // Copy out, drop, recreate, copy back: no ALTER TABLE ... RENAME, which re-checks the whole schema.
+    conn.execute_batch(
+        "CREATE TEMP TABLE scrobble_accounts_copy AS
+           SELECT user_id, service, secret_enc, secret_nonce, account_name, needs_reconnect, connected_at,
+                  last_scrobble_at
+           FROM main.scrobble_accounts;
+         DROP TABLE main.scrobble_accounts;
+         CREATE TABLE main.scrobble_accounts (
+           user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+           service           TEXT NOT NULL,
+           secret_enc        BLOB NOT NULL,
+           secret_nonce      BLOB NOT NULL,
+           account_name      TEXT,
+           needs_reconnect   INTEGER NOT NULL DEFAULT 0,
+           connected_at      TEXT NOT NULL DEFAULT (datetime('now')),
+           last_scrobble_at  TEXT,
+           api_base          TEXT,
+           PRIMARY KEY (user_id, service)
+         ) WITHOUT ROWID;
+         INSERT INTO main.scrobble_accounts(user_id, service, secret_enc, secret_nonce, account_name,
+                                            needs_reconnect, connected_at, last_scrobble_at)
+           SELECT user_id, service, secret_enc, secret_nonce, account_name, needs_reconnect, connected_at,
+                  last_scrobble_at
+           FROM temp.scrobble_accounts_copy;
+         DROP TABLE temp.scrobble_accounts_copy;",
+    )
+}
+
 // ── Accounts ───────────────────────────────────────────────────────────────────
 
-/// A stored account with its encrypted secret (Last.fm session key or ListenBrainz token).
+/// A stored account with its encrypted secret (Last.fm/Libre.fm session key or ListenBrainz token).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrobbleAccount {
     pub user_id: String,
@@ -82,6 +145,8 @@ pub struct ScrobbleAccount {
     pub secret_nonce: Vec<u8>,
     pub account_name: Option<String>,
     pub needs_reconnect: bool,
+    /// The own server's address (`None` for the other services).
+    pub api_base: Option<String>,
 }
 
 /// What the Settings UI shows for one connected account (never the secret).
@@ -93,6 +158,8 @@ pub struct ScrobbleAccountStatus {
     pub connected_at: String,
     pub last_scrobble_at: Option<String>,
     pub pending: i64,
+    /// The own server's address.
+    pub api_base: Option<String>,
 }
 
 /// Stores (or replaces) a user's account and clears any reconnect flag.
@@ -104,13 +171,35 @@ pub fn upsert_account(
     secret_nonce: &[u8],
     account_name: Option<&str>,
 ) -> rusqlite::Result<()> {
+    upsert_account_at(
+        conn,
+        user_id,
+        service,
+        secret_enc,
+        secret_nonce,
+        account_name,
+        None,
+    )
+}
+
+/// [`upsert_account`] with the server address an own-server account sends to.
+pub fn upsert_account_at(
+    conn: &Connection,
+    user_id: &str,
+    service: ScrobbleService,
+    secret_enc: &[u8],
+    secret_nonce: &[u8],
+    account_name: Option<&str>,
+    api_base: Option<&str>,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO scrobble_accounts(user_id, service, secret_enc, secret_nonce, account_name)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO scrobble_accounts(user_id, service, secret_enc, secret_nonce, account_name, api_base)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(user_id, service) DO UPDATE SET
            secret_enc = excluded.secret_enc, secret_nonce = excluded.secret_nonce,
-           account_name = excluded.account_name, needs_reconnect = 0, connected_at = datetime('now')",
-        params![user_id, service.as_str(), secret_enc, secret_nonce, account_name],
+           account_name = excluded.account_name, api_base = excluded.api_base, needs_reconnect = 0,
+           connected_at = datetime('now')",
+        params![user_id, service.as_str(), secret_enc, secret_nonce, account_name, api_base],
     )?;
     Ok(())
 }
@@ -145,7 +234,7 @@ pub fn get_account(
     service: ScrobbleService,
 ) -> rusqlite::Result<Option<ScrobbleAccount>> {
     conn.query_row(
-        "SELECT secret_enc, secret_nonce, account_name, needs_reconnect
+        "SELECT secret_enc, secret_nonce, account_name, needs_reconnect, api_base
          FROM scrobble_accounts WHERE user_id = ?1 AND service = ?2",
         params![user_id, service.as_str()],
         |row| {
@@ -156,6 +245,7 @@ pub fn get_account(
                 secret_nonce: row.get(1)?,
                 account_name: row.get(2)?,
                 needs_reconnect: row.get::<_, i64>(3)? != 0,
+                api_base: row.get(4)?,
             })
         },
     )
@@ -169,7 +259,8 @@ pub fn list_accounts(
 ) -> rusqlite::Result<Vec<ScrobbleAccountStatus>> {
     let mut stmt = conn.prepare(
         "SELECT a.service, a.account_name, a.needs_reconnect, a.connected_at, a.last_scrobble_at,
-                (SELECT COUNT(*) FROM scrobble_queue q WHERE q.user_id = a.user_id AND q.service = a.service)
+                (SELECT COUNT(*) FROM scrobble_queue q WHERE q.user_id = a.user_id AND q.service = a.service),
+                a.api_base
          FROM scrobble_accounts a WHERE a.user_id = ?1 ORDER BY a.service",
     )?;
     let rows = stmt.query_map([user_id], |row| {
@@ -182,6 +273,7 @@ pub fn list_accounts(
                 connected_at: row.get(3)?,
                 last_scrobble_at: row.get(4)?,
                 pending: row.get(5)?,
+                api_base: row.get(6)?,
             },
         ))
     })?;
@@ -460,6 +552,66 @@ mod tests {
             assert_eq!(ScrobbleService::parse(s.as_str()), Some(s));
         }
         assert_eq!(ScrobbleService::parse("spotify"), None);
+    }
+
+    #[test]
+    fn targets_migration_keeps_rows_and_takes_the_new_services() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users(id TEXT PRIMARY KEY); INSERT INTO users(id) VALUES ('u1');",
+        )
+        .unwrap();
+        ensure_scrobble_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO scrobble_accounts(user_id, service, secret_enc, secret_nonce, account_name, needs_reconnect)
+             VALUES ('u1', 'lastfm', x'01', x'02', 'al', 1)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            upsert_account(&conn, "u1", ScrobbleService::LibreFm, b"x", b"y", None).is_err(),
+            "the old CHECK refuses new services"
+        );
+        ensure_scrobble_targets_schema(&conn).unwrap();
+        ensure_scrobble_targets_schema(&conn).unwrap();
+        let kept = get_account(&conn, "u1", ScrobbleService::LastFm)
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.account_name.as_deref(), Some("al"));
+        assert!(kept.needs_reconnect);
+        assert_eq!(kept.secret_enc, [1]);
+        assert_eq!(kept.api_base, None);
+        upsert_account_at(
+            &conn,
+            "u1",
+            ScrobbleService::OwnServer,
+            b"tok",
+            b"n",
+            None,
+            Some("http://maloja.lan:42010/apis/listenbrainz"),
+        )
+        .unwrap();
+        upsert_account(
+            &conn,
+            "u1",
+            ScrobbleService::LibreFm,
+            b"sk",
+            b"n",
+            Some("lf"),
+        )
+        .unwrap();
+        let own = get_account(&conn, "u1", ScrobbleService::OwnServer)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            own.api_base.as_deref(),
+            Some("http://maloja.lan:42010/apis/listenbrainz")
+        );
+        let list = list_accounts(&conn, "u1").unwrap();
+        assert_eq!(list.len(), 3);
+        assert!(list
+            .iter()
+            .any(|a| a.service == ScrobbleService::OwnServer && a.api_base.is_some()));
     }
 
     #[test]

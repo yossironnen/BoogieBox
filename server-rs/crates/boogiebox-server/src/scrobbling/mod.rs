@@ -1,4 +1,5 @@
-//! Scrobble forwarding to each user's own Last.fm and ListenBrainz accounts (plan §15.5, 2.5-3).
+//! Scrobble forwarding to each user's own Last.fm, Libre.fm, ListenBrainz and ListenBrainz-compatible server
+//! (Maloja, Koito) accounts (plan §15.5, 2.5-3; wip/lastfm-replacement-plan.md phase 7).
 //! Plays are queued in `scrobble_queue` and sent by a background forwarder, outside the database lock, with
 //! retries. "Now playing" is sent directly (best effort). Account secrets are AES-256-GCM encrypted with the
 //! data-folder key Subsonic passwords use, bound to user and service.
@@ -40,6 +41,7 @@ pub enum SendError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoints {
     pub lastfm: String,
+    pub librefm: String,
     pub listenbrainz: String,
 }
 
@@ -47,6 +49,8 @@ impl Endpoints {
     pub fn production() -> Self {
         Endpoints {
             lastfm: crate::providers::lastfm_api_base(),
+            librefm: std::env::var("BOOGIEBOX_LIBREFM_API_BASE")
+                .unwrap_or_else(|_| "https://libre.fm/2.0/".to_owned()),
             listenbrainz: listenbrainz::api_base(),
         }
     }
@@ -86,6 +90,7 @@ pub fn lastfm_app(conn: &Connection) -> Option<lastfm::AppCredentials> {
     Some(lastfm::AppCredentials {
         api_key: get("lastfmKey")?,
         secret: get("lastfmSecret")?,
+        guard_key: true,
     })
 }
 
@@ -213,10 +218,24 @@ pub async fn forward_now_playing(
                     }
                     None => Err(SendError::Temporary),
                 },
+                ScrobbleService::LibreFm => {
+                    lastfm::update_now_playing(
+                        &env.http,
+                        &endpoints.librefm,
+                        &lastfm::AppCredentials::librefm(),
+                        secret,
+                        &track,
+                    )
+                    .await
+                }
                 ScrobbleService::ListenBrainz => {
                     listenbrainz::playing_now(&env.http, &endpoints.listenbrainz, secret, &track)
                         .await
                 }
+                ScrobbleService::OwnServer => match account.api_base.as_deref() {
+                    Some(base) => listenbrainz::playing_now(&env.http, base, secret, &track).await,
+                    None => Err(SendError::Auth),
+                },
             }
         };
         if let Ok(Err(err)) = tokio::time::timeout(NOW_PLAYING_BUDGET, send).await {
@@ -247,19 +266,42 @@ pub struct PassReport {
 async fn send_batch(
     env: &PlayEnv,
     endpoints: &Endpoints,
-    service: ScrobbleService,
+    account: &qdb::ScrobbleAccount,
     secret: &str,
     app: Option<&lastfm::AppCredentials>,
     plays: &[(ScrobbleTrack, i64)],
 ) -> Result<(), SendError> {
-    match service {
+    match account.service {
         ScrobbleService::LastFm => match app {
             Some(app) => lastfm::scrobble(&env.http, &endpoints.lastfm, app, secret, plays).await,
             None => Err(SendError::Temporary),
         },
+        ScrobbleService::LibreFm => {
+            lastfm::scrobble(
+                &env.http,
+                &endpoints.librefm,
+                &lastfm::AppCredentials::librefm(),
+                secret,
+                plays,
+            )
+            .await
+        }
         ScrobbleService::ListenBrainz => {
             listenbrainz::submit_listens(&env.http, &endpoints.listenbrainz, secret, plays).await
         }
+        // No address (can't happen after connecting): ask the user to connect again.
+        ScrobbleService::OwnServer => match account.api_base.as_deref() {
+            Some(base) => listenbrainz::submit_listens(&env.http, base, secret, plays).await,
+            None => Err(SendError::Auth),
+        },
+    }
+}
+
+/// Most plays per delivery call for a service.
+fn batch_size(service: ScrobbleService) -> usize {
+    match service {
+        ScrobbleService::LastFm | ScrobbleService::LibreFm => lastfm::MAX_BATCH,
+        ScrobbleService::ListenBrainz | ScrobbleService::OwnServer => listenbrainz::MAX_BATCH,
     }
 }
 
@@ -319,7 +361,7 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
     let mut delivered = Vec::new();
     for rows in groups.values() {
         let Some(first) = rows.first() else { continue };
-        let Some((_, secret)) = unlocked
+        let Some((account, secret)) = unlocked
             .accounts
             .iter()
             .find(|(a, _)| a.user_id == first.user_id && a.service == first.service)
@@ -332,11 +374,7 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
             postponed.extend(rows.iter().map(|r| r.id));
             continue;
         }
-        let batch_size = match first.service {
-            ScrobbleService::LastFm => lastfm::MAX_BATCH,
-            ScrobbleService::ListenBrainz => listenbrainz::MAX_BATCH,
-        };
-        for chunk in rows.chunks(batch_size) {
+        for chunk in rows.chunks(batch_size(first.service)) {
             let plays: Vec<(ScrobbleTrack, i64)> = chunk
                 .iter()
                 .map(|r| (r.track.clone(), r.played_at))
@@ -345,7 +383,7 @@ pub async fn deliver_due(env: &PlayEnv, endpoints: &Endpoints) -> PassReport {
             match send_batch(
                 env,
                 endpoints,
-                first.service,
+                account,
                 secret,
                 unlocked.lastfm.as_ref(),
                 &plays,
@@ -432,6 +470,8 @@ pub enum ConnectError {
     NotConfigured,
     /// The sign-in link expired or was already used.
     Expired,
+    /// The own server's address is not an http(s) address.
+    BadAddress,
     /// The encryption key or database failed.
     Internal,
 }
@@ -443,6 +483,9 @@ impl ConnectError {
             ConnectError::Unavailable => "The service could not be reached. Try again later",
             ConnectError::NotConfigured => "Last.fm is not set up on this server",
             ConnectError::Expired => "This sign-in link has expired. Start again from Settings",
+            ConnectError::BadAddress => {
+                "Enter the server address, starting with http:// or https://"
+            }
             ConnectError::Internal => "The account could not be saved",
         }
     }
@@ -461,6 +504,7 @@ async fn store_account(
     service: ScrobbleService,
     secret: String,
     name: Option<String>,
+    api_base: Option<String>,
 ) -> Result<(), ConnectError> {
     let (env, user) = (env.clone(), user_id.to_owned());
     tokio::task::spawn_blocking(move || {
@@ -470,7 +514,16 @@ async fn store_account(
             .ok_or(ConnectError::Internal)?;
         let (enc, nonce) = seal(&key, &user, service, &secret).ok_or(ConnectError::Internal)?;
         let conn = env.db.lock().unwrap_or_else(|p| p.into_inner());
-        qdb::upsert_account(&conn, &user, service, &enc, &nonce, name.as_deref()).map_err(|err| {
+        qdb::upsert_account_at(
+            &conn,
+            &user,
+            service,
+            &enc,
+            &nonce,
+            name.as_deref(),
+            api_base.as_deref(),
+        )
+        .map_err(|err| {
             tracing::error!(error = %err, "Could not save a scrobble account");
             ConnectError::Internal
         })
@@ -499,9 +552,39 @@ pub async fn connect_listenbrainz(
         ScrobbleService::ListenBrainz,
         token.to_owned(),
         Some(name.clone()).filter(|n| !n.is_empty()),
+        None,
     )
     .await?;
     Ok(name)
+}
+
+/// Checks and stores a token for the user's own ListenBrainz-compatible server. Returns the cleaned
+/// address and the user name, when the server tells it.
+pub async fn connect_own_server(
+    env: &PlayEnv,
+    user_id: &str,
+    address: &str,
+    token: &str,
+) -> Result<(String, Option<String>), ConnectError> {
+    let address =
+        listenbrainz::normalize_own_server_address(address).ok_or(ConnectError::BadAddress)?;
+    let token = token.trim();
+    if !listenbrainz::plausible_own_server_token(token) {
+        return Err(ConnectError::Rejected);
+    }
+    let name = listenbrainz::check_own_server_token(&env.http, &address, token)
+        .await
+        .map_err(connect_error)?;
+    store_account(
+        env,
+        user_id,
+        ScrobbleService::OwnServer,
+        token.to_owned(),
+        name.clone(),
+        Some(address.clone()),
+    )
+    .await?;
+    Ok((address, name))
 }
 
 /// `scheme://host[:port]` with nothing after it.
@@ -512,9 +595,57 @@ pub fn valid_origin(origin: &str) -> bool {
     boogiebox_db::radio_stations::valid_http_url(origin) && !rest.contains(['/', '?', '#', '@'])
 }
 
-/// Starts the Last.fm sign-in: the page to open, with a one-time callback state for `user_id`.
-pub async fn begin_lastfm_connect(
+/// A service that signs in through its own page (the Last.fm protocol).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignIn {
+    LastFm,
+    LibreFm,
+}
+
+impl SignIn {
+    pub fn service(self) -> ScrobbleService {
+        match self {
+            SignIn::LastFm => ScrobbleService::LastFm,
+            SignIn::LibreFm => ScrobbleService::LibreFm,
+        }
+    }
+
+    fn auth_page(self) -> &'static str {
+        match self {
+            SignIn::LastFm => lastfm::AUTH_PAGE,
+            SignIn::LibreFm => lastfm::LIBREFM_AUTH_PAGE,
+        }
+    }
+
+    fn api_base(self, endpoints: &Endpoints) -> &str {
+        match self {
+            SignIn::LastFm => &endpoints.lastfm,
+            SignIn::LibreFm => &endpoints.librefm,
+        }
+    }
+
+    /// Last.fm needs the admin's key and secret; Libre.fm has built-in ones.
+    async fn app(self, env: &PlayEnv) -> Result<lastfm::AppCredentials, ConnectError> {
+        match self {
+            SignIn::LibreFm => Ok(lastfm::AppCredentials::librefm()),
+            SignIn::LastFm => {
+                let db = env.db.clone();
+                tokio::task::spawn_blocking(move || {
+                    let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+                    lastfm_app(&conn)
+                })
+                .await
+                .map_err(|_| ConnectError::Internal)?
+                .ok_or(ConnectError::NotConfigured)
+            }
+        }
+    }
+}
+
+/// Starts a sign-in: the page to open, with a one-time callback state for `user_id`.
+pub async fn begin_sign_in(
     env: &PlayEnv,
+    network: SignIn,
     user_id: &str,
     origin: &str,
 ) -> Result<String, ConnectError> {
@@ -522,32 +653,31 @@ pub async fn begin_lastfm_connect(
     if !valid_origin(origin) {
         return Err(ConnectError::Rejected);
     }
-    let db = env.db.clone();
-    let app = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        lastfm_app(&conn)
-    })
-    .await
-    .map_err(|_| ConnectError::Internal)?
-    .ok_or(ConnectError::NotConfigured)?;
-    let state = env.hub.issue_lastfm_state(user_id);
-    let callback = format!("{origin}/api/scrobble/lastfm/callback?state={state}");
-    Ok(lastfm::auth_url(&app.api_key, &callback))
+    let app = network.app(env).await?;
+    let service = network.service().as_str();
+    let state = env.hub.issue_sign_in_state(user_id, service);
+    let callback = format!("{origin}/api/scrobble/{service}/callback?state={state}");
+    Ok(lastfm::auth_url(
+        network.auth_page(),
+        &app.api_key,
+        &callback,
+    ))
 }
 
-/// Finishes the Last.fm sign-in from the callback (`state` names the user; it works once).
-pub async fn finish_lastfm_connect(
+/// Finishes a sign-in from the callback (`state` names the user and the service; it works once).
+pub async fn finish_sign_in(
     env: &PlayEnv,
     endpoints: &Endpoints,
+    network: SignIn,
     state: &str,
     token: &str,
 ) -> Result<String, ConnectError> {
     let user = env
         .hub
-        .take_lastfm_state(state)
+        .take_sign_in_state(state, network.service().as_str())
         .ok_or(ConnectError::Expired)?;
     let token = token.trim();
-    // Last.fm callback tokens are URL-safe: letters, digits, `-` and `_`.
+    // Callback tokens are URL-safe: letters, digits, `-` and `_`.
     if token.is_empty()
         || token.len() > 128
         || !token
@@ -556,23 +686,18 @@ pub async fn finish_lastfm_connect(
     {
         return Err(ConnectError::Rejected);
     }
-    let db = env.db.clone();
-    let app = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        lastfm_app(&conn)
-    })
-    .await
-    .map_err(|_| ConnectError::Internal)?
-    .ok_or(ConnectError::NotConfigured)?;
-    let (session_key, name) = lastfm::get_session(&env.http, &endpoints.lastfm, &app, token)
-        .await
-        .map_err(connect_error)?;
+    let app = network.app(env).await?;
+    let (session_key, name) =
+        lastfm::get_session(&env.http, network.api_base(endpoints), &app, token)
+            .await
+            .map_err(connect_error)?;
     store_account(
         env,
         &user,
-        ScrobbleService::LastFm,
+        network.service(),
         session_key,
         Some(name.clone()).filter(|n| !n.is_empty()),
+        None,
     )
     .await?;
     Ok(name)

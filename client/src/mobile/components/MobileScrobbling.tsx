@@ -1,11 +1,20 @@
 /**
- * Mobile Settings → Scrobbling: connect the signed-in user's Last.fm and ListenBrainz accounts.
- * Mirrors the desktop panel (components/ScrobblingPanel.tsx) and shares its logic.
+ * Mobile Settings → Scrobbling: connect the signed-in user's Last.fm, Libre.fm and ListenBrainz accounts and
+ * their own ListenBrainz-compatible server. Mirrors the desktop panel (components/ScrobblingPanel.tsx) and
+ * shares its logic.
  */
 
 import React, { useState } from 'react';
 import { formatWhen } from '../../components/ConnectedAppsPanel';
-import { ScrobbleIcon, SERVICE_NAMES, useScrobbleAccounts } from '../../components/ScrobblingPanel';
+import {
+  accountLabel,
+  disconnectTitle,
+  ScrobbleIcon,
+  SERVER_COPY,
+  SERVICE_NAMES,
+  useScrobbleAccounts,
+  type SignInService,
+} from '../../components/ScrobblingPanel';
 import { hybridMobileContentStyles } from '../../hybridPreview';
 import { LASTFM_SCROBBLES_REFUSED, type ScrobbleService } from '../../scrobbling';
 import MobileConfirmationSheet from './MobileConfirmationSheet';
@@ -14,23 +23,52 @@ import MobileConfirmationSheet from './MobileConfirmationSheet';
 export default function MobileScrobbling() {
   const s = useScrobbleAccounts();
   const [token, setToken] = useState('');
+  const [serverAddress, setServerAddress] = useState('');
+  const [serverToken, setServerToken] = useState('');
   const [confirm, setConfirm] = useState<ScrobbleService | null>(null);
   if (!s.loaded) return null;
-  const lastfm = s.account('lastfm');
   const listenbrainz = s.account('listenbrainz');
+  const server = s.account('server');
   const failed = s.result?.startsWith('Error: ');
   const message = s.result ? s.result.replace(/^Error: /, '') : '';
+  const serverReady = !s.busy && serverAddress.trim() !== '' && serverToken.trim() !== '';
 
   const row = (service: ScrobbleService) => {
     const account = s.account(service);
     return (
       <div style={styles.row}>
-        <span style={styles.icon}><ScrobbleIcon.Service /></span>
+        <span style={styles.icon}>{service === 'server' ? <ScrobbleIcon.Server /> : <ScrobbleIcon.Service />}</span>
         <span style={styles.label}>{SERVICE_NAMES[service]}</span>
         <strong style={styles.value}>
-          {account ? `${account.accountName || 'Connected'} · ${formatWhen(account.lastScrobbleAt) ?? 'No scrobbles yet'}` : 'Not connected'}
+          {account ? `${accountLabel(account)} · ${formatWhen(account.lastScrobbleAt) ?? 'No scrobbles yet'}` : 'Not connected'}
         </strong>
       </div>
+    );
+  };
+
+  const signIn = (service: SignInService, setupHint: string | null) => {
+    const name = SERVICE_NAMES[service];
+    const account = s.account(service);
+    const waiting = s.waitingFor !== null;
+    return (
+      <>
+        {row(service)}
+        {account?.needsReconnect ? <div role="alert" style={styles.error}>{name} stopped accepting this account. Reconnect to keep scrobbling.</div> : null}
+        {service === 'lastfm' && account && s.lastfmKeyRefused ? <div role="status" style={styles.error}>{LASTFM_SCROBBLES_REFUSED}</div> : null}
+        {!account || account.needsReconnect ? (
+          setupHint === null ? (
+            <button type="button" disabled={s.busy || waiting} style={{ ...styles.primary, ...(s.busy || waiting ? styles.disabled : null) }} onClick={() => void s.connectSignIn(service)}>
+              {account ? `Reconnect ${name}` : `Connect ${name}`}
+            </button>
+          ) : (
+            <div style={styles.hint}>{setupHint}</div>
+          )
+        ) : null}
+        {s.waitingFor === service ? <div role="status" style={styles.hint}>Finish signing in to {name} in the window that opened.</div> : null}
+        {account ? (
+          <button type="button" disabled={s.busy} style={styles.danger} onClick={() => setConfirm(service)}>Disconnect {name}</button>
+        ) : null}
+      </>
     );
   };
 
@@ -41,25 +79,11 @@ export default function MobileScrobbling() {
         <h3 id="mobile-settings-scrobbling" style={styles.heading}>Scrobbling</h3>
       </div>
       <p style={styles.description}>
-        Send what you play to your own Last.fm or ListenBrainz account.
+        Send what you play to your own Last.fm, Libre.fm or ListenBrainz account, or your own scrobble server.
       </p>
 
-      {row('lastfm')}
-      {lastfm?.needsReconnect ? <div role="alert" style={styles.error}>Last.fm stopped accepting this account. Reconnect to keep scrobbling.</div> : null}
-      {lastfm && s.lastfmKeyRefused ? <div role="status" style={styles.error}>{LASTFM_SCROBBLES_REFUSED}</div> : null}
-      {!lastfm || lastfm.needsReconnect ? (
-        s.lastfmAvailable ? (
-          <button type="button" disabled={s.busy || s.waitingLastFm} style={{ ...styles.primary, ...(s.busy || s.waitingLastFm ? styles.disabled : null) }} onClick={() => void s.connectLastFm()}>
-            {lastfm ? 'Reconnect Last.fm' : 'Connect Last.fm'}
-          </button>
-        ) : (
-          <div style={styles.hint}>An admin needs to add the Last.fm API key and shared secret first.</div>
-        )
-      ) : null}
-      {s.waitingLastFm ? <div role="status" style={styles.hint}>Finish signing in to Last.fm in the window that opened.</div> : null}
-      {lastfm ? (
-        <button type="button" disabled={s.busy} style={styles.danger} onClick={() => setConfirm('lastfm')}>Disconnect Last.fm</button>
-      ) : null}
+      {signIn('lastfm', s.lastfmAvailable ? null : 'An admin needs to add the Last.fm API key and shared secret first.')}
+      {signIn('librefm', null)}
 
       {row('listenbrainz')}
       {listenbrainz?.needsReconnect ? <div role="alert" style={styles.error}>ListenBrainz stopped accepting this token. Enter a new one.</div> : null}
@@ -82,11 +106,51 @@ export default function MobileScrobbling() {
         <button type="button" disabled={s.busy} style={styles.danger} onClick={() => setConfirm('listenbrainz')}>Disconnect ListenBrainz</button>
       )}
 
+      {row('server')}
+      {server?.needsReconnect ? <div role="alert" style={styles.error}>{SERVER_COPY.reconnect}</div> : null}
+      {!server || server.needsReconnect ? (
+        <>
+          <div style={styles.hint}>{SERVER_COPY.hint}</div>
+          <label style={styles.field}>
+            {SERVER_COPY.addressLabel}
+            <input
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              maxLength={2048}
+              placeholder={SERVER_COPY.addressPlaceholder}
+              value={serverAddress}
+              style={styles.input}
+              onChange={(e) => setServerAddress(e.target.value)}
+            />
+          </label>
+          <label style={styles.field}>
+            {SERVER_COPY.tokenLabel}
+            <input type="password" autoComplete="off" value={serverToken} maxLength={256} style={styles.input} onChange={(e) => setServerToken(e.target.value)} />
+          </label>
+          <button
+            type="button"
+            disabled={!serverReady}
+            style={{ ...styles.primary, ...(!serverReady ? styles.disabled : null) }}
+            onClick={() => {
+              void s.connectServer(serverAddress, serverToken).then((ok) => { if (ok) { setServerAddress(''); setServerToken(''); } });
+            }}
+          >
+            {SERVER_COPY.connect}
+          </button>
+        </>
+      ) : null}
+      {server ? (
+        <button type="button" disabled={s.busy} style={styles.danger} onClick={() => setConfirm('server')}>Disconnect your server</button>
+      ) : null}
+
       {message ? <div role={failed ? 'alert' : 'status'} style={failed ? styles.error : styles.saved}>{message}</div> : null}
 
       <MobileConfirmationSheet
         open={confirm !== null}
-        title={confirm ? `Disconnect ${SERVICE_NAMES[confirm]}?` : ''}
+        title={confirm ? disconnectTitle(confirm) : ''}
         description="Plays waiting to be sent to it are dropped."
         confirmLabel="Disconnect"
         cancelLabel="Keep it"
@@ -111,7 +175,7 @@ const styles: Record<string, React.CSSProperties> = {
   label: { color: 'var(--text-muted)', fontSize: 12 },
   value: { color: 'var(--text)', fontSize: 13, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   field: { display: 'grid', gap: 5, color: 'var(--text-muted)', fontSize: 12, fontWeight: 650 },
-  input: { minHeight: 44, padding: '0 12px', border: '1px solid var(--divider-subtle)', borderRadius: 11, background: 'var(--surface-subtle)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 15 },
+  input: { minHeight: 44, minWidth: 0, padding: '0 12px', border: '1px solid var(--divider-subtle)', borderRadius: 11, background: 'var(--surface-subtle)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 15 },
   hint: { color: 'var(--text-muted)', fontSize: 12 },
   saved: { ...hybridMobileContentStyles.feedback, borderColor: 'color-mix(in srgb, var(--success) 32%, var(--divider-subtle))', background: 'color-mix(in srgb, var(--success) 9%, var(--surface))', color: 'var(--success)' },
   error: { ...hybridMobileContentStyles.feedback, ...hybridMobileContentStyles.feedbackError },

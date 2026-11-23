@@ -143,11 +143,14 @@ apps. Tokens and session keys are stored AES-256-GCM encrypted with `subsonic.ke
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/scrobble/accounts` | `{ lastfmAvailable, accounts: [{ service, accountName, needsReconnect, connectedAt, lastScrobbleAt, pending }] }`. |
+| `GET` | `/api/scrobble/accounts` | `{ lastfmAvailable, lastfmKeyRefused, accounts: [{ service, accountName, needsReconnect, connectedAt, lastScrobbleAt, pending, address }] }`. `service` is `lastfm`, `librefm`, `listenbrainz` or `server` (own ListenBrainz-compatible server; `address` is its address). |
 | `PUT` | `/api/scrobble/listenbrainz` | Connect ListenBrainz with `{ token }` (validated with ListenBrainz first; `400` when refused, `502` when unreachable). |
 | `POST` | `/api/scrobble/lastfm/connect` | Start the Last.fm sign-in: body `{ origin }` (the web UI's own origin); returns `{ url }` to open. `409` until an admin sets `lastfmKey` and `lastfmSecret`. |
 | `GET` | `/api/scrobble/lastfm/callback?state&token` | Where Last.fm sends the user back. No session cookie needed: the one-time `state` (10 minutes) names the user. Returns a small HTML page. |
-| `DELETE` | `/api/scrobble/{lastfm\|listenbrainz}` | Disconnect and drop queued plays. |
+| `POST` | `/api/scrobble/librefm/connect` | Start the Libre.fm sign-in: body `{ origin }`; returns `{ url }`. No admin setup (Libre.fm takes BoogieBox's built-in placeholder key). |
+| `GET` | `/api/scrobble/librefm/callback?state&token` | Where Libre.fm sends the user back (as the Last.fm callback; a state works only for the service it was issued for). |
+| `PUT` | `/api/scrobble/server` | Connect the user's own ListenBrainz-compatible server (Maloja, Koito) with `{ address, token }`. `address` is http(s) with an optional path (e.g. `…/apis/listenbrainz`); a trailing `/1` or `/` is dropped. The token is checked with the server's `/1/validate-token`; a server without one (404/405) is accepted without a user name. Returns `{ ok, accountName, address }`; `400` for a bad address or a refused token, `502` when unreachable. |
+| `DELETE` | `/api/scrobble/{lastfm\|librefm\|listenbrainz\|server}` | Disconnect and drop queued plays. |
 
 Delivery: plays are queued and sent in batches (Last.fm 50, ListenBrainz 100) by a background worker. Temporary
 failures retry with backoff (1 minute doubling to 6 hours); plays are dropped after 14 days or 20 attempts; at most

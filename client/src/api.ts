@@ -75,7 +75,7 @@ import type { EntityId } from './entityId';
 import type { SubsonicCredentials } from './subsonic';
 import type { FavouriteIds, FavouriteKind, Favourites } from './favourites';
 import type { RadioStation, RadioStationInput } from './radioStations';
-import type { ScrobbleAccountsResponse } from './scrobbling';
+import type { ScrobbleAccountsResponse, ScrobbleService } from './scrobbling';
 import type { SmartDefinition, SmartDefinitionView } from './smartPlaylistRules';
 import type { SmartSteer, SteerUpdate, SteerView } from './smartSteer';
 import { invalidateHomeData } from './homeCache';
@@ -1021,7 +1021,12 @@ export const api = {
     connectListenBrainz: (token: string) => put<{ ok: boolean; accountName: string }>('/scrobble/listenbrainz', { token }),
     /** The Last.fm sign-in page to open; Last.fm returns to this origin's callback. */
     connectLastFm:       (origin: string) => post<{ url: string }>('/scrobble/lastfm/connect', { origin }),
-    disconnect:          (service: 'lastfm' | 'listenbrainz') => del<{ ok: boolean }>(`/scrobble/${service}`),
+    /** The Libre.fm sign-in page to open; Libre.fm returns to this origin's callback. */
+    connectLibreFm:      (origin: string) => post<{ url: string }>('/scrobble/librefm/connect', { origin }),
+    /** The user's own ListenBrainz-compatible server; `address` comes back cleaned. */
+    connectServer:       (address: string, token: string) =>
+      put<{ ok: boolean; accountName: string; address?: string }>('/scrobble/server', { address, token }),
+    disconnect:          (service: ScrobbleService) => del<{ ok: boolean }>(`/scrobble/${service}`),
   },
   /** The signed-in user's Subsonic password and API key for third-party apps (`/rest`). */
   subsonic: {

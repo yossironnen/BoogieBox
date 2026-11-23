@@ -53,7 +53,7 @@ pub struct NowPlayingEntry {
 #[derive(Debug, Default)]
 struct Inner {
     now_playing: Mutex<Vec<NowPlayingEntry>>,
-    lastfm_states: Mutex<HashMap<String, (String, Instant)>>,
+    lastfm_states: Mutex<HashMap<String, (String, &'static str, Instant)>>,
     wake: Notify,
 }
 
@@ -92,24 +92,24 @@ impl PlayHub {
         list.iter().rev().cloned().collect()
     }
 
-    /// A one-time, unguessable value naming `user_id` for the Last.fm sign-in callback.
-    pub fn issue_lastfm_state(&self, user_id: &str) -> String {
+    /// A one-time, unguessable value naming `user_id` for a Last.fm/Libre.fm (`service`) sign-in callback.
+    pub fn issue_sign_in_state(&self, user_id: &str, service: &'static str) -> String {
         let mut bytes = [0u8; 32];
         rand::rng().fill_bytes(&mut bytes);
         let state = hex::encode(bytes);
         let mut states = lock(&self.0.lastfm_states);
-        states.retain(|_, (_, at)| at.elapsed() < LASTFM_STATE_TTL);
+        states.retain(|_, (_, _, at)| at.elapsed() < LASTFM_STATE_TTL);
         if states.len() >= MAX_LASTFM_STATES {
             states.clear();
         }
-        states.insert(state.clone(), (user_id.to_owned(), Instant::now()));
+        states.insert(state.clone(), (user_id.to_owned(), service, Instant::now()));
         state
     }
 
-    /// The user a sign-in state was issued to; each state works once and expires.
-    pub fn take_lastfm_state(&self, state: &str) -> Option<String> {
-        let (user, at) = lock(&self.0.lastfm_states).remove(state)?;
-        (at.elapsed() < LASTFM_STATE_TTL).then_some(user)
+    /// The user a sign-in state was issued to for `service`; each state works once and expires.
+    pub fn take_sign_in_state(&self, state: &str, service: &str) -> Option<String> {
+        let (user, issued_for, at) = lock(&self.0.lastfm_states).remove(state)?;
+        (at.elapsed() < LASTFM_STATE_TTL && issued_for == service).then_some(user)
     }
 
     /// Wakes the scrobble forwarder (new plays were queued).
@@ -250,17 +250,23 @@ mod tests {
     #[test]
     fn lastfm_states_are_single_use_and_bound_to_a_user() {
         let hub = PlayHub::default();
-        let a = hub.issue_lastfm_state("u1");
-        let b = hub.issue_lastfm_state("u2");
+        let a = hub.issue_sign_in_state("u1", "lastfm");
+        let b = hub.issue_sign_in_state("u2", "lastfm");
+        let c = hub.issue_sign_in_state("u1", "librefm");
+        assert_eq!(
+            hub.take_sign_in_state(&c, "lastfm"),
+            None,
+            "bound to its service"
+        );
         assert_eq!(a.len(), 64);
         assert_ne!(a, b);
-        assert_eq!(hub.take_lastfm_state(&a).as_deref(), Some("u1"));
-        assert_eq!(hub.take_lastfm_state(&a), None, "one use only");
-        assert_eq!(hub.take_lastfm_state("forged"), None);
+        assert_eq!(hub.take_sign_in_state(&a, "lastfm").as_deref(), Some("u1"));
+        assert_eq!(hub.take_sign_in_state(&a, "lastfm"), None, "one use only");
+        assert_eq!(hub.take_sign_in_state("forged", "lastfm"), None);
         hub.reset();
-        assert_eq!(hub.take_lastfm_state(&b), None);
+        assert_eq!(hub.take_sign_in_state(&b, "lastfm"), None);
         for i in 0..(MAX_LASTFM_STATES + 1) {
-            hub.issue_lastfm_state(&format!("u{i}"));
+            hub.issue_sign_in_state(&format!("u{i}"), "lastfm");
         }
         assert!(lock(&hub.0.lastfm_states).len() <= MAX_LASTFM_STATES);
     }

@@ -884,6 +884,10 @@ fn tracked_migrations() -> Vec<Migration> {
             id: "2026-11-22-popularity-source",
             apply: popularity::ensure_popularity_source_column,
         },
+        Migration {
+            id: "2026-11-22-scrobble-targets",
+            apply: scrobble::ensure_scrobble_targets_schema,
+        },
     ]
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createScrobbleTracker, plausibleListenBrainzToken, scrobbleThreshold } from './scrobbling';
+import { createScrobbleTracker, plausibleListenBrainzToken, plausibleServerAddress, scrobbleThreshold } from './scrobbling';
 
 describe('scrobbling', () => {
   it('uses half the length or four minutes, never for short or unknown tracks', () => {
@@ -33,5 +33,18 @@ describe('scrobbling', () => {
     // No play key or a bad position: nothing.
     expect(tracker.observe(null, 't4', 200, 150, 4000)).toBeNull();
     expect(tracker.observe('4:0:t4', 't4', 200, Number.NaN, 4000)).toBeNull();
+  });
+});
+
+describe('plausibleServerAddress', () => {
+  it('takes http(s) addresses with a host and an optional path', () => {
+    expect(plausibleServerAddress('http://maloja.lan:42010/apis/listenbrainz')).toBe(true);
+    expect(plausibleServerAddress(' https://koito.example/apis/listenbrainz/1 ')).toBe(true);
+    expect(plausibleServerAddress('http://box')).toBe(true);
+    expect(plausibleServerAddress('maloja.lan:42010')).toBe(false);
+    expect(plausibleServerAddress('ftp://box/x')).toBe(false);
+    expect(plausibleServerAddress('http://user:pw@box/x')).toBe(false);
+    expect(plausibleServerAddress('http://box/x?token=1')).toBe(false);
+    expect(plausibleServerAddress('http:///x')).toBe(false);
   });
 });

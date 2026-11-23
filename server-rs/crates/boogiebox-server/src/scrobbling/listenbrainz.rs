@@ -81,6 +81,65 @@ pub async fn validate_token(
         .to_owned())
 }
 
+/// [`validate_token`] for a user's own server: one without the token check (404/405, as Koito may be)
+/// is accepted with no user name; a wrong token then shows at the first scrobble.
+pub async fn check_own_server_token(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Result<Option<String>, SendError> {
+    let response = client
+        .get(format!("{base}/1/validate-token"))
+        .header("Authorization", format!("Token {token}"))
+        .timeout(TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| SendError::Temporary)?;
+    if matches!(response.status().as_u16(), 404 | 405) {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(status_error(response.status()));
+    }
+    let body: Value = response.json().await.map_err(|_| SendError::Temporary)?;
+    if body.get("valid").and_then(Value::as_bool) != Some(true) {
+        return Err(SendError::Auth);
+    }
+    Ok(body
+        .get("user_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != "n/a")
+        .map(str::to_owned))
+}
+
+/// Own-server tokens (Maloja/Koito API keys): visible ASCII only, so they're safe in a header.
+pub fn plausible_own_server_token(token: &str) -> bool {
+    (4..=256).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// The address scrobbles go to: http(s), a host, an optional path; no user:password, query or fragment.
+/// Trailing `/` and a trailing `/1` (Koito's documented address) are dropped, since `/1/...` is added.
+pub fn normalize_own_server_address(raw: &str) -> Option<String> {
+    let mut address = raw.trim().trim_end_matches('/').to_owned();
+    if let Some(stripped) = address.strip_suffix("/1") {
+        address = stripped.trim_end_matches('/').to_owned();
+    }
+    let lower = address.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("http://")
+        .or_else(|| lower.strip_prefix("https://"))?;
+    let host = rest.split('/').next().unwrap_or("");
+    if host.is_empty()
+        || host.contains('@')
+        || address.contains(['?', '#'])
+        || !boogiebox_db::radio_stations::valid_http_url(&address)
+    {
+        return None;
+    }
+    Some(address)
+}
+
 async fn submit(
     client: &reqwest::Client,
     base: &str,
@@ -246,6 +305,74 @@ mod tests {
         assert_eq!(
             submit_listens(&client, &base, "good-token-1", &[(track(), 1)]).await,
             Err(SendError::Auth)
+        );
+    }
+
+    #[test]
+    fn own_server_addresses_are_cleaned_and_checked() {
+        let n = normalize_own_server_address;
+        assert_eq!(
+            n(" http://maloja.lan:42010/apis/listenbrainz/ ").as_deref(),
+            Some("http://maloja.lan:42010/apis/listenbrainz")
+        );
+        assert_eq!(
+            n("http://192.168.0.100:4110/apis/listenbrainz/1").as_deref(),
+            Some("http://192.168.0.100:4110/apis/listenbrainz")
+        );
+        assert_eq!(
+            n("https://koito.example/apis/listenbrainz/1/").as_deref(),
+            Some("https://koito.example/apis/listenbrainz")
+        );
+        assert_eq!(n("ftp://box/x"), None);
+        assert_eq!(n("maloja.lan:42010"), None);
+        assert_eq!(n("http://user:pw@box/x"), None);
+        assert_eq!(n("http://box/x?token=1"), None);
+        assert_eq!(n("http://box/x#frag"), None);
+        assert_eq!(n("http:///path"), None);
+        assert_eq!(n("http://bad host/x"), None);
+    }
+
+    #[test]
+    fn own_server_tokens_must_be_header_safe() {
+        assert!(plausible_own_server_token("Abc_123.xyz"));
+        assert!(!plausible_own_server_token("abc"));
+        assert!(!plausible_own_server_token("two words"));
+        assert!(!plausible_own_server_token("line\r\nbreak"));
+    }
+
+    #[tokio::test]
+    async fn own_server_token_check_accepts_a_server_without_one() {
+        let named = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/1/validate-token"))
+            .and(header("Authorization", "Token maloja-key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"valid": true, "user_name": "n/a"})),
+            )
+            .mount(&named)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/1/validate-token"))
+            .and(header("Authorization", "Token wrong-key"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&named)
+            .await;
+        let client = reqwest::Client::new();
+        assert_eq!(
+            check_own_server_token(&client, &named.uri(), "maloja-key").await,
+            Ok(None),
+            "Maloja's placeholder user name is not a name"
+        );
+        assert_eq!(
+            check_own_server_token(&client, &named.uri(), "wrong-key").await,
+            Err(SendError::Auth)
+        );
+        let bare = MockServer::start().await;
+        assert_eq!(
+            check_own_server_token(&client, &bare.uri(), "koito-key").await,
+            Ok(None),
+            "no token check (404): accepted"
         );
     }
 

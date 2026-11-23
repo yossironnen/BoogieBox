@@ -1,9 +1,11 @@
 /**
- * Scrobbling to the signed-in user's own Last.fm and ListenBrainz accounts. The server keeps the secrets and
- * sends the plays; the web player only says when a play counts (`scrobbleThreshold`).
+ * Scrobbling to the signed-in user's own Last.fm, Libre.fm, ListenBrainz and ListenBrainz-compatible server
+ * (Maloja, Koito) accounts. The server keeps the secrets and sends the plays; the web player only says when a
+ * play counts (`scrobbleThreshold`).
  */
 
-export type ScrobbleService = 'lastfm' | 'listenbrainz';
+/** `server` is the user's own ListenBrainz-compatible server. */
+export type ScrobbleService = 'lastfm' | 'listenbrainz' | 'librefm' | 'server';
 
 /** One connected account (never includes the token or session key). */
 export interface ScrobbleAccount {
@@ -14,6 +16,8 @@ export interface ScrobbleAccount {
   lastScrobbleAt: string | null;
   /** Plays waiting to be sent. */
   pending: number;
+  /** The own server's address (`server` only). */
+  address?: string | null;
 }
 
 /** `GET /api/scrobble/accounts`. */
@@ -35,6 +39,14 @@ export const LASTFM_SCROBBLES_REFUSED = "Last.fm isn't accepting scrobbles from 
 export function scrobbleThreshold(duration: number | null | undefined): number | null {
   if (duration == null || !Number.isFinite(duration) || duration <= 30) return null;
   return Math.min(duration / 2, 240);
+}
+
+/** Approved copy: an own-server address that isn't http(s). Matches the server's message. */
+export const SERVER_ADDRESS_ERROR = 'Enter the server address, starting with http:// or https://';
+
+/** An http(s) address with a host and no user:password, query or fragment; the server checks it again. */
+export function plausibleServerAddress(address: string): boolean {
+  return /^https?:\/\/[^\s/@?#]+(\/[^\s?#]*)?$/i.test(address.trim());
 }
 
 /** ListenBrainz tokens are UUID-like; mirrors the server's shape check. */

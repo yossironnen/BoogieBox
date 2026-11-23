@@ -4,7 +4,14 @@ import ScrobblingPanel from './ScrobblingPanel';
 import MobileScrobbling from '../mobile/components/MobileScrobbling';
 
 const { scrobbleApi } = vi.hoisted(() => ({
-  scrobbleApi: { accounts: vi.fn(), connectListenBrainz: vi.fn(), connectLastFm: vi.fn(), disconnect: vi.fn() },
+  scrobbleApi: {
+    accounts: vi.fn(),
+    connectListenBrainz: vi.fn(),
+    connectLastFm: vi.fn(),
+    connectLibreFm: vi.fn(),
+    connectServer: vi.fn(),
+    disconnect: vi.fn(),
+  },
 }));
 vi.mock('../api', () => ({ api: { scrobble: scrobbleApi } }));
 
@@ -30,7 +37,8 @@ describe('ScrobblingPanel', () => {
     render(<ScrobblingPanel />);
     const panel = await screen.findByRole('region', { name: 'Scrobbling' });
     expect(within(panel).getByText(/An admin needs to add the Last.fm API key/)).toBeInTheDocument();
-    expect(within(panel).getAllByText('Not connected')).toHaveLength(1);
+    // Last.fm, Libre.fm and the own server.
+    expect(within(panel).getAllByText('Not connected')).toHaveLength(3);
     expect(within(panel).getByText(/ListenBrainz is under Integrations/)).toBeInTheDocument();
     expect(within(panel).queryByLabelText('ListenBrainz user token')).not.toBeInTheDocument();
     expect(within(panel).queryByText('lb_alice')).not.toBeInTheDocument();
@@ -73,7 +81,7 @@ describe('ScrobblingPanel', () => {
     const panel = await screen.findByRole('region', { name: 'Scrobbling' });
     expect(within(panel).getByText('fm_alice')).toBeInTheDocument();
     expect(within(panel).getByText('3')).toBeInTheDocument();
-    fireEvent.click(within(panel).getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Disconnect Last.fm' }));
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Disconnect' }));
     await waitFor(() => expect(scrobbleApi.disconnect).toHaveBeenCalledWith('lastfm'));
   });
@@ -169,7 +177,7 @@ describe('MobileScrobbling', () => {
     scrobbleApi.accounts.mockRejectedValue(new Error('down'));
     render(<MobileScrobbling />);
     expect(await screen.findByText('Scrobbling')).toBeInTheDocument();
-    expect(screen.getAllByText('Not connected')).toHaveLength(2);
+    expect(screen.getAllByText('Not connected')).toHaveLength(4);
   });
 });
 
@@ -206,9 +214,9 @@ describe('ScrobblingPanel edge cases', () => {
     render(<ScrobblingPanel />);
     fireEvent.click(await screen.findByRole('button', { name: 'Reconnect Last.fm' }));
     expect(await screen.findByText(/Could not start the Last.fm sign-in/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Last.fm' }));
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Last.fm' }));
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Disconnect' }));
     expect(await screen.findByText(/Could not disconnect/)).toBeInTheDocument();
   });
@@ -220,5 +228,125 @@ describe('ScrobblingPanel edge cases', () => {
     fireEvent.change(await screen.findByLabelText('ListenBrainz user token'), { target: { value: token } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect ListenBrainz' }));
     expect(await screen.findByText(/Could not connect/)).toBeInTheDocument();
+  });
+});
+
+describe('Libre.fm and own server', () => {
+  const serverAddress = 'http://maloja.lan:42010/apis/listenbrainz';
+  beforeEach(() => {
+    Object.values(scrobbleApi).forEach((m) => m.mockReset());
+    scrobbleApi.disconnect.mockResolvedValue({ ok: true });
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('signs in to Libre.fm with no admin setup and waits for the account', async () => {
+    vi.useFakeTimers();
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    scrobbleApi.accounts
+      .mockResolvedValueOnce({ lastfmAvailable: false, accounts: [] })
+      .mockResolvedValueOnce({ lastfmAvailable: false, accounts: [] })
+      .mockResolvedValue({
+        lastfmAvailable: false,
+        accounts: [{ ...lbAccount, service: 'librefm', accountName: 'lf_alice', connectedAt: '2026-11-22 10:00:00' }],
+      });
+    scrobbleApi.connectLibreFm.mockResolvedValue({ url: 'https://libre.fm/api/auth/?api_key=k' });
+    render(<ScrobblingPanel />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText(/An admin needs to add the Last.fm API key/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Libre.fm' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(scrobbleApi.connectLibreFm).toHaveBeenCalledWith(window.location.origin);
+    expect(scrobbleApi.connectLastFm).not.toHaveBeenCalled();
+    expect(open).toHaveBeenCalledWith('https://libre.fm/api/auth/?api_key=k', '_blank', 'noopener,noreferrer');
+    expect(screen.getByText(/Finish signing in to Libre.fm in the window that opened/)).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+    expect(screen.getByText('Connected to Libre.fm as lf_alice')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disconnect Libre.fm' })).toBeInTheDocument();
+    open.mockRestore();
+  });
+
+  it('warns when Libre.fm stops accepting the account', async () => {
+    scrobbleApi.accounts.mockResolvedValue({ lastfmAvailable: false, accounts: [{ ...lbAccount, service: 'librefm', needsReconnect: true }] });
+    render(<ScrobblingPanel />);
+    expect(await screen.findByText(/Libre.fm stopped accepting this account. Reconnect to keep scrobbling./)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reconnect Libre.fm' })).toBeInTheDocument();
+  });
+
+  it('connects an own server, shows its address and disconnects it', async () => {
+    scrobbleApi.accounts
+      .mockResolvedValueOnce({ lastfmAvailable: true, accounts: [] })
+      .mockResolvedValue({
+        lastfmAvailable: true,
+        accounts: [{ ...lbAccount, service: 'server', accountName: null, address: serverAddress }],
+      });
+    scrobbleApi.connectServer.mockResolvedValue({ ok: true, accountName: '', address: serverAddress });
+    render(<ScrobblingPanel />);
+    const panel = await screen.findByRole('region', { name: 'Scrobbling' });
+    expect(within(panel).getByText(/Any server that takes ListenBrainz scrobbles, such as Maloja or Koito/)).toBeInTheDocument();
+    const connect = within(panel).getByRole('button', { name: 'Connect server' });
+    expect(connect).toBeDisabled();
+    fireEvent.change(within(panel).getByLabelText('Server address'), { target: { value: 'maloja.lan:42010' } });
+    fireEvent.change(within(panel).getByLabelText('Token'), { target: { value: 'maloja-key' } });
+    fireEvent.click(connect);
+    expect(await within(panel).findByText(/Enter the server address, starting with http:\/\/ or https:\/\//)).toBeInTheDocument();
+    expect(scrobbleApi.connectServer).not.toHaveBeenCalled();
+
+    fireEvent.change(within(panel).getByLabelText('Server address'), { target: { value: ` ${serverAddress}/1 ` } });
+    fireEvent.click(connect);
+    await waitFor(() => expect(scrobbleApi.connectServer).toHaveBeenCalledWith(`${serverAddress}/1`, 'maloja-key'));
+    expect(await within(panel).findByText(`Connected to ${serverAddress}`)).toBeInTheDocument();
+    expect(within(panel).getByText(serverAddress)).toBeInTheDocument();
+    expect(within(panel).queryByLabelText('Server address')).not.toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Disconnect your server' }));
+    const dialog = screen.getByRole('alertdialog');
+    expect(within(dialog).getByText('Disconnect your server?')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(scrobbleApi.disconnect).toHaveBeenCalledWith('server'));
+    expect(await within(panel).findByText('Disconnected from your server')).toBeInTheDocument();
+  });
+
+  it('names the server account and asks for a new token when it is refused', async () => {
+    scrobbleApi.accounts.mockResolvedValue({
+      lastfmAvailable: true,
+      accounts: [{ ...lbAccount, service: 'server', accountName: 'mal', address: serverAddress, needsReconnect: true }],
+    });
+    scrobbleApi.connectServer.mockResolvedValue({ ok: true, accountName: 'mal', address: serverAddress });
+    render(<ScrobblingPanel />);
+    expect(await screen.findByText('Your server stopped accepting this token. Enter a new one.')).toBeInTheDocument();
+    expect(screen.getByText('mal')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Server address'), { target: { value: serverAddress } });
+    fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'new-key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect server' }));
+    expect(await screen.findByText(`Connected to ${serverAddress} as mal`)).toBeInTheDocument();
+  });
+
+  it('connects Libre.fm and an own server on mobile', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    scrobbleApi.accounts.mockResolvedValue({ lastfmAvailable: false, accounts: [] });
+    scrobbleApi.connectLibreFm.mockResolvedValue({ url: 'https://libre.fm/api/auth/' });
+    scrobbleApi.connectServer.mockRejectedValue(new Error('The service could not be reached. Try again later'));
+    render(<MobileScrobbling />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Libre.fm' }));
+    expect(await screen.findByText(/Finish signing in to Libre.fm/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Server address'), { target: { value: serverAddress } });
+    fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'maloja-key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect server' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not be reached');
+    open.mockRestore();
+  });
+
+  it('disconnects the own server on mobile', async () => {
+    scrobbleApi.accounts.mockResolvedValue({
+      lastfmAvailable: false,
+      accounts: [{ ...lbAccount, service: 'server', accountName: null, address: serverAddress }],
+    });
+    render(<MobileScrobbling />);
+    expect(await screen.findByText(new RegExp(serverAddress))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect your server' }));
+    expect(await screen.findByText('Disconnect your server?')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(scrobbleApi.disconnect).toHaveBeenCalledWith('server'));
   });
 });
