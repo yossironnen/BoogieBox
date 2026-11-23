@@ -231,8 +231,18 @@ fn resolve_candidate(
     find_owned_artist_by_name(conn, &candidate.name)
 }
 
-fn deezer_rank_score(rank: usize) -> f64 {
-    0.65 / (1.0 + 0.08 * rank.saturating_sub(1) as f64)
+/// Deezer and ListenBrainz scores sit below Last.fm's while Last.fm is in the mix; without it (no key, a refused
+/// key, nothing listed) they use the whole 0..1 range, so Artist Radio weighs similar artists as it did before.
+fn keyless_scale(with_lastfm: bool, scale: f64) -> f64 {
+    if with_lastfm {
+        scale
+    } else {
+        1.0
+    }
+}
+
+fn deezer_rank_score(rank: usize, with_lastfm: bool) -> f64 {
+    keyless_scale(with_lastfm, 0.65) / (1.0 + 0.08 * rank.saturating_sub(1) as f64)
 }
 
 /// Last.fm + Deezer only — see [`resolve_local_similar_artists_with_listenbrainz`].
@@ -255,11 +265,11 @@ pub fn resolve_local_similar_artists(
     )
 }
 
-fn listenbrainz_rank_score(candidate: &RelatedArtistCandidate) -> f64 {
+fn listenbrainz_rank_score(candidate: &RelatedArtistCandidate, with_lastfm: bool) -> f64 {
     let base = candidate
         .match_score
         .unwrap_or_else(|| 1.0 / candidate.rank.max(1) as f64);
-    (0.6 * base).clamp(0.0, 1.0)
+    (keyless_scale(with_lastfm, 0.6) * base).clamp(0.0, 1.0)
 }
 
 /// Intersects provider candidates with the local collection, rejects
@@ -276,6 +286,7 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
     limit: usize,
 ) -> rusqlite::Result<Vec<SimilarArtistResult>> {
     let mut matches: HashMap<EntityId, RankedMatch> = HashMap::new();
+    let with_lastfm = !lastfm.is_empty();
 
     for candidate in lastfm {
         let Some(local_id) = resolve_candidate(conn, ArtistIdentityProvider::LastFm, candidate)?
@@ -314,7 +325,7 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
         if &local_id == source_artist_id {
             continue;
         }
-        let score = deezer_rank_score(candidate.rank.max(1));
+        let score = deezer_rank_score(candidate.rank.max(1), with_lastfm);
         matches
             .entry(local_id)
             .and_modify(|existing| {
@@ -341,7 +352,7 @@ pub fn resolve_local_similar_artists_with_listenbrainz(
         if &local_id == source_artist_id {
             continue;
         }
-        let score = listenbrainz_rank_score(candidate);
+        let score = listenbrainz_rank_score(candidate, with_lastfm);
         matches
             .entry(local_id)
             .and_modify(|existing| {
@@ -507,7 +518,8 @@ mod tests {
         assert_eq!(alone.len(), 2);
         assert_eq!(alone[0].name, "Portishead");
         assert_eq!(alone[0].providers, vec!["listenbrainz"]);
-        assert!((alone[0].score - 0.6).abs() < 1e-9);
+        // No Last.fm in the mix: ListenBrainz scores use the whole range.
+        assert!((alone[0].score - 1.0).abs() < 1e-9);
 
         let boosted = resolve_local_similar_artists_with_listenbrainz(
             &conn,
@@ -522,7 +534,18 @@ mod tests {
         assert_eq!(boosted[0].providers, vec!["lastfm", "listenbrainz"]);
         assert!((boosted[0].score - 0.56).abs() < 1e-9);
         // Rank-only candidates (no score) still score.
-        assert!(listenbrainz_rank_score(&candidate(None, "X", None, 2)) > 0.0);
+        assert!(listenbrainz_rank_score(&candidate(None, "X", None, 2), true) > 0.0);
+        // Without Last.fm the keyless sources use the whole range.
+        assert!(
+            (listenbrainz_rank_score(&candidate(None, "X", Some(0.8), 1), false) - 0.8).abs()
+                < 1e-9
+        );
+        assert!(
+            (listenbrainz_rank_score(&candidate(None, "X", Some(0.8), 1), true) - 0.48).abs()
+                < 1e-9
+        );
+        assert!((deezer_rank_score(1, false) - 1.0).abs() < 1e-9);
+        assert!((deezer_rank_score(1, true) - 0.65).abs() < 1e-9);
     }
 
     #[test]
