@@ -580,7 +580,6 @@ pub struct ArtistRow {
 /// External artist namespaces supported by the metadata enrichment pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtistIdentityProvider {
-    LastFm,
     Deezer,
     Spotify,
     Discogs,
@@ -648,21 +647,9 @@ pub fn persist_artist_identity_if_missing(
     artist_id: &EntityId,
     provider: ArtistIdentityProvider,
     external_id: Option<&str>,
-    canonical_name: Option<&str>,
 ) -> rusqlite::Result<bool> {
     let external_id = nonempty_identity(external_id);
-    let canonical_name = nonempty_identity(canonical_name);
     let changed = match provider {
-        ArtistIdentityProvider::LastFm => conn.execute(
-            "UPDATE artists
-             SET lastfm_mbid=COALESCE(lastfm_mbid, ?1),
-                 lastfm_canonical_name=COALESCE(lastfm_canonical_name, ?2),
-                 lastfm_identity_checked_at=datetime('now')
-             WHERE id=?3
-               AND (lastfm_mbid IS NULL OR lastfm_canonical_name IS NULL
-                    OR lastfm_identity_checked_at IS NULL)",
-            rusqlite::params![external_id, canonical_name, artist_id],
-        )?,
         ArtistIdentityProvider::Deezer => conn.execute(
             "UPDATE artists
              SET deezer_artist_id=COALESCE(deezer_artist_id, ?1),
@@ -746,7 +733,6 @@ pub fn find_owned_artist_by_external_identity(
     external_id: &str,
 ) -> rusqlite::Result<Option<EntityId>> {
     let sql = match provider {
-        ArtistIdentityProvider::LastFm => "SELECT ar.id FROM artists ar WHERE ar.lastfm_mbid=?1",
         ArtistIdentityProvider::Deezer => {
             "SELECT ar.id FROM artists ar WHERE ar.deezer_artist_id=?1"
         }
@@ -4112,37 +4098,25 @@ mod tests {
         assert!(persist_artist_identity_if_missing(
             &conn,
             &artist_id,
-            ArtistIdentityProvider::LastFm,
-            Some("mbid-1"),
-            Some("Owned Artist Canonical"),
+            ArtistIdentityProvider::Discogs,
+            Some("discogs-1"),
         )
         .unwrap());
         persist_artist_identity_if_missing(
             &conn,
             &artist_id,
-            ArtistIdentityProvider::LastFm,
-            Some("mbid-replacement"),
-            Some("Replacement Name"),
+            ArtistIdentityProvider::Discogs,
+            Some("discogs-replacement"),
         )
         .unwrap();
-        persist_artist_identity_if_missing(
-            &conn,
-            &artist_id,
-            ArtistIdentityProvider::Deezer,
-            None,
-            None,
-        )
-        .unwrap();
+        persist_artist_identity_if_missing(&conn, &artist_id, ArtistIdentityProvider::Deezer, None)
+            .unwrap();
 
         let identity = get_artist_external_identity(&conn, &artist_id)
             .unwrap()
             .expect("artist identity");
-        assert_eq!(identity.lastfm_mbid.as_deref(), Some("mbid-1"));
-        assert_eq!(
-            identity.lastfm_canonical_name.as_deref(),
-            Some("Owned Artist Canonical")
-        );
-        assert!(identity.lastfm_identity_checked_at.is_some());
+        assert_eq!(identity.discogs_artist_id.as_deref(), Some("discogs-1"));
+        assert!(identity.discogs_identity_checked_at.is_some());
         assert_eq!(identity.deezer_artist_id, None);
         assert!(identity.deezer_identity_checked_at.is_some());
     }
@@ -4197,7 +4171,7 @@ mod tests {
         assert_eq!(
             find_owned_artist_by_external_identity(
                 &conn,
-                ArtistIdentityProvider::LastFm,
+                ArtistIdentityProvider::MusicBrainz,
                 "shared-mbid"
             )
             .unwrap(),

@@ -100,14 +100,20 @@ impl SyncMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataSettings {
     pub mode: SyncMode,
-    /// `radioKeylessProviders`: MusicBrainz/ListenBrainz (default on).
+    /// The main metadata switch (see [`keyless_enabled`]).
     pub keyless: bool,
+}
+
+/// The main metadata switch (`radioKeylessProviders`, default on). Off: BoogieBox asks none of MusicBrainz,
+/// ListenBrainz, Wikipedia/Wikidata or TheAudioDB; answers already saved are still shown.
+pub fn keyless_enabled(conn: &rusqlite::Connection) -> bool {
+    get_setting(conn, "radioKeylessProviders").is_none_or(|v| v != "false")
 }
 
 pub fn read_settings(conn: &rusqlite::Connection) -> MetadataSettings {
     MetadataSettings {
         mode: SyncMode::parse(get_setting(conn, "radioTrackTagSync").as_deref()),
-        keyless: get_setting(conn, "radioKeylessProviders").is_none_or(|v| v != "false"),
+        keyless: keyless_enabled(conn),
     }
 }
 

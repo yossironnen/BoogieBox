@@ -252,8 +252,7 @@ async fn metadata_search_handler(
         tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap_or_else(|p| p.into_inner());
             (
-                boogiebox_db::artwork::get_setting(&conn, "radioKeylessProviders")
-                    .is_none_or(|value| value != "false"),
+                crate::radio_metadata::keyless_enabled(&conn),
                 boogiebox_db::artwork::get_setting(&conn, "discogsToken"),
                 boogiebox_db::artwork::get_setting(&conn, "spotifyClientId"),
                 boogiebox_db::artwork::get_setting(&conn, "spotifyClientSecret"),
@@ -385,7 +384,8 @@ const TOP_SONGS: usize = 5;
 
 /// An artist's most played songs: ListenBrainz listen counts by MusicBrainz id, else Deezer's order (no key
 /// either way). Answers `{ source, tracks: [{ name, listens, url }] }`; `source` is `listenbrainz`, `deezer` or
-/// `null` (nothing found). Cached a week, an empty answer a day; a failed lookup isn't cached.
+/// `null` (nothing found). Cached a week, an empty answer a day; a failed lookup isn't cached. With the main metadata
+/// switch off ListenBrainz isn't asked, and a Deezer answer is kept only a day so turning it on shows soon.
 async fn artist_top_songs_handler(
     State(state): State<SharedState>,
     _user: AuthenticatedUser,
@@ -407,11 +407,12 @@ async fn artist_top_songs_handler(
             let mbid = boogiebox_db::radio::get_artist_musicbrainz_id(&conn, &artist_id)
                 .ok()
                 .flatten();
-            (cached, identity, mbid)
+            let keyless = crate::radio_metadata::keyless_enabled(&conn);
+            (cached, identity, mbid, keyless)
         })
         .await
     };
-    let Ok((cached, identity, mbid)) = lookup else {
+    let Ok((cached, identity, mbid, keyless)) = lookup else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": "Internal server error" })),
@@ -439,7 +440,8 @@ async fn artist_top_songs_handler(
     let mut failed = false;
     let mut source = None;
     let mut tracks = Vec::new();
-    if let Some(mbid) = mbid.as_deref() {
+    let skipped_listenbrainz = !keyless && mbid.is_some();
+    if let Some(mbid) = mbid.as_deref().filter(|_| keyless) {
         match fetch_listenbrainz_top_recordings(&http_client, mbid).await {
             Ok(songs) if !songs.is_empty() => {
                 source = Some("listenbrainz");
@@ -470,7 +472,11 @@ async fn artist_top_songs_handler(
     }
     let body = serde_json::json!({ "source": source, "tracks": tracks });
     if !failed || source.is_some() {
-        let days = if source.is_some() { 7 } else { 1 };
+        let days = if source.is_some() && !skipped_listenbrainz {
+            7
+        } else {
+            1
+        };
         if let Ok(data) = serde_json::to_string(&body) {
             let _ = tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap_or_else(|p| p.into_inner());
@@ -858,8 +864,38 @@ mod tests {
         assert!(body["source"].is_null());
         assert_eq!(body["summary"], "");
 
-        let (status, _) = send(app, get("/api/artists/missing/about")).await;
+        let (status, _) = send(app.clone(), get("/api/artists/missing/about")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Main metadata switch off: a saved answer is still shown, nobody is asked (MusicBrainz `expect(1)`).
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute_batch(&format!(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES ('radioKeylessProviders', 'false');
+                 INSERT INTO artists(id, name, musicbrainz_artist_id) VALUES ('ar-off', 'Massive Attack Too', '{wiki_mbid}');
+                 INSERT INTO albums(id, title, album_artist, artist_id) VALUES ('al-off', 'Dummy', 'Portishead', 'ar-off');"
+            ))
+            .unwrap();
+        }
+        let (_, body) = send(app.clone(), get("/api/artists/ar-wiki/about")).await;
+        assert_eq!(json_body(&body)["source"], "wikipedia");
+        for uri in ["/api/artists/ar-off/about", "/api/albums/al-off/about"] {
+            let (status, body) = send(app.clone(), get(uri)).await;
+            assert_eq!(status, StatusCode::OK);
+            let body = json_body(&body);
+            assert!(body["source"].is_null(), "{uri}");
+            assert!(body["stats"].is_null(), "{uri}");
+        }
+        let saved: i64 = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM lastfm_cache WHERE cache_key IN ('about:artist:ar-off', 'about:album:al-off')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, 0, "nothing saved while the switch is off");
         for var in [
             "BOOGIEBOX_MUSICBRAINZ_API_BASE",
             "BOOGIEBOX_WIKIDATA_API_BASE",
@@ -953,8 +989,31 @@ mod tests {
         assert!(body["tracks"][0]["listens"].is_null());
         assert_eq!(body["tracks"][0]["url"], "https://www.deezer.com/track/1");
 
-        let (status, _) = send(app, get("/api/artists/missing/top-songs")).await;
+        let (status, _) = send(app.clone(), get("/api/artists/missing/top-songs")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Main metadata switch off: Deezer only (ListenBrainz `expect(1)`), kept a day.
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute_batch(&format!(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES ('radioKeylessProviders', 'false');
+                 INSERT INTO artists(id, name, musicbrainz_artist_id, deezer_artist_id)
+                   VALUES ('ar-off', 'Massive Attack Too', '{mbid}', '42');"
+            ))
+            .unwrap();
+        }
+        let (_, body) = send(app.clone(), get("/api/artists/ar-off/top-songs")).await;
+        assert_eq!(json_body(&body)["source"], "deezer");
+        let days: f64 = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT julianday(expires_at) - julianday(fetched_at) FROM lastfm_cache WHERE cache_key = 'topsongs:ar-off'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(days <= 1.01, "{days}");
         std::env::remove_var("BOOGIEBOX_LISTENBRAINZ_API_BASE");
         std::env::remove_var("BOOGIEBOX_DEEZER_API_BASE");
     }

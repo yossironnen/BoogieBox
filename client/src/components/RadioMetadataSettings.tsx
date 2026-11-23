@@ -1,7 +1,7 @@
 /**
- * Settings → Advanced → Artist Radio: how track-level tags and keyless
- * MusicBrainz/ListenBrainz data are collected for Artist Radio, plus live
- * progress. See wip/artist-radio-v2-plan.md §3.4 and §3.6.
+ * Settings → Advanced → Artist Radio: how track-level tags are collected for Artist Radio, plus live progress.
+ * The switch for the free music sources lives in Settings → Integrations (FreeMusicSourcesSetting).
+ * See wip/artist-radio-v2-plan.md §3.4 and §3.6.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -93,27 +93,9 @@ export default function RadioMetadataSettings({ disabled = false }: { disabled?:
         </span>
       </label>
 
-      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-        <input
-          type="checkbox"
-          aria-label="Use MusicBrainz and ListenBrainz"
-          checked={status?.keylessEnabled ?? true}
-          disabled={busy}
-          onChange={(e) => save({ radioKeylessProviders: e.target.checked ? 'true' : 'false' })}
-          style={{ marginTop: 3, accentColor: 'var(--accent)' }}
-        />
-        <span style={{ display: 'grid', gap: 2 }}>
-          <span style={{ color: 'var(--text)', fontWeight: 600 }}>Use MusicBrainz and ListenBrainz</span>
-          <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-            No account or key needed. Adds similar artists, genre and mood tags, and popularity. Artist names and
-            track titles are sent to musicbrainz.org and listenbrainz.org.
-          </span>
-        </span>
-      </label>
-
       {status && !status.keylessEnabled && status.mode !== 'off' ? (
         <div role="note" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-          Turn on MusicBrainz and ListenBrainz to collect tags.
+          Turn on Free music sources under Settings › Integrations to collect tags.
         </div>
       ) : null}
 

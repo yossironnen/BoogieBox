@@ -407,9 +407,11 @@ struct ArtistRow {
     name: String,
     mbid: Option<String>,
     cached: Option<String>,
+    keyless: bool,
 }
 
-/// An artist's bio and stats (`None`: no such artist).
+/// An artist's bio and stats (`None`: no such artist). With the main metadata switch off only a saved answer is
+/// shown; nobody is asked.
 pub async fn artist_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<About> {
     let lookup = id.clone();
     let row = blocking(db, move |conn| -> Option<ArtistRow> {
@@ -423,6 +425,7 @@ pub async fn artist_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<A
                 .ok()
                 .flatten(),
             cached: boogiebox_db::artwork::get_lastfm_cached(conn, &artist_key(&lookup)),
+            keyless: crate::radio_metadata::keyless_enabled(conn),
             name,
         })
     })
@@ -433,6 +436,9 @@ pub async fn artist_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<A
         .and_then(|data| serde_json::from_str::<About>(&data).ok())
     {
         return Some(about);
+    }
+    if !row.keyless {
+        return Some(About::default());
     }
     let mbid = row.mbid.filter(|m| is_valid_mbid(m));
     let mut failed = false;
@@ -471,9 +477,10 @@ struct AlbumRow {
     artist: String,
     release_group: Option<String>,
     cached: Option<String>,
+    keyless: bool,
 }
 
-/// An album's description (`None`: no such album).
+/// An album's description (`None`: no such album). With the main metadata switch off only a saved answer is shown.
 pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<About> {
     let lookup = id.clone();
     let row = blocking(db, move |conn| -> Option<AlbumRow> {
@@ -489,6 +496,7 @@ pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<Ab
             .ok()?;
         Some(AlbumRow {
             cached: boogiebox_db::artwork::get_lastfm_cached(conn, &album_key(&lookup)),
+            keyless: crate::radio_metadata::keyless_enabled(conn),
             title,
             artist,
             release_group,
@@ -501,6 +509,9 @@ pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<Ab
         .and_then(|data| serde_json::from_str::<About>(&data).ok())
     {
         return Some(about);
+    }
+    if !row.keyless {
+        return Some(About::default());
     }
     let release_group = row.release_group.filter(|m| is_valid_mbid(m));
     let mut failed = false;

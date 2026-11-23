@@ -7,7 +7,7 @@ use crate::{
     DbPool,
 };
 use boogiebox_db::{
-    artwork::{get_lastfm_cached, get_lastfm_cached_stale, get_setting, save_lastfm_cache},
+    artwork::{get_lastfm_cached, get_lastfm_cached_stale, save_lastfm_cache},
     music::{
         find_owned_artist_by_external_identity, find_owned_artist_by_name, get_artist,
         get_artist_external_identity, ArtistIdentityProvider, EntityId,
@@ -34,10 +34,6 @@ fn decode_related_cache(payload: Option<String>) -> Option<Vec<RelatedArtistCand
 }
 
 /// Reads a bool setting that defaults to `true` when unset.
-fn setting_enabled_by_default(conn: &Connection, key: &str) -> bool {
-    get_setting(conn, key).is_none_or(|value| value != "false")
-}
-
 struct RelatedContext {
     deezer_artist_id: Option<String>,
     musicbrainz_id: Option<String>,
@@ -81,7 +77,7 @@ pub async fn gather_related_candidates(
             Ok(Some(RelatedContext {
                 deezer_artist_id: identity.deezer_artist_id,
                 musicbrainz_id: get_artist_musicbrainz_id(&conn, &source_id)?,
-                keyless: setting_enabled_by_default(&conn, "radioKeylessProviders"),
+                keyless: crate::radio_metadata::keyless_enabled(&conn),
                 keys,
                 fresh,
                 stale,

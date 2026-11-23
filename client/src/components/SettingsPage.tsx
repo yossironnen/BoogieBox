@@ -24,6 +24,7 @@ import BackupSettingsSection from './BackupSettingsSection';
 import ConfirmModal from './ConfirmModal';
 import CommandBar from './CommandBar';
 import RadioMetadataSettings from './RadioMetadataSettings';
+import FreeMusicSourcesSetting from './FreeMusicSourcesSetting';
 import PlayOnSettings from './PlayOnSettings';
 import SubsonicSettings from './SubsonicSettings';
 import ConnectedAppsPanel from './ConnectedAppsPanel';
@@ -3002,6 +3003,10 @@ export default function SettingsPage({
         <div style={P.section}>
 
           {isAdmin && (<>
+          {/* Free music sources: the main metadata switch */}
+          <div style={P.sectionTitle}>Free music sources</div>
+          <FreeMusicSourcesSetting />
+
           {/* Discogs */}
           <IntegrationConnector
             dotColor="#333"

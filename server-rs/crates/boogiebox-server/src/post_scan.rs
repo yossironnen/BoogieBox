@@ -235,7 +235,7 @@ async fn persist_artist_provider_match(
     let external_id = matched.external_id.clone();
     let _ = tokio::task::spawn_blocking(move || {
         let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        persist_artist_identity_if_missing(&conn, &artist_id, provider, Some(&external_id), None)
+        persist_artist_identity_if_missing(&conn, &artist_id, provider, Some(&external_id))
     })
     .await;
 }

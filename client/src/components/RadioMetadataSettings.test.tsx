@@ -1,5 +1,5 @@
 /**
- * Tests the Artist Radio metadata settings card (mode, keyless providers, progress).
+ * Tests the Artist Radio metadata settings card (mode, note when the free music sources are off, progress).
  */
 
 import React from 'react';
@@ -46,13 +46,13 @@ describe('tagProgressPercent', () => {
 });
 
 describe('RadioMetadataSettings', () => {
-  it('shows the current mode, keyless setting, and progress with icons', async () => {
+  it('shows the current mode and progress with icons', async () => {
     render(<RadioMetadataSettings />);
     expect(screen.getByText('Loading status…')).toBeInTheDocument();
     expect(await screen.findByText(/Tracks checked:/)).toHaveTextContent('1,234 of 5,000 (25%)');
     expect(screen.getByText(/Artists with tags:/)).toHaveTextContent('80 of 100 (80%)');
     expect(screen.getByRole('combobox', { name: 'Track tag collection' })).toHaveValue('full');
-    expect(screen.getByRole('checkbox', { name: 'Use MusicBrainz and ListenBrainz' })).toBeChecked();
+    expect(screen.queryByRole('checkbox')).toBeNull();
     expect(screen.getByRole('progressbar', { name: 'Track tag collection progress' })).toHaveAttribute('aria-valuenow', '25');
     expect(screen.queryByRole('note')).toBeNull();
   });
@@ -66,21 +66,10 @@ describe('RadioMetadataSettings', () => {
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Track tag collection' })).toHaveValue('lazy'));
   });
 
-  it('saves the keyless providers toggle in both directions', async () => {
-    render(<RadioMetadataSettings />);
-    const box = await screen.findByRole('checkbox', { name: 'Use MusicBrainz and ListenBrainz' });
-    apiMock.radioMetadataStatus.mockResolvedValue(status({ keylessEnabled: false }));
-    fireEvent.click(box);
-    await waitFor(() => expect(apiMock.settings.update).toHaveBeenCalledWith({ radioKeylessProviders: 'false' }));
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Use MusicBrainz and ListenBrainz' })).not.toBeChecked());
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Use MusicBrainz and ListenBrainz' }));
-    await waitFor(() => expect(apiMock.settings.update).toHaveBeenLastCalledWith({ radioKeylessProviders: 'true' }));
-  });
-
-  it('asks to turn on MusicBrainz when it is off, unless collection is off', async () => {
+  it('points to the free music sources switch when it is off, unless collection is off', async () => {
     apiMock.radioMetadataStatus.mockResolvedValue(status({ keylessEnabled: false }));
     const { unmount } = render(<RadioMetadataSettings />);
-    expect(await screen.findByRole('note')).toHaveTextContent('Turn on MusicBrainz and ListenBrainz to collect tags.');
+    expect(await screen.findByRole('note')).toHaveTextContent('Turn on Free music sources under Settings › Integrations to collect tags.');
     unmount();
     apiMock.radioMetadataStatus.mockResolvedValue(status({ mode: 'off' }));
     const { unmount: unmountOff } = render(<RadioMetadataSettings />);
@@ -111,7 +100,6 @@ describe('RadioMetadataSettings', () => {
     render(<RadioMetadataSettings disabled />);
     await screen.findByText(/Tracks checked:/);
     expect(screen.getByRole('combobox', { name: 'Track tag collection' })).toBeDisabled();
-    expect(screen.getByRole('checkbox', { name: 'Use MusicBrainz and ListenBrainz' })).toBeDisabled();
   });
 
   it('shows the error when saving fails and keeps the last status', async () => {

@@ -9,9 +9,8 @@ use std::collections::HashMap;
 
 /// Re-read an artist's counts after this long; they change slowly.
 pub const POPULARITY_OK_TTL_DAYS: i64 = 90;
-/// An artist Last.fm didn't know may appear there later.
+/// An artist ListenBrainz didn't know may appear there later.
 pub const POPULARITY_EMPTY_TTL_DAYS: i64 = 30;
-const SOURCE_LASTFM: &str = "lastfm";
 /// Counts from ListenBrainz (`total_listen_count` per recording).
 pub const SOURCE_LISTENBRAINZ: &str = "listenbrainz";
 
@@ -107,36 +106,6 @@ pub fn normalize_title(title: &str) -> String {
     }
 }
 
-/// Artists with tracks whose counts are missing or due for another look, never-checked ones first.
-pub fn list_artists_needing_popularity(
-    conn: &Connection,
-    limit: i64,
-) -> rusqlite::Result<Vec<(EntityId, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT ar.id, ar.name
-         FROM artists ar
-         LEFT JOIN artist_popularity_sync s ON s.artist_id = ar.id
-         WHERE TRIM(ar.name) <> ''
-           AND EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = ar.id)
-           -- Counts ListenBrainz gave are never overwritten by Last.fm.
-           AND NOT (s.status = 'ok' AND s.source IS 'listenbrainz')
-           AND (s.artist_id IS NULL
-                OR (s.status = 'ok' AND s.checked_at < datetime('now', ?1))
-                OR (s.status <> 'ok' AND s.checked_at < datetime('now', ?2)))
-         ORDER BY s.artist_id IS NOT NULL, s.checked_at, ar.id
-         LIMIT ?3",
-    )?;
-    let rows = stmt.query_map(
-        params![
-            format!("-{POPULARITY_OK_TTL_DAYS} days"),
-            format!("-{POPULARITY_EMPTY_TTL_DAYS} days"),
-            limit
-        ],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    rows.collect()
-}
-
 /// Artists with a MusicBrainz id whose counts didn't come from ListenBrainz yet, or are due for another look;
 /// never-checked ones first.
 pub fn list_artists_needing_listenbrainz_popularity(
@@ -167,16 +136,6 @@ pub fn list_artists_needing_listenbrainz_popularity(
     rows.collect()
 }
 
-/// Replaces an artist's counts with what Last.fm listed, matched to their tracks by title, and marks the artist
-/// checked. A track with no match has no count. Returns how many tracks matched.
-pub fn store_artist_popularity(
-    conn: &Connection,
-    artist_id: &EntityId,
-    entries: &[PopularityEntry],
-) -> rusqlite::Result<usize> {
-    store_counts(conn, artist_id, entries, SOURCE_LASTFM)
-}
-
 /// Replaces an artist's counts (from any source) with ListenBrainz's, matched by recording id, then title. An
 /// empty list keeps what is there (Last.fm counts stay until ListenBrainz has some) and only marks the check.
 pub fn store_listenbrainz_popularity(
@@ -192,15 +151,6 @@ pub fn store_listenbrainz_popularity(
         )?;
         return Ok(0);
     }
-    store_counts(conn, artist_id, entries, SOURCE_LISTENBRAINZ)
-}
-
-fn store_counts(
-    conn: &Connection,
-    artist_id: &EntityId,
-    entries: &[PopularityEntry],
-    source: &str,
-) -> rusqlite::Result<usize> {
     let mut by_recording: HashMap<&str, &PopularityEntry> = HashMap::new();
     for entry in entries {
         if let Some(mbid) = entry.recording_mbid.as_deref() {
@@ -221,21 +171,12 @@ fn store_counts(
         }
     }
     let tx = conn.unchecked_transaction()?;
-    // Last.fm replaces only its own rows; ListenBrainz replaces every count of the artist, so one artist's songs
-    // never mix the two.
-    if source == SOURCE_LASTFM {
-        tx.execute(
-            "DELETE FROM track_popularity WHERE source = ?1
-               AND track_id IN (SELECT id FROM tracks WHERE artist_id = ?2)",
-            params![source, artist_id],
-        )?;
-    } else {
-        tx.execute(
-            "DELETE FROM track_popularity
-             WHERE track_id IN (SELECT id FROM tracks WHERE artist_id = ?1)",
-            params![artist_id],
-        )?;
-    }
+    // Every count of the artist goes (old Last.fm ones too), so one artist's songs never mix two sources.
+    tx.execute(
+        "DELETE FROM track_popularity
+         WHERE track_id IN (SELECT id FROM tracks WHERE artist_id = ?1)",
+        params![artist_id],
+    )?;
     let tracks: Vec<(EntityId, String, Option<String>)> = tx
         .prepare(
             "SELECT id, COALESCE(title, ''), musicbrainz_recording_id FROM tracks WHERE artist_id = ?1",
@@ -258,7 +199,7 @@ fn store_counts(
                     track_id,
                     entry.scrobbles as i64,
                     entry.listeners.map(|n| n as i64),
-                    source
+                    SOURCE_LISTENBRAINZ
                 ])?;
                 matched += 1;
             }
@@ -266,12 +207,8 @@ fn store_counts(
     }
     tx.execute(
         "INSERT OR REPLACE INTO artist_popularity_sync(artist_id, status, checked_at, source)
-         VALUES (?1, ?2, datetime('now'), ?3)",
-        params![
-            artist_id,
-            if entries.is_empty() { "empty" } else { "ok" },
-            (source != SOURCE_LASTFM).then_some(source)
-        ],
+         VALUES (?1, 'ok', datetime('now'), ?2)",
+        params![artist_id, SOURCE_LISTENBRAINZ],
     )?;
     tx.commit()?;
     Ok(matched)
@@ -341,7 +278,7 @@ mod tests {
     #[test]
     fn counts_reach_every_release_of_a_song_and_unmatched_tracks_have_none() {
         let conn = db();
-        let matched = store_artist_popularity(
+        let matched = store_listenbrainz_popularity(
             &conn,
             &coerce_entity_id("a1"),
             &[
@@ -371,9 +308,9 @@ mod tests {
     fn a_new_look_replaces_the_old_counts() {
         let conn = db();
         let artist = coerce_entity_id("a1");
-        store_artist_popularity(&conn, &artist, &[entry("Rare B-Side", 5)]).unwrap();
+        store_listenbrainz_popularity(&conn, &artist, &[entry("Rare B-Side", 5)]).unwrap();
         assert_eq!(scrobbles(&conn, "t4"), Some(5));
-        store_artist_popularity(&conn, &artist, &[entry("Sometimes", 8)]).unwrap();
+        store_listenbrainz_popularity(&conn, &artist, &[entry("Sometimes", 8)]).unwrap();
         assert_eq!(scrobbles(&conn, "t4"), None);
         assert_eq!(scrobbles(&conn, "t3"), Some(8));
     }
@@ -381,7 +318,8 @@ mod tests {
     #[test]
     fn counts_go_with_the_track() {
         let conn = db();
-        store_artist_popularity(&conn, &coerce_entity_id("a2"), &[entry("The Race", 5)]).unwrap();
+        store_listenbrainz_popularity(&conn, &coerce_entity_id("a2"), &[entry("The Race", 5)])
+            .unwrap();
         conn.execute("DELETE FROM tracks WHERE id = 't5'", [])
             .unwrap();
         let left: i64 = conn
@@ -391,37 +329,47 @@ mod tests {
     }
 
     #[test]
-    fn artists_are_listed_until_checked_and_again_when_due() {
+    fn artists_with_a_musicbrainz_id_are_listed_until_checked_and_again_when_due() {
         let conn = db();
-        let names = |conn: &Connection| -> Vec<String> {
-            list_artists_needing_popularity(conn, 10)
+        conn.execute_batch(
+            "UPDATE artists SET musicbrainz_artist_id = 'mb-' || id WHERE id IN ('a1', 'a2', 'a3');",
+        )
+        .unwrap();
+        let ids = |conn: &Connection| -> Vec<String> {
+            list_artists_needing_listenbrainz_popularity(conn, 10)
                 .unwrap()
                 .into_iter()
-                .map(|(_, name)| name)
+                .map(|(id, _)| id.to_string())
                 .collect()
         };
         assert_eq!(
-            names(&conn),
-            ["Erasure", "Yello"],
-            "no blank names, no artists without tracks"
+            ids(&conn),
+            ["a1", "a2"],
+            "no artists without tracks or an id"
         );
-        assert_eq!(list_artists_needing_popularity(&conn, 1).unwrap().len(), 1);
+        assert_eq!(
+            list_artists_needing_listenbrainz_popularity(&conn, 1)
+                .unwrap()
+                .len(),
+            1
+        );
 
-        store_artist_popularity(&conn, &coerce_entity_id("a1"), &[entry("Sometimes", 1)]).unwrap();
-        store_artist_popularity(&conn, &coerce_entity_id("a2"), &[]).unwrap();
-        assert!(names(&conn).is_empty());
+        store_listenbrainz_popularity(&conn, &coerce_entity_id("a1"), &[entry("Sometimes", 1)])
+            .unwrap();
+        store_listenbrainz_popularity(&conn, &coerce_entity_id("a2"), &[]).unwrap();
+        assert!(ids(&conn).is_empty());
 
-        // An artist Last.fm didn't know comes back sooner than one it did.
+        // An artist ListenBrainz didn't know comes back sooner than one it did.
         conn.execute_batch(
             "UPDATE artist_popularity_sync SET checked_at = datetime('now', '-40 days');",
         )
         .unwrap();
-        assert_eq!(names(&conn), ["Yello"]);
+        assert_eq!(ids(&conn), ["a2"]);
         conn.execute_batch(
             "UPDATE artist_popularity_sync SET checked_at = datetime('now', '-100 days');",
         )
         .unwrap();
-        assert_eq!(names(&conn), ["Erasure", "Yello"]);
+        assert_eq!(ids(&conn), ["a1", "a2"]);
     }
 
     #[test]
