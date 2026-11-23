@@ -208,9 +208,9 @@ Once, before finishing, run the full checks scoped by what changed in the task:
 - Run independent checks (lint, semgrep, tests) in parallel where possible.
 - Ensure all tests pass before finishing.
 
-If ANY code file changes (`.ts/.tsx/.js/.jsx/.css/.rs` or scripts):
+If ANY code file changes (`.ts/.tsx/.js/.jsx/.css/.rs` or scripts, including `e2e/` and tests):
 
-1. Run `npm run version:bump`
+1. Run `npm run version:bump` once per task that changes code, even when the current version was never committed or released. Never reuse the current version for new code changes.
 2. Include updated `client/src/version.ts`
 3. Windows builds only: ensure desktop/package metadata matches the app version:
    - `desktop/src-tauri/tauri.conf.json` `version`
