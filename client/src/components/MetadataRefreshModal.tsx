@@ -16,6 +16,7 @@ interface Props {
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
+  musicbrainz: 'MusicBrainz',
   lastfm: 'Last.fm',
   discogs: 'Discogs',
   spotify: 'Spotify',
@@ -23,6 +24,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const PROVIDER_COLORS: Record<string, string> = {
+  musicbrainz: '#ba478f',
   lastfm: '#d51007',
   discogs: '#333',
   spotify: '#1db954',
@@ -246,13 +248,19 @@ export default function MetadataRefreshModal({ mode, entityId, initialArtist, in
                         }}
                       >
                         {r.image ? (
-                          <img src={r.image} alt="" style={{ width: 48, height: 48, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }} />
+                          <img
+                            src={r.image}
+                            alt=""
+                            style={{ width: 48, height: 48, borderRadius: 6, objectFit: 'cover', flexShrink: 0, background: 'var(--border)' }}
+                            onError={e => { e.currentTarget.style.visibility = 'hidden'; }}
+                          />
                         ) : (
                           <div style={{ width: 48, height: 48, borderRadius: 6, background: 'var(--border)', flexShrink: 0 }} />
                         )}
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 700, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
                           {r.artist && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{r.artist}</div>}
+                          {r.disambiguation && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.disambiguation}</div>}
                           <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2, display: 'flex', gap: 8 }}>
                             {r.year && <span>{r.year}</span>}
                             {r.genre && <span>{r.genre}</span>}

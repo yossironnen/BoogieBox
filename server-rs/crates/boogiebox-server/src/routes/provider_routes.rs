@@ -267,10 +267,12 @@ async fn metadata_search_handler(
         None => return setup_required_response(),
     };
 
-    let (lastfm_key, discogs_token, spotify_id, spotify_secret) =
+    let (musicbrainz, lastfm_key, discogs_token, spotify_id, spotify_secret) =
         tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap_or_else(|p| p.into_inner());
             (
+                boogiebox_db::artwork::get_setting(&conn, "radioKeylessProviders")
+                    .is_none_or(|value| value != "false"),
                 boogiebox_db::artwork::get_setting(&conn, "lastfmKey"),
                 boogiebox_db::artwork::get_setting(&conn, "discogsToken"),
                 boogiebox_db::artwork::get_setting(&conn, "spotifyClientId"),
@@ -278,7 +280,7 @@ async fn metadata_search_handler(
             )
         })
         .await
-        .unwrap_or((None, None, None, None));
+        .unwrap_or((true, None, None, None, None));
 
     let http_client = state
         .read()
@@ -287,6 +289,7 @@ async fn metadata_search_handler(
         .clone();
     let (results, provider_warnings) = search_metadata(
         &http_client,
+        musicbrainz,
         lastfm_key.as_deref(),
         discogs_token.as_deref(),
         spotify_id.as_deref(),
@@ -903,6 +906,16 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/artist/"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "artists": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/api/token"))
             .respond_with(
@@ -946,6 +959,7 @@ mod tests {
 
         std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
     }
 
     #[tokio::test]

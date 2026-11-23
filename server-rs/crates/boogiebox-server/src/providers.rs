@@ -655,12 +655,17 @@ pub struct MetadataSearchResult {
     pub artist: Option<String>,
     /// Documents the Year public API surface.
     pub year: Option<String>,
-    /// Documents the Release Type public API surface.
+    /// The client reads `releaseType`.
+    #[serde(rename = "releaseType")]
     pub release_type: Option<String>,
     /// Documents the Genre public API surface.
     pub genre: Option<String>,
-    /// Documents the Cover Url public API surface.
+    /// The client reads `image`.
+    #[serde(rename = "image")]
     pub cover_url: Option<String>,
+    /// Tells namesakes apart (MusicBrainz disambiguation and area).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disambiguation: Option<String>,
     /// Documents the Tracklist public API surface.
     pub tracklist: Option<Vec<Value>>,
     /// Documents the Description public API surface.
@@ -707,17 +712,19 @@ pub async fn search_metadata_combined(
     results
 }
 
-/// Searches for artist/album metadata as a failover chain — Last.fm first,
-/// then Discogs (album searches only; Discogs has no artist-only search
-/// wired up here), then Spotify as the last resort — stopping at the first
-/// provider that returns at least one match. A provider that errors (rate
-/// limit or otherwise) doesn't stop the chain, but its failure is recorded
-/// and returned alongside whatever the rest of the chain found, so the
-/// client can tell "genuinely no matches" apart from "a provider failed" —
-/// previously indistinguishable (a Spotify 429 looked exactly like an empty
-/// result).
+/// Searches for artist/album metadata as a failover chain — MusicBrainz
+/// first (keyless, several candidates), then Discogs (album searches only;
+/// Discogs has no artist-only search wired up here), then Spotify, then
+/// Last.fm while its key still works — stopping at the first provider that
+/// returns at least one match. A provider that errors (rate limit or
+/// otherwise) doesn't stop the chain, but its failure is recorded and
+/// returned alongside whatever the rest of the chain found, so the client
+/// can tell "genuinely no matches" apart from "a provider failed".
+// Back to 7 arguments when the Last.fm key goes.
+#[allow(clippy::too_many_arguments)]
 pub async fn search_metadata(
     client: &Client,
+    musicbrainz: bool,
     lastfm_key: Option<&str>,
     discogs_token: Option<&str>,
     spotify_client_id: Option<&str>,
@@ -727,12 +734,12 @@ pub async fn search_metadata(
 ) -> (Vec<MetadataSearchResult>, Vec<ProviderSearchWarning>) {
     let mut warnings = Vec::new();
 
-    if let Some(key) = lastfm_key.filter(|key| lastfm_key_usable(key)) {
-        match search_lastfm_metadata(client, key, artist, album).await {
+    if musicbrainz {
+        match search_musicbrainz_metadata(client, artist, album).await {
             Ok(results) if !results.is_empty() => return (results, warnings),
             Ok(_) => {}
             Err(reason) => warnings.push(ProviderSearchWarning {
-                provider: "lastfm".to_owned(),
+                provider: "musicbrainz".to_owned(),
                 reason,
             }),
         }
@@ -753,18 +760,238 @@ pub async fn search_metadata(
 
     if let (Some(id), Some(secret)) = (spotify_client_id, spotify_client_secret) {
         match search_spotify_metadata(client, id, secret, artist, album).await {
-            Ok(results) => (results, warnings),
-            Err(reason) => {
-                warnings.push(ProviderSearchWarning {
-                    provider: "spotify".to_owned(),
-                    reason,
-                });
-                (Vec::new(), warnings)
-            }
+            Ok(results) if !results.is_empty() => return (results, warnings),
+            Ok(_) => {}
+            Err(reason) => warnings.push(ProviderSearchWarning {
+                provider: "spotify".to_owned(),
+                reason,
+            }),
         }
-    } else {
-        (Vec::new(), warnings)
     }
+
+    if let Some(key) = lastfm_key.filter(|key| lastfm_key_usable(key)) {
+        match search_lastfm_metadata(client, key, artist, album).await {
+            Ok(results) => return (results, warnings),
+            Err(reason) => warnings.push(ProviderSearchWarning {
+                provider: "lastfm".to_owned(),
+                reason,
+            }),
+        }
+    }
+
+    (Vec::new(), warnings)
+}
+
+/// Search words with Lucene syntax and operators removed, lowercased so a title word like "AND" stays a word.
+fn lucene_terms(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if matches!(
+                c,
+                '+' | '-'
+                    | '&'
+                    | '|'
+                    | '!'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '['
+                    | ']'
+                    | '^'
+                    | '"'
+                    | '~'
+                    | '*'
+                    | '?'
+                    | ':'
+                    | '\\'
+                    | '/'
+            ) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Lowest MusicBrainz search score a Refresh Metadata candidate may have.
+const MUSICBRAINZ_MIN_CANDIDATE_SCORE: i64 = 50;
+
+/// Cover Art Archive front image for a release group (the browser loads it; 404 when there is none).
+fn cover_art_archive_front(release_group_id: &str) -> String {
+    format!("https://coverartarchive.org/release-group/{release_group_id}/front-250")
+}
+
+/// The most voted tag of a MusicBrainz search hit.
+fn musicbrainz_top_tag(item: &Value) -> Option<String> {
+    item["tags"]
+        .as_array()?
+        .iter()
+        .filter_map(|tag| Some((tag["count"].as_i64().unwrap_or(0), tag["name"].as_str()?)))
+        .max_by_key(|(count, _)| *count)
+        .map(|(_, name)| name.to_owned())
+}
+
+/// Joins the non-empty parts that tell namesakes apart.
+fn musicbrainz_disambiguation(parts: &[Option<&str>]) -> Option<String> {
+    let joined = parts
+        .iter()
+        .flatten()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// Album, single, EP or compilation from a release group's primary and secondary types.
+fn musicbrainz_release_type(item: &Value) -> Option<String> {
+    let compilation = item["secondary-types"]
+        .as_array()
+        .is_some_and(|types| types.iter().any(|t| t.as_str() == Some("Compilation")));
+    if compilation {
+        return Some("compilation".to_owned());
+    }
+    item["primary-type"]
+        .as_str()
+        .map(str::to_ascii_lowercase)
+        .filter(|kind| matches!(kind.as_str(), "album" | "single" | "ep"))
+}
+
+/// Refresh Metadata candidates from MusicBrainz: up to five artists, or
+/// release groups when `album` is given, best search score first.
+async fn search_musicbrainz_metadata(
+    client: &Client,
+    artist: &str,
+    album: Option<&str>,
+) -> Result<Vec<MetadataSearchResult>, ProviderSearchFailure> {
+    let artist_name: String = artist
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\'))
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    let artist_terms = lucene_terms(artist);
+    let album_terms = album.map(lucene_terms).filter(|terms| !terms.is_empty());
+    if artist_name.is_empty() || artist_terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Loose terms, not an exact phrase: tag titles carry extras ("Ep", "[Bonus Tracks]",
+    // "Pres.") that a phrase never matches. On 20 library albums: 19 found vs 10.
+    let (entity, query, subject) = match (&album_terms, album) {
+        (Some(terms), Some(title)) => (
+            "release-group",
+            format!("releasegroup:({terms}) AND artist:\"{artist_name}\""),
+            format!("{artist_name} — {title}"),
+        ),
+        _ => (
+            "artist",
+            format!("artist:({artist_terms})"),
+            artist_name.clone(),
+        ),
+    };
+    let album_title = album_terms;
+    let url = format!(
+        "{}/{entity}/?query={}&fmt=json&limit=5",
+        musicbrainz_api_base(),
+        urlencoding::encode(&query)
+    );
+    let t0 = log_request("musicbrainz", "metadata_search", &subject);
+    let response = client
+        .get(&url)
+        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+        .timeout(PROVIDER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
+    log_response("musicbrainz", "metadata_search", t0, response.status());
+    check_metabrainz_status(&response).map_err(|error| match error {
+        ProviderFetchError::RateLimited => ProviderSearchFailure::RateLimited,
+        _ => ProviderSearchFailure::Unavailable,
+    })?;
+    let data: Value = response
+        .json()
+        .await
+        .map_err(|_| ProviderSearchFailure::Unavailable)?;
+    let key = if album_title.is_some() {
+        "release-groups"
+    } else {
+        "artists"
+    };
+    let hits = data[key]
+        .as_array()
+        .ok_or(ProviderSearchFailure::Unavailable)?;
+    let confident = hits.iter().filter(|item| {
+        item["score"].as_i64().unwrap_or(0) >= MUSICBRAINZ_MIN_CANDIDATE_SCORE
+            && item["id"].as_str().is_some_and(is_valid_mbid)
+    });
+    let results = if album_title.is_some() {
+        confident
+            .map(|item| {
+                let credit = item["artist-credit"].as_array().map(|credits| {
+                    credits
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "{}{}",
+                                c["name"]
+                                    .as_str()
+                                    .or_else(|| c["artist"]["name"].as_str())
+                                    .unwrap_or(""),
+                                c["joinphrase"].as_str().unwrap_or("")
+                            )
+                        })
+                        .collect::<String>()
+                });
+                MetadataSearchResult {
+                    provider: "musicbrainz".to_owned(),
+                    title: optional_nonempty_json_string(&item["title"]),
+                    artist: credit
+                        .map(|c| c.trim().to_owned())
+                        .filter(|c| !c.is_empty()),
+                    year: item["first-release-date"]
+                        .as_str()
+                        .and_then(|date| date.get(..4))
+                        .map(str::to_owned),
+                    release_type: musicbrainz_release_type(item),
+                    genre: musicbrainz_top_tag(item),
+                    cover_url: item["id"].as_str().map(cover_art_archive_front),
+                    disambiguation: musicbrainz_disambiguation(&[item["disambiguation"].as_str()]),
+                    tracklist: None,
+                    description: None,
+                    extra: Some(item.clone()),
+                }
+            })
+            .collect()
+    } else {
+        confident
+            .map(|item| MetadataSearchResult {
+                provider: "musicbrainz".to_owned(),
+                title: optional_nonempty_json_string(&item["name"]),
+                artist: optional_nonempty_json_string(&item["name"]),
+                year: item["life-span"]["begin"]
+                    .as_str()
+                    .and_then(|date| date.get(..4))
+                    .map(str::to_owned),
+                release_type: None,
+                genre: musicbrainz_top_tag(item),
+                cover_url: None,
+                disambiguation: musicbrainz_disambiguation(&[
+                    item["disambiguation"].as_str(),
+                    item["area"]["name"].as_str(),
+                ]),
+                tracklist: None,
+                description: None,
+                extra: Some(item.clone()),
+            })
+            .collect()
+    };
+    Ok(results)
 }
 
 /// One-result-or-none Last.fm lookup (`artist.getinfo`/`album.getinfo` are
@@ -842,6 +1069,7 @@ async fn search_lastfm_metadata(
             release_type: None,
             genre,
             cover_url: image,
+            disambiguation: None,
             tracklist: None,
             description: if summary.is_empty() {
                 None
@@ -873,6 +1101,7 @@ async fn search_lastfm_metadata(
             release_type: None,
             genre,
             cover_url: image,
+            disambiguation: None,
             tracklist: None,
             description: if summary.is_empty() {
                 None
@@ -963,6 +1192,7 @@ async fn search_discogs_metadata(
                     .and_then(|v| v.as_str())
                     .map(str::to_owned),
                 cover_url,
+                disambiguation: None,
                 tracklist: None,
                 description: None,
                 extra: Some(item.clone()),
@@ -1046,6 +1276,7 @@ async fn search_spotify_metadata(
                     release_type: item["album_type"].as_str().map(str::to_owned),
                     genre: None,
                     cover_url,
+                    disambiguation: None,
                     tracklist: None,
                     description: None,
                     extra: Some(item.clone()),
@@ -1078,6 +1309,7 @@ async fn search_spotify_metadata(
                         .and_then(|v| v.as_str())
                         .map(str::to_owned),
                     cover_url,
+                    disambiguation: None,
                     tracklist: None,
                     description: None,
                     extra: Some(item.clone()),
@@ -2636,10 +2868,10 @@ pub(crate) mod provider_fetch_tests {
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
     }
 
-    // -- search_metadata failover chain (Last.fm -> Discogs -> Spotify) ----------
+    // -- search_metadata failover chain (MusicBrainz -> Discogs -> Spotify -> Last.fm)
 
     #[tokio::test]
-    async fn search_metadata_stops_at_lastfm_when_it_has_a_match() {
+    async fn search_metadata_uses_lastfm_last_when_it_is_the_only_provider() {
         let _guard = ENV_LOCK.lock().await;
         let server = MockServer::start().await;
         std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
@@ -2652,12 +2884,10 @@ pub(crate) mod provider_fetch_tests {
             })))
             .mount(&server)
             .await;
-        // No Discogs/Spotify mocks mounted at all — if the chain called them,
-        // the request would fail/hang, proving it stopped at Last.fm.
-
         let client = Client::new();
         let (results, warnings) = search_metadata(
             &client,
+            false,
             Some("lastfm-key"),
             None,
             None,
@@ -2675,19 +2905,30 @@ pub(crate) mod provider_fetch_tests {
     }
 
     #[tokio::test]
-    async fn search_metadata_falls_through_to_the_next_provider_when_lastfm_has_nothing() {
+    async fn search_metadata_falls_through_when_musicbrainz_has_nothing_and_skips_lastfm_after_a_match(
+    ) {
         let _guard = ENV_LOCK.lock().await;
         let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
 
         Mock::given(method("GET"))
+            .and(path("/artist/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": [{ "id": "79239441-bfd5-4981-a70c-55c3f15c1287", "score": 30, "name": "Madonnas" }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
             .and(path("/"))
             .and(query_param("method", "artist.getinfo"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "artist": {}
+                "artist": { "name": "Madonna" }
             })))
+            .expect(0)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -2709,6 +2950,7 @@ pub(crate) mod provider_fetch_tests {
         let client = Client::new();
         let (results, warnings) = search_metadata(
             &client,
+            true,
             Some("lastfm-key"),
             None,
             Some("spotify-id"),
@@ -2721,9 +2963,10 @@ pub(crate) mod provider_fetch_tests {
         assert_eq!(results[0].provider, "spotify");
         assert!(
             warnings.is_empty(),
-            "an empty (not erroring) Last.fm lookup isn't a warning"
+            "a low-score (not erroring) MusicBrainz search isn't a warning"
         );
 
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
         std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
@@ -2733,14 +2976,13 @@ pub(crate) mod provider_fetch_tests {
     async fn search_metadata_records_a_rate_limit_warning_and_keeps_failing_over() {
         let _guard = ENV_LOCK.lock().await;
         let server = MockServer::start().await;
-        std::env::set_var("BOOGIEBOX_LASTFM_API_BASE", server.uri());
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE", server.uri());
         std::env::set_var("BOOGIEBOX_SPOTIFY_API_BASE", server.uri());
 
         Mock::given(method("GET"))
-            .and(path("/"))
-            .and(query_param("method", "artist.getinfo"))
-            .respond_with(ResponseTemplate::new(429))
+            .and(path("/artist/"))
+            .respond_with(ResponseTemplate::new(503))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -2762,7 +3004,8 @@ pub(crate) mod provider_fetch_tests {
         let client = Client::new();
         let (results, warnings) = search_metadata(
             &client,
-            Some("lastfm-key"),
+            true,
+            None,
             None,
             Some("spotify-id"),
             Some("spotify-secret"),
@@ -2772,12 +3015,124 @@ pub(crate) mod provider_fetch_tests {
         .await;
         assert!(results.is_empty());
         assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].provider, "lastfm");
+        assert_eq!(warnings[0].provider, "musicbrainz");
         assert_eq!(warnings[0].reason, ProviderSearchFailure::RateLimited);
 
-        std::env::remove_var("BOOGIEBOX_LASTFM_API_BASE");
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_ACCOUNTS_BASE");
         std::env::remove_var("BOOGIEBOX_SPOTIFY_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn musicbrainz_metadata_search_lists_artist_namesakes_to_pick_from() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/artist/"))
+            .and(query_param("query", "artist:(nirvana)"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artists": [
+                    { "id": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "score": 100, "name": "Nirvana",
+                      "disambiguation": "90s US grunge band", "area": { "name": "United States" },
+                      "life-span": { "begin": "1987" },
+                      "tags": [{ "count": 3, "name": "rock" }, { "count": 9, "name": "grunge" }] },
+                    { "id": "9282c8b4-ca0b-4c6b-b7e3-4f7762dfc4d6", "score": 100, "name": "Nirvana",
+                      "disambiguation": "60s band from the UK", "area": { "name": "United Kingdom" } },
+                    { "id": "not-an-id", "score": 100, "name": "Broken" },
+                    { "id": "0d8ba0c2-1d43-4de0-bc0e-b0b2b1a4a6f1", "score": 20, "name": "Nirvana Tribute" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (results, warnings) =
+            search_metadata(&client, true, None, None, None, None, "Nirvana", None).await;
+        assert!(warnings.is_empty());
+        assert_eq!(results.len(), 2, "bad ids and weak scores are dropped");
+        assert!(results.iter().all(|r| r.provider == "musicbrainz"));
+        assert_eq!(results[0].title.as_deref(), Some("Nirvana"));
+        assert_eq!(results[0].year.as_deref(), Some("1987"));
+        assert_eq!(results[0].genre.as_deref(), Some("grunge"));
+        assert_eq!(
+            results[0].disambiguation.as_deref(),
+            Some("90s US grunge band · United States")
+        );
+        assert_eq!(
+            results[1].disambiguation.as_deref(),
+            Some("60s band from the UK · United Kingdom")
+        );
+        let json = serde_json::to_value(&results[0]).unwrap();
+        assert!(json.get("image").is_some() && json.get("releaseType").is_some());
+        assert!(json.get("cover_url").is_none());
+
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
+    }
+
+    #[tokio::test]
+    async fn musicbrainz_metadata_search_maps_release_groups_for_albums() {
+        let _guard = ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        std::env::set_var("BOOGIEBOX_MUSICBRAINZ_API_BASE", server.uri());
+        let rg = "1b022e01-4da6-387b-8658-8678046e4cef";
+        Mock::given(method("GET"))
+            .and(path("/release-group/"))
+            .and(query_param(
+                "query",
+                "releasegroup:(nevermind) AND artist:\"Nirvana\"",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "release-groups": [
+                    { "id": rg, "score": 100, "title": "Nevermind", "primary-type": "Album",
+                      "first-release-date": "1991-09-24",
+                      "artist-credit": [{ "name": "Nirvana", "joinphrase": "" }],
+                      "tags": [{ "count": 5, "name": "grunge" }] },
+                    { "id": "6e8a7b7c-0b2a-4a4a-9b1a-0d6d3c3e2f11", "score": 90, "title": "Nevermind Hits",
+                      "primary-type": "Album", "secondary-types": ["Compilation"],
+                      "artist-credit": [{ "name": "Nirvana", "joinphrase": " & " }, { "name": "Friends" }] },
+                    { "id": "3c2f9a1e-5b8d-4e6f-a7c9-1d2e3f4a5b6c", "score": 80, "title": "Nevermind Live",
+                      "primary-type": "Broadcast", "first-release-date": "" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let (results, _) = search_metadata(
+            &client,
+            true,
+            None,
+            None,
+            None,
+            None,
+            "Nirvana",
+            Some("Nevermind"),
+        )
+        .await;
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].year.as_deref(), Some("1991"));
+        assert_eq!(results[0].release_type.as_deref(), Some("album"));
+        assert_eq!(results[0].genre.as_deref(), Some("grunge"));
+        assert_eq!(
+            results[0].cover_url.as_deref(),
+            Some(format!("https://coverartarchive.org/release-group/{rg}/front-250").as_str())
+        );
+        assert_eq!(results[1].release_type.as_deref(), Some("compilation"));
+        assert_eq!(results[1].artist.as_deref(), Some("Nirvana & Friends"));
+        assert_eq!(results[2].release_type, None);
+        assert_eq!(results[2].year, None);
+
+        std::env::remove_var("BOOGIEBOX_MUSICBRAINZ_API_BASE");
+    }
+
+    #[test]
+    fn lucene_terms_drop_query_syntax_and_operators() {
+        assert_eq!(
+            lucene_terms("Chase (Us 12\" Promo) AND [Bonus: Tracks] && C+C / Vol.2?"),
+            "chase us 12 promo and bonus tracks c c vol.2"
+        );
+        assert_eq!(lucene_terms(" ()  "), "");
     }
 
     #[tokio::test]
@@ -2806,6 +3161,7 @@ pub(crate) mod provider_fetch_tests {
         // the chain, matching the real regression this was found from.
         let (results, warnings) = search_metadata(
             &client,
+            false,
             None,
             None,
             Some("spotify-id"),
@@ -3234,8 +3590,17 @@ pub(crate) mod provider_fetch_tests {
         assert!(fetch_lastfm_artist_top_tags(&client, "dead-10", "Cher")
             .await
             .is_empty());
-        let (results, warnings) =
-            search_metadata(&client, Some("dead-10"), None, None, None, "Cher", None).await;
+        let (results, warnings) = search_metadata(
+            &client,
+            false,
+            Some("dead-10"),
+            None,
+            None,
+            None,
+            "Cher",
+            None,
+        )
+        .await;
         assert!(
             results.is_empty() && warnings.is_empty(),
             "skipped, not a failure"

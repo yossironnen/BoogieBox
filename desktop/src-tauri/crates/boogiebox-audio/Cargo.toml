@@ -1,6 +1,6 @@
 [package]
 name = "boogiebox-audio"
-version = "0.9.120"
+version = "0.9.121"
 edition = "2021"
 publish = false
 description = "Native Hi-Res playback engine for the BoogieBox desktop app (HTTP range source, symphonia decode, WASAPI output)"

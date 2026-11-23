@@ -729,9 +729,9 @@ export const api = {
       genre?: string;
       description?: string;
       label?: string;
-      releaseType?: 'album' | 'single' | 'compilation';
-      discogsReleaseType?: 'album' | 'single' | 'compilation';
-      spotifyReleaseType?: 'album' | 'single' | 'compilation';
+      releaseType?: 'album' | 'single' | 'ep' | 'compilation';
+      discogsReleaseType?: 'album' | 'single' | 'ep' | 'compilation';
+      spotifyReleaseType?: 'album' | 'single' | 'ep' | 'compilation';
     },
     resetLock?: boolean,
   ) =>

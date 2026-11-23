@@ -137,6 +137,43 @@ describe('MetadataRefreshModal', () => {
     }));
   });
 
+  it('lists MusicBrainz namesakes with what tells them apart and applies the picked release type', async () => {
+    apiMock.integrations.metadataSearch.mockResolvedValue({
+      results: [
+        { provider: 'musicbrainz', type: 'album', title: 'Nevermind', artist: 'Nirvana', year: '1991', releaseType: 'album', image: 'https://coverartarchive.org/release-group/x/front-250' },
+        { provider: 'musicbrainz', type: 'album', title: 'Nevermind', artist: 'Nirvana', releaseType: 'ep', disambiguation: 'promo' },
+      ],
+      provider_warnings: [],
+    });
+    apiMock.updateAlbumMetadata.mockResolvedValue({ ok: true });
+    const { container } = render(
+      <MetadataRefreshModal
+        mode="album"
+        entityId="album-1"
+        initialArtist="Nirvana"
+        initialAlbum="Nevermind"
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('MusicBrainz')).toBeInTheDocument();
+    expect(screen.getByText('2 results')).toBeInTheDocument();
+    expect(screen.getByText('promo')).toBeInTheDocument();
+    const cover = container.querySelector('img')!;
+    fireEvent.error(cover);
+    expect(cover.style.visibility).toBe('hidden');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Apply' })[1]);
+    await waitFor(() => expect(apiMock.updateAlbumMetadata).toHaveBeenCalledWith('album-1', expect.objectContaining({
+      title: 'Nevermind',
+      album_artist: 'Nirvana',
+      releaseType: 'ep',
+      discogsReleaseType: undefined,
+      spotifyReleaseType: undefined,
+    })));
+  });
+
   it('shows a rate-limit message when a provider was rate limited', async () => {
     apiMock.integrations.metadataSearch.mockResolvedValue({
       results: [],

@@ -978,7 +978,7 @@ export interface SonicFingerprint {
 
 /** Metadata Search Result is part of this module's public API. */
 export interface MetadataSearchResult {
-  provider: 'lastfm' | 'discogs' | 'spotify' | 'deezer';
+  provider: 'musicbrainz' | 'lastfm' | 'discogs' | 'spotify' | 'deezer';
   type: 'artist' | 'album';
   title: string;
   artist?: string;
@@ -987,7 +987,9 @@ export interface MetadataSearchResult {
   tags?: string[];
   image?: string;
   url?: string;
-  releaseType?: 'album' | 'single' | 'compilation';
+  releaseType?: 'album' | 'single' | 'ep' | 'compilation';
+  /** Tells namesakes apart, e.g. "90s US grunge band · United States". */
+  disambiguation?: string;
 }
 
 /** One metadata-search provider that failed instead of contributing results
