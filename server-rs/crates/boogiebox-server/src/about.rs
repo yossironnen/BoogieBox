@@ -1,6 +1,7 @@
 //! Artist bios and album descriptions without a key (`wip/lastfm-replacement-plan.md` phase 2): the English
 //! Wikipedia summary reached through MusicBrainz → Wikidata links (never a name search, so no disambiguation
-//! pages), then TheAudioDB with its free key.
+//! pages), then TheAudioDB with its free key. An album whose files carry no MusicBrainz tag gets its release group
+//! from one clear MusicBrainz search match, kept on the album.
 //! Artist stats are ListenBrainz listen and listener counts.
 
 use std::time::Duration;
@@ -10,10 +11,12 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::musicbrainz_gate::{self, Priority};
 use crate::providers::urlencoding;
 use crate::providers::{
-    check_metabrainz_status, is_valid_mbid, listenbrainz_api_base, musicbrainz_api_base,
-    optional_nonempty_json_string, ProviderFetchError, MUSICBRAINZ_USER_AGENT,
+    check_metabrainz_status, is_valid_mbid, listenbrainz_api_base, lucene_terms,
+    musicbrainz_api_base, normalize_artist_name, optional_nonempty_json_string, ProviderFetchError,
+    MUSICBRAINZ_USER_AGENT,
 };
 use crate::DbPool;
 
@@ -93,7 +96,9 @@ async fn musicbrainz_wiki_links(
         "{}/{entity}/{mbid}?inc=url-rels&fmt=json",
         musicbrainz_api_base()
     );
-    let response = get(client, &url).send().await.map_err(failed)?;
+    let response = musicbrainz_gate::send(get(client, &url), Priority::Foreground)
+        .await
+        .map_err(failed)?;
     if response.status().as_u16() == 404 {
         return Ok((None, None));
     }
@@ -212,6 +217,151 @@ async fn wikipedia_text(
     }
 }
 
+/// An album title without its bracketed extras ("Brotherhood [Collector's Edition]" → "Brotherhood").
+fn title_without_brackets(title: &str) -> String {
+    let mut depth = 0usize;
+    title
+        .chars()
+        .filter(|c| match c {
+            '(' | '[' => {
+                depth += 1;
+                false
+            }
+            ')' | ']' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => depth == 0,
+        })
+        .collect()
+}
+
+/// A title as release groups are compared: `normalize_title`, without a trailing "EP" ("Rainmaker Ep" is
+/// MusicBrainz's "Rainmaker").
+fn album_title_key(title: &str) -> String {
+    let trimmed = title.trim_end();
+    let lower = trimmed.to_lowercase();
+    let without_ep = [" ep", " e.p.", " e.p"]
+        .iter()
+        .find_map(|suffix| {
+            lower
+                .ends_with(suffix)
+                .then(|| &trimmed[..trimmed.len() - suffix.len()])
+        })
+        .filter(|rest| !rest.trim().is_empty())
+        .unwrap_or(trimmed);
+    boogiebox_db::popularity::normalize_title(without_ep)
+}
+
+/// The release group in a MusicBrainz search answer that is clearly this album: the same title (as
+/// `normalize_title` reduces both), credited to `artist` (unless the search was by artist id), of the album's own
+/// type. Of several, the one without secondary types (live, remix…) counts; a compilation must be marked one.
+/// `None` when nothing or more than one fits.
+fn pick_release_group(
+    data: &Value,
+    title: &str,
+    artist: Option<&str>,
+    release_type: Option<&str>,
+) -> Option<String> {
+    let wanted_title = album_title_key(title);
+    let wanted_artist = artist.map(normalize_artist_name);
+    let (primary, compilation) = match release_type.map(str::trim) {
+        Some("ep") => ("ep", false),
+        Some("single") => ("single", false),
+        Some("compilation") => ("album", true),
+        _ => ("album", false),
+    };
+    let secondary = |group: &Value| -> Vec<String> {
+        group["secondary-types"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.as_str().map(str::to_ascii_lowercase))
+            .collect()
+    };
+    let fits: Vec<&Value> = data["release-groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|group| {
+            group["title"]
+                .as_str()
+                .is_some_and(|t| album_title_key(t) == wanted_title)
+                && group["primary-type"]
+                    .as_str()
+                    .is_some_and(|t| t.eq_ignore_ascii_case(primary))
+                && wanted_artist.as_deref().is_none_or(|wanted| {
+                    group["artist-credit"].as_array().is_some_and(|credits| {
+                        credits.iter().any(|c| {
+                            c["name"]
+                                .as_str()
+                                .or_else(|| c["artist"]["name"].as_str())
+                                .is_some_and(|n| normalize_artist_name(n) == wanted)
+                        })
+                    })
+                })
+        })
+        .collect();
+    let preferred: Vec<&Value> = fits
+        .iter()
+        .copied()
+        .filter(|group| {
+            let types = secondary(group);
+            if compilation {
+                types.iter().any(|t| t == "compilation")
+            } else {
+                types.is_empty()
+            }
+        })
+        .collect();
+    let chosen = match (preferred.len(), fits.len()) {
+        (1, _) => preferred[0],
+        (0, 1) if !compilation => fits[0],
+        _ => return None,
+    };
+    chosen["id"]
+        .as_str()
+        .filter(|id| is_valid_mbid(id))
+        .map(str::to_ascii_lowercase)
+}
+
+/// The release group of an album whose files carry no MusicBrainz tag, by title and artist (the artist's
+/// MusicBrainz id when known). See [`pick_release_group`].
+async fn search_release_group(
+    client: &Client,
+    artist: &str,
+    artist_mbid: Option<&str>,
+    title: &str,
+    release_type: Option<&str>,
+) -> Result<Option<String>, ProviderFetchError> {
+    let terms = lucene_terms(&title_without_brackets(title));
+    let artist_name: String = artist
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\'))
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if terms.is_empty() || (artist_mbid.is_none() && artist_name.is_empty()) {
+        return Ok(None);
+    }
+    let query = match artist_mbid {
+        Some(mbid) => format!("releasegroup:({terms}) AND arid:{mbid}"),
+        None => format!("releasegroup:({terms}) AND artist:\"{artist_name}\""),
+    };
+    let url = format!(
+        "{}/release-group/?query={}&fmt=json&limit=10",
+        musicbrainz_api_base(),
+        urlencoding::encode(&query)
+    );
+    let response = musicbrainz_gate::send(get(client, &url), Priority::Foreground)
+        .await
+        .map_err(failed)?;
+    check_metabrainz_status(&response)?;
+    let data: Value = response.json().await.map_err(failed)?;
+    let by_name = artist_mbid.is_none().then_some(artist_name.as_str());
+    Ok(pick_release_group(&data, title, by_name, release_type))
+}
+
 /// A long text as a summary (its first paragraph) and the whole text when there's more.
 fn split_text(text: &str) -> Option<(String, Option<String>)> {
     let text = text.replace("\r\n", "\n");
@@ -246,6 +396,13 @@ async fn theaudiodb_json(
     Ok(response.json().await.unwrap_or(Value::Null))
 }
 
+/// TheAudioDB's English text: `<field>EN` where an entry still has it, else `<field>` (where the API now puts the
+/// English text; `<field>FR`, `<field>ES`… hold the other languages).
+fn english_text(entry: &Value, field: &str) -> Option<String> {
+    optional_nonempty_json_string(&entry[format!("{field}EN")])
+        .or_else(|| optional_nonempty_json_string(&entry[field]))
+}
+
 /// An artist's English biography on TheAudioDB: by MusicBrainz id, else by exact name.
 async fn theaudiodb_artist(
     client: &Client,
@@ -257,7 +414,7 @@ async fn theaudiodb_artist(
             .as_array()?
             .iter()
             .find(|a| !check_name || a["strArtist"].as_str().is_some_and(|n| same_name(n, name)))?;
-        let (summary, full) = split_text(artist["strBiographyEN"].as_str()?)?;
+        let (summary, full) = split_text(&english_text(artist, "strBiography")?)?;
         let url = optional_nonempty_json_string(&artist["idArtist"])
             .map(|id| format!("https://www.theaudiodb.com/artist/{id}"));
         Some(Text { summary, full, url })
@@ -287,7 +444,7 @@ async fn theaudiodb_album(
         let album = data["album"].as_array()?.iter().find(|a| {
             !check_title || a["strAlbum"].as_str().is_some_and(|t| same_name(t, title))
         })?;
-        let (summary, full) = split_text(album["strDescriptionEN"].as_str()?)?;
+        let (summary, full) = split_text(&english_text(album, "strDescription")?)?;
         let url = optional_nonempty_json_string(&album["idAlbum"])
             .map(|id| format!("https://www.theaudiodb.com/album/{id}"));
         Some(Text { summary, full, url })
@@ -475,6 +632,9 @@ pub async fn artist_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<A
 struct AlbumRow {
     title: String,
     artist: String,
+    /// The album artist's MusicBrainz id, when the album artist is that artist.
+    artist_mbid: Option<String>,
+    release_type: Option<String>,
     release_group: Option<String>,
     cached: Option<String>,
     keyless: bool,
@@ -484,21 +644,35 @@ struct AlbumRow {
 pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<About> {
     let lookup = id.clone();
     let row = blocking(db, move |conn| -> Option<AlbumRow> {
-        let (title, artist, release_group): (String, String, Option<String>) = conn
+        type Columns = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let (title, artist, artist_name, artist_mbid, release_type, release_group): Columns = conn
             .query_row(
-                "SELECT al.title, COALESCE(NULLIF(TRIM(al.album_artist), ''), ar.name, ''),
-                        al.musicbrainz_release_group_id
+                "SELECT al.title, COALESCE(NULLIF(TRIM(al.album_artist), ''), ar.name, ''), ar.name,
+                        COALESCE(NULLIF(TRIM(ar.musicbrainz_artist_id), ''), NULLIF(TRIM(ar.lastfm_mbid), '')),
+                        al.release_type, al.musicbrainz_release_group_id
                  FROM albums al LEFT JOIN artists ar ON ar.id = al.artist_id
                  WHERE al.id = ?1",
                 [&lookup],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .ok()?;
+        let same_artist = artist_name.is_some_and(|name| {
+            normalize_artist_name(&name) == normalize_artist_name(&artist)
+        });
         Some(AlbumRow {
             cached: boogiebox_db::artwork::get_lastfm_cached(conn, &album_key(&lookup)),
             keyless: crate::radio_metadata::keyless_enabled(conn),
+            artist_mbid: artist_mbid.filter(|m| same_artist && is_valid_mbid(m)),
             title,
             artist,
+            release_type,
             release_group,
         })
     })
@@ -513,8 +687,38 @@ pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<Ab
     if !row.keyless {
         return Some(About::default());
     }
-    let release_group = row.release_group.filter(|m| is_valid_mbid(m));
     let mut failed = false;
+    let mut release_group = row.release_group.filter(|m| is_valid_mbid(m));
+    if release_group.is_none() && !row.title.trim().is_empty() && !row.artist.trim().is_empty() {
+        match search_release_group(
+            http,
+            &row.artist,
+            row.artist_mbid.as_deref(),
+            &row.title,
+            row.release_type.as_deref(),
+        )
+        .await
+        {
+            Ok(Some(found)) => {
+                // Kept like a tag from the files (a scan fills only an empty one).
+                let (album_id, id) = (id.clone(), found.clone());
+                blocking(db, move |conn| {
+                    conn.execute(
+                        "UPDATE albums SET musicbrainz_release_group_id = ?1
+                         WHERE id = ?2 AND musicbrainz_release_group_id IS NULL",
+                        rusqlite::params![id, album_id],
+                    )
+                })
+                .await;
+                release_group = Some(found);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::debug!("album about: release group search: {error}");
+                failed = true;
+            }
+        }
+    }
     let mut note = |result: Result<Option<Text>, ProviderFetchError>| match result {
         Ok(text) => text,
         Err(error) => {
@@ -545,6 +749,129 @@ pub async fn album_about(db: &DbPool, http: &Client, id: &EntityId) -> Option<Ab
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn group(id: &str, title: &str, primary: &str, secondary: &[&str], artist: &str) -> Value {
+        serde_json::json!({
+            "id": id, "title": title, "primary-type": primary, "secondary-types": secondary,
+            "artist-credit": [{ "name": artist }]
+        })
+    }
+
+    const ALBUM: &str = "017f2a37-a78f-3578-9611-fa40408e5d90";
+    const SINGLE: &str = "ecc129fd-419f-49ef-ac02-391cd8ef5c39";
+    const LIVE: &str = "bfb2d112-e8be-4a07-a15b-64253c761833";
+    const BEST_OF: &str = "33f5fa70-4715-4f8d-84e7-b962ee43f3b2";
+
+    #[test]
+    fn the_release_group_of_the_albums_own_type_is_picked() {
+        let data = serde_json::json!({ "release-groups": [
+            group(SINGLE, "Hounds of Love", "Single", &[], "Kate Bush"),
+            group(ALBUM, "Hounds of Love", "Album", &[], "Kate Bush"),
+            group(LIVE, "Hounds of Love", "Album", &["Live"], "Kate Bush"),
+            group(BEST_OF, "Hounds of Love / Lionheart", "Album", &["Compilation"], "Kate Bush"),
+        ]});
+        let pick = |title, artist, kind| pick_release_group(&data, title, artist, kind);
+        assert_eq!(
+            pick("Hounds Of Love", Some("Kate Bush"), Some("album")).as_deref(),
+            Some(ALBUM)
+        );
+        assert_eq!(
+            pick("Hounds Of Love [2018 Remaster]", None, None).as_deref(),
+            Some(ALBUM)
+        );
+        assert_eq!(
+            pick("Hounds Of Love", Some("Kate Bush"), Some("single")).as_deref(),
+            Some(SINGLE)
+        );
+        assert_eq!(
+            pick("Hounds Of Love", Some("Someone Else"), Some("album")),
+            None
+        );
+        assert_eq!(pick("Hounds Of Love", Some("Kate Bush"), Some("ep")), None);
+        assert_eq!(pick("The Dreaming", Some("Kate Bush"), Some("album")), None);
+        // A compilation must be marked one; a studio album of the same name doesn't count.
+        assert_eq!(
+            pick("Hounds of Love / Lionheart", None, Some("compilation")).as_deref(),
+            Some(BEST_OF)
+        );
+        assert_eq!(pick("Hounds Of Love", None, Some("compilation")), None);
+    }
+
+    #[test]
+    fn several_equal_matches_or_only_a_live_one_are_handled() {
+        let two = serde_json::json!({ "release-groups": [
+            group(ALBUM, "Greatest Hits", "Album", &[], "Eurythmics"),
+            group(SINGLE, "Greatest Hits", "Album", &[], "Eurythmics"),
+        ]});
+        assert_eq!(
+            pick_release_group(&two, "Greatest Hits", None, Some("album")),
+            None
+        );
+        let live_only = serde_json::json!({ "release-groups": [
+            group(LIVE, "Live at Wembley", "Album", &["Live"], "Queen"),
+        ]});
+        assert_eq!(
+            pick_release_group(&live_only, "Live At Wembley", Some("Queen"), Some("album"))
+                .as_deref(),
+            Some(LIVE)
+        );
+        assert_eq!(
+            pick_release_group(&serde_json::json!({}), "Anything", None, None),
+            None
+        );
+        let bad_id = serde_json::json!({ "release-groups": [group("../x", "Dummy", "Album", &[], "Portishead")] });
+        assert_eq!(pick_release_group(&bad_id, "Dummy", None, None), None);
+    }
+
+    #[test]
+    fn a_trailing_ep_is_not_part_of_the_title() {
+        const EP: &str = "0b6c4f5e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+        let data = serde_json::json!({ "release-groups": [group(EP, "Rainmaker", "EP", &[], "Recondite")] });
+        assert_eq!(
+            pick_release_group(&data, "Rainmaker Ep", None, Some("ep")).as_deref(),
+            Some(EP)
+        );
+        assert_eq!(
+            pick_release_group(&data, "Rainmaker E.P.", None, Some("ep")).as_deref(),
+            Some(EP)
+        );
+        assert_eq!(
+            album_title_key("Ep"),
+            album_title_key("EP"),
+            "a title that is only EP stays"
+        );
+        assert_ne!(album_title_key("Deep"), album_title_key("De"));
+    }
+
+    #[test]
+    fn theaudiodb_english_text_is_read_with_or_without_the_en_suffix() {
+        let now = serde_json::json!({ "strBiography": "English.", "strBiographyFR": "Français." });
+        assert_eq!(
+            english_text(&now, "strBiography").as_deref(),
+            Some("English.")
+        );
+        let old =
+            serde_json::json!({ "strDescriptionEN": "Old field.", "strDescription": "New field." });
+        assert_eq!(
+            english_text(&old, "strDescription").as_deref(),
+            Some("Old field.")
+        );
+        let empty = serde_json::json!({ "strBiographyEN": "", "strBiography": "  " });
+        assert_eq!(english_text(&empty, "strBiography"), None);
+    }
+
+    #[test]
+    fn bracketed_extras_leave_the_title() {
+        assert_eq!(
+            title_without_brackets("Brotherhood [Collector's Edition]").trim(),
+            "Brotherhood"
+        );
+        assert_eq!(
+            title_without_brackets("Substance (2023 Expanded / Reissue)").trim(),
+            "Substance"
+        );
+        assert_eq!(title_without_brackets("Dummy"), "Dummy");
+    }
 
     #[test]
     fn wikipedia_titles_are_decoded() {

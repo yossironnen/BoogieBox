@@ -154,7 +154,7 @@ function NativeRows({
         }}
       />
       {active && native.settings ? (
-        <div role="group" aria-label="Output device" style={{ margin: '2px 0 6px 40px', paddingLeft: 10, borderLeft: '1px solid var(--border)', display: 'grid', gap: 2 }}>
+        <div role="group" aria-label="Output device" style={{ margin: '2px 0 6px 40px', paddingLeft: 10, borderLeft: '1px solid var(--border)', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 2 }}>
           {native.devices.map((device) => {
             const chosen = native.device?.id === device.id;
             const rate = deviceRateShort(device);
@@ -168,7 +168,7 @@ function NativeRows({
                   if (native.settings) void native.save({ ...native.settings, deviceId: device.id });
                 }}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px', borderRadius: 10, border: 0,
+                  display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, padding: '7px 8px', borderRadius: 10, border: 0,
                   background: chosen ? 'var(--surface-subtle, var(--bg))' : 'transparent', color: 'var(--text)',
                   textAlign: 'left', font: 'inherit', cursor: 'pointer',
                 }}
@@ -181,7 +181,7 @@ function NativeRows({
                   {chosen ? <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }} /> : null}
                 </span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: chosen ? 650 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{device.name}</span>
-                {rate ? <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{rate}</span> : null}
+                {rate ? <span style={{ flexShrink: 0, fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{rate}</span> : null}
               </button>
             );
           })}

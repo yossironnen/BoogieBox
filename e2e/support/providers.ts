@@ -111,7 +111,7 @@ function listenbrainz(method: string, path: string, body: string): Answer {
 
 function theaudiodb(path: string, query: URLSearchParams): Answer {
   if (path === '/search.php' && query.get('s') === 'The Velvet Owls') {
-    return ok({ artists: [{ idArtist: '424242', strArtist: 'The Velvet Owls', strBiographyEN: `${MOCK.velvetOwlsBio}\n\nThey exist only in tests.` }] })
+    return ok({ artists: [{ idArtist: '424242', strArtist: 'The Velvet Owls', strBiography: `${MOCK.velvetOwlsBio}\n\nThey exist only in tests.` }] })
   }
   if (path === '/search.php' || path === '/artist-mb.php') return ok({ artists: null })
   if (path === '/searchalbum.php' || path === '/album-mb.php') return ok({ album: null })

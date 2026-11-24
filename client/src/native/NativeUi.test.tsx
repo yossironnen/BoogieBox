@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NativeAudioSettings, NativeDevice } from './nativeTypes';
 
@@ -87,6 +87,16 @@ describe('desktop Hi-Res output UI', () => {
     expect(fake.saved[fake.saved.length - 1]).toMatchObject({ deviceId: 'hdmi' });
     fireEvent.click(screen.getByRole('button', { name: 'Audio output settings' }));
     expect(open).toHaveBeenCalled();
+  });
+
+  it('keeps device rows inside the picker: long names shorten, the rate stays whole', async () => {
+    render(<OutputPickerList playOn={playOn({ kind: 'native' })} />);
+    const group = await screen.findByRole('group', { name: 'Output device' });
+    expect(group.style.gridTemplateColumns).toBe('minmax(0, 1fr)');
+    const row = screen.getByRole('radio', { name: /FiiO Q series/ });
+    expect(row.style.minWidth).toBe('0px');
+    const rate = within(row).getByText('up to 384 kHz');
+    expect(rate.style.flexShrink).toBe('0');
   });
 
   it('saves every Audio output setting', async () => {

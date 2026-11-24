@@ -78,7 +78,7 @@ pub struct RelatedArtistCandidate {
     pub rank: usize,
 }
 
-fn normalize_artist_name(value: &str) -> String {
+pub(crate) fn normalize_artist_name(value: &str) -> String {
     value
         .to_lowercase()
         .chars()
@@ -639,7 +639,7 @@ pub async fn search_metadata(
 }
 
 /// Search words with Lucene syntax and operators removed, lowercased so a title word like "AND" stays a word.
-fn lucene_terms(text: &str) -> String {
+pub(crate) fn lucene_terms(text: &str) -> String {
     text.chars()
         .map(|c| {
             if matches!(
@@ -758,13 +758,15 @@ async fn search_musicbrainz_metadata(
         urlencoding::encode(&query)
     );
     let t0 = log_request("musicbrainz", "metadata_search", &subject);
-    let response = client
-        .get(&url)
-        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
-        .timeout(PROVIDER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|_| ProviderSearchFailure::Unavailable)?;
+    let response = crate::musicbrainz_gate::send(
+        client
+            .get(&url)
+            .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+            .timeout(PROVIDER_TIMEOUT),
+        crate::musicbrainz_gate::Priority::Foreground,
+    )
+    .await
+    .map_err(|_| ProviderSearchFailure::Unavailable)?;
     log_response("musicbrainz", "metadata_search", t0, response.status());
     check_metabrainz_status(&response).map_err(|error| match error {
         ProviderFetchError::RateLimited => ProviderSearchFailure::RateLimited,
@@ -1621,13 +1623,15 @@ pub async fn search_musicbrainz_artist(
         urlencoding::encode(&query)
     );
     let t0 = log_request("musicbrainz", "artist_search", artist_name);
-    let response = client
-        .get(&url)
-        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
-        .timeout(PROVIDER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let response = crate::musicbrainz_gate::send(
+        client
+            .get(&url)
+            .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+            .timeout(PROVIDER_TIMEOUT),
+        crate::musicbrainz_gate::Priority::Background,
+    )
+    .await
+    .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
     log_response("musicbrainz", "artist_search", t0, response.status());
     check_metabrainz_status(&response)?;
     let data: Value = response
@@ -1688,13 +1692,15 @@ pub async fn search_musicbrainz_recording(
         "recording_search",
         &format!("{artist} — {song}"),
     );
-    let response = client
-        .get(&url)
-        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
-        .timeout(PROVIDER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let response = crate::musicbrainz_gate::send(
+        client
+            .get(&url)
+            .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+            .timeout(PROVIDER_TIMEOUT),
+        crate::musicbrainz_gate::Priority::Background,
+    )
+    .await
+    .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
     log_response("musicbrainz", "recording_search", t0, response.status());
     check_metabrainz_status(&response)?;
     let data: Value = response
@@ -1757,13 +1763,15 @@ async fn fetch_musicbrainz_entity_tags(
         musicbrainz_api_base()
     );
     let t0 = log_request("musicbrainz", &format!("{entity}_tags"), mbid);
-    let response = client
-        .get(&url)
-        .header("User-Agent", MUSICBRAINZ_USER_AGENT)
-        .timeout(PROVIDER_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
+    let response = crate::musicbrainz_gate::send(
+        client
+            .get(&url)
+            .header("User-Agent", MUSICBRAINZ_USER_AGENT)
+            .timeout(PROVIDER_TIMEOUT),
+        crate::musicbrainz_gate::Priority::Background,
+    )
+    .await
+    .map_err(|error| ProviderFetchError::Failed(error.to_string()))?;
     log_response(
         "musicbrainz",
         &format!("{entity}_tags"),

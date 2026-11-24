@@ -76,6 +76,7 @@ loudness_analysis.rs — volume levelling: ebur128 measurement of untagged track
 lane_failures.rs — waveform/BPM/loudness lanes give up on a file after 3 failures (until restart)  
 post_scan.rs — async post-scan lanes (art caching, artist ids, lyrics, Discogs album metadata)  
 mix_worker.rs — BoogieMix render + AI planner + deep-analysis Python orchestration  
+musicbrainz_gate.rs — one paced queue for every MusicBrainz request (user lookups before background passes)  
 dlna.rs — SSDP + Axum DLNA server, ContentDirectory Browse, audio streaming  
 media_serve.rs — shared ranged serving + MP3/WAV transcodes (browser, DLNA, Play On)  
 native.rs — desktop Hi-Res engine links (`POST /api/native/stream-tokens`, `/media/n/{token}`: original file with Range, or 24-bit WAV for Opus/WMA)  

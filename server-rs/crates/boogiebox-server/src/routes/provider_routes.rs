@@ -782,7 +782,7 @@ mod tests {
             .and(query_param("i", tadb_mbid))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "artists": [{ "idArtist": "111239", "strArtist": "Portishead",
-                              "strBiographyEN": "Portishead are a band from Bristol.\n\nThey formed in 1991." }]
+                              "strBiography": "Portishead are a band from Bristol.\n\nThey formed in 1991." }]
             })))
             .mount(&server)
             .await;
@@ -792,7 +792,7 @@ mod tests {
             .and(query_param("s", "Portishead"))
             .and(query_param("a", "Dummy"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "album": [{ "idAlbum": "2115", "strAlbum": "Dummy", "strDescriptionEN": "Dummy is the debut album." }]
+                "album": [{ "idAlbum": "2115", "strAlbum": "Dummy", "strDescription": "Dummy is the debut album." }]
             })))
             .mount(&server)
             .await;
@@ -903,6 +903,106 @@ mod tests {
             "BOOGIEBOX_THEAUDIODB_API_BASE",
             "BOOGIEBOX_LISTENBRAINZ_API_BASE",
         ] {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[tokio::test]
+    async fn album_about_finds_an_untagged_albums_release_group_and_keeps_it() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let _guard = crate::providers::provider_fetch_tests::ENV_LOCK
+            .lock()
+            .await;
+        let server = MockServer::start().await;
+        let vars = [
+            "BOOGIEBOX_MUSICBRAINZ_API_BASE",
+            "BOOGIEBOX_WIKIDATA_API_BASE",
+            "BOOGIEBOX_WIKIPEDIA_API_BASE",
+            "BOOGIEBOX_THEAUDIODB_API_BASE",
+        ];
+        for var in vars {
+            std::env::set_var(var, server.uri());
+        }
+        let artist_mbid = "4b585938-f271-45e2-b19a-91c634b5e396";
+        let album_rg = "017f2a37-a78f-3578-9611-fa40408e5d90";
+        let single_rg = "ecc129fd-419f-49ef-ac02-391cd8ef5c39";
+        Mock::given(method("GET"))
+            .and(path("/release-group/"))
+            .and(query_param(
+                "query",
+                format!("releasegroup:(hounds of love) AND arid:{artist_mbid}"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "release-groups": [
+                    { "id": single_rg, "title": "Hounds of Love", "primary-type": "Single",
+                      "artist-credit": [{ "name": "Kate Bush" }] },
+                    { "id": album_rg, "title": "Hounds of Love", "primary-type": "Album",
+                      "artist-credit": [{ "name": "Kate Bush" }] }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/release-group/{album_rg}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "relations": [{ "type": "wikidata", "url": { "resource": "https://www.wikidata.org/wiki/Q1260834" } }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/w/api.php"))
+            .and(query_param("ids", "Q1260834"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entities": { "Q1260834": { "sitelinks": { "enwiki": { "title": "Hounds of Love" } } } }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/rest_v1/page/summary/Hounds_of_Love"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "standard",
+                "extract": "Hounds of Love is the fifth studio album by Kate Bush.",
+                "content_urls": { "desktop": { "page": "https://en.wikipedia.org/wiki/Hounds_of_Love" } }
+            })))
+            .mount(&server)
+            .await;
+
+        let (app, pool) = new_test_app_with_pool("provider-album-about-search");
+        let cookie = seed_user_session(&pool, "u1");
+        pool.lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO artists(id, name, musicbrainz_artist_id) VALUES ('ar-kb', 'Kate Bush', '{artist_mbid}');
+                 INSERT INTO albums(id, title, album_artist, artist_id, release_type)
+                   VALUES ('al-hol', 'Hounds Of Love [2018 Remaster]', 'Kate Bush', 'ar-kb', 'album');"
+            ))
+            .unwrap();
+        let request = Request::builder()
+            .uri("/api/albums/al-hol/about")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = send(app, request).await;
+        assert_eq!(status, StatusCode::OK);
+        let body = json_body(&body);
+        assert_eq!(body["source"], "wikipedia");
+        assert_eq!(
+            body["summary"],
+            "Hounds of Love is the fifth studio album by Kate Bush."
+        );
+        let kept: Option<String> = pool
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT musicbrainz_release_group_id FROM albums WHERE id = 'al-hol'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some(album_rg));
+        for var in vars {
             std::env::remove_var(var);
         }
     }

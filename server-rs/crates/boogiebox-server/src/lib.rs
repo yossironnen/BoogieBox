@@ -52,6 +52,7 @@ pub mod loudness_analysis;
 pub mod media_serve;
 pub mod mix_priority_gate;
 pub mod mix_worker;
+pub mod musicbrainz_gate;
 pub mod native;
 pub mod plays;
 pub mod post_scan;

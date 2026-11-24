@@ -71,11 +71,6 @@ fn listenbrainz_delay() -> Duration {
     delay_from_env_or("BOOGIEBOX_LISTENBRAINZ_DELAY_MS", 1100)
 }
 
-/// MusicBrainz allows ~1 request/second; stay just under it.
-fn musicbrainz_delay() -> Duration {
-    delay_from_env_or("BOOGIEBOX_MUSICBRAINZ_DELAY_MS", 1100)
-}
-
 /// `radioTrackTagSync` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -256,11 +251,7 @@ async fn run_musicbrainz_pass(
         // Last.fm's mbid is already a MusicBrainz id — no network needed.
         let resolved = match lastfm_mbid.filter(|m| is_valid_mbid(m)) {
             Some(mbid) => Some(mbid),
-            None => {
-                let found = search_musicbrainz_artist(http, &name).await?;
-                tokio::time::sleep(musicbrainz_delay()).await;
-                found
-            }
+            None => search_musicbrainz_artist(http, &name).await?,
         };
         blocking(db, move |conn| {
             set_musicbrainz_identity(conn, &artist_id, resolved.as_deref())
@@ -280,7 +271,6 @@ async fn run_musicbrainz_pass(
             return Ok(did_work);
         }
         let raw = fetch_musicbrainz_artist_tags(http, &mbid).await?;
-        tokio::time::sleep(musicbrainz_delay()).await;
         // MusicBrainz votes are small integers: keep tags with at least a
         // fifth of the leading tag's votes.
         let tags = to_tag_inputs(&raw, 1, 0.2, 12, &[]);
@@ -332,7 +322,6 @@ async fn process_musicbrainz_track_tags(
             None => {
                 let found =
                     search_musicbrainz_recording(http, &candidate.artist, &candidate.title).await;
-                tokio::time::sleep(musicbrainz_delay()).await;
                 if let Ok(Some(id)) = &found {
                     let (track_id, id) = (candidate.track_id.clone(), id.clone());
                     blocking(db, move |conn| {
@@ -348,11 +337,7 @@ async fn process_musicbrainz_track_tags(
             }
         };
         let tags = match recording {
-            Ok(Some(id)) => {
-                let tags = fetch_musicbrainz_recording_tags(http, &id).await;
-                tokio::time::sleep(musicbrainz_delay()).await;
-                tags
-            }
+            Ok(Some(id)) => fetch_musicbrainz_recording_tags(http, &id).await,
             // No recording to be found: stamped empty, asked again after the negative-cache TTL.
             Ok(None) => Ok(Vec::new()),
             Err(error) => Err(error),
