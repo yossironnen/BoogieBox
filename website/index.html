@@ -19,6 +19,7 @@
       <nav aria-label="Primary navigation">
         <a href="#features">Features</a>
         <a href="#boogiemix">BoogieMix</a>
+        <a href="#desktop">Desktop app</a>
         <a href="#smart-playlists">Smart playlists</a>
         <a href="#apps">Apps</a>
         <a href="#play-on">Play On</a>
@@ -39,7 +40,7 @@
             <img src="assets/boogiebox.png" alt="">
             <span>Self-hosted music for Windows &amp; Linux</span>
           </div>
-          <a class="hero-news" href="#tune"><strong>New</strong> Tune your smart playlists →</a>
+          <a class="hero-news" href="#desktop"><strong>New</strong> Hi-Res playback in the Windows desktop app →</a>
           <h1 id="hero-title">BoogieBox</h1>
           <p>Self hosted music server with AI DJ Mix builder.</p>
           <div class="hero-actions">
@@ -94,6 +95,56 @@
         </button>
       </section>
 
+      <section class="spotlight spotlight-alt" id="desktop">
+        <div class="spotlight-copy">
+          <p class="eyebrow spotlight-eyebrow-pink">New — Desktop app for Windows</p>
+          <h2><span style="white-space: nowrap;">Hi-Res,</span> <span style="white-space: nowrap;">bit-perfect.</span></h2>
+          <p>The BoogieBox desktop app has its own audio engine. Pick This PC in Play on and your music goes straight to your DAC at each file's own sample rate and bit depth, with no browser in the way.</p>
+          <ul>
+            <li>Exclusive mode: every sample reaches the DAC unchanged</li>
+            <li>The rate follows each song: 44.1, 96, 192 kHz and up, as far as your DAC goes</li>
+            <li>A badge shows what you're hearing, like 24/96 · Bit-perfect, with the full path from file to DAC</li>
+            <li>Choose the device, Exclusive or Shared, and the buffer size</li>
+            <li>Pure mode keeps EQ, levelling, and crossfade out of the way. Turn it off to use them</li>
+            <li>Gapless, including AAC/M4A albums, and Opus and WMA play too</li>
+          </ul>
+        </div>
+        <button class="image-button" type="button" data-lightbox="assets/screenshots/desktop_play_on_this_pc.png" aria-label="Open This PC output screenshot">
+          <img src="assets/screenshots/desktop_play_on_this_pc.png" alt="The desktop app's Play on picker with This PC selected, its sound devices and their highest sample rates, and a 24/96 Bit-perfect badge in the playback bar">
+        </button>
+        <div class="gallery gallery-bars spotlight-extras" style="order: 3;">
+          <figure>
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/desktop_bit_perfect.png" aria-label="Open Bit-perfect badge screenshot">
+              <img src="assets/screenshots/desktop_bit_perfect.png" alt="The Bit-perfect badge with its tooltip: FLAC 24-bit 96 kHz, sent to the DAC at 24-bit 96 kHz exclusive, every sample reaches the DAC unchanged">
+            </button>
+            <figcaption><strong>Know what you're hearing</strong><span>From the file to the DAC, at a glance.</span></figcaption>
+          </figure>
+          <figure>
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/desktop_audio_output.png" aria-label="Open Audio output settings screenshot">
+              <img src="assets/screenshots/desktop_audio_output.png" alt="Audio output settings with the device list, Exclusive and Shared modes, buffer sizes, Pure mode, and Use the nearest rate the DAC can play">
+            </button>
+            <figcaption><strong>Audio output settings</strong><span>Device, mode, buffer, and Pure mode.</span></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="spotlight">
+        <div class="spotlight-copy">
+          <p class="eyebrow spotlight-eyebrow-pink">Desktop app</p>
+          <h2>Made for Windows.</h2>
+          <p>Everything from the web player in a window of its own: browse, playlists, BoogieMix, Play On speakers, EQ, and lyrics. Your library stays on your BoogieBox server.</p>
+          <ul>
+            <li>Finds BoogieBox servers on your network on first start, and remembers yours</li>
+            <li>Media keys, the Windows media flyout, and the lock screen control playback</li>
+            <li>Play, pause, and skip buttons and a progress bar on the taskbar icon</li>
+            <li>Setup program or MSI package for 64-bit Windows 10 and 11</li>
+          </ul>
+        </div>
+        <button class="image-button" type="button" data-lightbox="assets/screenshots/desktop_connect.png" aria-label="Open server discovery screenshot" style="max-width: 440px; justify-self: center;">
+          <img src="assets/screenshots/desktop_connect.png" alt="The desktop app's first start listing discovered BoogieBox servers: This PC and a server on the local network">
+        </button>
+      </section>
+
       <section class="spotlight spotlight-alt" id="smart-playlists">
         <div class="spotlight-copy">
           <p class="eyebrow spotlight-eyebrow-pink">Smart playlists</p>
@@ -120,12 +171,12 @@
 
       <section class="spotlight" id="tune">
         <div class="spotlight-copy">
-          <p class="eyebrow spotlight-eyebrow-pink">New — Tune smart playlists</p>
+          <p class="eyebrow spotlight-eyebrow-pink">Tune smart playlists</p>
           <h2>Tune it with a tap.</h2>
           <p>Open a smart playlist and BoogieBox suggests ways to tune it, based on the music inside. Tap "More trip-hop" or "Less ambient" and the playlist swaps in new picks, still inside your rules.</p>
           <ul>
             <li>More, less, or "Go deeper into" a style, from your own library's style tags</li>
-            <li>My favourites, Popular (Last.fm scrobbles or plays on your server), and Something new</li>
+            <li>My favourites, Popular (ListenBrainz listens or plays on your server), and Something new</li>
             <li>Faster, slower, more energetic, or calmer, from deep analysis</li>
             <li>Up to three at a time, with the changed tracks marked</li>
             <li>Already playing it? "Update what's next" brings the new picks into your queue</li>
@@ -175,7 +226,7 @@
 
       <section class="spotlight" id="saved-eq">
         <div class="spotlight-copy">
-          <p class="eyebrow spotlight-eyebrow-pink">New — Saved EQ</p>
+          <p class="eyebrow spotlight-eyebrow-pink">Saved EQ</p>
           <h2>EQ that remembers.</h2>
           <p>Found the perfect curve for an album? Save it. With "Use my saved EQ" on, the player switches to it as the track starts.</p>
           <ul>
@@ -209,7 +260,7 @@
             <li>CarPlay, lock-screen controls, AirPlay, and Bluetooth, the way phone apps do it</li>
             <li>Playlists, favourites, and ratings stay in sync with BoogieBox</li>
             <li>Your BoogieMixes, lyrics, Instant Mix, and internet radio, right in the app</li>
-            <li>Scrobble to your own Last.fm or ListenBrainz account from any app or speaker</li>
+            <li>Scrobble to your own Libre.fm or ListenBrainz account, or your own scrobble server, from any app or speaker</li>
           </ul>
         </div>
         <div class="phone-trio">
@@ -415,10 +466,10 @@
             <figcaption><strong>Drop the needle</strong><span>Vinyl Mode allows you to play it old school and even add cracks and pops.</span></figcaption>
           </figure>
           <figure>
-            <button class="image-button" type="button" data-lightbox="assets/screenshots/artist_page.png" aria-label="Open artist page screenshot">
-              <img src="assets/screenshots/artist_page.png" alt="BoogieBox artist detail page">
+            <button class="image-button" type="button" data-lightbox="assets/screenshots/artist_about_top_songs.png" aria-label="Open artist page screenshot">
+              <img src="assets/screenshots/artist_about_top_songs.png" alt="BoogieBox artist page with a Wikipedia bio, ListenBrainz listener stats, and Top 5 Songs">
             </button>
-            <figcaption><strong>Know the artist</strong><span>Artwork, releases, top tracks, and context together.</span></figcaption>
+            <figcaption><strong>Know the artist</strong><span>A Wikipedia bio, top songs, and listener stats from ListenBrainz.</span></figcaption>
           </figure>
           <figure>
             <button class="image-button" type="button" data-lightbox="assets/screenshots/playlist_main.png" aria-label="Open playlists screenshot">
@@ -447,9 +498,9 @@
           <h2>The technical stuff.</h2>
         </div>
         <div class="detail-list">
-          <div><span>Playback</span><p>MP3, FLAC, M4A (AAC and ALAC), OGG, OPUS, WAV, AAC, WMA, and AIFF.</p></div>
+          <div><span>Playback</span><p>MP3, FLAC, M4A (AAC and ALAC), OGG, OPUS, WAV, AAC, WMA, and AIFF. Hi-Res and bit-perfect output to your DAC in the Windows desktop app.</p></div>
           <div><span>Analysis</span><p>Waveforms, BPM detection, Sonic Fingerprint stem analysis, listening history, and optional BoogieMix deep analysis with Demucs.</p></div>
-          <div><span>Connected</span><p>Subsonic/OpenSubsonic apps, Play On to UPnP/DLNA speakers, a built-in DLNA server, Last.fm and ListenBrainz scrobbling, internet radio, lyrics, metadata enrichment, and mobile access.</p></div>
+          <div><span>Connected</span><p>Subsonic/OpenSubsonic apps, Play On to UPnP/DLNA speakers, a built-in DLNA server, Libre.fm, ListenBrainz, and own-server scrobbling, internet radio, lyrics, metadata enrichment, and mobile access.</p></div>
           <div><span>Library care</span><p>Automatic backups with one-click restore, M3U/M3U8 playlist import, volume levelling with ReplayGain, and scans that never wipe tracks from an offline drive.</p></div>
           <div><span>Built with</span><p>Rust, React, TypeScript, Tauri 2, SQLite, and FFmpeg.</p></div>
         </div>
