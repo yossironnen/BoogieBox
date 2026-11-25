@@ -20,10 +20,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  # Build and deploy are separate jobs (GitHub's Pages template layout): when deploy-pages ran in the same job
+  # right after the upload, the run's artifact list was sometimes still empty and the deploy failed.
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -44,6 +43,13 @@ jobs:
         with:
           path: _site
 
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
