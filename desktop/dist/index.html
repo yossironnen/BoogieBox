@@ -179,10 +179,14 @@
         button.onclick = () => connectTo(server.url);
         const setup = server.setupRequired ? 'Setup required' : 'Ready';
         const version = server.version ? ' - v' + escapeHtml(server.version) : '';
+        // The server on this PC is listed once, as localhost.
+        const thisPc = /^https?:\/\/localhost(:\d+)?\/?$/i.test(server.url);
+        const title = thisPc ? 'This PC' : escapeHtml(server.url);
+        const where = thisPc ? escapeHtml(server.url) + ' · ' : '';
         button.innerHTML = `
           <span>
-            <span class="server-title">${escapeHtml(server.url)}</span>
-            <span class="server-meta">${setup}${version}</span>
+            <span class="server-title">${title}</span>
+            <span class="server-meta">${where}${setup}${version}</span>
           </span>
           <span class="server-action">Connect</span>
         `;

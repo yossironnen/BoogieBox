@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-audio"
-version = "0.9.125"
+version = "0.9.128"
 dependencies = [
  "reqwest",
  "rtrb",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "boogiebox-desktop"
-version = "0.9.125"
+version = "0.9.128"
 dependencies = [
  "boogiebox-audio",
  "directories",
