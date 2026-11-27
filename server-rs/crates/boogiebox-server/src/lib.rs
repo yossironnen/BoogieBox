@@ -35,6 +35,7 @@ pub mod artwork_cache;
 pub mod auth;
 pub mod backup;
 pub mod beat_grid;
+pub mod boogiemix_setup;
 pub mod bpm_analysis;
 pub mod cors;
 pub mod db_maintenance;

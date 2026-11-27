@@ -1,4 +1,4 @@
-; BoogieBox Server Windows Installer
+﻿; BoogieBox Server Windows Installer
 ; Built automatically by build-server-rust.bat (calls iscc with /DReleaseDir=<abs-path>).
 ; Manual build from repo root:
 ;   iscc "/DAppVersion=x.x.x" "/DReleaseDir=D:\path\to\Releases\boogiebox-x.x.x-win-rs" installer\boogiebox-server.iss
@@ -41,14 +41,22 @@ UninstallDisplayIcon={app}\boogiebox.exe
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Messages]
+; The file is UTF-8 with a BOM so Inno Setup reads the separators below correctly.
+FinishedLabel=Setup has finished installing [name] on your computer. The application may be launched by selecting the installed shortcuts.%n%nBoogieMix deep analysis can be set up later in Settings › Advanced › BoogieMix.
+FinishedLabelNoIcons=Setup has finished installing [name] on your computer.%n%nBoogieMix deep analysis can be set up later in Settings › Advanced › BoogieMix.
+
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 Name: "startatlogin"; Description: "Start BoogieBox when I sign in"; GroupDescription: "Server startup:"
 Name: "serviceinstall"; Description: "Install as a Windows &service"; GroupDescription: "Server startup:"; Flags: unchecked
-Name: "boogiemix"; Description: "[HIGHLY EXPERIMENTAL - still in progress] Install BoogieMix &deep analysis (AI stem separation - requires internet, large download, 2-5 GB installed, 10-30 min)"; GroupDescription: "Optional features:"; Flags: unchecked
 
 [Dirs]
 Name: "{commonappdata}\BoogieBox\logs"; Permissions: users-modify
+; BoogieMix deep analysis is set up from Settings (boogiemix_setup.rs), not by this installer: the managed
+; Python environment and the Demucs model cache live here so the tray user and the service account can write them.
+Name: "{commonappdata}\BoogieBox\boogiemix"; Permissions: users-modify
+Name: "{commonappdata}\BoogieBox\model-cache"; Permissions: users-modify
 
 [Files]
 Source: "{#ReleaseDir}\boogiebox-server.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -67,6 +75,13 @@ Type: filesandordirs; Name: "{app}\client\build"
 ; Clean up Node.js runtime artifacts left by older Node SEA installs.
 Type: filesandordirs; Name: "{app}\node_modules"
 
+[UninstallDelete]
+; BoogieMix deep analysis (2-5 GB): the environment from Settings, the model cache, and the environment older
+; installers created inside the install folder. The library database is never touched.
+Type: filesandordirs; Name: "{commonappdata}\BoogieBox\boogiemix"
+Type: filesandordirs; Name: "{commonappdata}\BoogieBox\model-cache"
+Type: filesandordirs; Name: "{app}\resources\Services\boogiemix\python\.venv"
+
 [Icons]
 ; boogiebox.exe runs the server without a console window and shows a notification-area icon.
 Name: "{group}\BoogieBox Server"; Filename: "{app}\boogiebox.exe"; WorkingDir: "{app}"; Comment: "Start the BoogieBox media server"
@@ -81,7 +96,6 @@ Filename: "{app}\boogiebox.exe"; Description: "Start BoogieBox Server now"; Flag
 var
   ServiceAccountModePage: TInputOptionWizardPage;
   ExistingServiceAccountPage: TInputQueryWizardPage;
-  BoogieMixInfoPage: TOutputMsgWizardPage;
 
 function CoCreateGuid(var Guid: TGUID): Integer;
 external 'CoCreateGuid@ole32.dll stdcall';
@@ -311,30 +325,6 @@ begin
   ExistingServiceAccountPage.Add('Account:', False);
   ExistingServiceAccountPage.Add('Password:', True);
   ExistingServiceAccountPage.Add('Confirm password:', True);
-
-  BoogieMixInfoPage := CreateOutputMsgPage(
-    wpSelectTasks,
-    'BoogieMix Deep Analysis',
-    'AI-powered audio stem separation for enhanced mix transitions',
-    'Selecting this option will perform the following after file installation:' + #13#10 +
-    '' + #13#10 +
-    '  - Install a compatible Python version if not already present (via winget or python.org)' + #13#10 +
-    '  - Detect NVIDIA/CUDA and install GPU PyTorch when available' + #13#10 +
-    '  - Fall back to CPU PyTorch if CUDA is unavailable or cannot be verified' + #13#10 +
-    '  - Download and install Demucs plus its stem-separation models' + #13#10 +
-    '  - Create a managed Python environment inside the BoogieBox install folder' + #13#10 +
-    '' + #13#10 +
-    'Requirements:' + #13#10 +
-    '  - Active internet connection during installation' + #13#10 +
-    '  - Approximately 2-5 GB of free disk space' + #13#10 +
-    '  - 10-30 minutes depending on download speed and GPU package size' + #13#10 +
-    '' + #13#10 +
-    'BoogieBox Server installs and works normally regardless of this choice.' + #13#10 +
-    'Deep analysis can be repaired or enabled later by running bootstrap_env.ps1 from' + #13#10 +
-    'resources\Services\boogiemix\python\ inside the install folder.' + #13#10 +
-    '' + #13#10 +
-    'Installer diagnostics are written to ProgramData\BoogieBox\installer-boogiemix.log.'
-  );
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -342,8 +332,7 @@ begin
   Result :=
     ((PageID = ServiceAccountModePage.ID) and (not WizardIsTaskSelected('serviceinstall'))) or
     ((PageID = ExistingServiceAccountPage.ID) and
-      ((not WizardIsTaskSelected('serviceinstall')) or (ServiceAccountModePage.SelectedValueIndex = 0))) or
-    ((PageID = BoogieMixInfoPage.ID) and (not WizardIsTaskSelected('boogiemix')));
+      ((not WizardIsTaskSelected('serviceinstall')) or (ServiceAccountModePage.SelectedValueIndex = 0)));
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -372,65 +361,6 @@ begin
       Result := False;
     end;
   end;
-end;
-
-function BuildBoogieMixSetupScript(AppDir: String): String;
-var
-  LogPath: String;
-  PythonDir: String;
-begin
-  LogPath := ExpandConstant('{commonappdata}') + '\BoogieBox\installer-boogiemix.log';
-  PythonDir := AppDir + '\resources\Services\boogiemix\python';
-  Result :=
-    '$host.UI.RawUI.WindowTitle = ''BoogieBox - Installing BoogieMix (may take 10-30 minutes)''' + #13#10 +
-    '$logPath = ''' + LogPath + '''' + #13#10 +
-    'New-Item -ItemType Directory -Force -Path (Split-Path $logPath) | Out-Null' + #13#10 +
-    'function Write-Log { param([string]$m); $l = "[$(Get-Date -Format ''yyyy-MM-dd HH:mm:ss'')] $m"; Write-Host $l; Add-Content -Path $logPath -Value $l -Encoding Unicode }' + #13#10 +
-    'Write-Log ''BoogieMix setup started.''' + #13#10 +
-    'Write-Log ''Running bootstrap_env.ps1 (resolves/installs a Python version matching the bundled madmom wheel, auto CUDA/CPU PyTorch, Demucs model download - this may take 10-30 minutes)...''' + #13#10 +
-    'try {' + #13#10 +
-    '  & ''' + PythonDir + '\bootstrap_env.ps1'' -Auto -PrimeDemucsModel -Force *>&1 | Tee-Object -Append -FilePath $logPath' + #13#10 +
-    '} catch {' + #13#10 +
-    '  Write-Log "Bootstrap threw an exception: $_"' + #13#10 +
-    '}' + #13#10 +
-    'Write-Log ''Verifying BoogieMix environment...''' + #13#10 +
-    '$venvPy = ''' + PythonDir + '\.venv\Scripts\python.exe''' + #13#10 +
-    'if (-not (Test-Path $venvPy)) {' + #13#10 +
-    '  Write-Log ''FAILED: .venv python not found. Bootstrap may have failed before creating the environment.''' + #13#10 +
-    '  Write-Log "Log saved to: $logPath"' + #13#10 +
-    '  Read-Host ''Press Enter to close''' + #13#10 +
-    '  exit 1' + #13#10 +
-    '}' + #13#10 +
-    '& $venvPy -c ''import torch, demucs'' 2>&1 | Out-Null' + #13#10 +
-    'if ($LASTEXITCODE -ne 0) {' + #13#10 +
-    '  Write-Log ''FAILED: torch/demucs not importable after bootstrap.''' + #13#10 +
-    '  Write-Log "Log saved to: $logPath"' + #13#10 +
-    '  Read-Host ''Press Enter to close''' + #13#10 +
-    '  exit 1' + #13#10 +
-    '}' + #13#10 +
-    'Write-Log ''BoogieMix setup completed successfully.''';
-end;
-
-function RunBoogieMixSetup(AppDir: String): Boolean;
-var
-  ScriptPath: String;
-  ResultCode: Integer;
-begin
-  ScriptPath := ExpandConstant('{tmp}') + '\bb_boogiemix_setup.ps1';
-  if not SaveStringToFile(ScriptPath, BuildBoogieMixSetupScript(AppDir), False) then
-  begin
-    Log('Could not write BoogieMix setup script to ' + ScriptPath + '.');
-    Result := False;
-    exit;
-  end;
-  WizardForm.StatusLabel.Caption := 'Setting up BoogieMix deep analysis (may take 10-30 minutes)...';
-  Result := Exec(
-    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"',
-    '', SW_SHOW, ewWaitUntilTerminated, ResultCode
-  ) and (ResultCode = 0);
-  DeleteFile(ScriptPath);
-  Log('BoogieMix setup exit code: ' + IntToStr(ResultCode));
 end;
 
 procedure RefreshFirewallRule();
@@ -482,21 +412,6 @@ begin
       end;
       if not InstallBoogieBoxService(ServiceUserName, ServicePassword) then
         RaiseException('Could not install the BoogieBox Windows service.');
-    end;
-    if WizardIsTaskSelected('boogiemix') then
-    begin
-      if not RunBoogieMixSetup(ExpandConstant('{app}')) then
-        MsgBox(
-          'BoogieMix deep analysis dependencies could not be installed.' + #13#10 +
-          '' + #13#10 +
-          'BoogieBox Server is installed and will work normally without deep analysis.' + #13#10 +
-          'To enable deep analysis later, ensure Python 3.10+ is installed and run:' + #13#10 +
-          '' + #13#10 +
-          ExpandConstant('{app}') + '\resources\Services\boogiemix\python\bootstrap_env.ps1' + #13#10 +
-          '' + #13#10 +
-          'See ' + ExpandConstant('{commonappdata}') + '\BoogieBox\installer-boogiemix.log for details.',
-          mbInformation, MB_OK
-        );
     end;
   end;
 end;

@@ -170,6 +170,11 @@ async fn run_tick(
     last_runtime: &mut Option<(Instant, RuntimeStatus)>,
     last_empty_discovery: &mut Option<Instant>,
 ) {
+    // In-app setup rebuilds the environment; no job may start on a half-built one.
+    if crate::boogiemix_setup::hub().is_running() {
+        *last_runtime = None;
+        return;
+    }
     let settings = match on_db(state, load_settings).await {
         Some(Ok(settings)) => settings,
         None => return,
@@ -1144,7 +1149,15 @@ fn python_candidates() -> Vec<PythonInvocation> {
         &["resources", "Services", "boogiemix", "python", ".venv"],
     ];
 
-    let mut candidates = Vec::new();
+    // The managed environment from in-app setup (ProgramData) comes first.
+    let mut candidates: Vec<PythonInvocation> = crate::boogiemix_setup::installed_managed_python()
+        .into_iter()
+        .map(|path| PythonInvocation {
+            display_name: path.display().to_string(),
+            command: path,
+            base_args: Vec::new(),
+        })
+        .collect();
     for root in candidate_roots() {
         for base in base_rels {
             let venv_root: PathBuf = base.iter().fold(root.clone(), |p, s| p.join(s));
@@ -1188,7 +1201,7 @@ fn worker_script_path() -> Option<PathBuf> {
     None
 }
 
-fn model_cache_path() -> PathBuf {
+pub(crate) fn model_cache_path() -> PathBuf {
     // Prefer ProgramData (writable by service accounts) over the install dir.
     #[cfg(windows)]
     {
@@ -1207,7 +1220,7 @@ fn model_cache_path() -> PathBuf {
     std::env::temp_dir().join("boogiebox-model-cache")
 }
 
-fn candidate_roots() -> Vec<PathBuf> {
+pub(crate) fn candidate_roots() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(parent) = current_exe.parent() {

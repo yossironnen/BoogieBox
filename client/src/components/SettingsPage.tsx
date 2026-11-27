@@ -22,6 +22,7 @@ import LogsView from './LogsView';
 import FolderPickerModal from './FolderPickerModal';
 import BackupSettingsSection from './BackupSettingsSection';
 import ConfirmModal from './ConfirmModal';
+import BoogieMixSetupCard from './BoogieMixSetupCard';
 import CommandBar from './CommandBar';
 import RadioMetadataSettings from './RadioMetadataSettings';
 import FreeMusicSourcesSetting from './FreeMusicSourcesSetting';
@@ -2184,6 +2185,13 @@ export default function SettingsPage({
 
           {/* ── BoogieMix ────────────────────────────────────────────────── */}
           <div id="advanced-boogiemix" style={P.advancedSectionTitle}>BoogieMix</div>
+
+          {isAdmin && (
+            <BoogieMixSetupCard
+              runtime={boogiemixDeepStatus?.runtime ?? null}
+              onChanged={() => { void loadBoogieMixDeepStatus(); }}
+            />
+          )}
 
           <div style={{
             padding: '16px 20px', borderRadius: 8, marginBottom: 12,

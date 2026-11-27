@@ -7,6 +7,8 @@ param(
   [string]$PythonExe = "python",
   [string[]]$PythonExeArgs = @(),
   [string]$VenvPath = ".venv",
+  # Model cache the server's worker uses (TORCH_HOME); defaults to the bundled model-cache\torch.
+  [string]$TorchHome = "",
   [switch]$Auto,
   [switch]$Cuda,
   [switch]$CpuOnly,
@@ -16,7 +18,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$venvFull = Join-Path $root $VenvPath
+# The server's in-app setup passes an absolute path (ProgramData); Join-Path would mangle it.
+$venvFull = if ([System.IO.Path]::IsPathRooted($VenvPath)) { $VenvPath } else { Join-Path $root $VenvPath }
+
+# Progress markers parsed by the server's in-app setup (boogiemix_setup.rs); the keys are stable, the
+# client owns the wording. Keep the total in step with SETUP_TOTAL_STEPS.
+$bbStepTotal = 8
+function Write-BBStep {
+  param([int]$Index, [string]$Key)
+  Write-Host "##BB-STEP $Index/$bbStepTotal $Key"
+}
+
+Write-BBStep 1 "python"
 
 # If no explicit -PythonExe was given, resolve Python from known locations before
 # falling back to PATH. Exit code 9009 means "not found" on Windows.
@@ -161,7 +174,8 @@ if ($PythonExe -eq "python") {
   Write-Host "Using Python: $PythonExe $($resolvedArgs -join ' ')"
 }
 
-$torchHome       = Join-Path $root "model-cache\torch"
+$bundledTorchHome = Join-Path $root "model-cache\torch"
+$torchHome       = if ($TorchHome) { $TorchHome } else { $bundledTorchHome }
 $constraintsPath = Join-Path $root "constraints.txt"
 $cudaIndexUrl    = "https://download.pytorch.org/whl/cu128"
 $cpuIndexUrl     = "https://download.pytorch.org/whl/cpu"
@@ -205,6 +219,7 @@ function Invoke-NativeChecked {
   }
 }
 
+Write-BBStep 2 "venv"
 if ((Test-Path $venvFull) -and $Force) {
   Remove-Item -Recurse -Force $venvFull
 }
@@ -216,6 +231,7 @@ if (-not (Test-Path $venvFull)) {
 $py  = Join-Path $venvFull "Scripts\python.exe"
 $pip = Join-Path $venvFull "Scripts\pip.exe"
 
+Write-BBStep 3 "tools"
 # torch 2.11.0 itself declares `setuptools<82`, so the torch/torchaudio install
 # below re-downgrades this on its own (re-asserted again afterward - see the
 # setuptools floor comment near the PyTorch install branch for the CVE detail).
@@ -224,6 +240,16 @@ Invoke-NativeChecked $pip @("install", "--upgrade", "-c", $constraintsPath, "Cyt
 
 New-Item -ItemType Directory -Force -Path $torchHome | Out-Null
 $env:TORCH_HOME = $torchHome
+# A release built with the model cache ships the Demucs weights; copy them to the worker's cache so the
+# first analysis (and the priming below) doesn't download them again.
+if (($torchHome -ne $bundledTorchHome) -and (Test-Path (Join-Path $bundledTorchHome "hub"))) {
+  try {
+    Copy-Item -Path (Join-Path $bundledTorchHome "*") -Destination $torchHome -Recurse -Force
+    Write-Host "Copied bundled Demucs models to $torchHome"
+  } catch {
+    Write-Warning "Could not copy the bundled Demucs models (they will be downloaded instead): $($_.Exception.Message)"
+  }
+}
 
 function Test-NvidiaGpu {
   try {
@@ -267,6 +293,7 @@ function Install-TorchCuda {
   }
 }
 
+Write-BBStep 4 "torch"
 $torchMode = $null
 if ($CpuOnly) {
   Install-TorchCpu
@@ -295,8 +322,10 @@ if ($CpuOnly) {
 # pip has no reason to touch the already-installed, already-matched torch/torchaudio.
 Invoke-NativeChecked $py @("-m", "pip", "install", "--upgrade", "setuptools>=78.1.1,<82")
 
+Write-BBStep 5 "packages"
 Invoke-NativeChecked $pip @("install", "--no-build-isolation", "-c", $constraintsPath, "-r", (Join-Path $root "requirements.txt"))
 
+Write-BBStep 6 "extras"
 # madmom: try pre-built bundled wheel first, then fall back to PyPI source build (requires MSVC).
 Write-Host "Installing madmom (neural beat tracking)..."
 $wheelsDir = Join-Path $root "wheels"
@@ -348,8 +377,7 @@ if (-not $diffqOk) {
   }
 }
 
-Invoke-NativeChecked $py @("-c", "import torch, demucs")
-
+Write-BBStep 7 "models"
 if ($PrimeDemucsModel) {
   foreach ($model in $demucsModelsToPrime) {
     Write-Host "Priming Demucs model cache for $model..."
@@ -360,6 +388,9 @@ if ($PrimeDemucsModel) {
     }
   }
 }
+
+Write-BBStep 8 "check"
+Invoke-NativeChecked $py @("-c", "import torch, demucs")
 
 Write-Host "BoogieMix deep-analysis worker environment ready: $venvFull"
 Write-Host "PyTorch mode: $torchMode"

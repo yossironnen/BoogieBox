@@ -836,6 +836,14 @@ export const api = {
       post<{ queued: number }>(
         `/boogiemix/deep-analysis/all/queue${force ? '?force=true' : ''}`,
       ),
+    deepAnalysisSetup: () =>
+      get<import('./types').BoogieMixSetupSnapshot>('/boogiemix/deep-analysis/setup'),
+    installDeepAnalysis: () =>
+      post<import('./types').BoogieMixSetupSnapshot>('/boogiemix/deep-analysis/setup/install'),
+    cancelDeepAnalysisSetup: () =>
+      post<import('./types').BoogieMixSetupSnapshot>('/boogiemix/deep-analysis/setup/cancel'),
+    removeDeepAnalysis: () =>
+      post<import('./types').BoogieMixSetupSnapshot>('/boogiemix/deep-analysis/setup/remove'),
     pauseDeepAnalysisBackground: () =>
       post<{ ok: boolean }>('/boogiemix/deep-analysis/pause'),
     resumeDeepAnalysisBackground: () =>

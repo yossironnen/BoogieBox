@@ -674,6 +674,26 @@ export interface BoogieMixDeepAnalysisStatus {
   };
 }
 
+/** Where an in-app deep-analysis setup run stands (`GET /api/boogiemix/deep-analysis/setup`). */
+export type BoogieMixSetupState = 'idle' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+/** In-app deep-analysis setup (Windows; Linux reports `supported: false`). */
+export interface BoogieMixSetupSnapshot {
+  supported: boolean;
+  state: BoogieMixSetupState;
+  step: { index: number; total: number; key: string } | null;
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  /** Reason key, e.g. `exit_code`, `verify_failed`; the client owns the wording. */
+  error: string | null;
+  exitCode: number | null;
+  lines: string[];
+  /** Whether the environment set up from Settings is there. */
+  installed: boolean;
+  freeBytes: number | null;
+  requiredBytes: number;
+}
+
 /** Per-playlist deep analysis progress returned by the progress endpoint. */
 export interface PlaylistDeepAnalysisProgress {
   total: number;

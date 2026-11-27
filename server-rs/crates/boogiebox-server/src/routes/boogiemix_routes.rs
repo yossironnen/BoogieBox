@@ -189,6 +189,22 @@ pub fn boogiemix_router(state: SharedState) -> Router {
             "/api/boogiemix/deep-analysis/cache/clear",
             post(clear_deep_analysis_cache_handler),
         )
+        .route(
+            "/api/boogiemix/deep-analysis/setup",
+            get(deep_setup_status_handler),
+        )
+        .route(
+            "/api/boogiemix/deep-analysis/setup/install",
+            post(deep_setup_install_handler),
+        )
+        .route(
+            "/api/boogiemix/deep-analysis/setup/cancel",
+            post(deep_setup_cancel_handler),
+        )
+        .route(
+            "/api/boogiemix/deep-analysis/setup/remove",
+            post(deep_setup_remove_handler),
+        )
         .with_state(state)
 }
 
@@ -1102,6 +1118,90 @@ async fn queue_library_deep_analysis_handler(
     result
 }
 
+// ── In-app deep-analysis setup (Windows) ───────────────────────────────────────
+
+async fn deep_setup_status_handler(AdminUser(_user): AdminUser) -> Response {
+    let snapshot = crate::boogiemix_setup::snapshot(crate::boogiemix_setup::hub()).await;
+    (StatusCode::OK, Json(snapshot)).into_response()
+}
+
+/// Whether deep-analysis jobs are running now (setup and remove wait for them).
+async fn deep_jobs_running(state: &SharedState) -> Result<bool, Box<Response>> {
+    let Some(db) = get_db(state) else {
+        return Err(Box::new(db_not_configured()));
+    };
+    let result = tokio::task::spawn_blocking(move || match db.lock() {
+        Ok(conn) => get_deep_analysis_queue_status(&conn)
+            .map(|q| q.running > 0)
+            .map_err(|e| e.to_string()),
+        Err(_) => Err("DB lock failed".to_string()),
+    })
+    .await;
+    match result {
+        Ok(Ok(running)) => Ok(running),
+        Ok(Err(e)) => Err(Box::new(internal_error(&e))),
+        Err(e) => Err(Box::new(internal_error(&e.to_string()))),
+    }
+}
+
+fn setup_conflict(key: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: key.to_string(),
+            setup_required: None,
+        }),
+    )
+        .into_response()
+}
+
+async fn setup_result(result: Result<(), &'static str>) -> Response {
+    match result {
+        Ok(()) => {
+            let snapshot = crate::boogiemix_setup::snapshot(crate::boogiemix_setup::hub()).await;
+            (StatusCode::OK, Json(snapshot)).into_response()
+        }
+        Err(crate::boogiemix_setup::errors::REMOVE_FAILED) => {
+            internal_error(crate::boogiemix_setup::errors::REMOVE_FAILED)
+        }
+        Err(key) => setup_conflict(key),
+    }
+}
+
+async fn deep_setup_install_handler(
+    State(state): State<SharedState>,
+    AdminUser(_user): AdminUser,
+) -> Response {
+    if !crate::boogiemix_setup::supported() {
+        return setup_conflict(crate::boogiemix_setup::errors::NOT_SUPPORTED);
+    }
+    let jobs_running = match deep_jobs_running(&state).await {
+        Ok(running) => running,
+        Err(response) => return *response,
+    };
+    setup_result(crate::boogiemix_setup::install(crate::boogiemix_setup::hub(), jobs_running).await)
+        .await
+}
+
+async fn deep_setup_cancel_handler(AdminUser(_user): AdminUser) -> Response {
+    setup_result(crate::boogiemix_setup::hub().cancel()).await
+}
+
+async fn deep_setup_remove_handler(
+    State(state): State<SharedState>,
+    AdminUser(_user): AdminUser,
+) -> Response {
+    if !crate::boogiemix_setup::supported() {
+        return setup_conflict(crate::boogiemix_setup::errors::NOT_SUPPORTED);
+    }
+    let jobs_running = match deep_jobs_running(&state).await {
+        Ok(running) => running,
+        Err(response) => return *response,
+    };
+    setup_result(crate::boogiemix_setup::remove(crate::boogiemix_setup::hub(), jobs_running).await)
+        .await
+}
+
 async fn pause_deep_analysis_background_handler(
     State(state): State<SharedState>,
     AdminUser(_user): AdminUser,
@@ -1267,6 +1367,11 @@ async fn cached_deep_runtime() -> DeepRuntimeStatus {
     let status = detect_deep_runtime().await;
     *cache = Some((Instant::now(), status.clone()));
     status
+}
+
+/// Drops the cached probe so the next status call sees a just-installed or removed environment.
+pub(crate) async fn invalidate_deep_runtime_cache() {
+    *DEEP_RUNTIME_CACHE.lock().await = None;
 }
 
 async fn detect_deep_runtime() -> DeepRuntimeStatus {
@@ -1534,7 +1639,15 @@ fn python_candidates() -> Vec<PythonInvocation> {
             .join(".."),
     );
 
-    let mut candidates = Vec::new();
+    // The managed environment from in-app setup (ProgramData) comes first.
+    let mut candidates: Vec<PythonInvocation> = crate::boogiemix_setup::installed_managed_python()
+        .into_iter()
+        .map(|path| PythonInvocation {
+            display_name: path.display().to_string(),
+            command: path,
+            base_args: Vec::new(),
+        })
+        .collect();
     for dir in dirs {
         for base in base_rels {
             let venv_root = base.iter().fold(dir.clone(), |p, s| p.join(s));
@@ -2560,6 +2673,108 @@ mod route_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(json_body(&body)["runtime"].is_object());
+    }
+
+    #[tokio::test]
+    async fn deep_setup_routes_are_admin_only() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-setup-auth");
+        let user_cookie = seed_user_session(&pool, "u1");
+        for (method, uri) in [
+            ("GET", "/api/boogiemix/deep-analysis/setup"),
+            ("POST", "/api/boogiemix/deep-analysis/setup/install"),
+            ("POST", "/api/boogiemix/deep-analysis/setup/cancel"),
+            ("POST", "/api/boogiemix/deep-analysis/setup/remove"),
+        ] {
+            let (unauth, _) = send(
+                app.clone(),
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(unauth, StatusCode::UNAUTHORIZED, "{uri}");
+            let (user, _) = send(
+                app.clone(),
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("cookie", user_cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(user, StatusCode::FORBIDDEN, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn deep_setup_status_and_idle_cancel_for_admin() {
+        let (app, pool) = new_test_app_with_pool("boogiemix-setup-admin");
+        let cookie = seed_admin_session(&pool, "admin1");
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .uri("/api/boogiemix/deep-analysis/setup")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json = json_body(&body);
+        assert_eq!(json["supported"], crate::boogiemix_setup::supported());
+        assert_eq!(
+            json["requiredBytes"],
+            crate::boogiemix_setup::REQUIRED_FREE_BYTES
+        );
+        assert!(json["lines"].is_array());
+
+        // Nothing is running in tests, so cancel has nothing to stop.
+        let (status, body) = send(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/boogiemix/deep-analysis/setup/cancel")
+                .header("cookie", cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json_body(&body)["error"], "not_running");
+
+        // Install/remove would touch the real ProgramData environment on Windows; only Linux is checked here.
+        if !crate::boogiemix_setup::supported() {
+            for uri in [
+                "/api/boogiemix/deep-analysis/setup/install",
+                "/api/boogiemix/deep-analysis/setup/remove",
+            ] {
+                let (status, body) = send(
+                    app.clone(),
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("cookie", cookie.clone())
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{uri}");
+                assert_eq!(json_body(&body)["error"], "not_supported", "{uri}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn setup_result_maps_keys_to_status_codes() {
+        let conflict = super::setup_result(Err(crate::boogiemix_setup::errors::JOBS_RUNNING)).await;
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let failed = super::setup_result(Err(crate::boogiemix_setup::errors::REMOVE_FAILED)).await;
+        assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let ok = super::setup_result(Ok(())).await;
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 
     #[tokio::test]
